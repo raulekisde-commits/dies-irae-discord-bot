@@ -4,15 +4,15 @@ import os
 
 TOKEN = os.getenv("TOKEN")
 
-GUILD_ID = 1234567890
-CATEGORY_ID = 1234567890
+GUILD_ID = 1257878770841288724
+CATEGORY_ID = 1257902293609742346
 
-RECRUITER_ROLE_ID = 1111111111
-MIEMBRO_ROLE_ID = 2222222222
-TANK_ROLE_ID = 3333333333
-HEALER_ROLE_ID = 4444444444
-SUPP_ROLE_ID = 5555555555
-DPS_ROLE_ID = 6666666666
+RECRUITER_ROLE_ID = 1257896905099444354
+MIEMBRO_ROLE_ID = 1257896455860129822
+TANK_ROLE_ID = 1260755129754189854
+HEALER_ROLE_ID = 1260755151296266331
+SUPP_ROLE_ID = 1260755342472646656
+DPS_ROLE_ID = 1260755289062248458
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -116,8 +116,7 @@ class TicketPanel(discord.ui.View):
             description=(
                 "**Enviá lo siguiente:**\n\n"
                 "📸 Screenshot perfil Albion\n"
-                "📊 Fame\n"
-                "⚔ Build principal\n"
+                "⚔ Rol ZvZ\n"
                 "🕒 Horarios\n\n"
                 "Un reclutador revisará tu postulación."
             ),
@@ -151,3 +150,4 @@ async def panel(ctx):
     await ctx.send(embed=embed, view=TicketPanel())
 
 bot.run(TOKEN)
+
