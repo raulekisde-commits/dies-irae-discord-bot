@@ -49,7 +49,8 @@ async def send_log(guild, message):
 async def create_transcript(channel):
     messages = []
     async for msg in channel.history(limit=200):
-        messages.append(f"[{msg.author}] {msg.content}")
+        content = msg.content if msg.content else ""
+        messages.append(f"[{msg.author}] {content}")
 
     transcript = "\n".join(reversed(messages))
     return transcript
@@ -95,37 +96,61 @@ class RecruitView(discord.ui.View):
         )
 
 
-    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="✔ Miembro",
+        style=discord.ButtonStyle.success,
+        custom_id="accept_miembro"
+    )
     async def miembro(self, interaction, button):
         await interaction.response.defer()
         await self.accept_player(interaction, MIEMBRO_ROLE_ID, "Miembro")
 
 
-    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="🛡 Tank",
+        style=discord.ButtonStyle.primary,
+        custom_id="accept_tank"
+    )
     async def tank(self, interaction, button):
         await interaction.response.defer()
         await self.accept_player(interaction, TANK_ROLE_ID, "Tank")
 
 
-    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="✨ Healer",
+        style=discord.ButtonStyle.primary,
+        custom_id="accept_healer"
+    )
     async def healer(self, interaction, button):
         await interaction.response.defer()
         await self.accept_player(interaction, HEALER_ROLE_ID, "Healer")
 
 
-    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="🧙 Support",
+        style=discord.ButtonStyle.primary,
+        custom_id="accept_support"
+    )
     async def supp(self, interaction, button):
         await interaction.response.defer()
         await self.accept_player(interaction, SUPP_ROLE_ID, "Support")
 
 
-    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="⚔ DPS",
+        style=discord.ButtonStyle.primary,
+        custom_id="accept_dps"
+    )
     async def dps(self, interaction, button):
         await interaction.response.defer()
         await self.accept_player(interaction, DPS_ROLE_ID, "DPS")
 
 
-    @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="❌ Rechazar",
+        style=discord.ButtonStyle.secondary,
+        custom_id="reject_postulacion"
+    )
     async def reject(self, interaction, button):
 
         await interaction.response.defer()
@@ -148,7 +173,11 @@ class RecruitView(discord.ui.View):
         await interaction.channel.delete()
 
 
-    @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="🔒 Cerrar Postulación",
+        style=discord.ButtonStyle.danger,
+        custom_id="close_postulacion"
+    )
     async def close(self, interaction, button):
 
         await interaction.response.defer()
@@ -173,7 +202,11 @@ class PanelView(discord.ui.View):
         super().__init__(timeout=None)
 
 
-    @discord.ui.button(label="⚡ Abrir Postulación", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="⚡ Abrir Postulación",
+        style=discord.ButtonStyle.success,
+        custom_id="open_postulacion"
+    )
     async def open_application(self, interaction: discord.Interaction, button):
 
         if interaction.guild is None:
