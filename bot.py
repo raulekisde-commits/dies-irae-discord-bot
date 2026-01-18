@@ -10,7 +10,7 @@ def home():
     return "ok", 200
 
 def run_web():
-    port = int(os.environ.get("PORT", 3000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
 Thread(target=run_web, daemon=True).start()
@@ -37,11 +37,14 @@ HEALER_ROLE_ID = 1260755151296266331
 SUPP_ROLE_ID = 1260755342472646656
 DPS_ROLE_ID = 1260755289062248458
 
+# ✅ NUEVO: rol Public (se saca al aceptar)
+PUBLIC_ROLE_ID = 1266805315547041902
+
 # ✅ STAFF
 STAFF_ROLE_ID = 1257896709246423083
 
 # ✅ RELOJ UTC (poné acá el canal que querés renombrar)
-CLOCK_CHANNEL_ID = 1462464849463214395  # <-- CAMBIÁ ESTO por el ID del canal reloj
+CLOCK_CHANNEL_ID = 1462464849463214395
 
 COOLDOWN_SECONDS = 60
 
@@ -58,7 +61,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ---------- UTILIDADES ----------
 
 async def send_log(guild: discord.Guild, message: str):
-    """Manda logs al canal aunque no esté cacheado."""
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if channel is None:
         try:
@@ -81,16 +83,13 @@ def staff_only():
     async def predicate(ctx: commands.Context):
         if ctx.guild is None:
             return False
-
         staff_role = ctx.guild.get_role(STAFF_ROLE_ID)
         if staff_role is None:
             await ctx.reply("❌ STAFF_ROLE_ID mal configurado (no encuentro el rol).")
             return False
-
         if staff_role not in ctx.author.roles:
             await ctx.reply("❌ Solo los miembros con el rol **Staff** pueden usar este comando.")
             return False
-
         return True
     return commands.check(predicate)
 
@@ -98,7 +97,6 @@ def staff_only():
 
 @tasks.loop(minutes=5)
 async def utc_clock():
-    # Si no configuraste el canal, no hace nada
     if not CLOCK_CHANNEL_ID or CLOCK_CHANNEL_ID == 0:
         return
 
@@ -114,11 +112,10 @@ async def utc_clock():
             return
 
     now = datetime.now(timezone.utc)
-    # Discord no permite ":" en nombres de canal, por eso HHMM
-    new_name = f"utc-{now:%H%M}"  # ej: utc-0000, utc-1535
+    new_name = f"🕒 UTC {now:%H%M}"
 
     if channel.name == new_name:
-        return  # evita rate limit
+        return
 
     try:
         await channel.edit(name=new_name, reason="UTC clock update (cada 5 min)")
@@ -136,24 +133,19 @@ async def before_utc_clock():
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
-    bot.add_view(PanelView())  # view persistente
+    bot.add_view(PanelView())
     print("✅ Panel persistente cargado")
 
     if not utc_clock.is_running():
         utc_clock.start()
         print("✅ Reloj UTC iniciado (cada 5 min)")
 
-# ---------- COMANDOS STAFF ----------
+# ---------- COMANDOS STAFF (los tuyos) ----------
 
 @bot.command(name="addroll-list")
 @staff_only()
 @commands.guild_only()
 async def addroll_list(ctx: commands.Context, *, args: str = None):
-    """
-    Uso: !addroll-list NombreDelRol @Usuario1 @Usuario2 ...
-    - Crea el rol si no existe
-    - Lo asigna a los usuarios mencionados
-    """
     if not args:
         return await ctx.reply("Uso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
 
@@ -161,7 +153,6 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
     if not mentioned_members:
         return await ctx.reply("Tenés que mencionar al menos 1 usuario.\nUso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
 
-    # Saca menciones del texto para quedarse con el nombre del rol
     role_name = args
     for m in mentioned_members:
         role_name = role_name.replace(m.mention, "").strip()
@@ -170,10 +161,8 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
     if not role_name:
         return await ctx.reply("Falta el nombre del rol.\nUso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
 
-    # Buscar rol por nombre
     role = discord.utils.get(ctx.guild.roles, name=role_name)
 
-    # Crear rol si no existe
     if role is None:
         try:
             role = await ctx.guild.create_role(
@@ -185,7 +174,6 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
         except Exception:
             return await ctx.reply("❌ Error inesperado creando el rol.")
 
-    # Asignar roles
     ok = 0
     fail = 0
     for member in mentioned_members:
@@ -201,10 +189,6 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
 @staff_only()
 @commands.guild_only()
 async def delrole(ctx: commands.Context, *, role_query: str = None):
-    """
-    Uso: !delrole NombreDelRol  o  !delrole @Rol
-    - No deja borrar Staff ni roles managed (bots/integraciones)
-    """
     if not role_query and not ctx.message.role_mentions:
         return await ctx.reply("Uso: `!delrole NombreDelRol` o `!delrole @Rol`")
 
@@ -249,16 +233,23 @@ class RecruitView(discord.ui.View):
     async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
         role = interaction.guild.get_role(role_id)
         member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
+        public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)  # ✅ NUEVO
 
         if role is None or member_role is None:
             await interaction.channel.send("❌ Error: no encontré uno de los roles configurados (IDs mal).")
             return
 
         try:
+            # ✅ Da roles nuevos
             await self.user.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
+
+            # ✅ NUEVO: saca rol Public si lo tiene
+            if public_role and public_role in self.user.roles:
+                await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
+
         except discord.Forbidden:
             await interaction.channel.send(
-                "❌ No tengo permisos para asignar roles.\n"
+                "❌ No tengo permisos para asignar/quitar roles.\n"
                 "✅ Revisá: permisos del bot y que los roles estén *debajo* del rol del bot."
             )
             return
@@ -272,7 +263,7 @@ class RecruitView(discord.ui.View):
 
         await send_log(
             interaction.guild,
-            f"✅ **ACEPTADO** {self.user} → {role_name}"
+            f"✅ **ACEPTADO** {self.user} → {role_name} (Public removido)"
         )
 
         active_applications.pop(self.user.id, None)
@@ -413,8 +404,11 @@ class PanelView(discord.ui.View):
             color=discord.Color.gold()
         )
 
+        # ✅ NUEVO: tag al rol reclutador cuando abre ticket
+        recruiter_mention = recruiter_role.mention if recruiter_role else "@Reclutadores"
+
         await channel.send(
-            content=interaction.user.mention,
+            content=f"{interaction.user.mention} {recruiter_mention}",
             embed=embed,
             view=RecruitView(interaction.user)
         )
@@ -442,4 +436,3 @@ if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno.")
 
 bot.run(TOKEN)
-
