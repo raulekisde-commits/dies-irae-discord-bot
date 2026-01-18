@@ -1,3 +1,17 @@
+from flask import Flask
+from threading import Thread
+
+app = Flask(__name__)
+
+@app.get("/")
+def home():
+    return "ok", 200
+
+def run_web():
+    app.run(host="0.0.0.0", port=3000)
+
+Thread(target=run_web, daemon=True).start()
+
 import discord
 from discord.ext import commands
 import os
@@ -282,3 +296,4 @@ if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno.")
 
 bot.run(TOKEN)
+
