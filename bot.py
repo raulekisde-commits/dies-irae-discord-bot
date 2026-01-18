@@ -1,3 +1,4 @@
+# ================== WEB PING (UptimeRobot) ==================
 from flask import Flask
 from threading import Thread
 
@@ -12,14 +13,16 @@ def run_web():
 
 Thread(target=run_web, daemon=True).start()
 
+# ================== BOT ==================
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import time
+from datetime import datetime, timezone
 
 # ================== CONFIG ==================
 
-TOKEN = os.getenv("DISCORD_TOKEN")  # Railway: Variables -> DISCORD_TOKEN
+TOKEN = os.getenv("DISCORD_TOKEN")  # Replit Secrets: DISCORD_TOKEN
 
 GUILD_ID = 1257878770841288724
 CATEGORY_ID = 1257902293609742346
@@ -32,6 +35,12 @@ HEALER_ROLE_ID = 1260755151296266331
 SUPP_ROLE_ID = 1260755342472646656
 DPS_ROLE_ID = 1260755289062248458
 
+# ✅ STAFF
+STAFF_ROLE_ID = 1257896709246423083
+
+# ✅ RELOJ UTC (poné acá el canal que querés renombrar)
+CLOCK_CHANNEL_ID = 1462464849463214395  # <-- CAMBIÁ ESTO por el ID del canal reloj
+
 COOLDOWN_SECONDS = 60
 
 active_applications = {}
@@ -43,16 +52,6 @@ intents.message_content = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-
-# ---------- READY ----------
-
-@bot.event
-async def on_ready():
-    print(f"✅ Bot conectado como {bot.user}")
-    bot.add_view(PanelView())  # view persistente
-    print("✅ Panel persistente cargado")
-
 
 # ---------- UTILIDADES ----------
 
@@ -69,7 +68,6 @@ async def send_log(guild: discord.Guild, message: str):
     except Exception:
         pass
 
-
 async def create_transcript(channel: discord.TextChannel):
     messages = []
     async for msg in channel.history(limit=200, oldest_first=True):
@@ -77,6 +75,157 @@ async def create_transcript(channel: discord.TextChannel):
         messages.append(f"[{msg.author}] {content}")
     return "\n".join(messages)
 
+def staff_only():
+    async def predicate(ctx: commands.Context):
+        if ctx.guild is None:
+            return False
+
+        staff_role = ctx.guild.get_role(STAFF_ROLE_ID)
+        if staff_role is None:
+            await ctx.reply("❌ STAFF_ROLE_ID mal configurado (no encuentro el rol).")
+            return False
+
+        if staff_role not in ctx.author.roles:
+            await ctx.reply("❌ Solo los miembros con el rol **Staff** pueden usar este comando.")
+            return False
+
+        return True
+    return commands.check(predicate)
+
+# ---------- RELOJ UTC (cada 5 min) ----------
+
+@tasks.loop(minutes=5)
+async def utc_clock():
+    # Si no configuraste el canal, no hace nada
+    if not CLOCK_CHANNEL_ID or CLOCK_CHANNEL_ID == 0:
+        return
+
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    channel = guild.get_channel(CLOCK_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(CLOCK_CHANNEL_ID)
+        except Exception:
+            return
+
+    now = datetime.now(timezone.utc)
+    # Discord no permite ":" en nombres de canal, por eso HHMM
+    new_name = f"utc-{now:%H%M}"  # ej: utc-0000, utc-1535
+
+    if channel.name == new_name:
+        return  # evita rate limit
+
+    try:
+        await channel.edit(name=new_name, reason="UTC clock update (cada 5 min)")
+    except discord.Forbidden:
+        print("❌ No tengo permisos para editar el canal (Manage Channels).")
+    except Exception as e:
+        print("❌ Error editando canal:", e)
+
+@utc_clock.before_loop
+async def before_utc_clock():
+    await bot.wait_until_ready()
+
+# ---------- READY ----------
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot conectado como {bot.user}")
+    bot.add_view(PanelView())  # view persistente
+    print("✅ Panel persistente cargado")
+
+    if not utc_clock.is_running():
+        utc_clock.start()
+        print("✅ Reloj UTC iniciado (cada 5 min)")
+
+# ---------- COMANDOS STAFF ----------
+
+@bot.command(name="addroll-list")
+@staff_only()
+@commands.guild_only()
+async def addroll_list(ctx: commands.Context, *, args: str = None):
+    """
+    Uso: !addroll-list NombreDelRol @Usuario1 @Usuario2 ...
+    - Crea el rol si no existe
+    - Lo asigna a los usuarios mencionados
+    """
+    if not args:
+        return await ctx.reply("Uso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
+
+    mentioned_members = ctx.message.mentions
+    if not mentioned_members:
+        return await ctx.reply("Tenés que mencionar al menos 1 usuario.\nUso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
+
+    # Saca menciones del texto para quedarse con el nombre del rol
+    role_name = args
+    for m in mentioned_members:
+        role_name = role_name.replace(m.mention, "").strip()
+    role_name = " ".join(role_name.split())
+
+    if not role_name:
+        return await ctx.reply("Falta el nombre del rol.\nUso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
+
+    # Buscar rol por nombre
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+
+    # Crear rol si no existe
+    if role is None:
+        try:
+            role = await ctx.guild.create_role(
+                name=role_name,
+                reason=f"Rol creado automáticamente por {ctx.author} (Staff)"
+            )
+        except discord.Forbidden:
+            return await ctx.reply("❌ No pude crear el rol. Me falta permiso **Manage Roles** o jerarquía.")
+        except Exception:
+            return await ctx.reply("❌ Error inesperado creando el rol.")
+
+    # Asignar roles
+    ok = 0
+    fail = 0
+    for member in mentioned_members:
+        try:
+            await member.add_roles(role, reason=f"Asignado por {ctx.author} (Staff)")
+            ok += 1
+        except Exception:
+            fail += 1
+
+    await ctx.reply(f"✅ Rol **{role.name}** asignado. OK: {ok} | Fallos: {fail}")
+
+@bot.command(name="delrole")
+@staff_only()
+@commands.guild_only()
+async def delrole(ctx: commands.Context, *, role_query: str = None):
+    """
+    Uso: !delrole NombreDelRol  o  !delrole @Rol
+    - No deja borrar Staff ni roles managed (bots/integraciones)
+    """
+    if not role_query and not ctx.message.role_mentions:
+        return await ctx.reply("Uso: `!delrole NombreDelRol` o `!delrole @Rol`")
+
+    role = None
+    if ctx.message.role_mentions:
+        role = ctx.message.role_mentions[0]
+    else:
+        role = discord.utils.get(ctx.guild.roles, name=role_query.strip()) if role_query else None
+
+    if role is None:
+        return await ctx.reply("❌ No encontré ese rol.")
+
+    if role.id == STAFF_ROLE_ID or role.managed:
+        return await ctx.reply("❌ No se puede eliminar ese rol.")
+
+    try:
+        name = role.name
+        await role.delete(reason=f"Eliminado por {ctx.author} (Staff)")
+        await ctx.reply(f"🗑️ Rol **{name}** eliminado correctamente.")
+    except discord.Forbidden:
+        await ctx.reply("❌ No pude eliminar el rol. Me falta permiso **Manage Roles** o jerarquía.")
+    except Exception:
+        await ctx.reply("❌ Error inesperado eliminando el rol.")
 
 # ---------- RECRUIT VIEW ----------
 
@@ -124,7 +273,6 @@ class RecruitView(discord.ui.View):
             f"✅ **ACEPTADO** {self.user} → {role_name}"
         )
 
-        # ✅ Cierra y libera la postulación
         active_applications.pop(self.user.id, None)
         try:
             await interaction.channel.delete()
@@ -193,7 +341,6 @@ class RecruitView(discord.ui.View):
         except Exception:
             pass
 
-
 # ---------- PANEL VIEW ----------
 
 class PanelView(discord.ui.View):
@@ -232,7 +379,6 @@ class PanelView(discord.ui.View):
             await interaction.followup.send("❌ Error: no encontré el rol de reclutador (RECRUITER_ROLE_ID mal).", ephemeral=True)
             return
 
-        # ✅ nombre estable y único (no depende del discriminator)
         channel_name = f"postulacion-{interaction.user.name}-{interaction.user.id}"
 
         bot_member = guild.me or guild.get_member(bot.user.id)
@@ -275,7 +421,6 @@ class PanelView(discord.ui.View):
 
         await interaction.followup.send(f"✅ Postulación creada: {channel.mention}", ephemeral=True)
 
-
 # ---------- COMANDO PANEL ----------
 
 @bot.command()
@@ -289,11 +434,9 @@ async def panel(ctx: commands.Context):
     embed.set_footer(text="Albion Online Recruitment System")
     await ctx.send(embed=embed, view=PanelView())
 
-
 # ---------- RUN ----------
 
 if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno.")
 
 bot.run(TOKEN)
-
