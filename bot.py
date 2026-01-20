@@ -147,10 +147,32 @@ def is_timers_member(member: discord.Member) -> bool:
         return False
     return role in member.roles
 
+# ✅ FIX: helper para responder interacciones sin 40060
+async def respond_ephemeral(interaction: discord.Interaction, content: str):
+    """
+    Responde ephemeral. Si ya estaba ack/deferido, usa followup.
+    Evita: Interaction has already been acknowledged (40060)
+    """
+    try:
+        if interaction.response.is_done():
+            return await interaction.followup.send(content, ephemeral=True)
+        return await interaction.response.send_message(content, ephemeral=True)
+    except Exception:
+        # último recurso: intentar followup
+        try:
+            return await interaction.followup.send(content, ephemeral=True)
+        except Exception:
+            return
+
 # ---------- RELOJ UTC (cada 5 min) ----------
+
+# ✅ FIX: throttle + manejo de rate limit (429)
+_last_clock_edit_ts = 0.0
 
 @tasks.loop(minutes=5)
 async def utc_clock():
+    global _last_clock_edit_ts
+
     if not CLOCK_CHANNEL_ID or CLOCK_CHANNEL_ID == 0:
         return
 
@@ -166,15 +188,26 @@ async def utc_clock():
             return
 
     now = datetime.now(timezone.utc)
-
-    # ✅ Canal de VOZ permite ":" → formato lindo
     new_name = f"🕒 UTC {now:%H:%M}"
 
-    if channel.name == new_name:
+    # si no cambió, no toques nada
+    if getattr(channel, "name", None) == new_name:
+        return
+
+    # throttle extra por si hay reinicios o se ejecuta doble
+    now_ts = time.time()
+    if now_ts - _last_clock_edit_ts < 600:  # 10 minutos
         return
 
     try:
-        await channel.edit(name=new_name, reason="UTC clock update (cada 5 min)")
+        await channel.edit(name=new_name, reason="UTC clock update")
+        _last_clock_edit_ts = now_ts
+    except discord.HTTPException as e:
+        # Si Discord te rate-limitea, guardamos tiempo para no insistir
+        # (discord.py suele reintentar solo, pero igual frenamos el spam)
+        if getattr(e, "status", None) == 429:
+            _last_clock_edit_ts = now_ts
+        print("❌ HTTPException editando canal:", e)
     except discord.Forbidden:
         print("❌ No tengo permisos para editar el canal (Manage Channels).")
     except Exception as e:
@@ -256,6 +289,13 @@ async def on_ready():
     except Exception as e:
         print("❌ Error sync slash commands:", e)
 
+# ✅ FIX: ignorar comandos desconocidos para que no llene logs con "!bal"
+@bot.event
+async def on_command_error(ctx: commands.Context, error: Exception):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    raise error
+
 # ================== SLASH COMMANDS TIMERS ==================
 
 @bot.tree.command(name="timeradd", description="Agregar timer (solo rol Timers)", guild=discord.Object(id=GUILD_ID))
@@ -287,19 +327,18 @@ async def timeradd_slash(
     mapa: str,
     tiempo: str
 ):
-    # ✅ permiso rol Timers
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("❌ Solo disponible en el servidor.", ephemeral=True)
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
     if not is_timers_member(interaction.user):
-        return await interaction.response.send_message("❌ Solo el rol **timers** puede usar este comando.", ephemeral=True)
+        return await respond_ephemeral(interaction, "❌ Solo el rol **timers** puede usar este comando.")
 
     if not mapa.strip():
-        return await interaction.response.send_message("❌ El nombre del mapa no puede estar vacío.", ephemeral=True)
+        return await respond_ephemeral(interaction, "❌ El nombre del mapa no puede estar vacío.")
 
     dur = parse_duration_hhmm(tiempo.strip())
     if dur is None:
-        return await interaction.response.send_message('❌ Tiempo inválido. Usá `H:M` ej: `6:10`.', ephemeral=True)
+        return await respond_ephemeral(interaction, '❌ Tiempo inválido. Usá `H:M` ej: `6:10`.')
 
     h, m = dur
     now = datetime.now(timezone.utc)
@@ -314,19 +353,19 @@ async def timeradd_slash(
     )
     timers.append(item)
 
-    await interaction.response.send_message(
+    await respond_ephemeral(
+        interaction,
         f"✅ Timer creado: 🧱 **{item.material.title()}** | ⭐ **T{item.tier}** | 🗺️ **{item.map_name}**\n"
-        f"🕒 Sale a **{fmt_utc(item.end_at)}** (en {time_left_str(item.end_at)})",
-        ephemeral=True
+        f"🕒 Sale a **{fmt_utc(item.end_at)}** (en {time_left_str(item.end_at)})"
     )
 
 @bot.tree.command(name="timerslist", description="Listar timers (ordenados)", guild=discord.Object(id=GUILD_ID))
 async def timerslist_slash(interaction: discord.Interaction):
     if interaction.guild is None:
-        return await interaction.response.send_message("❌ Solo disponible en el servidor.", ephemeral=True)
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
     if not timers:
-        return await interaction.response.send_message("📭 No hay timers activos.", ephemeral=True)
+        return await respond_ephemeral(interaction, "📭 No hay timers activos.")
 
     sorted_timers = sorted(timers, key=lambda t: t.end_at)
     lines = []
@@ -340,9 +379,9 @@ async def timerslist_slash(interaction: discord.Interaction):
     if len(msg) > 1900:
         msg = msg[:1900] + "\n…"
 
-    await interaction.response.send_message(msg, ephemeral=True)
+    await respond_ephemeral(interaction, msg)
 
-# ---------- COMANDOS STAFF (los tuyos) ----------
+# ---------- COMANDOS STAFF ----------
 
 @bot.command(name="addroll-list")
 @staff_only()
@@ -425,10 +464,7 @@ class RecruitView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
         if recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message(
-                "❌ Solo reclutadores pueden usar estos botones.",
-                ephemeral=True
-            )
+            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
             return False
         return True
 
@@ -438,7 +474,10 @@ class RecruitView(discord.ui.View):
         public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
 
         if role is None or member_role is None:
-            await interaction.channel.send("❌ Error: no encontré uno de los roles configurados (IDs mal).")
+            try:
+                await interaction.channel.send("❌ Error: no encontré uno de los roles configurados (IDs mal).")
+            except Exception:
+                pass
             return
 
         try:
@@ -446,18 +485,25 @@ class RecruitView(discord.ui.View):
             if public_role and public_role in self.user.roles:
                 await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
         except discord.Forbidden:
-            await interaction.channel.send(
-                "❌ No tengo permisos para asignar/quitar roles.\n"
-                "✅ Revisá: permisos del bot y que los roles estén *debajo* del rol del bot."
-            )
+            try:
+                await interaction.channel.send(
+                    "❌ No tengo permisos para asignar/quitar roles.\n"
+                    "✅ Revisá: permisos del bot y que los roles estén *debajo* del rol del bot."
+                )
+            except Exception:
+                pass
             return
         except Exception:
-            await interaction.channel.send("❌ Error inesperado asignando roles.")
+            try:
+                await interaction.channel.send("❌ Error inesperado asignando roles.")
+            except Exception:
+                pass
             return
 
-        await interaction.channel.send(
-            f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️"
-        )
+        try:
+            await interaction.channel.send(f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️")
+        except Exception:
+            pass
 
         await send_log(interaction.guild, f"✅ **ACEPTADO** {self.user} → {role_name} (Public removido)")
 
@@ -469,7 +515,7 @@ class RecruitView(discord.ui.View):
 
     @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success, custom_id="accept_miembro")
     async def miembro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
+        await interaction.response.defer()  # ACK
         await self.accept_player(interaction, MIEMBRO_ROLE_ID, "Miembro")
 
     @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary, custom_id="accept_tank")
@@ -544,12 +590,10 @@ class PanelView(discord.ui.View):
         now = time.time()
 
         if user_id in active_applications:
-            await interaction.response.send_message("❌ Ya tenés una postulación activa.", ephemeral=True)
-            return
+            return await respond_ephemeral(interaction, "❌ Ya tenés una postulación activa.")
 
         if user_id in cooldowns and (now - cooldowns[user_id] < COOLDOWN_SECONDS):
-            await interaction.response.send_message("⏳ Esperá un momento antes de volver a intentar.", ephemeral=True)
-            return
+            return await respond_ephemeral(interaction, "⏳ Esperá un momento antes de volver a intentar.")
 
         cooldowns[user_id] = now
         await interaction.response.defer(ephemeral=True)
@@ -560,16 +604,15 @@ class PanelView(discord.ui.View):
         recruiter_role = guild.get_role(RECRUITER_ROLE_ID)
 
         if category is None:
-            await interaction.followup.send("❌ Error: no encontré la categoría configurada (CATEGORY_ID mal).", ephemeral=True)
-            return
+            return await interaction.followup.send("❌ Error: no encontré la categoría configurada (CATEGORY_ID mal).", ephemeral=True)
 
         if recruiter_role is None:
-            await interaction.followup.send("❌ Error: no encontré el rol de reclutador (RECRUITER_ROLE_ID mal).", ephemeral=True)
-            return
+            return await interaction.followup.send("❌ Error: no encontré el rol de reclutador (RECRUITER_ROLE_ID mal).", ephemeral=True)
 
         channel_name = f"postulacion-{interaction.user.name}-{interaction.user.id}"
 
-        bot_member = guild.me or guild.get_member(bot.user.id)
+        # ✅ FIX: guild.me legacy, usamos get_member
+        bot_member = guild.get_member(bot.user.id) if bot.user else None
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -630,4 +673,3 @@ if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno.")
 
 bot.run(TOKEN)
-
