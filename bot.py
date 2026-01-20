@@ -1,20 +1,3 @@
-# ================== WEB PING (UptimeRobot) ==================
-from flask import Flask
-from threading import Thread
-import os
-
-app = Flask(__name__)
-
-@app.get("/")
-def home():
-    return "ok", 200
-
-def run_web():
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
-Thread(target=run_web, daemon=True).start()
-
 # ================== BOT ==================
 import discord
 from discord.ext import commands, tasks
@@ -647,3 +630,4 @@ if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno.")
 
 bot.run(TOKEN)
+
