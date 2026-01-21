@@ -7,7 +7,18 @@ import time
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional
+import os
+from dotenv import load_dotenv
 
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+if not TOKEN:
+    env_path = '/root/discordbot/.env'
+    if os.path.exists(env_path):
+        load_dotenv(dotenv_path=env_path)
+        TOKEN = os.getenv("DISCORD_TOKEN")
+    else:
+        raise RuntimeError(f"Error: No se encontró DISCORD_TOKEN en el sistema ni en {env_path}")
 # ================== CONFIG ==================
 
 TOKEN = os.getenv("DISCORD_TOKEN")  # Replit Secrets: DISCORD_TOKEN
@@ -673,3 +684,4 @@ if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno.")
 
 bot.run(TOKEN)
+
