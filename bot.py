@@ -1,12 +1,10 @@
 # ================== BOT ==================
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 import os
 import time
-from datetime import datetime, timezone, timedelta
-from dataclasses import dataclass, field
-from typing import List, Optional
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # ================== TOKEN ==================
@@ -31,19 +29,10 @@ TANK_ROLE_ID = 1260755129754189854
 HEALER_ROLE_ID = 1260755151296266331
 SUPP_ROLE_ID = 1260755342472646656
 DPS_ROLE_ID = 1260755289062248458
-
 PUBLIC_ROLE_ID = 1266805315547041902
-STAFF_ROLE_ID = 1257896709246423083
-
-CLOCK_CHANNEL_ID = 1462464849463214395
-
-COOLDOWN_SECONDS = 60
-CLOCK_COOLDOWN_SECONDS = 15 * 60
-_last_clock_edit_ts = 0.0
 
 active_applications = {}   # user_id -> channel_id
 ticket_images = {}         # user_id -> image_url
-cooldowns = {}
 
 # ================== INTENTS ==================
 intents = discord.Intents.default()
@@ -53,7 +42,7 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ================== UTILIDADES ==================
+# ================== HELPERS ==================
 async def respond_ephemeral(interaction: discord.Interaction, content: str):
     try:
         if interaction.response.is_done():
@@ -68,13 +57,6 @@ class RecruitView(discord.ui.View):
     def __init__(self, user: discord.Member):
         super().__init__(timeout=None)
         self.user = user
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
-        if recruiter_role not in interaction.user.roles:
-            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar esto.")
-            return False
-        return True
 
     async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
         role = interaction.guild.get_role(role_id)
@@ -93,7 +75,7 @@ class RecruitView(discord.ui.View):
             f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️"
         )
 
-        # ================== LOG ==================
+        # -------- LOG --------
         log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             embed = discord.Embed(
@@ -115,27 +97,27 @@ class RecruitView(discord.ui.View):
         active_applications.pop(self.user.id, None)
         await interaction.channel.delete()
 
-    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success, custom_id="accept_miembro")
     async def miembro(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, MIEMBRO_ROLE_ID, "Miembro")
 
-    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary, custom_id="accept_tank")
     async def tank(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, TANK_ROLE_ID, "Tank")
 
-    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary, custom_id="accept_healer")
     async def healer(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, HEALER_ROLE_ID, "Healer")
 
-    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary, custom_id="accept_support")
     async def supp(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, SUPP_ROLE_ID, "Support")
 
-    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary, custom_id="accept_dps")
     async def dps(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, DPS_ROLE_ID, "DPS")
@@ -145,7 +127,11 @@ class PanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="⚡ Abrir Postulación", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="⚡ Abrir Postulación",
+        style=discord.ButtonStyle.success,
+        custom_id="open_postulacion_panel"
+    )
     async def open_application(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id in active_applications:
             return await respond_ephemeral(interaction, "❌ Ya tenés una postulación abierta.")
@@ -170,11 +156,7 @@ class PanelView(discord.ui.View):
 
         embed = discord.Embed(
             title="⚔️ Reclutamiento Dies-Irae",
-            description=(
-                "📸 Screenshot perfil Albion\n"
-                "⚔ Rol ZvZ\n"
-                "🕒 Horarios"
-            ),
+            description="📸 Screenshot perfil Albion\n⚔ Rol ZvZ\n🕒 Horarios",
             color=discord.Color.gold()
         )
 
@@ -186,7 +168,7 @@ class PanelView(discord.ui.View):
 
         await respond_ephemeral(interaction, f"✅ Postulación creada: {channel.mention}")
 
-# ================== EVENTOS ==================
+# ================== EVENTS ==================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
