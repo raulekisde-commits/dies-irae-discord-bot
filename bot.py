@@ -51,6 +51,7 @@ TIMER_ALERT_CHANNEL_ID = 1462184630835740732
 TIMER_ALERT_MINUTES_BEFORE = 30
 
 active_applications = {}
+ticket_images = {}  # user_id -> image_url
 cooldowns = {}
 
 intents = discord.Intents.default()
@@ -439,7 +440,44 @@ class RecruitView(discord.ui.View):
         except Exception:
             pass
 
-        await send_log(interaction.guild, f"✅ **ACEPTADO** {self.user} → {role_name} (Public removido)")
+        log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+if log_channel:
+    embed = discord.Embed(
+        title="✅ POSTULACIÓN ACEPTADA",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    embed.add_field(
+        name="👤 Postulante",
+        value=self.user.mention,
+        inline=True
+    )
+
+    embed.add_field(
+        name="🧑‍💼 Reclutador",
+        value=interaction.user.mention,
+        inline=True
+    )
+
+    embed.add_field(
+        name="🎭 Rol asignado",
+        value=f"**{role_name}**",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📍 Ticket",
+        value=interaction.channel.name,
+        inline=False
+    )
+
+    img_url = ticket_images.get(self.user.id)
+    if img_url:
+        embed.set_image(url=img_url)
+
+    await log_channel.send(embed=embed)
+
 
         active_applications.pop(self.user.id, None)
         try:
@@ -597,6 +635,20 @@ async def panel(ctx: commands.Context):
 
 # ---------- READY (AL FINAL, así PanelView existe) ----------
 @bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    if isinstance(message.channel, discord.TextChannel):
+        if message.channel.category_id == CATEGORY_ID:
+            # solo imágenes del creador del ticket
+            if message.attachments:
+                for att in message.attachments:
+                    if att.content_type and att.content_type.startswith("image"):
+                        ticket_images[message.author.id] = att.url
+
+    await bot.process_commands(message)
+@bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
 
@@ -628,3 +680,4 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 # ---------- RUN ----------
 bot.run(TOKEN)
+
