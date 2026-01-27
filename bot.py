@@ -1,9 +1,7 @@
 # ================== BOT ==================
 import discord
 from discord.ext import commands
-from discord import app_commands
 import os
-import time
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -189,12 +187,23 @@ async def on_message(message: discord.Message):
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
     bot.add_view(PanelView())
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-# ================== PANEL COMMAND ==================
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return  # ignorar comandos inexistentes
+    raise error
+
+# ================== PANEL COMMAND (ANTI DUPLICADOS) ==================
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def panel(ctx: commands.Context):
+    # 🔒 Evitar duplicados
+    async for msg in ctx.channel.history(limit=30):
+        if msg.author == bot.user and msg.components:
+            await ctx.reply("⚠️ Ya hay un panel activo en este canal.", delete_after=5)
+            return
+
     embed = discord.Embed(
         title="⚔️ Dies-Irae Reclutamiento",
         description="Abrí tu postulación oficial",
