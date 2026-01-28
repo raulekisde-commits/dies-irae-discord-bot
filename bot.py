@@ -397,133 +397,100 @@ class RecruitView(discord.ui.View):
         self.user = user
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return False
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False
 
-    recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
-    if recruiter_role is None:
-        await respond_ephemeral(interaction, "❌ Rol de reclutador mal configurado.")
-        return False
+        recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
+        if recruiter_role is None:
+            await respond_ephemeral(interaction, "❌ Rol de reclutador mal configurado.")
+            return False
 
-    if recruiter_role not in interaction.user.roles:
-        await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
-        return False
+        if recruiter_role not in interaction.user.roles:
+            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
+            return False
 
-    return True
+        return True
 
-async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
-    role = interaction.guild.get_role(role_id)
-    member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
-    public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
+    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
+        role = interaction.guild.get_role(role_id)
+        member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
+        public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
 
-    if role is None or member_role is None:
-        try:
-            await interaction.channel.send("❌ Error: no encontré uno de los roles configurados (IDs mal).")
-        except Exception:
-            pass
-        return
-
-    try:
-        await self.user.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
-        if public_role and public_role in self.user.roles:
-            await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
-    except discord.Forbidden:
-        try:
-            await interaction.channel.send(
-                "❌ No tengo permisos para asignar/quitar roles.\n"
-                "✅ Revisá: permisos del bot y que los roles estén *debajo* del rol del bot."
+        if role is None or member_role is None:
+            await interaction.followup.send(
+                "❌ Error: roles mal configurados (IDs incorrectos).",
+                ephemeral=True
             )
-        except Exception:
-            pass
-        return
-    except Exception:
-        try:
-            await interaction.channel.send("❌ Error inesperado asignando roles.")
-        except Exception:
-            pass
-        return
+            return
 
-    try:
+        try:
+            await self.user.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
+            if public_role and public_role in self.user.roles:
+                await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ No tengo permisos para asignar/quitar roles.\n"
+                "Revisá jerarquía y permisos del bot.",
+                ephemeral=True
+            )
+            return
+        except Exception:
+            await interaction.followup.send("❌ Error inesperado asignando roles.", ephemeral=True)
+            return
+
         await interaction.channel.send(
             f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️"
         )
-    except Exception:
-        pass
 
-    # -------- LOG --------
-    log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(
-            title="✅ POSTULACIÓN ACEPTADA",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
-        )
+        # ---------- LOG ----------
+        log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            embed = discord.Embed(
+                title="✅ POSTULACIÓN ACEPTADA",
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name="👤 Postulante", value=self.user.mention, inline=True)
+            embed.add_field(name="🧑‍💼 Reclutador", value=interaction.user.mention, inline=True)
+            embed.add_field(name="🎭 Rol asignado", value=role_name, inline=False)
+            embed.add_field(name="📍 Ticket", value=interaction.channel.name, inline=False)
 
-        embed.add_field(
-            name="👤 Postulante",
-            value=self.user.mention,
-            inline=True
-        )
+            img_url = ticket_images.get(self.user.id)
+            if img_url:
+                embed.set_image(url=img_url)
 
-        embed.add_field(
-            name="🧑‍💼 Reclutador",
-            value=interaction.user.mention,
-            inline=True
-        )
-
-        embed.add_field(
-            name="🎭 Rol asignado",
-            value=f"**{role_name}**",
-            inline=False
-        )
-
-        embed.add_field(
-            name="📍 Ticket",
-            value=interaction.channel.name,
-            inline=False
-        )
-
-        img_url = ticket_images.get(self.user.id)
-        if img_url:
-            embed.set_image(url=img_url)
-
-        try:
             await log_channel.send(embed=embed)
-        except Exception:
-            pass
 
-    active_applications.pop(self.user.id, None)
-    try:
+        active_applications.pop(self.user.id, None)
         await interaction.channel.delete()
-    except Exception:
-        pass
 
-    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success, custom_id="accept_miembro")
+    # ---------- BOTONES ----------
+    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success)
     async def miembro(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, MIEMBRO_ROLE_ID, "Miembro")
 
-    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary, custom_id="accept_tank")
+    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary)
     async def tank(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, TANK_ROLE_ID, "Tank")
 
-    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary, custom_id="accept_healer")
+    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary)
     async def healer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, HEALER_ROLE_ID, "Healer")
 
-    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary, custom_id="accept_support")
+    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary)
     async def supp(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, SUPP_ROLE_ID, "Support")
 
-    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary, custom_id="accept_dps")
+    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary)
     async def dps(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, DPS_ROLE_ID, "DPS")
 
-    @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="reject_postulacion")
+    @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
 
@@ -536,29 +503,21 @@ async def accept_player(self, interaction: discord.Interaction, role_id: int, ro
             pass
 
         await send_log(interaction.guild, f"❌ **RECHAZADO** {self.user}")
-
         active_applications.pop(self.user.id, None)
-        try:
-            await interaction.channel.delete()
-        except Exception:
-            pass
+        await interaction.channel.delete()
 
-    @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger, custom_id="close_postulacion")
+    @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
 
         transcript = await create_transcript(interaction.channel)
-
         await send_log(
             interaction.guild,
             f"🔒 **POSTULACIÓN CERRADA** {self.user}\n```\n{transcript[:1800]}\n```"
         )
 
         active_applications.pop(self.user.id, None)
-        try:
-            await interaction.channel.delete()
-        except Exception:
-            pass
+        await interaction.channel.delete()
 
 # ---------- PANEL VIEW ----------
 class PanelView(discord.ui.View):
@@ -679,5 +638,6 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
 
