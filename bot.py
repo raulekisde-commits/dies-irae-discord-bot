@@ -397,94 +397,106 @@ class RecruitView(discord.ui.View):
         self.user = user
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
-        if recruiter_role not in interaction.user.roles:
-            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
-            return False
-        return True
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return False
 
-    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
-        role = interaction.guild.get_role(role_id)
-        member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
-        public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
+    recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
+    if recruiter_role is None:
+        await respond_ephemeral(interaction, "❌ Rol de reclutador mal configurado.")
+        return False
 
-        if role is None or member_role is None:
-            try:
-                await interaction.channel.send("❌ Error: no encontré uno de los roles configurados (IDs mal).")
-            except Exception:
-                pass
-            return
+    if recruiter_role not in interaction.user.roles:
+        await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
+        return False
 
+    return True
+
+async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
+    role = interaction.guild.get_role(role_id)
+    member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
+    public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
+
+    if role is None or member_role is None:
         try:
-            await self.user.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
-            if public_role and public_role in self.user.roles:
-                await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
-        except discord.Forbidden:
-            try:
-                await interaction.channel.send(
-                    "❌ No tengo permisos para asignar/quitar roles.\n"
-                    "✅ Revisá: permisos del bot y que los roles estén *debajo* del rol del bot."
-                )
-            except Exception:
-                pass
-            return
+            await interaction.channel.send("❌ Error: no encontré uno de los roles configurados (IDs mal).")
         except Exception:
-            try:
-                await interaction.channel.send("❌ Error inesperado asignando roles.")
-            except Exception:
-                pass
-            return
+            pass
+        return
+
+    try:
+        await self.user.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
+        if public_role and public_role in self.user.roles:
+            await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
+    except discord.Forbidden:
+        try:
+            await interaction.channel.send(
+                "❌ No tengo permisos para asignar/quitar roles.\n"
+                "✅ Revisá: permisos del bot y que los roles estén *debajo* del rol del bot."
+            )
+        except Exception:
+            pass
+        return
+    except Exception:
+        try:
+            await interaction.channel.send("❌ Error inesperado asignando roles.")
+        except Exception:
+            pass
+        return
+
+    try:
+        await interaction.channel.send(
+            f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️"
+        )
+    except Exception:
+        pass
+
+    # -------- LOG --------
+    log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+    if log_channel:
+        embed = discord.Embed(
+            title="✅ POSTULACIÓN ACEPTADA",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.add_field(
+            name="👤 Postulante",
+            value=self.user.mention,
+            inline=True
+        )
+
+        embed.add_field(
+            name="🧑‍💼 Reclutador",
+            value=interaction.user.mention,
+            inline=True
+        )
+
+        embed.add_field(
+            name="🎭 Rol asignado",
+            value=f"**{role_name}**",
+            inline=False
+        )
+
+        embed.add_field(
+            name="📍 Ticket",
+            value=interaction.channel.name,
+            inline=False
+        )
+
+        img_url = ticket_images.get(self.user.id)
+        if img_url:
+            embed.set_image(url=img_url)
 
         try:
-            await interaction.channel.send(f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️")
+            await log_channel.send(embed=embed)
         except Exception:
             pass
 
-        # -------- LOG (VERSIÓN CORRECTA) --------
-log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
-if log_channel:
-    embed = discord.Embed(
-        title="✅ POSTULACIÓN ACEPTADA",
-        color=discord.Color.green(),
-        timestamp=datetime.now(timezone.utc)
-    )
-
-    embed.add_field(
-        name="👤 Postulante",
-        value=self.user.mention,
-        inline=True
-    )
-
-    embed.add_field(
-        name="🧑‍💼 Reclutador",
-        value=interaction.user.mention,
-        inline=True
-    )
-
-    embed.add_field(
-        name="🎭 Rol asignado",
-        value=f"**{role_name}**",
-        inline=False
-    )
-
-    embed.add_field(
-        name="📍 Ticket",
-        value=interaction.channel.name,
-        inline=False
-    )
-
-    img_url = ticket_images.get(self.user.id)
-    if img_url:
-        embed.set_image(url=img_url)
-
-    await log_channel.send(embed=embed)
-
-
-        active_applications.pop(self.user.id, None)
-        try:
-            await interaction.channel.delete()
-        except Exception:
-            pass
+    active_applications.pop(self.user.id, None)
+    try:
+        await interaction.channel.delete()
+    except Exception:
+        pass
 
     @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success, custom_id="accept_miembro")
     async def miembro(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -667,4 +679,5 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
