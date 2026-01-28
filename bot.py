@@ -50,6 +50,7 @@ TIMERS_ROLE_NAME_FALLBACK = "timers"
 TIMER_ALERT_CHANNEL_ID = 1462184630835740732
 TIMER_ALERT_MINUTES_BEFORE = 30
 
+ticket_images = {}         # user_id -> image_url
 active_applications = {}
 cooldowns = {}
 
@@ -666,3 +667,4 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 # ---------- RUN ----------
 bot.run(TOKEN)
+
