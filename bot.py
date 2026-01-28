@@ -4,6 +4,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import os
 import time
+import re
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -59,7 +60,21 @@ intents.members = True
 intents.message_content = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+GUILD_OBJ = discord.Object(id=GUILD_ID)
+
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        # Views persistentes: se registran UNA sola vez
+        self.add_view(PanelView())
+
+        # Sync slash commands UNA sola vez
+        try:
+            await self.tree.sync(guild=GUILD_OBJ)
+            print("✅ Slash commands sincronizados (guild) [setup_hook]")
+        except Exception as e:
+            print("❌ Error sync slash commands [setup_hook]:", e)
+
+bot = MyBot(command_prefix="!", intents=intents)
 
 # ================== TIMERS DATA ==================
 ALLOWED_MATERIALS = {"fibra", "cuero", "mineral", "madera"}
@@ -167,6 +182,12 @@ async def respond_ephemeral(interaction: discord.Interaction, content: str):
         except Exception:
             return
 
+
+def safe_channel_name(user_name: str, user_id: int) -> str:
+    base = f"postulacion-{user_name}-{user_id}".lower()
+    base = re.sub(r"[^a-z0-9\-]", "-", base)
+    base = re.sub(r"-{2,}", "-", base).strip("-")
+    return base[:90]
 # ---------- RELOJ UTC ----------
 @tasks.loop(minutes=5)
 async def utc_clock():
@@ -444,6 +465,12 @@ class RecruitView(discord.ui.View):
 
         # ---------- LOG ----------
         log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        if log_channel is None:
+            try:
+                log_channel = await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+            except Exception:
+                log_channel = None
+
         if log_channel:
             embed = discord.Embed(
                 title="✅ POSTULACIÓN ACEPTADA",
@@ -459,11 +486,18 @@ class RecruitView(discord.ui.View):
             if img_url:
                 embed.set_image(url=img_url)
 
-            await log_channel.send(embed=embed)
+            try:
+                await log_channel.send(embed=embed)
+            except Exception:
+                pass
 
+        # ---------- CLEANUP ----------
         active_applications.pop(self.user.id, None)
-        await interaction.channel.delete()
-
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
+            
     # ---------- BOTONES ----------
     @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success)
     async def miembro(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -551,7 +585,7 @@ class PanelView(discord.ui.View):
         if recruiter_role is None:
             return await interaction.followup.send("❌ Error: no encontré el rol de reclutador (RECRUITER_ROLE_ID mal).", ephemeral=True)
 
-        channel_name = f"postulacion-{interaction.user.name}-{interaction.user.id}"
+        channel_name = safe_channel_name(interaction.user.name, interaction.user.id)
         bot_member = guild.get_member(bot.user.id) if bot.user else None
 
         overwrites = {
@@ -610,10 +644,6 @@ async def panel(ctx: commands.Context):
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
 
-    # Panel persistente (views con timeout=None)
-    bot.add_view(PanelView())
-    print("✅ Panel persistente cargado")
-
     if not utc_clock.is_running():
         utc_clock.start()
         print("✅ Reloj UTC iniciado (loop 5m, cooldown 15m)")
@@ -621,14 +651,7 @@ async def on_ready():
     if not timers_housekeeping.is_running():
         timers_housekeeping.start()
         print("✅ Timers housekeeping iniciado")
-
-    # Sync slash commands en el guild
-    try:
-        await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("✅ Slash commands sincronizados (guild)")
-    except Exception as e:
-        print("❌ Error sync slash commands:", e)
-
+        
 # ✅ Ignorar comandos desconocidos (!bal, etc.)
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):
@@ -638,6 +661,7 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
 
 
