@@ -52,13 +52,12 @@ TIMER_ALERT_CHANNEL_ID = 1462184630835740732
 TIMER_ALERT_MINUTES_BEFORE = 30
 
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
-# 👇 SETEÁ ESTOS 2 IDs
-FOCO_CATEGORY_ID = 0         # <-- ID de la categoría donde se crean los tickets de Foco Donor
-FOCO_LOG_CHANNEL_ID = 0      # <-- ID del canal de logs de foco
+FOCO_CATEGORY_ID = 1468340293571973273        
+FOCO_LOG_CHANNEL_ID = 1468345144502915313      
 
 FOCO_TOPIC_PREFIX = "FOCO_DONOR"
 
-ticket_images = {}         # user_id -> image_url
+ticket_images = {}         
 active_applications = {}
 cooldowns = {}
 
@@ -987,3 +986,4 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 # ---------- RUN ----------
 bot.run(TOKEN)
+
