@@ -5,6 +5,8 @@ from discord import app_commands
 import os
 import time
 import re
+import io
+import aiohttp
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -50,7 +52,27 @@ TIMERS_ROLE_ID = 1462515835326169159
 TIMERS_ROLE_NAME_FALLBACK = "timers"
 
 TIMER_ALERT_CHANNEL_ID = 1462184630835740732
-TIMER_ALERT_MINUTES_BEFORE = 30
+TIMER_ALERT_MINUTES_BEFORE = 60
+
+TIMERS_ALERT_ROLE_ID = 1258562816512884808
+
+TIMERS_BOARD_CHANNEL_ID = 1462516135361777875
+TIMERS_BOARD_TITLE = "⏱ Timers Activos"
+timers_board_message_id: Optional[int] = None
+
+MATERIALS_NORMAL = {"fibra", "cuero", "mineral", "madera"}
+MATERIALS_SPECIAL = {"vortex", "core"}
+
+TIERS_NORMAL = {"4.4", "5.4", "6.4", "7.4", "8.4"}
+TIERS_SPECIAL = {"common", "rare", "epic", "legendary"}
+
+TIER_LABELS_SPECIAL = {
+    "common": "Common (Verde)",
+    "rare": "Rare (Azul)",
+    "epic": "Epic (Violeta)",
+    "legendary": "Legendary (Amarillo)",
+}
+
 
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
 FOCO_CATEGORY_ID = 1468340293571973273        
@@ -74,24 +96,21 @@ GUILD_OBJ = discord.Object(id=GUILD_ID)
 
 class MyBot(commands.Bot):
     async def setup_hook(self):
-        # Views persistentes: se registran UNA sola vez
-        self.add_view(PanelView())
-        self.add_view(FocoPanelView())
-        self.add_view(FocoTicketActionView())
-
-        # Sync slash commands UNA sola vez
+        self.http_session = aiohttp.ClientSession()
         try:
             await self.tree.sync(guild=GUILD_OBJ)
             print("✅ Slash commands sincronizados (guild) [setup_hook]")
         except Exception as e:
             print("❌ Error sync slash commands [setup_hook]:", e)
 
+    async def close(self):
+        if hasattr(self, "http_session"):
+            await self.http_session.close()
+        await super().close()
+        
 bot = MyBot(command_prefix="!", intents=intents)
 
 # ================== TIMERS DATA ==================
-ALLOWED_MATERIALS = {"fibra", "cuero", "mineral", "madera"}
-ALLOWED_TIERS = {"4.4", "5.4", "6.4", "7.4", "8.4"}
-
 @dataclass
 class TimerItem:
     material: str
@@ -199,6 +218,120 @@ def safe_channel_name(user_name: str, user_id: int) -> str:
     base = re.sub(r"[^a-z0-9\-]", "-", base)
     base = re.sub(r"-{2,}", "-", base).strip("-")
     return base[:90]
+
+def _format_timer_line(t: TimerItem) -> str:
+    # Mostrar tier lindo si es special
+    tier_txt = TIER_LABELS_SPECIAL.get(t.tier, f"T{t.tier}")
+    return f"• 🧱 **{t.material.title()}** | ⭐ **{tier_txt}** | 🗺️ **{t.map_name}** → 🕒 **{fmt_utc(t.end_at)}** (en {time_left_str(t.end_at)})"
+
+async def ensure_timers_board_message(guild: discord.Guild):
+    global timers_board_message_id
+
+    ch = guild.get_channel(TIMERS_BOARD_CHANNEL_ID)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(TIMERS_BOARD_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    # 1) Buscar en pins un mensaje del bot con el título esperado
+    try:
+        pins = await ch.pins()
+        for m in pins:
+            if m.author.id == bot.user.id and m.embeds:
+                emb = m.embeds[0]
+                if emb.title == TIMERS_BOARD_TITLE:
+                    timers_board_message_id = m.id
+                    return
+    except Exception:
+        pass
+
+    # 2) Si no existe, crear uno nuevo y pinearlo
+    embed = discord.Embed(title=TIMERS_BOARD_TITLE, description="(cargando...)", color=discord.Color.blurple())
+    try:
+        m = await ch.send(embed=embed)
+        try:
+            await m.pin(reason="Timers board message")
+        except Exception:
+            pass
+        timers_board_message_id = m.id
+    except Exception:
+        return
+
+async def update_timers_board(guild: discord.Guild):
+    global timers_board_message_id
+
+    ch = guild.get_channel(TIMERS_BOARD_CHANNEL_ID)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(TIMERS_BOARD_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    if timers_board_message_id is None:
+        await ensure_timers_board_message(guild)
+
+    if timers_board_message_id is None:
+        return
+
+    # Ordenar por tiempo
+    sorted_timers = sorted(timers, key=lambda x: x.end_at)
+
+    if not sorted_timers:
+        desc = "📭 No hay timers activos."
+    else:
+        lines = [_format_timer_line(t) for t in sorted_timers]
+        desc = "\n".join(lines)
+        if len(desc) > 3900:
+            desc = desc[:3900] + "\n…"
+
+    embed = discord.Embed(
+        title=TIMERS_BOARD_TITLE,
+        description=desc,
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    try:
+        msg = await ch.fetch_message(timers_board_message_id)
+        await msg.edit(embed=embed)
+    except Exception:
+        # si se borró el mensaje, recrear
+        timers_board_message_id = None
+        await ensure_timers_board_message(guild)
+        if timers_board_message_id:
+            try:
+                msg = await ch.fetch_message(timers_board_message_id)
+                await msg.edit(embed=embed)
+            except Exception:
+                pass
+
+RECRUIT_TOPIC_PREFIX = "RECRUIT"
+def make_recruit_topic(user_id: int) -> str:
+    return f"{RECRUIT_TOPIC_PREFIX}|uid={user_id}"
+def parse_recruit_topic(topic: Optional[str]) -> dict:
+    if not topic or not topic.startswith(f"{RECRUIT_TOPIC_PREFIX}|"):
+        return {}
+    data = {}
+    for p in topic.split("|")[1:]:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            data[k.strip()] = v.strip()
+    return data
+
+async def download_as_file(url: str, filename: str) -> Optional[discord.File]:
+    try:
+        async with bot.http_session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.read()
+        return discord.File(fp=io.BytesIO(data), filename=filename)
+    except Exception:
+        return None
 
 # ================== FOCO DONOR HELPERS (NUEVO) ==================
 def _sanitize_topic_value(s: str, max_len: int = 200) -> str:
@@ -337,17 +470,28 @@ async def timers_housekeeping():
         except Exception:
             return
 
+    if expired:
+        await update_timers_board(guild)
+
     for t in timers:
         if t.warned_30:
             continue
         seconds_left = (t.end_at - now).total_seconds()
         if 0 < seconds_left <= (TIMER_ALERT_MINUTES_BEFORE * 60):
             t.warned_30 = True
+            
+            tier_txt = TIER_LABELS_SPECIAL.get(t.tier, f"T{t.tier}")
+
+            alert_role_mention = f"<@&{TIMERS_ALERT_ROLE_ID}>"
             msg = (
+                f"{alert_role_mention}\n"
+                f"**Las inteadas de daitza no se pagan solas, armen la party**\n"
                 f"⏰ **Faltan {TIMER_ALERT_MINUTES_BEFORE} min**\n"
-                f"🧱 **{t.material.title()}** | ⭐ **T{t.tier}** | 🗺️ **{t.map_name}**\n"
+                f"🧱 **{t.material.title()}** | ⭐ **{tier_txt}**\n"
+                f"🗺️ **{t.map_name}**\n"
                 f"🕒 Sale a **{fmt_utc(t.end_at)}**"
             )
+
             try:
                 await channel.send(msg)
             except Exception:
@@ -366,6 +510,8 @@ async def before_timers_housekeeping():
         app_commands.Choice(name="Cuero", value="cuero"),
         app_commands.Choice(name="Mineral", value="mineral"),
         app_commands.Choice(name="Madera", value="madera"),
+        app_commands.Choice(name="Vortex", value="vortex"),
+        app_commands.Choice(name="Core", value="core"),
     ],
     tier=[
         app_commands.Choice(name="4.4", value="4.4"),
@@ -373,6 +519,10 @@ async def before_timers_housekeeping():
         app_commands.Choice(name="6.4", value="6.4"),
         app_commands.Choice(name="7.4", value="7.4"),
         app_commands.Choice(name="8.4", value="8.4"),
+        app_commands.Choice(name="Common (Verde)", value="common"),
+        app_commands.Choice(name="Rare (Azul)", value="rare"),
+        app_commands.Choice(name="Epic (Violeta)", value="epic"),
+        app_commands.Choice(name="Legendary (Amarillo)", value="legendary"),
     ],
 )
 async def timeradd_slash(interaction: discord.Interaction, material: app_commands.Choice[str], tier: app_commands.Choice[str], mapa: str, tiempo: str):
@@ -385,6 +535,24 @@ async def timeradd_slash(interaction: discord.Interaction, material: app_command
     if not mapa.strip():
         return await respond_ephemeral(interaction, "❌ El nombre del mapa no puede estar vacío.")
 
+    mat = material.value
+    tr = tier.value
+
+    # Validación material/tier
+    if mat in MATERIALS_SPECIAL:
+        if tr not in TIERS_SPECIAL:
+            return await respond_ephemeral(
+                interaction,
+                "❌ Para **Vortex/Core** el tier tiene que ser: Common/Rare/Epic/Legendary."
+            )
+    else:
+        if tr not in TIERS_NORMAL:
+            return await respond_ephemeral(
+                interaction,
+                "❌ Para **Fibra/Cuero/Mineral/Madera** el tier tiene que ser: 4.4/5.4/6.4/7.4/8.4."
+            )
+
+    
     dur = parse_duration_hhmm(tiempo.strip())
     if dur is None:
         return await respond_ephemeral(interaction, '❌ Tiempo inválido. Usá `H:M` ej: `6:10`.')
@@ -393,13 +561,18 @@ async def timeradd_slash(interaction: discord.Interaction, material: app_command
     end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
 
     item = TimerItem(material=material.value, tier=tier.value, map_name=mapa.strip(), end_at=end_at, created_by_id=interaction.user.id)
+    
+    # actualizar tablero
     timers.append(item)
+    await update_timers_board(interaction.guild)
 
+    tier_txt = TIER_LABELS_SPECIAL.get(item.tier, f"T{item.tier}")
     await respond_ephemeral(
         interaction,
-        f"✅ Timer creado: 🧱 **{item.material.title()}** | ⭐ **T{item.tier}** | 🗺️ **{item.map_name}**\n"
+        f"✅ Timer creado: 🧱 **{item.material.title()}** | ⭐ **{tier_txt}** | 🗺️ **{item.map_name}**\n"
         f"🕒 Sale a **{fmt_utc(item.end_at)}** (en {time_left_str(item.end_at)})"
     )
+
 
 @bot.tree.command(name="timerslist", description="Listar timers (ordenados)", guild=discord.Object(id=GUILD_ID))
 async def timerslist_slash(interaction: discord.Interaction):
@@ -412,8 +585,9 @@ async def timerslist_slash(interaction: discord.Interaction):
     sorted_timers = sorted(timers, key=lambda t: t.end_at)
     lines = []
     for i, t in enumerate(sorted_timers, start=1):
+        tier_txt = TIER_LABELS_SPECIAL.get(t.tier, f"T{t.tier}")
         lines.append(
-            f"**{i}.** 🧱 {t.material.title()} | ⭐ T{t.tier} | 🗺️ {t.map_name} → 🕒 **{fmt_utc(t.end_at)}** (en {time_left_str(t.end_at)})"
+            f"**{i}.** 🧱 {t.material.title()} | ⭐ {tier_txt} | 🗺️ {t.map_name} → 🕒 **{fmt_utc(t.end_at)}** (en {time_left_str(t.end_at)})"
         )
 
     msg = "\n".join(lines)
@@ -491,63 +665,80 @@ async def delrole(ctx: commands.Context, *, role_query: str = None):
 
 # ---------- RECRUIT VIEW ----------
 class RecruitView(discord.ui.View):
-    def __init__(self, user: discord.Member):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.user = user
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return False
 
         recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
-        if recruiter_role is None:
-            await respond_ephemeral(interaction, "❌ Rol de reclutador mal configurado.")
+        if recruiter_role is None or recruiter_role not in interaction.user.roles:
+            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
             return False
 
-        if recruiter_role not in interaction.user.roles:
-            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
+        # Validar que el canal sea un ticket válido
+        ch = interaction.channel
+        if not isinstance(ch, discord.TextChannel):
+            await respond_ephemeral(interaction, "❌ Esto solo funciona en un canal de ticket.")
+            return False
+
+        info = parse_recruit_topic(ch.topic)
+        if not info.get("uid"):
+            await respond_ephemeral(interaction, "❌ Este canal no tiene UID en el topic (ticket viejo o mal creado).")
             return False
 
         return True
 
+    async def _get_applicant(self, interaction: discord.Interaction) -> Optional[discord.Member]:
+        ch = interaction.channel
+        if not isinstance(ch, discord.TextChannel) or interaction.guild is None:
+            return None
+
+        info = parse_recruit_topic(ch.topic)
+        uid = info.get("uid")
+        if not uid:
+            return None
+
+        member = interaction.guild.get_member(int(uid))
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(int(uid))
+            except Exception:
+                member = None
+        return member
+
     async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
+        member = await self._get_applicant(interaction)
+        if member is None:
+            return await respond_ephemeral(interaction, "❌ No pude encontrar al postulante (se fue del server o UID inválido).")
+
         role = interaction.guild.get_role(role_id)
         member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
         public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
 
         if role is None or member_role is None:
-            await interaction.followup.send(
-                "❌ Error: roles mal configurados (IDs incorrectos).",
-                ephemeral=True
-            )
-            return
+            return await respond_ephemeral(interaction, "❌ Error: roles mal configurados (IDs incorrectos).")
 
         try:
-            await self.user.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
-            if public_role and public_role in self.user.roles:
-                await self.user.remove_roles(public_role, reason="Aceptado: se quita rol Public")
+            await member.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
+            if public_role and public_role in member.roles:
+                await member.remove_roles(public_role, reason="Aceptado: se quita rol Public")
         except discord.Forbidden:
-            await interaction.followup.send(
-                "❌ No tengo permisos para asignar/quitar roles.\n"
-                "Revisá jerarquía y permisos del bot.",
-                ephemeral=True
-            )
-            return
+            return await respond_ephemeral(interaction, "❌ No tengo permisos para asignar/quitar roles (jerarquía/permisos).")
         except Exception:
-            await interaction.followup.send("❌ Error inesperado asignando roles.", ephemeral=True)
-            return
+            return await respond_ephemeral(interaction, "❌ Error inesperado asignando roles.")
 
-        await interaction.channel.send(
-            f"✅ {self.user.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️"
-        )
+        try:
+            await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️")
+        except Exception:
+            pass
 
-        # ---------- LOG ----------
-        log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
-        if log_channel is None:
-            try:
-                log_channel = await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
-            except Exception:
-                log_channel = None
+        # LOG
+        try:
+            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+        except Exception:
+            log_channel = None
 
         if log_channel:
             embed = discord.Embed(
@@ -555,106 +746,125 @@ class RecruitView(discord.ui.View):
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
-            embed.add_field(name="👤 Postulante", value=self.user.mention, inline=True)
+            embed.add_field(name="👤 Postulante", value=member.mention, inline=True)
             embed.add_field(name="🧑‍💼 Reclutador", value=interaction.user.mention, inline=True)
             embed.add_field(name="🎭 Rol asignado", value=role_name, inline=False)
             embed.add_field(name="📍 Ticket", value=interaction.channel.name, inline=False)
 
-            img_data = ticket_images.get(self.user.id)
-
+            # Imagen: la guardás por uid
+            img_data = ticket_images.get(member.id)
             try:
                 if img_data and img_data.get("url"):
-                    # descargamos y reenviamos como archivo (más confiable que set_image)
-                    file = await discord.File.from_url(
-                        img_data["url"],
-                        filename=img_data.get("filename", "image.png")
-                    )
-                    await log_channel.send(embed=embed, file=file)
+                    filename = img_data.get("filename", "image.png")
+                    file = await download_as_file(img_data["url"], filename)
+                    if file:
+                        embed.set_image(url=f"attachment://{filename}")
+                        await log_channel.send(embed=embed, file=file)
+                    else:
+                        await log_channel.send(embed=embed)
+                        await log_channel.send(img_data["url"])
                 else:
                     await log_channel.send(embed=embed)
             except Exception:
-                # fallback ultra simple
-                try:
-                    await log_channel.send(embed=embed)
-                except Exception:
-                    pass
+                pass
 
-        # ---------- CLEANUP ----------
-        active_applications.pop(self.user.id, None)
-        ticket_images.pop(self.user.id, None)
+        # Cleanup (aunque reinicies, esto solo limpia memoria)
+        active_applications.pop(member.id, None)
+        ticket_images.pop(member.id, None)
+
         try:
-            await interaction.channel.delete()
+            await interaction.channel.delete(reason=f"Postulación aceptada por {interaction.user}")
         except Exception:
             pass
 
-
-    # ---------- BOTONES ----------
-    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success)
-    async def miembro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.accept_player(interaction, MIEMBRO_ROLE_ID, "Miembro")
-
-    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary)
-    async def tank(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.accept_player(interaction, TANK_ROLE_ID, "Tank")
-
-    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary)
-    async def healer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.accept_player(interaction, HEALER_ROLE_ID, "Healer")
-
-    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary)
-    async def supp(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.accept_player(interaction, SUPP_ROLE_ID, "Support")
-
-    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary)
-    async def dps(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.accept_player(interaction, DPS_ROLE_ID, "DPS")
-        
-    @discord.ui.button(label="🐎 Battle Mount", style=discord.ButtonStyle.primary)
-    async def battle_mount(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.accept_player(interaction, BATTLE_MOUNT_ROLE_ID, "Battle Mount")
-
-    @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary)
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
+    async def reject_player(self, interaction: discord.Interaction):
+        member = await self._get_applicant(interaction)
+        if member:
+            try:
+                await member.send("❌ Tu postulación en **Dies-Irae** fue rechazada. Podés volver a aplicar más adelante.")
+            except Exception:
+                pass
 
         try:
-            await self.user.send(
-                "❌ Tu postulación en **Dies-Irae** fue rechazada.\n"
-                "Podés volver a aplicar más adelante."
+            await send_log(interaction.guild, f"❌ **RECHAZADO** {member} | Ticket: #{interaction.channel.name}")
+        except Exception:
+            pass
+
+        if member:
+            active_applications.pop(member.id, None)
+            ticket_images.pop(member.id, None)
+
+        try:
+            await interaction.channel.delete(reason=f"Postulación rechazada por {interaction.user}")
+        except Exception:
+            pass
+
+    async def close_ticket(self, interaction: discord.Interaction):
+        member = await self._get_applicant(interaction)
+        transcript = ""
+        try:
+            transcript = await create_transcript(interaction.channel)
+        except Exception:
+            pass
+
+        try:
+            await send_log(
+                interaction.guild,
+                f"🔒 **POSTULACIÓN CERRADA** {member}\n```\n{transcript[:1800]}\n```"
             )
         except Exception:
             pass
 
-        await send_log(interaction.guild, f"❌ **RECHAZADO** {self.user}")
-        active_applications.pop(self.user.id, None)
-        ticket_images.pop(self.user.id, None)
+        if member:
+            active_applications.pop(member.id, None)
+            ticket_images.pop(member.id, None)
+
         try:
-            await interaction.channel.delete()
+            await interaction.channel.delete(reason=f"Ticket cerrado por {interaction.user}")
         except Exception:
             pass
 
-    @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger)
+    # BOTONES (con custom_id fijo => persistente)
+    @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success, custom_id="recruit_accept_miembro")
+    async def miembro(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.accept_player(interaction, MIEMBRO_ROLE_ID, "Miembro")
+
+    @discord.ui.button(label="🛡 Tank", style=discord.ButtonStyle.primary, custom_id="recruit_accept_tank")
+    async def tank(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.accept_player(interaction, TANK_ROLE_ID, "Tank")
+
+    @discord.ui.button(label="✨ Healer", style=discord.ButtonStyle.primary, custom_id="recruit_accept_healer")
+    async def healer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.accept_player(interaction, HEALER_ROLE_ID, "Healer")
+
+    @discord.ui.button(label="🧙 Support", style=discord.ButtonStyle.primary, custom_id="recruit_accept_supp")
+    async def supp(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.accept_player(interaction, SUPP_ROLE_ID, "Support")
+
+    @discord.ui.button(label="⚔ DPS", style=discord.ButtonStyle.primary, custom_id="recruit_accept_dps")
+    async def dps(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.accept_player(interaction, DPS_ROLE_ID, "DPS")
+
+    @discord.ui.button(label="🐎 Battle Mount", style=discord.ButtonStyle.primary, custom_id="recruit_accept_bm")
+    async def battle_mount(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.accept_player(interaction, BATTLE_MOUNT_ROLE_ID, "Battle Mount")
+
+    @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.reject_player(interaction)
+
+    @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger, custom_id="recruit_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
+        await self.close_ticket(interaction)
 
-        transcript = await create_transcript(interaction.channel)
-        await send_log(
-            interaction.guild,
-            f"🔒 **POSTULACIÓN CERRADA** {self.user}\n```\n{transcript[:1800]}\n```"
-        )
-
-        active_applications.pop(self.user.id, None)
-        ticket_images.pop(self.user.id, None)
-        try:
-            await interaction.channel.delete()
-        except Exception:
-            pass
 
 # ================== FOCO DONOR SYSTEM ==================
 class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
@@ -783,7 +993,13 @@ class FocoTicketActionView(discord.ui.View):
         if not uid:
             return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket (topic vacío).")
 
-        member = interaction.guild.get_member(int(uid)) or await interaction.guild.fetch_member(int(uid))
+        member = interaction.guild.get_member(int(uid))
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(int(uid))
+            except Exception:
+                member = None
+
         if member:
             # Log de foco (tag a la persona + cantidad)
             await send_foco_log(
@@ -824,7 +1040,13 @@ class FocoTicketActionView(discord.ui.View):
         if not uid:
             return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket (topic vacío).")
 
-        member = interaction.guild.get_member(int(uid)) or await interaction.guild.fetch_member(int(uid))
+        member = interaction.guild.get_member(int(uid))
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(int(uid))
+            except Exception:
+                member = None
+
         if member:
             try:
                 await member.send(
@@ -884,11 +1106,24 @@ class FocoPanelView(discord.ui.View):
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     try:
-        if isinstance(channel, discord.TextChannel) and channel.topic and channel.topic.startswith(f"{FOCO_TOPIC_PREFIX}|"):
+        if not isinstance(channel, discord.TextChannel) or not channel.topic:
+            return
+
+        # FOCO
+        if channel.topic.startswith(f"{FOCO_TOPIC_PREFIX}|"):
             info = parse_foco_topic(channel.topic)
             uid = info.get("uid")
             if uid:
                 active_foco_tickets.pop(int(uid), None)
+
+        # RECRUIT
+        if channel.topic.startswith(f"{RECRUIT_TOPIC_PREFIX}|"):
+            info = parse_recruit_topic(channel.topic)
+            uid = info.get("uid")
+            if uid:
+                active_applications.pop(int(uid), None)
+                ticket_images.pop(int(uid), None)
+
     except Exception:
         pass
 
@@ -935,10 +1170,13 @@ class PanelView(discord.ui.View):
         if bot_member:
             overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
 
+        topic = make_recruit_topic(user_id)
+
         channel = await guild.create_text_channel(
             name=channel_name,
             category=category,
-            overwrites=overwrites
+            overwrites=overwrites,
+            topic=topic
         )
 
         active_applications[user_id] = channel.id
@@ -960,7 +1198,7 @@ class PanelView(discord.ui.View):
         await channel.send(
             content=f"{interaction.user.mention} {recruiter_mention}",
             embed=embed,
-            view=RecruitView(interaction.user)
+            view=RecruitView()
         )
 
         await send_log(guild, f"📥 **NUEVA POSTULACIÓN** {interaction.user} → {channel.mention}")
@@ -995,13 +1233,28 @@ async def panel_foco(ctx: commands.Context):
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
 
+    # Views persistentes (1 vez)
+    if not hasattr(bot, "_views_registered"):
+        bot.add_view(PanelView())
+        bot.add_view(FocoPanelView())
+        bot.add_view(FocoTicketActionView())
+        bot.add_view(RecruitView())
+        bot._views_registered = True
+        print("✅ Views persistentes registradas")
+
+    # Tasks
     if not utc_clock.is_running():
         utc_clock.start()
-        print("✅ Reloj UTC iniciado (loop 5m, cooldown 15m)")
+        print("✅ Reloj UTC iniciado")
 
     if not timers_housekeeping.is_running():
         timers_housekeeping.start()
         print("✅ Timers housekeeping iniciado")
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        await ensure_timers_board_message(guild)
+        await update_timers_board(guild)
 
 # ✅ Ignorar comandos desconocidos (!bal, etc.)
 @bot.event
@@ -1018,6 +1271,18 @@ def _is_image_attachment(att: discord.Attachment) -> bool:
     name = (att.filename or "").lower()
     return name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
 
+def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]:
+    if not isinstance(ch, discord.TextChannel):
+        return None
+    info = parse_recruit_topic(ch.topic)
+    uid = info.get("uid")
+    if not uid:
+        return None
+    try:
+        return int(uid)
+    except ValueError:
+        return None
+
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
@@ -1025,6 +1290,31 @@ async def on_message(message: discord.Message):
     if message.guild is None or message.author.bot:
         return
 
+    # ✅ RECRUIT: guardar screenshot aunque el bot haya reiniciado (por topic)
+    recruit_uid = _get_recruit_uid_from_channel(message.channel)
+    if recruit_uid is not None:
+        # Solo guardamos si el que manda la imagen es el postulante del ticket
+        if message.author.id != recruit_uid:
+            return
+
+        if not message.attachments:
+            return
+
+        img = None
+        for att in message.attachments:
+            if _is_image_attachment(att):
+                img = att
+                break
+        if img is None:
+            return
+
+        ticket_images[message.author.id] = {
+            "url": img.url,
+            "filename": img.filename or "image.png",
+        }
+        return
+
+    # (Opcional) Si querés conservar tu modo viejo para tickets recién creados:
     opener_channel_id = active_applications.get(message.author.id)
     if opener_channel_id is None or opener_channel_id != message.channel.id:
         return
@@ -1040,13 +1330,10 @@ async def on_message(message: discord.Message):
     if img is None:
         return
 
-    # Guardamos metadata del attachment (lo último que mande pisa lo anterior)
     ticket_images[message.author.id] = {
         "url": img.url,
         "filename": img.filename or "image.png",
     }
-
 # ---------- RUN ----------
 bot.run(TOKEN)
-
 
