@@ -32,6 +32,7 @@ TANK_ROLE_ID = 1260755129754189854
 HEALER_ROLE_ID = 1260755151296266331
 SUPP_ROLE_ID = 1260755342472646656
 DPS_ROLE_ID = 1260755289062248458
+BATTLE_MOUNT_ROLE_ID = 1469369363739181087
 
 PUBLIC_ROLE_ID = 1266805315547041902
 STAFF_ROLE_ID = 1257896709246423083
@@ -559,21 +560,33 @@ class RecruitView(discord.ui.View):
             embed.add_field(name="🎭 Rol asignado", value=role_name, inline=False)
             embed.add_field(name="📍 Ticket", value=interaction.channel.name, inline=False)
 
-            img_url = ticket_images.get(self.user.id)
-            if img_url:
-                embed.set_image(url=img_url)
+            img_data = ticket_images.get(self.user.id)
 
             try:
-                await log_channel.send(embed=embed)
+                if img_data and img_data.get("url"):
+                    # descargamos y reenviamos como archivo (más confiable que set_image)
+                    file = await discord.File.from_url(
+                        img_data["url"],
+                        filename=img_data.get("filename", "image.png")
+                    )
+                    await log_channel.send(embed=embed, file=file)
+                else:
+                    await log_channel.send(embed=embed)
             except Exception:
-                pass
+                # fallback ultra simple
+                try:
+                    await log_channel.send(embed=embed)
+                except Exception:
+                    pass
 
         # ---------- CLEANUP ----------
         active_applications.pop(self.user.id, None)
+        ticket_images.pop(self.user.id, None)
         try:
             await interaction.channel.delete()
         except Exception:
             pass
+
 
     # ---------- BOTONES ----------
     @discord.ui.button(label="✔ Miembro", style=discord.ButtonStyle.success)
@@ -600,6 +613,11 @@ class RecruitView(discord.ui.View):
     async def dps(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.accept_player(interaction, DPS_ROLE_ID, "DPS")
+        
+    @discord.ui.button(label="🐎 Battle Mount", style=discord.ButtonStyle.primary)
+    async def battle_mount(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await self.accept_player(interaction, BATTLE_MOUNT_ROLE_ID, "Battle Mount")
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -615,7 +633,11 @@ class RecruitView(discord.ui.View):
 
         await send_log(interaction.guild, f"❌ **RECHAZADO** {self.user}")
         active_applications.pop(self.user.id, None)
-        await interaction.channel.delete()
+        ticket_images.pop(self.user.id, None)
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
 
     @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger)
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -628,9 +650,13 @@ class RecruitView(discord.ui.View):
         )
 
         active_applications.pop(self.user.id, None)
-        await interaction.channel.delete()
+        ticket_images.pop(self.user.id, None)
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
 
-# ================== FOCO DONOR SYSTEM (NUEVO) ==================
+# ================== FOCO DONOR SYSTEM ==================
 class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
     foco = discord.ui.TextInput(
         label="Cuanto foco tenes actualmente",
@@ -984,6 +1010,43 @@ async def on_command_error(ctx: commands.Context, error: Exception):
         return
     raise error
 
+def _is_image_attachment(att: discord.Attachment) -> bool:
+    ct = (att.content_type or "").lower()
+    if ct.startswith("image/"):
+        return True
+    # fallback por extensión, por si content_type viene vacío
+    name = (att.filename or "").lower()
+    return name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+
+@bot.event
+async def on_message(message: discord.Message):
+    await bot.process_commands(message)
+
+    if message.guild is None or message.author.bot:
+        return
+
+    opener_channel_id = active_applications.get(message.author.id)
+    if opener_channel_id is None or opener_channel_id != message.channel.id:
+        return
+
+    if not message.attachments:
+        return
+
+    img = None
+    for att in message.attachments:
+        if _is_image_attachment(att):
+            img = att
+            break
+    if img is None:
+        return
+
+    # Guardamos metadata del attachment (lo último que mande pisa lo anterior)
+    ticket_images[message.author.id] = {
+        "url": img.url,
+        "filename": img.filename or "image.png",
+    }
+
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
