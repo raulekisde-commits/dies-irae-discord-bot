@@ -11,6 +11,8 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional
 from dotenv import load_dotenv
+import asyncio
+import random
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -122,6 +124,181 @@ class TimerItem:
     warned_30: bool = False
 
 timers: List[TimerItem] = []
+
+# ================== SORTEOS (NUEVO) ==================
+@dataclass
+class GiveawayItem:
+    prize: str
+    end_at: datetime
+    channel_id: int
+    message_id: int
+    creator_id: int
+    entrants: set[int] = field(default_factory=set)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+giveaways: dict[int, GiveawayItem] = {}  # message_id -> GiveawayItem
+
+def is_staff_member(member: discord.Member) -> bool:
+    staff_role = member.guild.get_role(STAFF_ROLE_ID)
+    return (staff_role is not None) and (staff_role in member.roles)
+
+def build_giveaway_embed(g: GiveawayItem) -> discord.Embed:
+    end_unix = int(g.end_at.timestamp())
+    emb = discord.Embed(
+        title="🕳️ Sorteo del topo",
+        description="Apretá el botón para anotarte. Después no llores.",
+        color=discord.Color.gold()
+    )
+    emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
+    emb.add_field(name="⏳ Termina", value=f"<t:{end_unix}:t> (<t:{end_unix}:R>)", inline=False)
+    emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
+    emb.set_footer(text="Dies-Irae Sorteos System")
+    return emb
+
+async def disable_giveaway_button(guild: discord.Guild, g: GiveawayItem):
+    ch = guild.get_channel(g.channel_id)
+    if ch is None:
+        ch = await guild.fetch_channel(g.channel_id)
+
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    try:
+        msg = await ch.fetch_message(g.message_id)
+    except Exception:
+        return
+
+    view = GiveawayJoinView()
+    for child in view.children:
+        child.disabled = True
+
+    try:
+        await msg.edit(embed=build_giveaway_embed(g), view=view)
+    except Exception:
+        pass
+
+async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
+    # Esperar hasta el final
+    now = datetime.now(timezone.utc)
+    delay = (g.end_at - now).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        giveaways.pop(g.message_id, None)
+        return
+
+    # Deshabilitar botón
+    await disable_giveaway_button(guild, g)
+
+    ch = guild.get_channel(g.channel_id)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(g.channel_id)
+        except Exception:
+            giveaways.pop(g.message_id, None)
+            return
+
+    if not isinstance(ch, discord.TextChannel):
+        giveaways.pop(g.message_id, None)
+        return
+
+    # Tomar participantes de forma segura
+    async with g.lock:
+        pool = list(g.entrants)
+
+    if not pool:
+        try:
+            await ch.send("📭 No se anotó nadie. Sorteo cancelado por falta de calle.")
+        except Exception:
+            pass
+        giveaways.pop(g.message_id, None)
+        return
+
+    random.shuffle(pool)
+
+    # Querés: 3 “falsos” + ganador. Si hay pocos, se adapta.
+    lines = [
+        "Este no gano nada.",
+        "Este tampoco gano nada.",
+        "Este es terrible topo.",
+        "Mira el orto que tiene este loco gano el sorteo."
+    ]
+
+    # Picks únicos hasta 4 o menos según gente
+    picks_count = min(len(pool), 4)
+    picks = pool[:picks_count]
+
+    # Si hay 1 solo, directamente ganador (última línea)
+    if picks_count == 1:
+        uid = picks[0]
+        try:
+            await ch.send(f"<@{uid}> — {lines[-1]}")
+        except Exception:
+            pass
+        giveaways.pop(g.message_id, None)
+        return
+
+    # Si hay 2: 1 falso + ganador
+    if picks_count == 2:
+        uid1, uid2 = picks
+        try:
+            await ch.send(f"<@{uid1}> — {lines[0]}")
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+        try:
+            await ch.send(f"<@{uid2}> — {lines[-1]}")
+        except Exception:
+            pass
+        giveaways.pop(g.message_id, None)
+        return
+
+    # Si hay 3: 2 falsos + ganador
+    if picks_count == 3:
+        uid1, uid2, uid3 = picks
+        try:
+            await ch.send(f"<@{uid1}> — {lines[0]}")
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+        try:
+            await ch.send(f"<@{uid2}> — {lines[1]}")
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+        try:
+            await ch.send(f"<@{uid3}> — {lines[-1]}")
+        except Exception:
+            pass
+        giveaways.pop(g.message_id, None)
+        return
+
+    # 4 o más: 3 falsos + ganador (tu guion completo)
+    uid1, uid2, uid3, uid4 = picks
+    try:
+        await ch.send(f"<@{uid1}> — {lines[0]}")
+    except Exception:
+        pass
+    await asyncio.sleep(60)
+    try:
+        await ch.send(f"<@{uid2}> — {lines[1]}")
+    except Exception:
+        pass
+    await asyncio.sleep(60)
+    try:
+        await ch.send(f"<@{uid3}> — {lines[2]}")
+    except Exception:
+        pass
+    await asyncio.sleep(60)
+    try:
+        await ch.send(f"<@{uid4}> — {lines[3]}")
+    except Exception:
+        pass
+
+    giveaways.pop(g.message_id, None)
+
 
 # ---------- UTILIDADES ----------
 async def send_log(guild: discord.Guild, message: str):
@@ -573,6 +750,61 @@ async def timeradd_slash(interaction: discord.Interaction, material: app_command
         f"🕒 Sale a **{fmt_utc(item.end_at)}** (en {time_left_str(item.end_at)})"
     )
 
+@bot.tree.command(name="sorteo", description="Crear sorteo (solo Staff)", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    premio="Qué se sortea (texto libre)",
+    tiempo="Duración en H:M (ej: 0:30, 2:00, 6:10)"
+)
+async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: str):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+    if not is_staff_member(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede crear sorteos.")
+
+    if not premio or not premio.strip():
+        return await respond_ephemeral(interaction, "❌ El premio no puede estar vacío.")
+
+    dur = parse_duration_hhmm(tiempo.strip())
+    if dur is None:
+        return await respond_ephemeral(
+            interaction,
+            "❌ Tiempo inválido.\nUsá `H:M` (ej: `0:30`, `2:00`, `6:10`)."
+        )
+
+    h, m = dur
+    end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Creamos mensaje panel
+    temp_g = GiveawayItem(
+        prize=premio.strip(),
+        end_at=end_at,
+        channel_id=interaction.channel.id,
+        message_id=0,
+        creator_id=interaction.user.id
+    )
+
+    view = GiveawayJoinView()
+    embed = build_giveaway_embed(temp_g)
+
+    try:
+        msg = await interaction.channel.send(embed=embed, view=view)
+    except Exception:
+        return await interaction.followup.send("❌ No pude enviar el panel del sorteo.", ephemeral=True)
+
+    # Guardar sorteo real
+    temp_g.message_id = msg.id
+    giveaways[msg.id] = temp_g
+
+    # Arrancar flujo en background
+    asyncio.create_task(run_giveaway_flow(GUILD_ID, temp_g))
+
+    await interaction.followup.send(
+        f"✅ Sorteo creado. Premio: `{temp_g.prize}` | Termina: <t:{int(end_at.timestamp())}:R>",
+        ephemeral=True
+    )
 
 @bot.tree.command(name="timerslist", description="Listar timers (ordenados)", guild=discord.Object(id=GUILD_ID))
 async def timerslist_slash(interaction: discord.Interaction):
@@ -1102,6 +1334,35 @@ class FocoPanelView(discord.ui.View):
         except Exception:
             return await respond_ephemeral(interaction, "❌ No pude abrir el formulario (modal).")
 
+class GiveawayJoinView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎟️ Anotarme", style=discord.ButtonStyle.success, custom_id="giveaway_join_btn")
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+        msg = interaction.message
+        if msg is None:
+            return await respond_ephemeral(interaction, "❌ No pude leer el mensaje del sorteo.")
+
+        g = giveaways.get(msg.id)
+        if g is None:
+            return await respond_ephemeral(interaction, "❌ Este sorteo ya no existe (o el bot reinició).")
+
+        if datetime.now(timezone.utc) >= g.end_at:
+            return await respond_ephemeral(interaction, "⏰ Llegaste tarde, ya terminó.")
+
+        async with g.lock:
+            if interaction.user.id in g.entrants:
+                return await respond_ephemeral(interaction, "✅ Ya estabas anotado. Te querés anotar dos veces, picarón.")
+            g.entrants.add(interaction.user.id)
+
+        # No editamos el embed en cada click (evita rate-limit cuando 200 monos spamean el botón)
+        return await respond_ephemeral(interaction, "✅ Listo, quedaste anotado.")
+
+
 # Limpieza si borran el canal manualmente (por si acaso)
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
@@ -1239,6 +1500,7 @@ async def on_ready():
         bot.add_view(FocoPanelView())
         bot.add_view(FocoTicketActionView())
         bot.add_view(RecruitView())
+        bot.add_view(GiveawayJoinView())
         bot._views_registered = True
         print("✅ Views persistentes registradas")
 
@@ -1336,4 +1598,5 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
