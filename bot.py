@@ -828,6 +828,61 @@ async def timerslist_slash(interaction: discord.Interaction):
 
     await respond_ephemeral(interaction, msg)
 
+def staff_only_slash():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return False
+        return is_staff_member(interaction.user)
+    return app_commands.check(predicate)
+
+
+@bot.tree.command(
+    name="list_role",
+    description="(Staff) Lista los miembros (apodo del server) que tienen un rol",
+    guild=discord.Object(id=GUILD_ID)
+)
+@staff_only_slash()
+@app_commands.describe(rol="Rol del que querés listar miembros")
+async def list_role_slash(interaction: discord.Interaction, rol: discord.Role):
+    if interaction.guild is None:
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    try:
+        await guild.chunk(cache=True)
+    except Exception:
+        pass
+
+    members = [m for m in guild.members if rol in m.roles]
+
+    if not members:
+        return await interaction.followup.send(f"📭 No hay nadie con el rol **{rol.name}**.", ephemeral=True)
+
+    lines = [m.nick or m.display_name or m.name for m in members]
+    lines.sort(key=lambda s: s.lower())
+
+    text = "\n".join(lines)
+    header = f"Rol: {rol.name} ({len(lines)} miembros)\n" + ("-" * 32) + "\n"
+    full = header + text
+
+    if len(full) > 1800:
+        file = discord.File(fp=io.BytesIO(full.encode("utf-8")), filename=f"list_role_{rol.name}.txt")
+        return await interaction.followup.send(
+            content=f"📄 Lista para **{rol.name}** ({len(lines)}):",
+            file=file,
+            ephemeral=True
+        )
+
+    await interaction.followup.send(f"```{full}```", ephemeral=True)
+
+@list_role_slash.error
+async def list_role_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/list_role`.")
+    return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
+
 # ---------- COMANDOS STAFF ----------
 @bot.command(name="addroll-list")
 @staff_only()
@@ -1598,5 +1653,6 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
 
