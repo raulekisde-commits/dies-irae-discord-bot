@@ -509,7 +509,7 @@ async def download_as_file(url: str, filename: str) -> Optional[discord.File]:
         return discord.File(fp=io.BytesIO(data), filename=filename)
     except Exception:
         return None
-
+NO_MENTIONS = discord.AllowedMentions.none()
 # ================== FOCO DONOR HELPERS (NUEVO) ==================
 def _sanitize_topic_value(s: str, max_len: int = 200) -> str:
     s = (s or "").strip()
@@ -883,6 +883,49 @@ async def list_role_error(interaction: discord.Interaction, error: app_commands.
         return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/list_role`.")
     return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
 
+@bot.tree.command(
+    name="delrole",
+    description="(Staff) Elimina un rol (sin tagear a nadie)",
+    guild=discord.Object(id=GUILD_ID)
+)
+@staff_only_slash()
+@app_commands.describe(rol="Rol que querés borrar")
+async def delrole_slash(interaction: discord.Interaction, rol: discord.Role):
+    if interaction.guild is None:
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+    # Bloqueos de seguridad
+    if rol.id == STAFF_ROLE_ID or rol.managed:
+        return await respond_ephemeral(interaction, "❌ No se puede eliminar ese rol (Staff o rol administrado).")
+
+    # Evitar borrar @everyone
+    if interaction.guild.default_role and rol.id == interaction.guild.default_role.id:
+        return await respond_ephemeral(interaction, "❌ No se puede eliminar @everyone.")
+
+    # Intentar borrar
+    try:
+        role_name = rol.name
+        await rol.delete(reason=f"Eliminado por {interaction.user} (Staff)")
+
+        # Ephemeral + sin mentions
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                f"🗑️ Rol **{role_name}** eliminado correctamente.",
+                ephemeral=True,
+                allowed_mentions=NO_MENTIONS
+            )
+        else:
+            await interaction.response.send_message(
+                f"🗑️ Rol **{role_name}** eliminado correctamente.",
+                ephemeral=True,
+                allowed_mentions=NO_MENTIONS
+            )
+
+    except discord.Forbidden:
+        return await respond_ephemeral(interaction, "❌ No pude eliminar el rol. Me falta **Manage Roles** o jerarquía.")
+    except Exception:
+        return await respond_ephemeral(interaction, "❌ Error inesperado eliminando el rol.")
+
 # ---------- COMANDOS STAFF ----------
 @bot.command(name="addroll-list")
 @staff_only()
@@ -922,33 +965,6 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
             fail += 1
 
     await ctx.reply(f"✅ Rol **{role.name}** asignado. OK: {ok} | Fallos: {fail}")
-
-@bot.command(name="delrole")
-@staff_only()
-@commands.guild_only()
-async def delrole(ctx: commands.Context, *, role_query: str = None):
-    if not role_query and not ctx.message.role_mentions:
-        return await ctx.reply("Uso: `!delrole NombreDelRol` o `!delrole @Rol`")
-
-    if ctx.message.role_mentions:
-        role = ctx.message.role_mentions[0]
-    else:
-        role = discord.utils.get(ctx.guild.roles, name=role_query.strip()) if role_query else None
-
-    if role is None:
-        return await ctx.reply("❌ No encontré ese rol.")
-
-    if role.id == STAFF_ROLE_ID or role.managed:
-        return await ctx.reply("❌ No se puede eliminar ese rol.")
-
-    try:
-        name = role.name
-        await role.delete(reason=f"Eliminado por {ctx.author} (Staff)")
-        await ctx.reply(f"🗑️ Rol **{name}** eliminado correctamente.")
-    except discord.Forbidden:
-        await ctx.reply("❌ No pude eliminar el rol. Me falta permiso **Manage Roles** o jerarquía.")
-    except Exception:
-        await ctx.reply("❌ Error inesperado eliminando el rol.")
 
 # ---------- RECRUIT VIEW ----------
 class RecruitView(discord.ui.View):
@@ -1653,6 +1669,7 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
 
 
