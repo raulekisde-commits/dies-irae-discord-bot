@@ -152,7 +152,7 @@ def build_giveaway_embed(g: GiveawayItem) -> discord.Embed:
     emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
     emb.add_field(name="⏳ Termina", value=f"<t:{end_unix}:t> (<t:{end_unix}:R>)", inline=False)
     emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
-    emb.set_footer(text="Dies-Irae Sorteos System")
+    emb.set_footer(text="Smogg Sorteos System")
     return emb
 
 async def disable_giveaway_button(guild: discord.Guild, g: GiveawayItem):
@@ -1033,7 +1033,7 @@ class RecruitView(discord.ui.View):
             return await respond_ephemeral(interaction, "❌ Error inesperado asignando roles.")
 
         try:
-            await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Dies-Irae** ⚔️")
+            await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
         except Exception:
             pass
 
@@ -1084,7 +1084,7 @@ class RecruitView(discord.ui.View):
         member = await self._get_applicant(interaction)
         if member:
             try:
-                await member.send("❌ Tu postulación en **Dies-Irae** fue rechazada. Podés volver a aplicar más adelante.")
+                await member.send("❌ Tu postulación en **Smogg** fue rechazada. Podés volver a aplicar más adelante.")
             except Exception:
                 pass
 
@@ -1251,7 +1251,7 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
             ),
             color=discord.Color.blurple()
         )
-        embed.set_footer(text="Dies-Irae Foco Donor System")
+        embed.set_footer(text="Smogg Foco Donor System")
 
         staff_mention = staff_role.mention if staff_role else f"<@&{STAFF_ROLE_ID}>"
 
@@ -1514,7 +1514,7 @@ class PanelView(discord.ui.View):
         active_applications[user_id] = channel.id
 
         embed = discord.Embed(
-            title="⚔️ Reclutamiento Dies-Irae",
+            title="⚔️ Reclutamiento Smogg",
             description=(
                 "**Enviá lo siguiente:**\n\n"
                 "📸 Screenshot perfil Albion\n"
@@ -1541,7 +1541,7 @@ class PanelView(discord.ui.View):
 @commands.has_permissions(administrator=True)
 async def panel(ctx: commands.Context):
     embed = discord.Embed(
-        title="⚔️ Dies-Irae Reclutamiento",
+        title="⚔️ Smogg Reclutamiento",
         description="Presioná el botón para abrir tu **postulación oficial**.",
         color=discord.Color.orange()
     )
@@ -1557,7 +1557,7 @@ async def panel_foco(ctx: commands.Context):
         description="Presioná el botón para donar foco a la guild.",
         color=discord.Color.blurple()
     )
-    embed.set_footer(text="Dies-Irae Foco Donor System")
+    embed.set_footer(text="Smogg Foco Donor System")
     await ctx.send(embed=embed, view=FocoPanelView())
 
 # ---------- READY (AL FINAL, así PanelView existe) ----------
