@@ -17,7 +17,7 @@ import random
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    env_path = "/root/discordbot/.env"
+    env_path = "token.env"
     if os.path.exists(env_path):
         load_dotenv(dotenv_path=env_path)
         TOKEN = os.getenv("DISCORD_TOKEN")
@@ -41,13 +41,7 @@ BATTLE_MOUNT_ROLE_ID = 1469369363739181087
 PUBLIC_ROLE_ID = 1266805315547041902
 STAFF_ROLE_ID = 1257896709246423083
 
-CLOCK_CHANNEL_ID = 1462464849463214395
-
 COOLDOWN_SECONDS = 60
-
-# ✅ Cooldown reloj 15 min (aunque el task corra cada 5)
-CLOCK_COOLDOWN_SECONDS = 15 * 60
-_last_clock_edit_ts = 0.0
 
 # ✅ Timers
 TIMERS_ROLE_ID = 1462515835326169159
@@ -75,7 +69,11 @@ TIER_LABELS_SPECIAL = {
     "legendary": "Legendary (Amarillo)",
 }
 
+ALBIONBB_REGION = os.getenv("ALBIONBB_REGION", "eu")
 
+ALBIONBB_BASE_URL = f"https://api.albionbb.com/{ALBIONBB_REGION}"
+ALBIONBB_BATTLE_URL = f"{ALBIONBB_BASE_URL}/battles"
+ALBIONBB_KILLS_URL = f"{ALBIONBB_BASE_URL}/battles/kills"
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
 FOCO_CATEGORY_ID = 1468340293571973273        
 FOCO_LOG_CHANNEL_ID = 1468345144502915313      
@@ -576,50 +574,6 @@ def get_foco_category(guild: discord.Guild) -> Optional[discord.CategoryChannel]
     foco_cat_id = FOCO_CATEGORY_ID if FOCO_CATEGORY_ID and FOCO_CATEGORY_ID != 0 else CATEGORY_ID
     return discord.utils.get(guild.categories, id=foco_cat_id)
 
-# ---------- RELOJ UTC ----------
-@tasks.loop(minutes=5)
-async def utc_clock():
-    global _last_clock_edit_ts
-
-    if not CLOCK_CHANNEL_ID or CLOCK_CHANNEL_ID == 0:
-        return
-
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
-
-    channel = guild.get_channel(CLOCK_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await guild.fetch_channel(CLOCK_CHANNEL_ID)
-        except Exception:
-            return
-
-    now = datetime.now(timezone.utc)
-    new_name = f"🕒 UTC {now:%H:%M}"
-
-    if getattr(channel, "name", None) == new_name:
-        return
-
-    now_ts = time.time()
-    if now_ts - _last_clock_edit_ts < CLOCK_COOLDOWN_SECONDS:
-        return
-
-    try:
-        await channel.edit(name=new_name, reason="UTC clock update (15m cooldown)")
-        _last_clock_edit_ts = now_ts
-    except discord.HTTPException as e:
-        if getattr(e, "status", None) == 429:
-            _last_clock_edit_ts = now_ts
-        print("❌ HTTPException editando canal:", e)
-    except discord.Forbidden:
-        print("❌ No tengo permisos para editar el canal (Manage Channels).")
-    except Exception as e:
-        print("❌ Error editando canal:", e)
-
-@utc_clock.before_loop
-async def before_utc_clock():
-    await bot.wait_until_ready()
 
 # ---------- TIMERS HOUSEKEEPING ----------
 @tasks.loop(seconds=30)
@@ -677,6 +631,73 @@ async def timers_housekeeping():
 @timers_housekeeping.before_loop
 async def before_timers_housekeeping():
     await bot.wait_until_ready()
+
+# ================== TIMER POSTS (/timeradd) ==================
+TIMER_POST_CHANNEL_ID = 1462184630835740732
+TIMER_POST_DELETE_AFTER_MINUTES = 15
+_TIMER_POST_TS_RE = re.compile(r"^Material:.*\nTier:.*\nMapa:.*\nTiempo:.*\nHorario: <t:(\d+):t>", re.DOTALL)
+
+
+class TimerDeleteView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🗑️ Eliminar", style=discord.ButtonStyle.danger, custom_id="timer_post_delete")
+    async def delete_post(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+        if not (is_timers_member(interaction.user) or is_staff_member(interaction.user)):
+            return await respond_ephemeral(interaction, "❌ No tenés permiso para eliminar este timer.")
+
+        try:
+            await interaction.message.delete()
+        except discord.NotFound:
+            pass
+        except Exception:
+            return await respond_ephemeral(interaction, "❌ No pude eliminar el mensaje.")
+
+        await respond_ephemeral(interaction, "🗑️ Timer eliminado.")
+
+
+@tasks.loop(seconds=60)
+async def timer_posts_cleanup():
+    """Borra los posts de /timeradd 15 min después de la hora indicada.
+    Lee la hora del propio mensaje, así funciona aunque el bot se reinicie."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    channel = guild.get_channel(TIMER_POST_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(TIMER_POST_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    limit_unix = int(datetime.now(timezone.utc).timestamp()) - TIMER_POST_DELETE_AFTER_MINUTES * 60
+
+    try:
+        async for msg in channel.history(limit=100):
+            if bot.user is None or msg.author.id != bot.user.id:
+                continue
+            match = _TIMER_POST_TS_RE.match(msg.content or "")
+            if not match:
+                continue
+            if int(match.group(1)) <= limit_unix:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+@timer_posts_cleanup.before_loop
+async def before_timer_posts_cleanup():
+    await bot.wait_until_ready()
+
 
 # ================== SLASH COMMANDS TIMERS ==================
 @bot.tree.command(name="timeradd", description="Agregar timer (solo rol Timers)", guild=discord.Object(id=GUILD_ID))
@@ -736,19 +757,42 @@ async def timeradd_slash(interaction: discord.Interaction, material: app_command
 
     h, m = dur
     end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
+    end_unix = int(end_at.timestamp())
 
-    item = TimerItem(material=material.value, tier=tier.value, map_name=mapa.strip(), end_at=end_at, created_by_id=interaction.user.id)
-    
-    # actualizar tablero
-    timers.append(item)
-    await update_timers_board(interaction.guild)
+    await interaction.response.defer(ephemeral=True)
 
-    tier_txt = TIER_LABELS_SPECIAL.get(item.tier, f"T{item.tier}")
-    await respond_ephemeral(
-        interaction,
-        f"✅ Timer creado: 🧱 **{item.material.title()}** | ⭐ **{tier_txt}** | 🗺️ **{item.map_name}**\n"
-        f"🕒 Sale a **{fmt_utc(item.end_at)}** (en {time_left_str(item.end_at)})"
+    channel = interaction.guild.get_channel(TIMER_POST_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await interaction.guild.fetch_channel(TIMER_POST_CHANNEL_ID)
+        except Exception:
+            channel = None
+    if not isinstance(channel, discord.TextChannel):
+        return await interaction.followup.send("❌ No encontré el canal de timers.", ephemeral=True)
+
+    tier_txt = TIER_LABELS_SPECIAL.get(tr, tr)
+    content = (
+        f"Material: {mat.title()}\n"
+        f"Tier: {tier_txt}\n"
+        f"Mapa: {mapa.strip()}\n"
+        f"Tiempo: {end_at.strftime('%H:%M')} UTC\n"
+        f"Horario: <t:{end_unix}:t>\n"
+        f"Falta: <t:{end_unix}:R>\n"
+        f"Timeado por: {interaction.user.mention}"
     )
+
+    try:
+        post = await channel.send(
+            content,
+            view=TimerDeleteView(),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.Forbidden:
+        return await interaction.followup.send("❌ No tengo permisos para escribir en el canal de timers.", ephemeral=True)
+    except Exception:
+        return await interaction.followup.send("❌ No pude publicar el timer.", ephemeral=True)
+
+    await interaction.followup.send(f"✅ Timer publicado: {post.jump_url}", ephemeral=True)
 
 @bot.tree.command(name="sorteo", description="Crear sorteo (solo Staff)", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(
@@ -805,28 +849,6 @@ async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: st
         f"✅ Sorteo creado. Premio: `{temp_g.prize}` | Termina: <t:{int(end_at.timestamp())}:R>",
         ephemeral=True
     )
-
-@bot.tree.command(name="timerslist", description="Listar timers (ordenados)", guild=discord.Object(id=GUILD_ID))
-async def timerslist_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-
-    if not timers:
-        return await respond_ephemeral(interaction, "📭 No hay timers activos.")
-
-    sorted_timers = sorted(timers, key=lambda t: t.end_at)
-    lines = []
-    for i, t in enumerate(sorted_timers, start=1):
-        tier_txt = TIER_LABELS_SPECIAL.get(t.tier, f"T{t.tier}")
-        lines.append(
-            f"**{i}.** 🧱 {t.material.title()} | ⭐ {tier_txt} | 🗺️ {t.map_name} → 🕒 **{fmt_utc(t.end_at)}** (en {time_left_str(t.end_at)})"
-        )
-
-    msg = "\n".join(lines)
-    if len(msg) > 1900:
-        msg = msg[:1900] + "\n…"
-
-    await respond_ephemeral(interaction, msg)
 
 def staff_only_slash():
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -1560,6 +1582,703 @@ async def panel_foco(ctx: commands.Context):
     embed.set_footer(text="Smogg Foco Donor System")
     await ctx.send(embed=embed, view=FocoPanelView())
 
+
+# ============================================================
+# FUNCIONES AUXILIARES
+# ============================================================
+
+def normalizar_nombre(nombre: str) -> str:
+    """
+    Normaliza un nombre para comparar ignorando MAYÚSCULAS/minúsculas.
+
+    NO elimina:
+    - espacios
+    - guiones
+    - números
+    - símbolos
+    - caracteres especiales
+
+    Ejemplos:
+
+    Carlos == carlos       -> True
+    CARLOS == Carlos       -> True
+    Carlos123 == Carlos    -> False
+    Carlitos == Carlos     -> False
+    """
+
+    return nombre.casefold()
+
+
+def extraer_ids(texto: str) -> list[str]:
+    """
+    Acepta:
+
+    1461052597
+    1461052597,1461051559,1461048629
+
+    https://albionbb.com/battles/1461052597
+
+    https://albionbb.com/battles/multi?ids=1461052597,1461051559,1461048629
+
+    y devuelve únicamente los IDs.
+    """
+
+    texto = texto.strip()
+
+    # Si es una URL con ?ids=
+    match = re.search(r"[?&]ids=([^&\s]+)", texto, re.IGNORECASE)
+
+    if match:
+        texto = match.group(1)
+
+    # Extraer todos los números
+    ids = re.findall(r"\d+", texto)
+
+    # Eliminar duplicados manteniendo el orden
+    resultado = []
+
+    for battle_id in ids:
+        if battle_id not in resultado:
+            resultado.append(battle_id)
+
+    return resultado
+
+
+async def obtener_jugadores_batalla_albion(
+    session: aiohttp.ClientSession,
+    battle_id: str,
+) -> list[dict[str, str]]:
+    """
+    Obtiene los participantes de UNA batalla desde el endpoint de detalle
+    de AlbionBB: /battles/{id}.
+
+    AlbionBB puede cambiar ligeramente la estructura JSON, por eso el
+    extractor acepta las variantes habituales de Name/GuildName/Guild.
+    """
+    url = f"{ALBIONBB_BATTLE_URL}/{battle_id}"
+
+    async with session.get(url) as response:
+        if response.status != 200:
+            raise RuntimeError(
+                f"AlbionBB batalla {battle_id}: HTTP {response.status}"
+            )
+        data = await response.json(content_type=None)
+
+    encontrados: dict[tuple[str, str], dict[str, str]] = {}
+
+    def extraer(obj):
+        if isinstance(obj, dict):
+            nombre = obj.get("Name") or obj.get("name")
+
+            guild_name = obj.get("GuildName") or obj.get("guildName")
+            guild_obj = obj.get("Guild") or obj.get("guild")
+
+            if not guild_name and isinstance(guild_obj, dict):
+                guild_name = guild_obj.get("Name") or guild_obj.get("name")
+            elif not guild_name and isinstance(guild_obj, str):
+                guild_name = guild_obj
+
+            if isinstance(nombre, str) and isinstance(guild_name, str) and guild_name.strip():
+                clave = (normalizar_nombre(nombre), normalizar_nombre(guild_name))
+                encontrados.setdefault(
+                    clave,
+                    {"name": nombre, "guild": guild_name}
+                )
+
+            for value in obj.values():
+                extraer(value)
+
+        elif isinstance(obj, list):
+            for value in obj:
+                extraer(value)
+
+    extraer(data)
+    return list(encontrados.values())
+
+
+async def obtener_jugadores_albion(
+    battle_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """
+    Obtiene los participantes de todas las batallas solicitadas.
+
+    Primero usa /battles/{id}, que es la fuente adecuada para obtener la
+    tabla de participantes de una batalla. Si una batalla no devuelve
+    participantes, usa /battles/kills como respaldo.
+
+    El resultado se indexa por nombre normalizado y elimina duplicados.
+    """
+    timeout = aiohttp.ClientTimeout(total=45)
+    jugadores: dict[str, dict[str, str]] = {}
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for battle_id in battle_ids:
+            try:
+                participantes = await obtener_jugadores_batalla_albion(
+                    session, battle_id
+                )
+            except Exception as error:
+                print(f"⚠️ Error obteniendo detalle de batalla {battle_id}: {error}")
+                participantes = []
+
+            for jugador in participantes:
+                clave = normalizar_nombre(jugador["name"])
+                jugadores.setdefault(clave, jugador)
+
+        # Fallback: si el detalle no entregó jugadores, intentamos el endpoint
+        # de kills para no dejar el comando inutilizable ante cambios de API.
+        if not jugadores:
+            ids = ",".join(battle_ids)
+            async with session.get(ALBIONBB_KILLS_URL, params={"ids": ids}) as response:
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"AlbionBB fallback kills: HTTP {response.status}"
+                    )
+                data = await response.json(content_type=None)
+
+            if not isinstance(data, list):
+                raise RuntimeError("La respuesta de AlbionBB no tiene el formato esperado.")
+
+            def agregar_participante(jugador):
+                if not isinstance(jugador, dict):
+                    return
+
+                nombre = jugador.get("Name") or jugador.get("name")
+                guild = jugador.get("GuildName") or jugador.get("guildName")
+
+                if not nombre or not guild:
+                    return
+
+                clave = normalizar_nombre(nombre)
+                jugadores.setdefault(
+                    clave,
+                    {"name": nombre, "guild": guild}
+                )
+
+            for evento in data:
+                agregar_participante(evento.get("Killer", {}))
+                agregar_participante(evento.get("Victim", {}))
+                for participante in evento.get("Participants", []) or []:
+                    agregar_participante(participante)
+                for participante in evento.get("GroupMembers", []) or []:
+                    agregar_participante(participante)
+
+    return jugadores
+
+
+# ============================================================
+# MATCHING DISCORD
+# ============================================================
+
+def construir_indice_discord(
+    guild: discord.Guild
+) -> dict[str, list[discord.Member]]:
+
+    """
+    Construye un índice:
+
+    nombre -> miembros Discord
+
+    Busca tanto:
+    - nickname/apodo
+    - username
+
+    Todo comparado ignorando mayúsculas.
+    """
+
+    indice = {}
+
+    for member in guild.members:
+
+        # ----------------------------------------------------
+        # Username
+        # ----------------------------------------------------
+
+        username = normalizar_nombre(member.name)
+
+        indice.setdefault(username, [])
+        indice[username].append(member)
+
+        # ----------------------------------------------------
+        # Nickname / apodo
+        # ----------------------------------------------------
+
+        if member.nick:
+
+            nickname = normalizar_nombre(member.nick)
+
+            indice.setdefault(nickname, [])
+            indice[nickname].append(member)
+
+    return indice
+
+
+# ============================================================
+# SLASH COMMAND: ROL DESDE ALBIONBB
+# ============================================================
+
+@bot.tree.command(
+    name="rolalbion",
+    description="Crea un rol y lo asigna a participantes de AlbionBB.",
+    guild=GUILD_OBJ,
+)
+@app_commands.describe(
+    ids="IDs o link de AlbionBB. Ej: 1461052597,1461051559,1461048629",
+    guild="Nombre exacto de la guild de Albion. Ej: Smogg",
+    rol="Nombre del rol que se creará. Ej: Smogg ZvZ"
+)
+async def rolalbion(
+    interaction: discord.Interaction,
+    ids: str,
+    guild: str,
+    rol: str,
+):
+    """Crea un rol y lo asigna mediante coincidencia exacta de nombres."""
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send(
+            "❌ Este comando solo puede usarse dentro del servidor.",
+            ephemeral=True,
+        )
+
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.followup.send(
+            "❌ Necesitás el permiso **Gestionar roles** para usar este comando.",
+            ephemeral=True,
+        )
+
+    battle_ids = extraer_ids(ids)
+    if not battle_ids:
+        return await interaction.followup.send(
+            "❌ No encontré ningún ID de batalla.\n\n"
+            "Ejemplo:\n"
+            "`/rolalbion ids:1461052597,1461051559,1461048629 guild:Smogg rol:Smogg ZvZ`",
+            ephemeral=True,
+        )
+
+    if len(battle_ids) > 50:
+        return await interaction.followup.send(
+            "❌ Podés consultar como máximo 50 batallas por comando.",
+            ephemeral=True,
+        )
+
+    guild_name = guild.strip()
+    role_name = rol.strip()
+    if not guild_name or not role_name:
+        return await interaction.followup.send(
+            "❌ La guild y el nombre del rol no pueden estar vacíos.",
+            ephemeral=True,
+        )
+
+    # Obtener participantes reales de las batallas.
+    try:
+        jugadores = await obtener_jugadores_albion(battle_ids)
+    except Exception as error:
+        print(f"❌ /rolalbion AlbionBB: {error!r}")
+        return await interaction.followup.send(
+            "❌ No pude obtener los participantes de AlbionBB.\n"
+            "Revisá los IDs y que AlbionBB esté disponible.",
+            ephemeral=True,
+        )
+
+    guild_key = normalizar_nombre(guild_name)
+    jugadores_guild = []
+
+    for datos in jugadores.values():
+        if normalizar_nombre(datos["guild"]) == guild_key:
+            jugadores_guild.append(datos["name"])
+
+    # Deduplicar jugadores que aparecieron en varias batallas.
+    jugadores_guild = list(dict.fromkeys(jugadores_guild))
+
+    if not jugadores_guild:
+        return await interaction.followup.send(
+            f"❌ No encontré participantes de **{guild_name}** en las "
+            f"{len(battle_ids)} batallas consultadas.",
+            ephemeral=True,
+        )
+
+    # Discord necesita la lista de miembros para poder comparar apodos.
+    try:
+        await interaction.guild.chunk(cache=True)
+    except Exception:
+        pass
+
+    indice_discord: dict[str, dict[int, discord.Member]] = {}
+
+    for member in interaction.guild.members:
+        # Username actual de Discord.
+        username_key = normalizar_nombre(member.name)
+        indice_discord.setdefault(username_key, {})[member.id] = member
+
+        # Apodo dentro del servidor.
+        if member.nick:
+            nickname_key = normalizar_nombre(member.nick)
+            indice_discord.setdefault(nickname_key, {})[member.id] = member
+
+    encontrados: list[tuple[str, discord.Member]] = []
+    no_encontrados: list[str] = []
+    ambiguos: list[tuple[str, list[discord.Member]]] = []
+
+    for jugador in jugadores_guild:
+        candidatos = list(indice_discord.get(normalizar_nombre(jugador), {}).values())
+
+        if len(candidatos) == 0:
+            no_encontrados.append(jugador)
+        elif len(candidatos) == 1:
+            encontrados.append((jugador, candidatos[0]))
+        else:
+            ambiguos.append((jugador, candidatos))
+
+    # Crear o reutilizar el rol.
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+
+    if role is None:
+        try:
+            role = await interaction.guild.create_role(
+                name=role_name,
+                reason=f"Creado por /rolalbion para la guild {guild_name}",
+            )
+        except discord.Forbidden:
+            return await interaction.followup.send(
+                "❌ No puedo crear roles. Necesito **Gestionar roles**.",
+                ephemeral=True,
+            )
+        except discord.HTTPException as error:
+            return await interaction.followup.send(
+                f"❌ Discord rechazó la creación del rol: `{error}`",
+                ephemeral=True,
+            )
+
+    bot_member = interaction.guild.me
+    if bot_member is None or role >= bot_member.top_role:
+        return await interaction.followup.send(
+            "❌ El rol está por encima o al mismo nivel que el rol del bot.\n"
+            "Mové el rol del bot por encima del rol que querés asignar.",
+            ephemeral=True,
+        )
+
+    asignados = []
+    ya_tenian = []
+    errores = []
+
+    for jugador, member in encontrados:
+        try:
+            if role in member.roles:
+                ya_tenian.append((jugador, member))
+            else:
+                await member.add_roles(
+                    role,
+                    reason=f"Participación AlbionBB - {guild_name}",
+                )
+                asignados.append((jugador, member))
+        except discord.Forbidden:
+            errores.append((jugador, member))
+        except discord.HTTPException as error:
+            print(f"⚠️ Error asignando {role_name} a {member}: {error}")
+            errores.append((jugador, member))
+
+    # Resultado compacto. Los detalles se mandan en mensajes efímeros separados
+    # para no superar el límite de 2000 caracteres de Discord.
+    resumen = (
+        "## ⚔️ Rol AlbionBB\n"
+        f"**Guild:** `{guild_name}`\n"
+        f"**Batallas:** `{len(battle_ids)}`\n"
+        f"**Jugadores de la guild:** `{len(jugadores_guild)}`\n"
+        f"**Encontrados:** `{len(encontrados)}`\n"
+        f"**Asignados ahora:** `{len(asignados)}`\n"
+        f"**Ya tenían el rol:** `{len(ya_tenian)}`\n"
+        f"**No encontrados:** `{len(no_encontrados)}`\n"
+        f"**Ambiguos:** `{len(ambiguos)}`\n"
+        f"**Errores:** `{len(errores)}`\n\n"
+        f"**Rol:** {role.mention}"
+    )
+
+    await interaction.followup.send(
+        resumen,
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+
+    detalles: list[str] = []
+    detalles.extend(f"✓ `{j}` → {m.display_name}" for j, m in asignados)
+    detalles.extend(f"↪ `{j}` → {m.display_name} (ya lo tenía)" for j, m in ya_tenian)
+    detalles.extend(f"✗ `{j}` → NO ENCONTRADO" for j in no_encontrados)
+    detalles.extend(
+        f"⚠ `{j}` → {', '.join(m.display_name for m in miembros)}"
+        for j, miembros in ambiguos
+    )
+    detalles.extend(f"🚫 `{j}` → {m.display_name} (sin permisos)" for j, m in errores)
+
+    if detalles:
+        for inicio in range(0, len(detalles), 25):
+            bloque = "\n".join(detalles[inicio:inicio + 25])
+            await interaction.followup.send(
+                bloque,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+# ============================================================
+# TAB SELL / CALCULAR SPLIT
+# ============================================================
+SPLIT_PANEL_CHANNEL_ID = 1557432820257923183
+SPLIT_LOG_CHANNEL_ID = 1557434386775932969
+SPLIT_SELLER_ROLE_IDS = {1257896709246423083, 1257896977220501557}
+SPLIT_PING_ROLE_ID = 1468314531825713338
+SPLIT_DEFAULT_DISCOUNT = 15.0
+SPLIT_REPARTIR_TAX = 5.0
+
+split_log_ids: dict[int, int] = {}   # panel_message_id -> log_message_id
+split_locks: dict[int, asyncio.Lock] = {}
+
+
+def fmt_num(n: float) -> str:
+    """1234567.0 -> '1,234,567' | 15.5 -> '15.5'"""
+    if float(n).is_integer():
+        return f"{int(n):,}"
+    return f"{n:,.2f}".rstrip("0").rstrip(".")
+
+
+def build_split_log(
+    panel_url: str, city: str, tab: str, creator_id: int,
+    total: float, reparacion: float, pct: float, bolsitas: float,
+    precio_venta: float, repartir: float,
+) -> str:
+    return (
+        f"Link al mensaje: {panel_url}\n"
+        f"City: {city}\n"
+        f"Nombre tab: {tab}\n"
+        f"Creador de la tab: <@{creator_id}>\n"
+        f"Vendedor: \n"
+        f"Total: {fmt_num(total)}\n"
+        f"Reparacion: {fmt_num(reparacion)}\n"
+        f"Tax venta: {fmt_num(pct)}%\n"
+        f"Bolsitas: {fmt_num(bolsitas)}\n"
+        f"Precio de venta: {fmt_num(precio_venta)}\n"
+        f"Total a repartir (-{fmt_num(SPLIT_REPARTIR_TAX)}%): {fmt_num(repartir)}"
+    )
+
+
+async def _get_channel(guild: discord.Guild, channel_id: int):
+    ch = guild.get_channel(channel_id)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(channel_id)
+        except Exception:
+            return None
+    return ch
+
+
+async def find_split_log_message(guild: discord.Guild, panel_msg: discord.Message) -> Optional[discord.Message]:
+    log_ch = await _get_channel(guild, SPLIT_LOG_CHANNEL_ID)
+    if not isinstance(log_ch, discord.TextChannel):
+        return None
+
+    log_id = split_log_ids.get(panel_msg.id)
+    if log_id:
+        try:
+            return await log_ch.fetch_message(log_id)
+        except Exception:
+            pass
+
+    # Fallback (por si el bot reinició): buscar por el link del panel
+    needle = f"Link al mensaje: {panel_msg.jump_url}"
+    try:
+        async for m in log_ch.history(limit=500):
+            if m.author.id == bot.user.id and m.content.startswith(needle):
+                split_log_ids[panel_msg.id] = m.id
+                return m
+    except Exception:
+        pass
+    return None
+
+
+class SplitConfirmView(discord.ui.View):
+    def __init__(self, panel_msg: discord.Message, user: discord.Member):
+        super().__init__(timeout=60)
+        self.panel_msg = panel_msg
+        self.user = user
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await respond_ephemeral(interaction, "❌ Esta confirmación no es tuya.")
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Sí, lo vendí", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        lock = split_locks.setdefault(self.panel_msg.id, asyncio.Lock())
+
+        async with lock:
+            # Releer el panel para saber si alguien ya lo vendió
+            try:
+                panel = await self.panel_msg.channel.fetch_message(self.panel_msg.id)
+            except Exception:
+                return await interaction.response.edit_message(content="❌ No pude leer el panel.", view=None)
+
+            if "Vendido por" in (panel.content or ""):
+                return await interaction.response.edit_message(content="❌ Este tab ya fue marcado como vendido.", view=None)
+
+            log_msg = await find_split_log_message(guild, panel)
+            if log_msg is None:
+                return await interaction.response.edit_message(content="❌ No encontré el registro de este tab en el canal de logs.", view=None)
+
+            # Editar log: completar Vendedor
+            new_content = re.sub(
+                r"^Vendedor:.*$",
+                f"Vendedor: {interaction.user.mention}",
+                log_msg.content,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            try:
+                await log_msg.edit(content=new_content, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                return await interaction.response.edit_message(content="❌ No pude editar el registro.", view=None)
+
+            # Editar panel: marcar vendido y deshabilitar botón
+            try:
+                await panel.edit(
+                    content=f"{panel.content}\n\n✅ **Vendido por** {interaction.user.display_name}",
+                    view=SplitSoldView(disabled=True),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                pass
+
+        self.stop()
+        await interaction.response.edit_message(content="✅ Registrado como vendido.", view=None)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelado.", view=None)
+
+
+class SplitSoldView(discord.ui.View):
+    def __init__(self, disabled: bool = False):
+        super().__init__(timeout=None)
+        if disabled:
+            for child in self.children:
+                child.disabled = True
+
+    @discord.ui.button(label="💰 Vendido", style=discord.ButtonStyle.success, custom_id="split_sold_btn")
+    async def sold(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+        user_role_ids = {r.id for r in interaction.user.roles}
+        if not (user_role_ids & SPLIT_SELLER_ROLE_IDS):
+            return await respond_ephemeral(interaction, "❌ No tenés permiso para marcar este tab como vendido.")
+
+        msg = interaction.message
+        if msg is None:
+            return await respond_ephemeral(interaction, "❌ No pude leer el panel.")
+
+        if "Vendido por" in (msg.content or ""):
+            return await respond_ephemeral(interaction, "❌ Este tab ya fue marcado como vendido.")
+
+        await interaction.response.send_message(
+            "⚠️ ¿Estás seguro de que vendiste este tab? Esta acción no se puede deshacer.",
+            view=SplitConfirmView(msg, interaction.user),
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(
+    name="calcularsplit",
+    description="Calcula el precio de venta de un tab y crea el panel.",
+    guild=GUILD_OBJ,
+)
+@app_commands.describe(
+    nombre_tab="Nombre del tab",
+    city="Ciudad donde se vende",
+    total="Total",
+    reparacion="Costo de reparación",
+    silver_bolsitas="Silver de bolsitas (opcional)",
+    descuento="Porcentaje de descuento/tax de venta (opcional, default 15)",
+)
+async def calcularsplit(
+    interaction: discord.Interaction,
+    nombre_tab: str,
+    city: str,
+    total: float,
+    reparacion: float,
+    silver_bolsitas: Optional[float] = None,
+    descuento: Optional[app_commands.Range[float, 0, 100]] = None,
+):
+    if interaction.guild is None:
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+    await interaction.response.defer(ephemeral=True)
+
+    panel_ch = await _get_channel(interaction.guild, SPLIT_PANEL_CHANNEL_ID)
+    if not isinstance(panel_ch, discord.TextChannel):
+        return await interaction.followup.send("❌ No encontré el canal de paneles.", ephemeral=True)
+
+    log_ch = await _get_channel(interaction.guild, SPLIT_LOG_CHANNEL_ID)
+    if not isinstance(log_ch, discord.TextChannel):
+        return await interaction.followup.send("❌ No encontré el canal de logs.", ephemeral=True)
+
+    nombre_tab = nombre_tab.strip()
+    city = city.strip()
+    bolsitas = silver_bolsitas or 0
+    pct = SPLIT_DEFAULT_DISCOUNT if descuento is None else descuento
+
+    precio_venta = round((total - reparacion) * (1 - pct / 100))
+    repartir = round((precio_venta + bolsitas) * (1 - SPLIT_REPARTIR_TAX / 100))
+
+    content = (
+        f"<@&{SPLIT_PING_ROLE_ID}>\n"
+        "Tab Sell\n"
+        f"Nombre tab: {nombre_tab}\n"
+        f"City: {city}\n"
+        f"Precio de venta (-{fmt_num(pct)}%): {fmt_num(precio_venta)}"
+    )
+
+    try:
+        panel_msg = await panel_ch.send(
+            content,
+            view=SplitSoldView(),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+    except discord.Forbidden:
+        return await interaction.followup.send("❌ No tengo permisos para escribir en el canal de paneles.", ephemeral=True)
+    except Exception:
+        return await interaction.followup.send("❌ No pude crear el panel.", ephemeral=True)
+
+    # Log creado al ejecutar el comando
+    log_text = build_split_log(
+        panel_msg.jump_url, city, nombre_tab, interaction.user.id,
+        total, reparacion, pct, bolsitas, precio_venta, repartir,
+    )
+    try:
+        log_msg = await log_ch.send(log_text, allowed_mentions=discord.AllowedMentions.none())
+        split_log_ids[panel_msg.id] = log_msg.id
+    except Exception:
+        await interaction.followup.send(
+            "⚠️ Panel creado pero no pude escribir el registro en el canal de logs.",
+            ephemeral=True,
+        )
+
+    thread_warning = ""
+    try:
+        await panel_msg.create_thread(name=nombre_tab[:100] or "Tab Sell")
+    except Exception:
+        thread_warning = "\n⚠️ No pude crear el hilo (revisá el permiso **Crear hilos públicos**)."
+
+    await interaction.followup.send(
+        f"✅ Panel creado: {panel_msg.jump_url}\n"
+        f"Precio de venta (-{fmt_num(pct)}%): **{fmt_num(precio_venta)}**\n"
+        f"Total a repartir (-{fmt_num(SPLIT_REPARTIR_TAX)}%): **{fmt_num(repartir)}**"
+        f"{thread_warning}",
+        ephemeral=True,
+    )
+
+
 # ---------- READY (AL FINAL, así PanelView existe) ----------
 @bot.event
 async def on_ready():
@@ -1572,13 +2291,15 @@ async def on_ready():
         bot.add_view(FocoTicketActionView())
         bot.add_view(RecruitView())
         bot.add_view(GiveawayJoinView())
+        bot.add_view(SplitSoldView())
+        bot.add_view(TimerDeleteView())
         bot._views_registered = True
         print("✅ Views persistentes registradas")
 
     # Tasks
-    if not utc_clock.is_running():
-        utc_clock.start()
-        print("✅ Reloj UTC iniciado")
+    if not timer_posts_cleanup.is_running():
+        timer_posts_cleanup.start()
+        print("✅ Timer posts cleanup iniciado")
 
     if not timers_housekeeping.is_running():
         timers_housekeeping.start()
