@@ -1541,7 +1541,8 @@ class PanelView(discord.ui.View):
                 "**Enviá lo siguiente:**\n\n"
                 "📸 Screenshot perfil Albion\n"
                 "⚔ Rol ZvZ\n"
-                "🕒 Horarios\n\n"
+                "🕒 Horarios\n"
+                "📜 Gremios anteriores en los que estuviste\n\n"
                 "Un reclutador revisará tu postulación."
             ),
             color=discord.Color.gold()
@@ -2028,7 +2029,6 @@ SPLIT_LOG_CHANNEL_ID = 1557434386775932969
 SPLIT_SELLER_ROLE_IDS = {1257896709246423083, 1257896977220501557}
 SPLIT_PING_ROLE_ID = 1468314531825713338
 SPLIT_DEFAULT_DISCOUNT = 15.0
-SPLIT_REPARTIR_TAX = 5.0
 
 split_log_ids: dict[int, int] = {}   # panel_message_id -> log_message_id
 split_locks: dict[int, asyncio.Lock] = {}
@@ -2043,8 +2043,7 @@ def fmt_num(n: float) -> str:
 
 def build_split_log(
     panel_url: str, city: str, tab: str, creator_id: int,
-    total: float, reparacion: float, pct: float, bolsitas: float,
-    precio_venta: float, repartir: float,
+    total: float, reparacion: float, pct: float, tax: float, precio_venta: float,
 ) -> str:
     return (
         f"Link al mensaje: {panel_url}\n"
@@ -2052,12 +2051,11 @@ def build_split_log(
         f"Nombre tab: {tab}\n"
         f"Creador de la tab: <@{creator_id}>\n"
         f"Vendedor: \n"
+        f"Comprador: \n"
         f"Total: {fmt_num(total)}\n"
         f"Reparacion: {fmt_num(reparacion)}\n"
-        f"Tax venta: {fmt_num(pct)}%\n"
-        f"Bolsitas: {fmt_num(bolsitas)}\n"
-        f"Precio de venta: {fmt_num(precio_venta)}\n"
-        f"Total a repartir (-{fmt_num(SPLIT_REPARTIR_TAX)}%): {fmt_num(repartir)}"
+        f"Tax venta: {fmt_num(pct)}% ({fmt_num(tax)})\n"
+        f"Precio de venta: {fmt_num(precio_venta)}"
     )
 
 
@@ -2095,21 +2093,26 @@ async def find_split_log_message(guild: discord.Guild, panel_msg: discord.Messag
     return None
 
 
-class SplitConfirmView(discord.ui.View):
-    def __init__(self, panel_msg: discord.Message, user: discord.Member):
-        super().__init__(timeout=60)
+class SplitBuyerModal(discord.ui.Modal, title="Marcar tab como vendido"):
+    comprador = discord.ui.TextInput(
+        label="¿A quién se lo vendiste?",
+        placeholder="Nombre del comprador",
+        min_length=1,
+        max_length=100,
+        required=True,
+    )
+
+    def __init__(self, panel_msg: discord.Message):
+        super().__init__()
         self.panel_msg = panel_msg
-        self.user = user
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user.id:
-            await respond_ephemeral(interaction, "❌ Esta confirmación no es tuya.")
-            return False
-        return True
-
-    @discord.ui.button(label="✅ Sí, lo vendí", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
+        buyer = self.comprador.value.strip()
+        if not buyer:
+            return await respond_ephemeral(interaction, "❌ Tenés que indicar el comprador.")
+
+        await interaction.response.defer(ephemeral=True)
         lock = split_locks.setdefault(self.panel_msg.id, asyncio.Lock())
 
         async with lock:
@@ -2117,45 +2120,50 @@ class SplitConfirmView(discord.ui.View):
             try:
                 panel = await self.panel_msg.channel.fetch_message(self.panel_msg.id)
             except Exception:
-                return await interaction.response.edit_message(content="❌ No pude leer el panel.", view=None)
+                return await interaction.followup.send("❌ No pude leer el panel.", ephemeral=True)
 
             if "Vendido por" in (panel.content or ""):
-                return await interaction.response.edit_message(content="❌ Este tab ya fue marcado como vendido.", view=None)
+                return await interaction.followup.send("❌ Este tab ya fue marcado como vendido.", ephemeral=True)
 
             log_msg = await find_split_log_message(guild, panel)
             if log_msg is None:
-                return await interaction.response.edit_message(content="❌ No encontré el registro de este tab en el canal de logs.", view=None)
+                return await interaction.followup.send("❌ No encontré el registro de este tab en el canal de logs.", ephemeral=True)
 
-            # Editar log: completar Vendedor
+            # Editar log: completar Vendedor y Comprador
             new_content = re.sub(
-                r"^Vendedor:.*$",
-                f"Vendedor: {interaction.user.mention}",
-                log_msg.content,
-                count=1,
-                flags=re.MULTILINE,
+                r"^Vendedor:.*$", lambda _m: f"Vendedor: {interaction.user.mention}",
+                log_msg.content, count=1, flags=re.MULTILINE,
+            )
+            new_content = re.sub(
+                r"^Comprador:.*$", lambda _m: f"Comprador: {buyer}",
+                new_content, count=1, flags=re.MULTILINE,
             )
             try:
                 await log_msg.edit(content=new_content, allowed_mentions=discord.AllowedMentions.none())
             except Exception:
-                return await interaction.response.edit_message(content="❌ No pude editar el registro.", view=None)
+                return await interaction.followup.send("❌ No pude editar el registro.", ephemeral=True)
 
-            # Editar panel: marcar vendido y deshabilitar botón
+            # Editar panel: marcar vendido, agregar comprador y deshabilitar botón
             try:
                 await panel.edit(
-                    content=f"{panel.content}\n\n✅ **Vendido por** {interaction.user.display_name}",
+                    content=(
+                        f"{panel.content}\n\n"
+                        f"✅ **Vendido por** {interaction.user.display_name}\n"
+                        f"Vendido a: {buyer}"
+                    ),
                     view=SplitSoldView(disabled=True),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except Exception:
                 pass
 
-        self.stop()
-        await interaction.response.edit_message(content="✅ Registrado como vendido.", view=None)
+        await interaction.followup.send("✅ Registrado como vendido.", ephemeral=True)
 
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.stop()
-        await interaction.response.edit_message(content="Cancelado.", view=None)
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        try:
+            await respond_ephemeral(interaction, "❌ Ocurrió un error al registrar la venta.")
+        except Exception:
+            pass
 
 
 class SplitSoldView(discord.ui.View):
@@ -2181,15 +2189,11 @@ class SplitSoldView(discord.ui.View):
         if "Vendido por" in (msg.content or ""):
             return await respond_ephemeral(interaction, "❌ Este tab ya fue marcado como vendido.")
 
-        await interaction.response.send_message(
-            "⚠️ ¿Estás seguro de que vendiste este tab? Esta acción no se puede deshacer.",
-            view=SplitConfirmView(msg, interaction.user),
-            ephemeral=True,
-        )
+        await interaction.response.send_modal(SplitBuyerModal(msg))
 
 
 @bot.tree.command(
-    name="calcularsplit",
+    name="tabsell",
     description="Calcula el precio de venta de un tab y crea el panel.",
     guild=GUILD_OBJ,
 )
@@ -2198,16 +2202,14 @@ class SplitSoldView(discord.ui.View):
     city="Ciudad donde se vende",
     total="Total",
     reparacion="Costo de reparación",
-    silver_bolsitas="Silver de bolsitas (opcional)",
     descuento="Porcentaje de descuento/tax de venta (opcional, default 15)",
 )
-async def calcularsplit(
+async def tabsell(
     interaction: discord.Interaction,
     nombre_tab: str,
     city: str,
     total: float,
     reparacion: float,
-    silver_bolsitas: Optional[float] = None,
     descuento: Optional[app_commands.Range[float, 0, 100]] = None,
 ):
     if interaction.guild is None:
@@ -2225,11 +2227,10 @@ async def calcularsplit(
 
     nombre_tab = nombre_tab.strip()
     city = city.strip()
-    bolsitas = silver_bolsitas or 0
     pct = SPLIT_DEFAULT_DISCOUNT if descuento is None else descuento
 
-    precio_venta = round((total - reparacion) * (1 - pct / 100))
-    repartir = round((precio_venta + bolsitas) * (1 - SPLIT_REPARTIR_TAX / 100))
+    tax = round(total * pct / 100)
+    precio_venta = round(total - tax - reparacion)
 
     content = (
         f"<@&{SPLIT_PING_ROLE_ID}>\n"
@@ -2253,7 +2254,7 @@ async def calcularsplit(
     # Log creado al ejecutar el comando
     log_text = build_split_log(
         panel_msg.jump_url, city, nombre_tab, interaction.user.id,
-        total, reparacion, pct, bolsitas, precio_venta, repartir,
+        total, reparacion, pct, tax, precio_venta,
     )
     try:
         log_msg = await log_ch.send(log_text, allowed_mentions=discord.AllowedMentions.none())
@@ -2272,8 +2273,8 @@ async def calcularsplit(
 
     await interaction.followup.send(
         f"✅ Panel creado: {panel_msg.jump_url}\n"
-        f"Precio de venta (-{fmt_num(pct)}%): **{fmt_num(precio_venta)}**\n"
-        f"Total a repartir (-{fmt_num(SPLIT_REPARTIR_TAX)}%): **{fmt_num(repartir)}**"
+        f"Total {fmt_num(total)} - {fmt_num(pct)}% ({fmt_num(tax)}) - reparación {fmt_num(reparacion)}\n"
+        f"Precio de venta: **{fmt_num(precio_venta)}**"
         f"{thread_warning}",
         ephemeral=True,
     )
