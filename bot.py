@@ -13,6 +13,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 import asyncio
 import random
+import sqlite3
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -24,6 +25,69 @@ if not TOKEN:
 
 if not TOKEN:
     raise RuntimeError("Falta DISCORD_TOKEN en variables de entorno o en /root/discordbot/.env")
+
+# ================== BASE DE DATOS PERSISTENTE ==================
+# Por defecto queda junto a bot.py. Se puede cambiar con BOT_DB_PATH.
+DB_PATH = os.getenv("BOT_DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.sqlite3"))
+
+
+def db_execute(query: str, params: tuple = ()):
+    """Ejecuta una escritura SQLite en una conexión corta y segura."""
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(query, params)
+        conn.commit()
+
+
+def db_fetchall(query: str, params: tuple = ()):
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(query, params).fetchall()
+
+
+def init_database():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS giveaways (
+                message_id INTEGER PRIMARY KEY,
+                prize TEXT NOT NULL,
+                end_at TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                creator_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS giveaway_entrants (
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (message_id, user_id),
+                FOREIGN KEY (message_id) REFERENCES giveaways(message_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS timers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                material TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                map_name TEXT NOT NULL,
+                end_at TEXT NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                warned_30 INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS ticket_images (
+                user_id INTEGER PRIMARY KEY,
+                url TEXT NOT NULL,
+                filename TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS split_log_ids (
+                panel_message_id INTEGER PRIMARY KEY,
+                log_message_id INTEGER NOT NULL
+            );
+        """)
+        conn.commit()
+
+
+init_database()
 
 # ================== CONFIG ==================
 GUILD_ID = 1257878770841288724
@@ -58,6 +122,19 @@ timers_board_message_id: Optional[int] = None
 
 MATERIALS_NORMAL = {"fibra", "cuero", "mineral", "madera"}
 MATERIALS_SPECIAL = {"vortex", "core"}
+MATERIALS_NO_TIER = {"dragon"}   # materiales que se publican sin tier
+
+# Iconos centralizados por material (se usan en el anuncio de /timeradd)
+MATERIAL_ICONS = {
+    "fibra": "🌿",
+    "cuero": "🐄",
+    "mineral": "🪨",
+    "madera": "🪵",
+    "vortex": "🌀",
+    "core": "💎",
+    "dragon": "🐉",
+}
+DEFAULT_MATERIAL_ICON = "📦"
 
 TIERS_NORMAL = {"4.4", "5.4", "6.4", "7.4", "8.4"}
 TIERS_SPECIAL = {"common", "rare", "epic", "legendary"}
@@ -120,6 +197,7 @@ class TimerItem:
     created_by_id: int
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     warned_30: bool = False
+    db_id: Optional[int] = None
 
 timers: List[TimerItem] = []
 
@@ -135,6 +213,146 @@ class GiveawayItem:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 giveaways: dict[int, GiveawayItem] = {}  # message_id -> GiveawayItem
+
+
+def save_giveaway(g: GiveawayItem, guild_id: int = GUILD_ID):
+    db_execute(
+        """INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(message_id) DO UPDATE SET prize=excluded.prize, end_at=excluded.end_at,
+             channel_id=excluded.channel_id, creator_id=excluded.creator_id, guild_id=excluded.guild_id""",
+        (g.message_id, g.prize, g.end_at.astimezone(timezone.utc).isoformat(),
+         g.channel_id, g.creator_id, guild_id),
+    )
+
+
+def save_giveaway_entrant(message_id: int, user_id: int):
+    db_execute("INSERT OR IGNORE INTO giveaway_entrants(message_id, user_id) VALUES (?, ?)",
+               (message_id, user_id))
+
+
+def remove_giveaway(message_id: int):
+    giveaways.pop(message_id, None)
+    db_execute("DELETE FROM giveaway_entrants WHERE message_id = ?", (message_id,))
+    db_execute("DELETE FROM giveaways WHERE message_id = ?", (message_id,))
+
+
+def save_timer(t: TimerItem):
+    values = (t.material, t.tier, t.map_name, t.end_at.astimezone(timezone.utc).isoformat(),
+              t.created_by_id, t.created_at.astimezone(timezone.utc).isoformat(), int(t.warned_30))
+    if t.db_id is None:
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            cur = conn.execute(
+                "INSERT INTO timers(material, tier, map_name, end_at, created_by_id, created_at, warned_30) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
+            t.db_id = cur.lastrowid
+            conn.commit()
+    else:
+        db_execute(
+            "UPDATE timers SET material=?, tier=?, map_name=?, end_at=?, created_by_id=?, created_at=?, warned_30=? WHERE id=?",
+            values + (t.db_id,),
+        )
+
+
+def delete_timer(t: TimerItem):
+    if t.db_id is not None:
+        db_execute("DELETE FROM timers WHERE id = ?", (t.db_id,))
+
+
+def save_ticket_image(user_id: int, url: str, filename: str):
+    db_execute(
+        "INSERT INTO ticket_images(user_id, url, filename) VALUES (?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET url=excluded.url, filename=excluded.filename",
+        (user_id, url, filename),
+    )
+    ticket_images[user_id] = {"url": url, "filename": filename}
+
+
+def delete_ticket_image(user_id: int):
+    ticket_images.pop(user_id, None)
+    db_execute("DELETE FROM ticket_images WHERE user_id = ?", (user_id,))
+
+
+def save_split_log_mapping(panel_message_id: int, log_message_id: int):
+    split_log_ids[panel_message_id] = log_message_id
+    db_execute(
+        "INSERT INTO split_log_ids(panel_message_id, log_message_id) VALUES (?, ?) "
+        "ON CONFLICT(panel_message_id) DO UPDATE SET log_message_id=excluded.log_message_id",
+        (panel_message_id, log_message_id),
+    )
+
+
+def restore_persistent_state(guild: discord.Guild):
+    """Restaura sorteos, participantes, timers y referencias locales desde SQLite."""
+    giveaways.clear()
+    for row in db_fetchall("SELECT * FROM giveaways"):
+        try:
+            end_at = datetime.fromisoformat(row["end_at"])
+            if end_at.tzinfo is None:
+                end_at = end_at.replace(tzinfo=timezone.utc)
+            g = GiveawayItem(
+                prize=row["prize"], end_at=end_at.astimezone(timezone.utc),
+                channel_id=int(row["channel_id"]), message_id=int(row["message_id"]),
+                creator_id=int(row["creator_id"]),
+            )
+            g.entrants = {int(r["user_id"]) for r in db_fetchall(
+                "SELECT user_id FROM giveaway_entrants WHERE message_id = ?", (g.message_id,)
+            )}
+            giveaways[g.message_id] = g
+        except Exception as exc:
+            print(f"⚠️ No pude restaurar el sorteo {row['message_id']}: {exc}")
+
+    timers.clear()
+    for row in db_fetchall("SELECT * FROM timers ORDER BY end_at"):
+        try:
+            end_at = datetime.fromisoformat(row["end_at"])
+            created_at = datetime.fromisoformat(row["created_at"])
+            if end_at.tzinfo is None:
+                end_at = end_at.replace(tzinfo=timezone.utc)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            timers.append(TimerItem(
+                material=row["material"], tier=row["tier"], map_name=row["map_name"],
+                end_at=end_at.astimezone(timezone.utc), created_by_id=int(row["created_by_id"]),
+                created_at=created_at.astimezone(timezone.utc), warned_30=bool(row["warned_30"]),
+                db_id=int(row["id"]),
+            ))
+        except Exception as exc:
+            print(f"⚠️ No pude restaurar un timer guardado: {exc}")
+
+    ticket_images.clear()
+    for row in db_fetchall("SELECT user_id, url, filename FROM ticket_images"):
+        ticket_images[int(row["user_id"])] = {"url": row["url"], "filename": row["filename"]}
+
+    split_log_ids.clear()
+    for row in db_fetchall("SELECT panel_message_id, log_message_id FROM split_log_ids"):
+        split_log_ids[int(row["panel_message_id"])] = int(row["log_message_id"])
+
+    # Los canales con tickets abiertos ya existen en Discord: reconstruir los índices en memoria.
+    active_applications.clear()
+    active_foco_tickets.clear()
+    for channel in guild.text_channels:
+        topic = channel.topic or ""
+        if topic.startswith(f"{RECRUIT_TOPIC_PREFIX}|"):
+            uid = parse_recruit_topic(topic).get("uid")
+            if uid:
+                active_applications[int(uid)] = channel.id
+        elif topic.startswith(f"{FOCO_TOPIC_PREFIX}|"):
+            uid = parse_foco_topic(topic).get("uid")
+            if uid:
+                active_foco_tickets[int(uid)] = channel.id
+
+
+def start_giveaway_task(guild_id: int, g: GiveawayItem):
+    tasks_by_id = getattr(bot, "_giveaway_tasks", None)
+    if tasks_by_id is None:
+        tasks_by_id = {}
+        bot._giveaway_tasks = tasks_by_id
+    current = tasks_by_id.get(g.message_id)
+    if current is not None and not current.done():
+        return
+    tasks_by_id[g.message_id] = asyncio.create_task(run_giveaway_flow(guild_id, g))
 
 def is_staff_member(member: discord.Member) -> bool:
     staff_role = member.guild.get_role(STAFF_ROLE_ID)
@@ -184,7 +402,7 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
 
     guild = bot.get_guild(guild_id)
     if not guild:
-        giveaways.pop(g.message_id, None)
+        # No borrar el registro persistente por un fallo temporal de caché/conexión.
         return
 
     # Deshabilitar botón
@@ -195,11 +413,10 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
         try:
             ch = await guild.fetch_channel(g.channel_id)
         except Exception:
-            giveaways.pop(g.message_id, None)
+            # Se conserva en SQLite para reintentar en la próxima reconexión.
             return
 
     if not isinstance(ch, discord.TextChannel):
-        giveaways.pop(g.message_id, None)
         return
 
     # Tomar participantes de forma segura
@@ -211,7 +428,7 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
             await ch.send("📭 No se anotó nadie. Sorteo cancelado por falta de calle.")
         except Exception:
             pass
-        giveaways.pop(g.message_id, None)
+        remove_giveaway(g.message_id)
         return
 
     random.shuffle(pool)
@@ -235,7 +452,7 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
             await ch.send(f"<@{uid}> — {lines[-1]}")
         except Exception:
             pass
-        giveaways.pop(g.message_id, None)
+        remove_giveaway(g.message_id)
         return
 
     # Si hay 2: 1 falso + ganador
@@ -250,7 +467,7 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
             await ch.send(f"<@{uid2}> — {lines[-1]}")
         except Exception:
             pass
-        giveaways.pop(g.message_id, None)
+        remove_giveaway(g.message_id)
         return
 
     # Si hay 3: 2 falsos + ganador
@@ -270,7 +487,7 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
             await ch.send(f"<@{uid3}> — {lines[-1]}")
         except Exception:
             pass
-        giveaways.pop(g.message_id, None)
+        remove_giveaway(g.message_id)
         return
 
     # 4 o más: 3 falsos + ganador (tu guion completo)
@@ -295,7 +512,7 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
     except Exception:
         pass
 
-    giveaways.pop(g.message_id, None)
+    remove_giveaway(g.message_id)
 
 
 # ---------- UTILIDADES ----------
@@ -584,6 +801,7 @@ async def timers_housekeeping():
     for t in expired:
         try:
             timers.remove(t)
+            delete_timer(t)
         except ValueError:
             pass
 
@@ -610,6 +828,7 @@ async def timers_housekeeping():
         seconds_left = (t.end_at - now).total_seconds()
         if 0 < seconds_left <= (TIMER_ALERT_MINUTES_BEFORE * 60):
             t.warned_30 = True
+            save_timer(t)
             
             tier_txt = TIER_LABELS_SPECIAL.get(t.tier, f"T{t.tier}")
 
@@ -635,7 +854,48 @@ async def before_timers_housekeeping():
 # ================== TIMER POSTS (/timeradd) ==================
 TIMER_POST_CHANNEL_ID = 1462184630835740732
 TIMER_POST_DELETE_AFTER_MINUTES = 15
-_TIMER_POST_TS_RE = re.compile(r"^Material:.*\nTier:.*\nMapa:.*\nTiempo:.*\nHorario: <t:(\d+):t>", re.DOTALL)
+ARGENTINA_TZ = timezone(timedelta(hours=-3))   # UTC-3 fijo (Argentina no usa horario de verano)
+
+# Lee el timestamp de "Falta" del propio mensaje (formato nuevo con ** y formato anterior sin **)
+_TIMER_POST_TS_RE = re.compile(r"Falta:\**\s*<t:(\d+):R>")
+_CLOCK_HHMM_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+
+def parse_clock_hhmm(s: str) -> Optional[tuple[int, int]]:
+    """'16:10' / '6:05' -> (16, 10) / (6, 5). Hora de reloj válida (0-23 : 0-59) o None."""
+    match = _CLOCK_HHMM_RE.match(s or "")
+    if not match:
+        return None
+    h, m = int(match.group(1)), int(match.group(2))
+    if h > 23 or m > 59:
+        return None
+    return h, m
+
+
+def next_utc_occurrence(h: int, m: int, now: Optional[datetime] = None) -> datetime:
+    """Próxima vez (UTC) que el reloj marque h:m. Si ya pasó hoy, es mañana (cruza medianoche sin problemas)."""
+    now = now or datetime.now(timezone.utc)
+    target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+def build_timer_post(material: str, tier: Optional[str], mapa: str, target_utc: datetime, user_mention: str) -> str:
+    """Arma el texto del anuncio. Si no hay tier (Dragon) la línea se omite por completo."""
+    icon = MATERIAL_ICONS.get(material, DEFAULT_MATERIAL_ICON)
+    unix = int(target_utc.timestamp())
+    lines = [f"{icon} **Material:** {material.title()}"]
+    if tier:
+        lines.append(f"🔹 **Tier:** {TIER_LABELS_SPECIAL.get(tier, tier)}")
+    lines += [
+        f"🗺️ **Mapa:** {mapa}",
+        f"🕒 **Tiempo:** {target_utc.strftime('%H:%M')} UTC",
+        f"🌎 **Horario:** {target_utc.astimezone(ARGENTINA_TZ).strftime('%H:%M')}",
+        f"⏳ **Falta:** <t:{unix}:R>",
+        f"👤 **Timeado por:** {user_mention}",
+    ]
+    return "\n".join(lines)
 
 
 class TimerDeleteView(discord.ui.View):
@@ -683,7 +943,7 @@ async def timer_posts_cleanup():
         async for msg in channel.history(limit=100):
             if bot.user is None or msg.author.id != bot.user.id:
                 continue
-            match = _TIMER_POST_TS_RE.match(msg.content or "")
+            match = _TIMER_POST_TS_RE.search(msg.content or "")
             if not match:
                 continue
             if int(match.group(1)) <= limit_unix:
@@ -701,7 +961,12 @@ async def before_timer_posts_cleanup():
 
 # ================== SLASH COMMANDS TIMERS ==================
 @bot.tree.command(name="timeradd", description="Agregar timer (solo rol Timers)", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(material="Material", tier="Tier", mapa="Nombre del mapa", tiempo="Tiempo (H:M) ej 6:10")
+@app_commands.describe(
+    material="Material",
+    mapa="Nombre del mapa",
+    tiempo="Horario UTC en que sale (HH:MM) ej 16:10",
+    tier="Tier (obligatorio salvo para Dragon)",
+)
 @app_commands.choices(
     material=[
         app_commands.Choice(name="Fibra", value="fibra"),
@@ -710,6 +975,7 @@ async def before_timer_posts_cleanup():
         app_commands.Choice(name="Madera", value="madera"),
         app_commands.Choice(name="Vortex", value="vortex"),
         app_commands.Choice(name="Core", value="core"),
+        app_commands.Choice(name="Dragon", value="dragon"),
     ],
     tier=[
         app_commands.Choice(name="4.4", value="4.4"),
@@ -723,21 +989,35 @@ async def before_timer_posts_cleanup():
         app_commands.Choice(name="Legendary (Amarillo)", value="legendary"),
     ],
 )
-async def timeradd_slash(interaction: discord.Interaction, material: app_commands.Choice[str], tier: app_commands.Choice[str], mapa: str, tiempo: str):
+async def timeradd_slash(
+    interaction: discord.Interaction,
+    material: app_commands.Choice[str],
+    mapa: str,
+    tiempo: str,
+    tier: Optional[app_commands.Choice[str]] = None,
+):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
     if not is_timers_member(interaction.user):
         return await respond_ephemeral(interaction, "❌ Solo el rol **timers** puede usar este comando.")
 
-    if not mapa.strip():
+    mapa = mapa.strip()
+    if not mapa:
         return await respond_ephemeral(interaction, "❌ El nombre del mapa no puede estar vacío.")
 
     mat = material.value
-    tr = tier.value
+    tr: Optional[str] = tier.value if tier is not None else None
 
-    # Validación material/tier
-    if mat in MATERIALS_SPECIAL:
+    # Validación material/tier (Dragon no lleva tier; si lo mandan se ignora)
+    if mat in MATERIALS_NO_TIER:
+        tr = None
+    elif tr is None:
+        return await respond_ephemeral(
+            interaction,
+            "❌ Falta el **tier**. Solo **Dragon** se puede publicar sin tier."
+        )
+    elif mat in MATERIALS_SPECIAL:
         if tr not in TIERS_SPECIAL:
             return await respond_ephemeral(
                 interaction,
@@ -750,14 +1030,14 @@ async def timeradd_slash(interaction: discord.Interaction, material: app_command
                 "❌ Para **Fibra/Cuero/Mineral/Madera** el tier tiene que ser: 4.4/5.4/6.4/7.4/8.4."
             )
 
-    
-    dur = parse_duration_hhmm(tiempo.strip())
-    if dur is None:
-        return await respond_ephemeral(interaction, '❌ Tiempo inválido. Usá `H:M` ej: `6:10`.')
+    clock = parse_clock_hhmm(tiempo)
+    if clock is None:
+        return await respond_ephemeral(
+            interaction,
+            "❌ Tiempo inválido. Usá el horario UTC en formato `HH:MM` (00:00 a 23:59), ej: `16:10`."
+        )
 
-    h, m = dur
-    end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
-    end_unix = int(end_at.timestamp())
+    target_utc = next_utc_occurrence(*clock)
 
     await interaction.response.defer(ephemeral=True)
 
@@ -770,16 +1050,7 @@ async def timeradd_slash(interaction: discord.Interaction, material: app_command
     if not isinstance(channel, discord.TextChannel):
         return await interaction.followup.send("❌ No encontré el canal de timers.", ephemeral=True)
 
-    tier_txt = TIER_LABELS_SPECIAL.get(tr, tr)
-    content = (
-        f"Material: {mat.title()}\n"
-        f"Tier: {tier_txt}\n"
-        f"Mapa: {mapa.strip()}\n"
-        f"Tiempo: {end_at.strftime('%H:%M')} UTC\n"
-        f"Horario: <t:{end_unix}:t>\n"
-        f"Falta: <t:{end_unix}:R>\n"
-        f"Timeado por: {interaction.user.mention}"
-    )
+    content = build_timer_post(mat, tr, mapa, target_utc, interaction.user.mention)
 
     try:
         post = await channel.send(
@@ -817,6 +1088,8 @@ async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: st
         )
 
     h, m = dur
+    if h == 0 and m == 0:
+        return await respond_ephemeral(interaction, "❌ La duración tiene que ser mayor a `00:00`.")
     end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
 
     await interaction.response.defer(ephemeral=True)
@@ -841,9 +1114,10 @@ async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: st
     # Guardar sorteo real
     temp_g.message_id = msg.id
     giveaways[msg.id] = temp_g
+    save_giveaway(temp_g, interaction.guild.id)
 
-    # Arrancar flujo en background
-    asyncio.create_task(run_giveaway_flow(GUILD_ID, temp_g))
+    # Arrancar flujo en background (se vuelve a iniciar desde SQLite tras un reinicio)
+    start_giveaway_task(interaction.guild.id, temp_g)
 
     await interaction.followup.send(
         f"✅ Sorteo creado. Premio: `{temp_g.prize}` | Termina: <t:{int(end_at.timestamp())}:R>",
@@ -1095,7 +1369,7 @@ class RecruitView(discord.ui.View):
 
         # Cleanup (aunque reinicies, esto solo limpia memoria)
         active_applications.pop(member.id, None)
-        ticket_images.pop(member.id, None)
+        delete_ticket_image(member.id)
 
         try:
             await interaction.channel.delete(reason=f"Postulación aceptada por {interaction.user}")
@@ -1117,7 +1391,7 @@ class RecruitView(discord.ui.View):
 
         if member:
             active_applications.pop(member.id, None)
-            ticket_images.pop(member.id, None)
+            delete_ticket_image(member.id)
 
         try:
             await interaction.channel.delete(reason=f"Postulación rechazada por {interaction.user}")
@@ -1142,7 +1416,7 @@ class RecruitView(discord.ui.View):
 
         if member:
             active_applications.pop(member.id, None)
-            ticket_images.pop(member.id, None)
+            delete_ticket_image(member.id)
 
         try:
             await interaction.channel.delete(reason=f"Ticket cerrado por {interaction.user}")
@@ -1451,6 +1725,7 @@ class GiveawayJoinView(discord.ui.View):
             if interaction.user.id in g.entrants:
                 return await respond_ephemeral(interaction, "✅ Ya estabas anotado. Te querés anotar dos veces, picarón.")
             g.entrants.add(interaction.user.id)
+            save_giveaway_entrant(g.message_id, interaction.user.id)
 
         # No editamos el embed en cada click (evita rate-limit cuando 200 monos spamean el botón)
         return await respond_ephemeral(interaction, "✅ Listo, quedaste anotado.")
@@ -1476,7 +1751,7 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
             uid = info.get("uid")
             if uid:
                 active_applications.pop(int(uid), None)
-                ticket_images.pop(int(uid), None)
+                delete_ticket_image(int(uid))
 
     except Exception:
         pass
@@ -1543,6 +1818,7 @@ class PanelView(discord.ui.View):
                 "⚔ Rol ZvZ\n"
                 "🕒 Horarios\n"
                 "📜 Gremios anteriores en los que estuviste\n\n"
+                "📸 Videos tuyos jugando el rol postulado\n\n"
                 "Un reclutador revisará tu postulación."
             ),
             color=discord.Color.gold()
@@ -2086,7 +2362,7 @@ async def find_split_log_message(guild: discord.Guild, panel_msg: discord.Messag
     try:
         async for m in log_ch.history(limit=500):
             if m.author.id == bot.user.id and m.content.startswith(needle):
-                split_log_ids[panel_msg.id] = m.id
+                save_split_log_mapping(panel_msg.id, m.id)
                 return m
     except Exception:
         pass
@@ -2258,7 +2534,7 @@ async def tabsell(
     )
     try:
         log_msg = await log_ch.send(log_text, allowed_mentions=discord.AllowedMentions.none())
-        split_log_ids[panel_msg.id] = log_msg.id
+        save_split_log_mapping(panel_msg.id, log_msg.id)
     except Exception:
         await interaction.followup.send(
             "⚠️ Panel creado pero no pude escribir el registro en el canal de logs.",
@@ -2296,6 +2572,23 @@ async def on_ready():
         bot.add_view(TimerDeleteView())
         bot._views_registered = True
         print("✅ Views persistentes registradas")
+
+    # Restaurar datos locales una sola vez por proceso. Los sorteos y sus anotados
+    # se cargan antes de volver a programar sus finales.
+    guild = bot.get_guild(GUILD_ID)
+    if guild and not getattr(bot, "_persistent_state_loaded", False):
+        try:
+            restore_persistent_state(guild)
+            bot._persistent_state_loaded = True
+            print(f"✅ SQLite restaurado: {len(giveaways)} sorteos, {len(timers)} timers y {len(ticket_images)} imágenes de postulación")
+        except Exception as exc:
+            print(f"❌ Error restaurando SQLite: {exc}")
+
+    # Reanudar también en reconexiones: si un intento anterior no pudo acceder al canal,
+    # el registro sigue en SQLite y se vuelve a programar.
+    if guild:
+        for g in list(giveaways.values()):
+            start_giveaway_task(guild.id, g)
 
     # Tasks
     if not timer_posts_cleanup.is_running():
@@ -2363,10 +2656,7 @@ async def on_message(message: discord.Message):
         if img is None:
             return
 
-        ticket_images[message.author.id] = {
-            "url": img.url,
-            "filename": img.filename or "image.png",
-        }
+        save_ticket_image(message.author.id, img.url, img.filename or "image.png")
         return
 
     # (Opcional) Si querés conservar tu modo viejo para tickets recién creados:
@@ -2391,7 +2681,3 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
-
-
-
-
