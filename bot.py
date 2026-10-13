@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import asyncio
 import random
 import sqlite3
+from decimal import Decimal
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -1818,7 +1819,6 @@ class PanelView(discord.ui.View):
                 "⚔ Rol ZvZ\n"
                 "🕒 Horarios\n"
                 "📜 Gremios anteriores en los que estuviste\n\n"
-                "📸 Videos tuyos jugando el rol postulado\n\n"
                 "Un reclutador revisará tu postulación."
             ),
             color=discord.Color.gold()
@@ -2556,6 +2556,116 @@ async def tabsell(
     )
 
 
+# ============================================================
+# /calcularsplit (solo Staff)
+# ============================================================
+SPLIT_CALC_DEFAULT_SALE_TAX = 15.0
+SPLIT_CALC_DEFAULT_GUILD_TAX = 5.0
+SPLIT_CALC_MAX_NUMBERS = 50
+_SPLIT_CALC_SEPARATORS_RE = re.compile(r"[\s+;]+")
+_SPLIT_CALC_NUMBER_RE = re.compile(r"^\d{1,15}(?:\.\d{1,4})?$")
+
+
+def parse_number_sum(text: str) -> Optional[float]:
+    """'1000000 500 23333' -> 1023833.0
+
+    Los números se separan con espacios (también se aceptan '+' y ';').
+    La coma NO es separador: '1,000,000' es inválido en vez de sumarse mal en silencio.
+    Devuelve None si no hay números, hay demasiados o algún valor no es válido.
+    """
+    tokens = [t for t in _SPLIT_CALC_SEPARATORS_RE.split((text or "").strip()) if t]
+    if not tokens or len(tokens) > SPLIT_CALC_MAX_NUMBERS:
+        return None
+    total = Decimal(0)
+    for token in tokens:
+        if not _SPLIT_CALC_NUMBER_RE.match(token):
+            return None
+        total += Decimal(token)
+    return float(total)
+
+
+def calc_split_final(total: float, sale_tax: float, guild_tax: float, reparacion: float) -> int:
+    """Split final = total - (total × (tax venta + tax guild) / 100) - reparación."""
+    return round(total - (total * (sale_tax + guild_tax) / 100) - reparacion)
+
+
+def build_split_calc_panel(
+    total: float, reparacion: float, bolsitas: float,
+    sale_tax: float, guild_tax: float, split_final: float,
+) -> str:
+    return (
+        "Split:\n"
+        f"Total: {fmt_num(total)}\n"
+        f"Reparacion: {fmt_num(reparacion)}\n"
+        f"Bolsitas: {fmt_num(bolsitas)}\n"
+        f"Tax de venta: {fmt_num(sale_tax)}%\n"
+        f"Tax de guild: {fmt_num(guild_tax)}%\n\n"
+        f"Split final: {fmt_num(split_final)}"
+    )
+
+
+@bot.tree.command(
+    name="calcularsplit",
+    description="(Staff) Calcula el split y publica el panel en este canal.",
+    guild=GUILD_OBJ,
+)
+@staff_only_slash()
+@app_commands.describe(
+    total="Total. Podés poner varios números separados por espacio. Ej: 1000000 500 23333",
+    reparacion="Reparación. Podés poner varios números separados por espacio. Ej: 15000 2500",
+    bolsitas="Bolsitas (opcional, default 0)",
+    tax_de_venta="Tax de venta en % (opcional, default 15)",
+    tax_de_guild="Tax de guild en % (opcional, default 5)",
+)
+async def calcularsplit_slash(
+    interaction: discord.Interaction,
+    total: str,
+    reparacion: str,
+    bolsitas: Optional[app_commands.Range[float, 0, 1e15]] = None,
+    tax_de_venta: Optional[app_commands.Range[float, 0, 100]] = None,
+    tax_de_guild: Optional[app_commands.Range[float, 0, 100]] = None,
+):
+    if interaction.guild is None:
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+
+    total_sum = parse_number_sum(total)
+    if total_sum is None:
+        return await respond_ephemeral(
+            interaction,
+            "❌ **Total** inválido. Usá solo números separados por espacios, ej: `1000000 500 23333` "
+            "(sin comas ni puntos de miles)."
+        )
+
+    rep_sum = parse_number_sum(reparacion)
+    if rep_sum is None:
+        return await respond_ephemeral(
+            interaction,
+            "❌ **Reparacion** inválida. Usá solo números separados por espacios, ej: `15000 2500` "
+            "(sin comas ni puntos de miles)."
+        )
+
+    bag = 0.0 if bolsitas is None else bolsitas
+    sale_tax = SPLIT_CALC_DEFAULT_SALE_TAX if tax_de_venta is None else tax_de_venta
+    guild_tax = SPLIT_CALC_DEFAULT_GUILD_TAX if tax_de_guild is None else tax_de_guild
+
+    if sale_tax + guild_tax > 100:
+        return await respond_ephemeral(interaction, "❌ La suma de **tax de venta** y **tax de guild** no puede superar 100%.")
+
+    final = calc_split_final(total_sum, sale_tax, guild_tax, rep_sum)
+
+    # Mensaje público en el canal donde se ejecutó el comando
+    await interaction.response.send_message(
+        build_split_calc_panel(total_sum, rep_sum, bag, sale_tax, guild_tax, final),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@calcularsplit_slash.error
+async def calcularsplit_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/calcularsplit`.")
+    return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
+
+
 # ---------- READY (AL FINAL, así PanelView existe) ----------
 @bot.event
 async def on_ready():
@@ -2681,3 +2791,7 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
+
+
+
