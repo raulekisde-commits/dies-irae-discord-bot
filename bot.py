@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import asyncio
 import random
 import sqlite3
+import json
 from decimal import Decimal
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
@@ -46,6 +47,13 @@ def db_fetchall(query: str, params: tuple = ()):
         return conn.execute(query, params).fetchall()
 
 
+def db_ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
+    """Agrega una columna solo si falta (migración segura, conserva los datos)."""
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if cols and column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def init_database():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
@@ -64,6 +72,19 @@ def init_database():
                 user_id INTEGER NOT NULL,
                 PRIMARY KEY (message_id, user_id),
                 FOREIGN KEY (message_id) REFERENCES giveaways(message_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS giveaway_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                guild_id INTEGER,
+                channel_id INTEGER,
+                prize TEXT NOT NULL,
+                winners_requested INTEGER NOT NULL,
+                entrants_count INTEGER NOT NULL,
+                valid_count INTEGER NOT NULL,
+                winners_json TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                finished_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS timers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +106,8 @@ def init_database():
                 log_message_id INTEGER NOT NULL
             );
         """)
+        # Migraciones aditivas: nunca borran ni recrean datos existentes.
+        db_ensure_column(conn, "giveaways", "winners_count", "INTEGER NOT NULL DEFAULT 1")
         conn.commit()
 
 
@@ -202,7 +225,14 @@ class TimerItem:
 
 timers: List[TimerItem] = []
 
-# ================== SORTEOS (NUEVO) ==================
+# ================== SORTEOS ==================
+GIVEAWAY_MAX_WINNERS = 25
+# Qué hacer si hay menos participantes válidos que ganadores pedidos:
+#   False -> no se sortea nada y se avisa (no se inventan ni se completan ganadores).
+#   True  -> se sortea entre todos los participantes válidos y se aclara que fueron menos.
+GIVEAWAY_ALLOW_PARTIAL = False
+
+
 @dataclass
 class GiveawayItem:
     prize: str
@@ -212,30 +242,74 @@ class GiveawayItem:
     creator_id: int
     entrants: set[int] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    winners_count: int = 1
 
 giveaways: dict[int, GiveawayItem] = {}  # message_id -> GiveawayItem
 
 
-def save_giveaway(g: GiveawayItem, guild_id: int = GUILD_ID):
-    db_execute(
-        """INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id)
-           VALUES (?, ?, ?, ?, ?, ?)
+_GIVEAWAY_UPSERT_SQL = """INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(message_id) DO UPDATE SET prize=excluded.prize, end_at=excluded.end_at,
-             channel_id=excluded.channel_id, creator_id=excluded.creator_id, guild_id=excluded.guild_id""",
-        (g.message_id, g.prize, g.end_at.astimezone(timezone.utc).isoformat(),
-         g.channel_id, g.creator_id, guild_id),
-    )
+             channel_id=excluded.channel_id, creator_id=excluded.creator_id, guild_id=excluded.guild_id,
+             winners_count=excluded.winners_count"""
 
 
-def save_giveaway_entrant(message_id: int, user_id: int):
-    db_execute("INSERT OR IGNORE INTO giveaway_entrants(message_id, user_id) VALUES (?, ?)",
-               (message_id, user_id))
+def _giveaway_row_values(g: GiveawayItem, guild_id: int):
+    return (g.message_id, g.prize, g.end_at.astimezone(timezone.utc).isoformat(),
+            g.channel_id, g.creator_id, guild_id, int(g.winners_count))
+
+
+def save_giveaway(g: GiveawayItem, guild_id: int = GUILD_ID):
+    db_execute(_GIVEAWAY_UPSERT_SQL, _giveaway_row_values(g, guild_id))
+
+
+def save_giveaway_entrant(message_id: int, user_id: int, g: Optional[GiveawayItem] = None,
+                          guild_id: int = GUILD_ID):
+    """Guarda un participante.
+
+    Si se pasa `g`, la fila del sorteo se asegura en la misma transacción antes de insertar al
+    participante. Así nunca falla por falta de la fila padre (FOREIGN KEY) cuando el sorteo
+    existe en memoria, y la base se autorrepara."""
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        if g is not None:
+            conn.execute(_GIVEAWAY_UPSERT_SQL, _giveaway_row_values(g, guild_id))
+        conn.execute("INSERT OR IGNORE INTO giveaway_entrants(message_id, user_id) VALUES (?, ?)",
+                     (message_id, user_id))
+        conn.commit()
 
 
 def remove_giveaway(message_id: int):
     giveaways.pop(message_id, None)
-    db_execute("DELETE FROM giveaway_entrants WHERE message_id = ?", (message_id,))
-    db_execute("DELETE FROM giveaways WHERE message_id = ?", (message_id,))
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM giveaway_entrants WHERE message_id = ?", (message_id,))
+        conn.execute("DELETE FROM giveaways WHERE message_id = ?", (message_id,))
+        conn.commit()
+
+
+def record_giveaway_result(g: GiveawayItem, guild_id: int, valid_count: int,
+                           winners: list[int], outcome: str):
+    """Guarda el resultado para poder verificarlo después (quién ganó y entre cuántos)."""
+    db_execute(
+        """INSERT INTO giveaway_history(message_id, guild_id, channel_id, prize, winners_requested,
+                                         entrants_count, valid_count, winners_json, outcome, finished_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (g.message_id, guild_id, g.channel_id, g.prize, int(g.winners_count), len(g.entrants),
+         int(valid_count), json.dumps([str(w) for w in winners]), outcome,
+         datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def pick_giveaway_winners(eligible, count: int, rng=None) -> list[int]:
+    """Elige `count` ganadores distintos, exclusivamente entre `eligible`.
+
+    Devuelve [] si no hay suficientes participantes (nunca completa con usuarios inventados)."""
+    unique = list(dict.fromkeys(int(u) for u in eligible))
+    if count < 1 or len(unique) < count:
+        return []
+    rng = rng or random.SystemRandom()
+    return rng.sample(unique, count)
 
 
 def save_timer(t: TimerItem):
@@ -296,6 +370,7 @@ def restore_persistent_state(guild: discord.Guild):
                 prize=row["prize"], end_at=end_at.astimezone(timezone.utc),
                 channel_id=int(row["channel_id"]), message_id=int(row["message_id"]),
                 creator_id=int(row["creator_id"]),
+                winners_count=max(1, int(row["winners_count"] or 1)),
             )
             g.entrants = {int(r["user_id"]) for r in db_fetchall(
                 "SELECT user_id FROM giveaway_entrants WHERE message_id = ?", (g.message_id,)
@@ -359,40 +434,70 @@ def is_staff_member(member: discord.Member) -> bool:
     staff_role = member.guild.get_role(STAFF_ROLE_ID)
     return (staff_role is not None) and (staff_role in member.roles)
 
-def build_giveaway_embed(g: GiveawayItem) -> discord.Embed:
+def build_giveaway_embed(g: GiveawayItem, winners: Optional[list[int]] = None,
+                         finished: bool = False, note: Optional[str] = None) -> discord.Embed:
     end_unix = int(g.end_at.timestamp())
     emb = discord.Embed(
-        title="🕳️ Sorteo del topo",
-        description="Apretá el botón para anotarte. Después no llores.",
-        color=discord.Color.gold()
+        title="🕳️ Sorteo del topo" if not finished else "🕳️ Sorteo finalizado",
+        description="Tocá el botón para anotarte." if not finished else "Este sorteo ya terminó.",
+        color=discord.Color.gold() if not finished else discord.Color.dark_grey(),
     )
     emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
-    emb.add_field(name="⏳ Termina", value=f"<t:{end_unix}:t> (<t:{end_unix}:R>)", inline=False)
-    emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
+    emb.add_field(name="🏆 Ganadores", value=str(g.winners_count), inline=True)
+    if finished:
+        emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
+        if winners:
+            emb.add_field(name="🎉 Ganadores del sorteo",
+                          value="\n".join(f"{i}. <@{uid}>" for i, uid in enumerate(winners, start=1)),
+                          inline=False)
+        elif note:
+            emb.add_field(name="Resultado", value=note, inline=False)
+    else:
+        emb.add_field(name="⏳ Termina", value=f"<t:{end_unix}:t> (<t:{end_unix}:R>)", inline=False)
+        emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
     emb.set_footer(text="Smogg Sorteos System")
     return emb
 
-async def disable_giveaway_button(guild: discord.Guild, g: GiveawayItem):
-    ch = guild.get_channel(g.channel_id)
+async def _giveaway_channel(guild: discord.Guild, g: GiveawayItem):
+    """Devuelve el canal del sorteo (canal de texto, hilo, etc.) o None si no se puede acceder."""
+    ch = guild.get_channel(g.channel_id) or guild.get_thread(g.channel_id)
     if ch is None:
-        ch = await guild.fetch_channel(g.channel_id)
+        try:
+            ch = await guild.fetch_channel(g.channel_id)
+        except Exception:
+            return None
+    if not hasattr(ch, "send") or not hasattr(ch, "fetch_message"):
+        return None
+    return ch
 
-    if not isinstance(ch, discord.TextChannel):
-        return
-
+async def finish_giveaway_message(ch, g: GiveawayItem, winners: Optional[list[int]],
+                                  note: Optional[str] = None):
+    """Deshabilita el botón y deja visible el resultado en el mensaje original del sorteo."""
     try:
         msg = await ch.fetch_message(g.message_id)
     except Exception:
         return
-
     view = GiveawayJoinView()
     for child in view.children:
         child.disabled = True
-
     try:
-        await msg.edit(embed=build_giveaway_embed(g), view=view)
+        await msg.edit(embed=build_giveaway_embed(g, winners=winners, finished=True, note=note), view=view)
     except Exception:
         pass
+
+async def resolve_valid_entrants(guild: discord.Guild, entrants) -> list[int]:
+    """Participantes válidos: siguen en el servidor y no son bots."""
+    valid = []
+    for uid in entrants:
+        member = guild.get_member(uid)
+        if member is None:
+            try:
+                member = await guild.fetch_member(uid)
+            except Exception:
+                member = None
+        if member is not None and not member.bot:
+            valid.append(uid)
+    return valid
 
 async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
     # Esperar hasta el final
@@ -406,113 +511,74 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
         # No borrar el registro persistente por un fallo temporal de caché/conexión.
         return
 
-    # Deshabilitar botón
-    await disable_giveaway_button(guild, g)
-
-    ch = guild.get_channel(g.channel_id)
+    ch = await _giveaway_channel(guild, g)
     if ch is None:
-        try:
-            ch = await guild.fetch_channel(g.channel_id)
-        except Exception:
-            # Se conserva en SQLite para reintentar en la próxima reconexión.
-            return
-
-    if not isinstance(ch, discord.TextChannel):
+        # Se conserva en SQLite para reintentar en la próxima reconexión.
         return
 
-    # Tomar participantes de forma segura
     async with g.lock:
-        pool = list(g.entrants)
+        entrants = list(g.entrants)
 
-    if not pool:
+    valid = await resolve_valid_entrants(guild, entrants)
+    wanted = max(1, int(g.winners_count))
+    no_pings = discord.AllowedMentions.none()
+
+    if not valid:
+        note = "No hubo participantes válidos."
+        record_giveaway_result(g, guild_id, 0, [], "no_entrants")
+        await finish_giveaway_message(ch, g, None, note)
         try:
-            await ch.send("📭 No se anotó nadie. Sorteo cancelado por falta de calle.")
+            await ch.send(f"📭 Sorteo de `{g.prize}` cancelado: no se anotó nadie.", allowed_mentions=no_pings)
         except Exception:
             pass
         remove_giveaway(g.message_id)
         return
 
-    random.shuffle(pool)
+    count = wanted
+    partial = False
+    if len(valid) < wanted:
+        if not GIVEAWAY_ALLOW_PARTIAL:
+            note = f"Se pidieron {wanted} ganadores pero solo hay {len(valid)} participantes válidos."
+            record_giveaway_result(g, guild_id, len(valid), [], "insufficient")
+            await finish_giveaway_message(ch, g, None, note)
+            try:
+                await ch.send(
+                    f"⚠️ No se pudo sortear `{g.prize}`: se pidieron **{wanted}** ganadores y solo hay "
+                    f"**{len(valid)}** participantes válidos. <@{g.creator_id}>, creá el sorteo de nuevo "
+                    f"con menos ganadores si querés repetirlo.",
+                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=g.creator_id)],
+                                                             roles=False, everyone=False),
+                )
+            except Exception:
+                pass
+            remove_giveaway(g.message_id)
+            return
+        count = len(valid)
+        partial = True
 
-    # Querés: 3 “falsos” + ganador. Si hay pocos, se adapta.
-    lines = [
-        "Este no gano nada.",
-        "Este tampoco gano nada.",
-        "Este es terrible topo.",
-        "Mira el orto que tiene este loco gano el sorteo."
-    ]
+    winners = pick_giveaway_winners(valid, count)
+    outcome = "partial" if partial else "ok"
+    record_giveaway_result(g, guild_id, len(valid), winners, outcome)
+    await finish_giveaway_message(ch, g, winners)
 
-    # Picks únicos hasta 4 o menos según gente
-    picks_count = min(len(pool), 4)
-    picks = pool[:picks_count]
-
-    # Si hay 1 solo, directamente ganador (última línea)
-    if picks_count == 1:
-        uid = picks[0]
+    lines = [f"🏆 **¡Sorteo finalizado!** Premio: `{g.prize}`", ""]
+    lines += [f"{i}. <@{uid}>" for i, uid in enumerate(winners, start=1)]
+    lines.append("")
+    lines.append(f"Participantes válidos: **{len(valid)}**.")
+    if partial:
+        lines.append(f"Se pidieron {wanted} ganadores, pero solo había {len(winners)} participantes válidos.")
+    text = "\n".join(lines)
+    allowed = discord.AllowedMentions(users=[discord.Object(id=u) for u in winners], roles=False, everyone=False)
+    sent = False
+    for _attempt in range(2):
         try:
-            await ch.send(f"<@{uid}> — {lines[-1]}")
+            await ch.send(text, allowed_mentions=allowed)
+            sent = True
+            break
         except Exception:
-            pass
-        remove_giveaway(g.message_id)
-        return
-
-    # Si hay 2: 1 falso + ganador
-    if picks_count == 2:
-        uid1, uid2 = picks
-        try:
-            await ch.send(f"<@{uid1}> — {lines[0]}")
-        except Exception:
-            pass
-        await asyncio.sleep(60)
-        try:
-            await ch.send(f"<@{uid2}> — {lines[-1]}")
-        except Exception:
-            pass
-        remove_giveaway(g.message_id)
-        return
-
-    # Si hay 3: 2 falsos + ganador
-    if picks_count == 3:
-        uid1, uid2, uid3 = picks
-        try:
-            await ch.send(f"<@{uid1}> — {lines[0]}")
-        except Exception:
-            pass
-        await asyncio.sleep(60)
-        try:
-            await ch.send(f"<@{uid2}> — {lines[1]}")
-        except Exception:
-            pass
-        await asyncio.sleep(60)
-        try:
-            await ch.send(f"<@{uid3}> — {lines[-1]}")
-        except Exception:
-            pass
-        remove_giveaway(g.message_id)
-        return
-
-    # 4 o más: 3 falsos + ganador (tu guion completo)
-    uid1, uid2, uid3, uid4 = picks
-    try:
-        await ch.send(f"<@{uid1}> — {lines[0]}")
-    except Exception:
-        pass
-    await asyncio.sleep(60)
-    try:
-        await ch.send(f"<@{uid2}> — {lines[1]}")
-    except Exception:
-        pass
-    await asyncio.sleep(60)
-    try:
-        await ch.send(f"<@{uid3}> — {lines[2]}")
-    except Exception:
-        pass
-    await asyncio.sleep(60)
-    try:
-        await ch.send(f"<@{uid4}> — {lines[3]}")
-    except Exception:
-        pass
-
+            await asyncio.sleep(2)
+    if not sent:
+        print(f"⚠️ Sorteo {g.message_id}: no pude anunciar el resultado; queda guardado en giveaway_history.")
     remove_giveaway(g.message_id)
 
 
@@ -542,7 +608,7 @@ def staff_only():
             return False
         staff_role = ctx.guild.get_role(STAFF_ROLE_ID)
         if staff_role is None:
-            await ctx.reply("❌ STAFF_ROLE_ID mal configurado (no encuentro el rol).")
+            await ctx.reply("❌ No encontré el rol de Staff. Avisale a un administrador.")
             return False
         if staff_role not in ctx.author.roles:
             await ctx.reply("❌ Solo los miembros con el rol **Staff** pueden usar este comando.")
@@ -1069,14 +1135,16 @@ async def timeradd_slash(
 @bot.tree.command(name="sorteo", description="Crear sorteo (solo Staff)", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(
     premio="Qué se sortea (texto libre)",
-    tiempo="Duración en H:M (ej: 0:30, 2:00, 6:10)"
+    tiempo="Duración en H:M (ej: 0:30, 2:00, 6:10)",
+    ganadores=f"Cantidad de ganadores (1 a {GIVEAWAY_MAX_WINNERS}). Por defecto 1",
 )
-async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: str):
+async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: str,
+                       ganadores: app_commands.Range[int, 1, GIVEAWAY_MAX_WINNERS] = 1):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+        return await respond_ephemeral(interaction, "❌ Este comando solo funciona dentro del servidor.")
 
     if not is_staff_member(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede crear sorteos.")
+        return await respond_ephemeral(interaction, "❌ Solo el **Staff** puede crear sorteos.")
 
     if not premio or not premio.strip():
         return await respond_ephemeral(interaction, "❌ El premio no puede estar vacío.")
@@ -1090,38 +1158,50 @@ async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: st
 
     h, m = dur
     if h == 0 and m == 0:
-        return await respond_ephemeral(interaction, "❌ La duración tiene que ser mayor a `00:00`.")
+        return await respond_ephemeral(interaction, "❌ La duración tiene que ser mayor a `0:00`.")
     end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
 
     await interaction.response.defer(ephemeral=True)
 
-    # Creamos mensaje panel
     temp_g = GiveawayItem(
         prize=premio.strip(),
         end_at=end_at,
         channel_id=interaction.channel.id,
         message_id=0,
-        creator_id=interaction.user.id
+        creator_id=interaction.user.id,
+        winners_count=int(ganadores),
     )
 
-    view = GiveawayJoinView()
-    embed = build_giveaway_embed(temp_g)
-
     try:
-        msg = await interaction.channel.send(embed=embed, view=view)
+        msg = await interaction.channel.send(embed=build_giveaway_embed(temp_g), view=GiveawayJoinView())
     except Exception:
-        return await interaction.followup.send("❌ No pude enviar el panel del sorteo.", ephemeral=True)
+        return await interaction.followup.send(
+            "❌ No pude publicar el sorteo. Revisá que el bot pueda enviar mensajes en este canal.",
+            ephemeral=True)
 
-    # Guardar sorteo real
     temp_g.message_id = msg.id
+    # Primero se guarda en la base y recién después en memoria: si el guardado falla, no queda
+    # un sorteo publicado que no existe en SQLite (causa del error FOREIGN KEY al anotarse).
+    try:
+        save_giveaway(temp_g, interaction.guild.id)
+    except Exception as exc:
+        print(f"❌ No pude guardar el sorteo {msg.id}: {exc}")
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return await interaction.followup.send(
+            "❌ No pude guardar el sorteo en la base de datos, así que lo cancelé. Avisale a un administrador.",
+            ephemeral=True)
+
     giveaways[msg.id] = temp_g
-    save_giveaway(temp_g, interaction.guild.id)
 
     # Arrancar flujo en background (se vuelve a iniciar desde SQLite tras un reinicio)
     start_giveaway_task(interaction.guild.id, temp_g)
 
     await interaction.followup.send(
-        f"✅ Sorteo creado. Premio: `{temp_g.prize}` | Termina: <t:{int(end_at.timestamp())}:R>",
+        f"✅ Sorteo creado. Premio: `{temp_g.prize}` · Ganadores: {temp_g.winners_count} · "
+        f"Termina: <t:{int(end_at.timestamp())}:R>",
         ephemeral=True
     )
 
@@ -1219,9 +1299,9 @@ async def delrole_slash(interaction: discord.Interaction, rol: discord.Role):
             )
 
     except discord.Forbidden:
-        return await respond_ephemeral(interaction, "❌ No pude eliminar el rol. Me falta **Manage Roles** o jerarquía.")
+        return await respond_ephemeral(interaction, "❌ No pude eliminar el rol. Me falta el permiso **Gestionar roles** o el rol está por encima del mío.")
     except Exception:
-        return await respond_ephemeral(interaction, "❌ Error inesperado eliminando el rol.")
+        return await respond_ephemeral(interaction, "❌ Ocurrió un error inesperado al eliminar el rol.")
 
 # ---------- COMANDOS STAFF ----------
 @bot.command(name="addroll-list")
@@ -1249,9 +1329,9 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
         try:
             role = await ctx.guild.create_role(name=role_name, reason=f"Rol creado automáticamente por {ctx.author} (Staff)")
         except discord.Forbidden:
-            return await ctx.reply("❌ No pude crear el rol. Me falta permiso **Manage Roles** o jerarquía.")
+            return await ctx.reply("❌ No pude crear el rol. Me falta el permiso **Gestionar roles** o el rol está por encima del mío.")
         except Exception:
-            return await ctx.reply("❌ Error inesperado creando el rol.")
+            return await ctx.reply("❌ Ocurrió un error inesperado al crear el rol.")
 
     ok, fail = 0, 0
     for member in mentioned_members:
@@ -1285,7 +1365,7 @@ class RecruitView(discord.ui.View):
 
         info = parse_recruit_topic(ch.topic)
         if not info.get("uid"):
-            await respond_ephemeral(interaction, "❌ Este canal no tiene UID en el topic (ticket viejo o mal creado).")
+            await respond_ephemeral(interaction, "❌ No pude identificar al postulante de este ticket (puede ser un ticket viejo o mal creado).")
             return False
 
         return True
@@ -1311,23 +1391,23 @@ class RecruitView(discord.ui.View):
     async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
         member = await self._get_applicant(interaction)
         if member is None:
-            return await respond_ephemeral(interaction, "❌ No pude encontrar al postulante (se fue del server o UID inválido).")
+            return await respond_ephemeral(interaction, "❌ No encontré al postulante (se fue del servidor o su ID no es válido).")
 
         role = interaction.guild.get_role(role_id)
         member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
         public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
 
         if role is None or member_role is None:
-            return await respond_ephemeral(interaction, "❌ Error: roles mal configurados (IDs incorrectos).")
+            return await respond_ephemeral(interaction, "❌ Los roles del bot no están bien configurados. Avisale a un administrador.")
 
         try:
             await member.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
             if public_role and public_role in member.roles:
                 await member.remove_roles(public_role, reason="Aceptado: se quita rol Public")
         except discord.Forbidden:
-            return await respond_ephemeral(interaction, "❌ No tengo permisos para asignar/quitar roles (jerarquía/permisos).")
+            return await respond_ephemeral(interaction, "❌ No tengo permisos para asignar roles. Revisá que mi rol esté por encima de los roles a asignar.")
         except Exception:
-            return await respond_ephemeral(interaction, "❌ Error inesperado asignando roles.")
+            return await respond_ephemeral(interaction, "❌ Ocurrió un error inesperado al asignar los roles.")
 
         try:
             await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
@@ -1469,13 +1549,13 @@ class RecruitView(discord.ui.View):
 # ================== FOCO DONOR SYSTEM ==================
 class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
     foco = discord.ui.TextInput(
-        label="Cuanto foco tenes actualmente",
+        label="¿Cuánto foco tenés actualmente?",
         placeholder="Ej: 30000",
         required=True,
         max_length=60
     )
     item_spec = discord.ui.TextInput(
-        label="Que item podes craftear y spec en ese item",
+        label="¿Qué ítem podés craftear y con qué spec?",
         placeholder="Ej: Hellion Jacket - Spec 100",
         required=True,
         style=discord.TextStyle.paragraph,
@@ -1502,8 +1582,7 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
         if category is None:
             return await respond_ephemeral(
                 interaction,
-                "❌ No encontré la categoría de tickets de Foco Donor.\n"
-                "👉 Seteá `FOCO_CATEGORY_ID` (o revisá el `CATEGORY_ID`)."
+                "❌ No encontré la categoría de tickets de Foco Donor. Avisale a un administrador."
             )
 
         # Crear canal
@@ -1532,9 +1611,9 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
                 topic=topic
             )
         except discord.Forbidden:
-            return await respond_ephemeral(interaction, "❌ No tengo permisos para crear canales / setear permisos.")
+            return await respond_ephemeral(interaction, "❌ No tengo permisos para crear canales ni configurar sus permisos.")
         except Exception:
-            return await respond_ephemeral(interaction, "❌ Error creando el canal del ticket.")
+            return await respond_ephemeral(interaction, "❌ No pude crear el canal del ticket.")
 
         active_foco_tickets[user_id] = channel.id
 
@@ -1583,7 +1662,7 @@ class FocoTicketActionView(discord.ui.View):
 
         ch = interaction.channel
         if not isinstance(ch, discord.TextChannel) or interaction.guild is None:
-            return await respond_ephemeral(interaction, "❌ Error: canal inválido.")
+            return await respond_ephemeral(interaction, "❌ Este canal no es válido para esta acción.")
 
         info = parse_foco_topic(ch.topic)
         uid = info.get("uid")
@@ -1591,7 +1670,7 @@ class FocoTicketActionView(discord.ui.View):
         item = info.get("item", "N/D")
 
         if not uid:
-            return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket (topic vacío).")
+            return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket.")
 
         member = interaction.guild.get_member(int(uid))
         if member is None:
@@ -1631,14 +1710,14 @@ class FocoTicketActionView(discord.ui.View):
 
         ch = interaction.channel
         if not isinstance(ch, discord.TextChannel) or interaction.guild is None:
-            return await respond_ephemeral(interaction, "❌ Error: canal inválido.")
+            return await respond_ephemeral(interaction, "❌ Este canal no es válido para esta acción.")
 
         info = parse_foco_topic(ch.topic)
         uid = info.get("uid")
         item = info.get("item", "ese ítem")
 
         if not uid:
-            return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket (topic vacío).")
+            return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket.")
 
         member = interaction.guild.get_member(int(uid))
         if member is None:
@@ -1700,7 +1779,7 @@ class FocoPanelView(discord.ui.View):
         try:
             await interaction.response.send_modal(FocoDonorModal(interaction.user))
         except Exception:
-            return await respond_ephemeral(interaction, "❌ No pude abrir el formulario (modal).")
+            return await respond_ephemeral(interaction, "❌ No pude abrir el formulario. Probá de nuevo.")
 
 class GiveawayJoinView(discord.ui.View):
     def __init__(self):
@@ -1717,18 +1796,27 @@ class GiveawayJoinView(discord.ui.View):
 
         g = giveaways.get(msg.id)
         if g is None:
-            return await respond_ephemeral(interaction, "❌ Este sorteo ya no existe (o el bot reinició).")
+            return await respond_ephemeral(interaction, "❌ Este sorteo ya terminó o no está activo.")
 
         if datetime.now(timezone.utc) >= g.end_at:
-            return await respond_ephemeral(interaction, "⏰ Llegaste tarde, ya terminó.")
+            return await respond_ephemeral(interaction, "⏰ Llegaste tarde, el sorteo ya terminó.")
 
-        async with g.lock:
-            if interaction.user.id in g.entrants:
-                return await respond_ephemeral(interaction, "✅ Ya estabas anotado. Te querés anotar dos veces, picarón.")
-            g.entrants.add(interaction.user.id)
-            save_giveaway_entrant(g.message_id, interaction.user.id)
+        if interaction.user.bot:
+            return await respond_ephemeral(interaction, "❌ Los bots no pueden participar.")
 
-        # No editamos el embed en cada click (evita rate-limit cuando 200 monos spamean el botón)
+        try:
+            async with g.lock:
+                if interaction.user.id in g.entrants:
+                    return await respond_ephemeral(interaction, "✅ Ya estabas anotado.")
+                # Guardar primero; solo si se guardó se agrega a la memoria.
+                save_giveaway_entrant(g.message_id, interaction.user.id, g=g, guild_id=interaction.guild.id)
+                g.entrants.add(interaction.user.id)
+        except sqlite3.Error as exc:
+            print(f"❌ No pude guardar la inscripción al sorteo {g.message_id}: {exc}")
+            return await respond_ephemeral(
+                interaction, "❌ No pude guardar tu inscripción. Probá de nuevo en unos segundos.")
+
+        # No editamos el embed en cada click (evita rate-limit cuando muchos usuarios tocan el botón)
         return await respond_ephemeral(interaction, "✅ Listo, quedaste anotado.")
 
 
@@ -1784,10 +1872,10 @@ class PanelView(discord.ui.View):
         recruiter_role = guild.get_role(RECRUITER_ROLE_ID)
 
         if category is None:
-            return await interaction.followup.send("❌ Error: no encontré la categoría configurada (CATEGORY_ID mal).", ephemeral=True)
+            return await interaction.followup.send("❌ No encontré la categoría de postulaciones. Avisale a un administrador.", ephemeral=True)
 
         if recruiter_role is None:
-            return await interaction.followup.send("❌ Error: no encontré el rol de reclutador (RECRUITER_ROLE_ID mal).", ephemeral=True)
+            return await interaction.followup.send("❌ No encontré el rol de reclutador. Avisale a un administrador.", ephemeral=True)
 
         channel_name = safe_channel_name(interaction.user.name, interaction.user.id)
         bot_member = guild.get_member(bot.user.id) if bot.user else None
@@ -2478,7 +2566,7 @@ class SplitSoldView(discord.ui.View):
     city="Ciudad donde se vende",
     total="Total",
     reparacion="Costo de reparación",
-    descuento="Porcentaje de descuento/tax de venta (opcional, default 15)",
+    descuento="Porcentaje de tax de venta (opcional, por defecto 15)",
 )
 async def tabsell(
     interaction: discord.Interaction,
@@ -2613,9 +2701,9 @@ def build_split_calc_panel(
 @app_commands.describe(
     total="Total. Podés poner varios números separados por espacio. Ej: 1000000 500 23333",
     reparacion="Reparación. Podés poner varios números separados por espacio. Ej: 15000 2500",
-    bolsitas="Bolsitas (opcional, default 0)",
-    tax_de_venta="Tax de venta en % (opcional, default 15)",
-    tax_de_guild="Tax de guild en % (opcional, default 5)",
+    bolsitas="Bolsitas (opcional, por defecto 0)",
+    tax_de_venta="Tax de venta en % (opcional, por defecto 15)",
+    tax_de_guild="Tax de guild en % (opcional, por defecto 5)",
 )
 async def calcularsplit_slash(
     interaction: discord.Interaction,
@@ -2640,7 +2728,7 @@ async def calcularsplit_slash(
     if rep_sum is None:
         return await respond_ephemeral(
             interaction,
-            "❌ **Reparacion** inválida. Usá solo números separados por espacios, ej: `15000 2500` "
+            "❌ **Reparación** inválida. Usá solo números separados por espacios, ej: `15000 2500` "
             "(sin comas ni puntos de miles)."
         )
 
@@ -2765,6 +2853,8 @@ def cta_db_init():
         CREATE INDEX IF NOT EXISTS idx_cta_runs_status ON cta_runs(guild_id, status, closes_at);
         CREATE INDEX IF NOT EXISTS idx_cta_signups_cta ON cta_signups(cta_id);
         """)
+        # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
+        db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         conn.commit()
 
 
@@ -2859,38 +2949,358 @@ def cta_snapshot_from_comp(comp: dict):
     return {"name": comp["name"], "slots": slots, "party_access": party_access}
 
 
-def cta_build_embed(run: dict, guild: discord.Guild):
-    snapshot = json.loads(run["snapshot_json"])
-    signups = cta_get_signups(run["id"])
-    assigned = {s["slot_key"]: int(s["user_id"]) for s in signups}
-    closes = datetime.fromisoformat(run["closes_at"])
-    if closes.tzinfo is None:
-        closes = closes.replace(tzinfo=timezone.utc)
-    remaining = max(0, int((closes - datetime.now(timezone.utc)).total_seconds())) if run["status"] == "open" else 0
-    mm, ss = divmod(remaining, 60)
-    hh, mm = divmod(mm, 60)
-    status_text = "🟢 INSCRIPCIONES ABIERTAS" if run["status"] == "open" else "🔒 CTA CERRADA"
-    embed = discord.Embed(title=f"⚔️ SMOGG · CTA {run['composition_name'].upper()}", description=f"{status_text}\nCierre: <t:{int(closes.timestamp())}:F> · " + (f"Restante: **{hh:02d}:{mm:02d}:{ss:02d}**" if run["status"] == "open" else "Inscripciones finalizadas"), color=discord.Color.green() if run["status"] == "open" else discord.Color.dark_grey())
-    parties = {}
-    for slot in snapshot["slots"]:
-        parties.setdefault(int(slot["party_no"]), []).append(slot)
-    for party_no, slots in sorted(parties.items()):
+# ================== CTA: reglas, numeración global y tablero en el hilo ==================
+CTA_MIN_MINUTES = 10
+CTA_DEFAULT_MINUTES = 40
+CTA_MAX_MINUTES = 23 * 60 + 59
+CTA_MAX_SLOTS = 250
+CTA_BOARD_CHAR_BUDGET = 5200      # el límite de Discord es 6000 caracteres de embeds por mensaje
+CTA_NAME_RE = re.compile(r"[\w -]{2,40}", re.UNICODE)
+CTA_LEAVE_WORDS = {"salir", "cancelar", "baja", "liberar", "-"}
+CTA_NO_PINGS = discord.AllowedMentions.none()
+
+
+def cta_duration_help() -> str:
+    return (f"Usá `HH:MM` (por ejemplo `00:{CTA_DEFAULT_MINUTES}`) o solo minutos "
+            f"(por ejemplo `{CTA_DEFAULT_MINUTES}`, `45m` o `1h30`). Mínimo {CTA_MIN_MINUTES} minutos.")
+
+
+def cta_parse_duration(text: Optional[str]) -> int:
+    """Convierte el texto del comando en minutos.
+
+    Sin texto devuelve la duración predeterminada (40 min). Lanza ValueError con un mensaje
+    listo para mostrar al usuario si el formato es inválido o si es menor al mínimo (10 min)."""
+    if text is None or not str(text).strip():
+        return CTA_DEFAULT_MINUTES
+    t = str(text).strip().lower()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
+    if m:
+        hours, minutes = int(m.group(1)), int(m.group(2))
+        if minutes > 59:
+            raise ValueError("Los minutos van de 00 a 59. " + cta_duration_help())
+    else:
+        m = re.fullmatch(r"(?:(\d{1,2})\s*h(?:s|oras?)?)?\s*(?:(\d{1,4})\s*(?:m|min|mins|minutos?)?)?", t)
+        if not m or not (m.group(1) or m.group(2)):
+            raise ValueError("No entendí la duración. " + cta_duration_help())
+        hours, minutes = int(m.group(1) or 0), int(m.group(2) or 0)
+    total = hours * 60 + minutes
+    if total < CTA_MIN_MINUTES:
+        raise ValueError(f"La duración mínima es de {CTA_MIN_MINUTES} minutos. " + cta_duration_help())
+    if total > CTA_MAX_MINUTES:
+        raise ValueError("La duración máxima es de 23:59. " + cta_duration_help())
+    return total
+
+
+def cta_number_slots(slots) -> list:
+    """Numeración global: devuelve [(número, slot)] correlativo entre todas las parties.
+
+    Se calcula siempre a partir de la composición real, ordenando por party y posición, así que
+    no hay huecos ni repetidos aunque las parties tengan cantidades distintas de posiciones."""
+    ordered = sorted(slots, key=lambda s: (int(s["party_no"]), int(s["position_no"])))
+    return [(i, s) for i, s in enumerate(ordered, start=1)]
+
+
+def cta_slot_by_number(slots, number: int):
+    for n, s in cta_number_slots(slots):
+        if n == number:
+            return s
+    return None
+
+
+def cta_number_of_slot_key(slots, slot_key: str) -> Optional[int]:
+    for n, s in cta_number_slots(slots):
+        if cta_slot_key(s) == slot_key:
+            return n
+    return None
+
+
+def cta_parse_thread_command(text: Optional[str]):
+    """Interpreta lo que se escribe en el hilo.
+
+    `21` o `#21` -> ("join", 21) · `salir` / `cancelar` -> ("leave", None) · otro texto -> None."""
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    m = re.fullmatch(r"#?\s*(\d{1,3})", t)
+    if m:
+        return ("join", int(m.group(1)))
+    if t in CTA_LEAVE_WORDS:
+        return ("leave", None)
+    return None
+
+
+def _cta_parse_dt(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+@contextlib.contextmanager
+def db_immediate():
+    """Transacción SQLite con bloqueo de escritura inmediato (evita carreras entre inscripciones)."""
+    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def cta_try_signup(run_id: int, user_id: int, slot_key: str):
+    """Anota o mueve a un jugador de forma atómica. Devuelve (código, dato).
+
+    Códigos: closed · same · occupied(id del ocupante) · locked(clave actual) · moved(clave anterior) · joined."""
+    with db_immediate() as conn:
+        run = conn.execute("SELECT status, closes_at FROM cta_runs WHERE id=?", (run_id,)).fetchone()
+        if not run or run[0] != "open" or _cta_parse_dt(run[1]) <= datetime.now(timezone.utc):
+            return ("closed", None)
+        existing = conn.execute("SELECT slot_key, assigned_by FROM cta_signups WHERE cta_id=? AND user_id=?",
+                                (run_id, user_id)).fetchone()
+        if existing and existing[0] == slot_key:
+            return ("same", None)
+        occupant = conn.execute("SELECT user_id FROM cta_signups WHERE cta_id=? AND slot_key=?",
+                                (run_id, slot_key)).fetchone()
+        if occupant:
+            return ("occupied", int(occupant[0]))
+        if existing:
+            if existing[1] is not None:
+                return ("locked", existing[0])
+            conn.execute("UPDATE cta_signups SET slot_key=?, signed_at=? WHERE cta_id=? AND user_id=?",
+                         (slot_key, cta_now_iso(), run_id, user_id))
+            return ("moved", existing[0])
+        conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,signed_at) VALUES (?,?,?,?)",
+                     (run_id, slot_key, user_id, cta_now_iso()))
+        return ("joined", None)
+
+
+def cta_try_leave(run_id: int, user_id: int):
+    """Libera la plaza del jugador. Devuelve (código, clave): closed · none · left."""
+    with db_immediate() as conn:
+        run = conn.execute("SELECT status, closes_at FROM cta_runs WHERE id=?", (run_id,)).fetchone()
+        if not run or run[0] != "open" or _cta_parse_dt(run[1]) <= datetime.now(timezone.utc):
+            return ("closed", None)
+        existing = conn.execute("SELECT slot_key FROM cta_signups WHERE cta_id=? AND user_id=?",
+                                (run_id, user_id)).fetchone()
+        if not existing:
+            return ("none", None)
+        conn.execute("DELETE FROM cta_signups WHERE cta_id=? AND user_id=?", (run_id, user_id))
+        return ("left", existing[0])
+
+
+def cta_slot_restricted(slot: dict) -> bool:
+    return (slot.get("access_mode") == "roles" and bool(slot.get("role_ids"))) or \
+           ((slot.get("party_access") or {}).get("mode") == "roles" and bool((slot.get("party_access") or {}).get("role_ids")))
+
+
+def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = False, color=None) -> list:
+    """Genera una lista de 'specs' (título + descripción) por party, con numeración global.
+
+    Si `assigned` es un dict slot_key -> user_id se muestra quién ocupa cada posición."""
+    by_party: dict = {}
+    for n, s in cta_number_slots(slots):
+        by_party.setdefault(int(s["party_no"]), []).append((n, s))
+    specs = []
+    for party_no in sorted(by_party):
+        items = by_party[party_no]
+        first, last = items[0][0], items[-1][0]
         lines = []
-        for slot in sorted(slots, key=lambda x: int(x["position_no"])):
-            key = cta_slot_key(slot)
-            user_id = assigned.get(key)
-            who = f"<@{user_id}>" if user_id else "*Libre*"
-            restricted = " 🔒" if slot.get("access_mode") == "roles" or slot.get("party_access", {}).get("mode") == "roles" else ""
-            lines.append(f"**{slot['position_no']}.** {slot.get('emoji','⚔️')} **{slot['role_name']}** — {who}{restricted}")
-        value = "\n".join(lines)
-        if len(value) > 1024:
-            value = value[:1000] + "\n…"
-        embed.add_field(name=f"PARTY {party_no}", value=value or "Sin posiciones", inline=False)
-    embed.set_footer(text=f"Plazas ocupadas: {len(signups)}/{len(snapshot['slots'])} · CTA #{run['id']}")
+        pa = items[0][1].get("party_access") or {}
+        if show_roles and pa.get("mode") == "roles" and pa.get("role_ids"):
+            roles = " ".join(f"<@&{r}>" for r in pa["role_ids"])
+            lines.append(f"🛡️ Party restringida a: {roles}")
+        for n, s in items:
+            mark = " 🔒" if cta_slot_restricted(s) else ""
+            extra = ""
+            if show_roles and s.get("access_mode") == "roles" and s.get("role_ids"):
+                extra = " · " + " ".join(f"<@&{r}>" for r in s["role_ids"])
+            if assigned is not None:
+                uid = assigned.get(cta_slot_key(s))
+                who = f"<@{uid}>" if uid else "*libre*"
+                lines.append(f"**{n}.** {s.get('emoji', '⚔️')} {s['role_name']} — {who}{mark}")
+            else:
+                lines.append(f"**{n}.** {s.get('emoji', '⚔️')} {s['role_name']}{mark}{extra}")
+        label = f"PARTY {party_no} · posiciones {first}–{last}" if first != last else f"PARTY {party_no} · posición {first}"
+        chunk, size, part = [], 0, 0
+        for line in lines:
+            if chunk and size + len(line) + 1 > 3800:
+                part += 1
+                specs.append({"title": label if part == 1 else f"{label} (cont.)",
+                              "description": "\n".join(chunk), "color": color})
+                chunk, size = [], 0
+            chunk.append(line)
+            size += len(line) + 1
+        if chunk:
+            part += 1
+            specs.append({"title": label if part == 1 else f"{label} (cont.)",
+                          "description": "\n".join(chunk), "color": color})
+    return specs
+
+
+def cta_spec_chars(spec: dict) -> int:
+    return len(spec.get("title") or "") + len(spec.get("description") or "") + len(spec.get("footer") or "")
+
+
+def cta_pack_specs(specs: list, budget: int = CTA_BOARD_CHAR_BUDGET) -> list:
+    """Agrupa specs en mensajes respetando 10 embeds y el presupuesto de caracteres por mensaje."""
+    groups, current, used = [], [], 0
+    for spec in specs:
+        size = cta_spec_chars(spec)
+        if current and (len(current) >= 10 or used + size > budget):
+            groups.append(current)
+            current, used = [], 0
+        current.append(spec)
+        used += size
+    if current:
+        groups.append(current)
+    return groups
+
+
+def cta_spec_to_embed(spec: dict) -> discord.Embed:
+    emb = discord.Embed(title=spec.get("title"), description=spec.get("description"),
+                        color=spec.get("color") or discord.Color.blurple())
+    if spec.get("footer"):
+        emb.set_footer(text=spec["footer"])
+    return emb
+
+
+def cta_run_context(run: dict):
+    """Devuelve (snapshot, {slot_key: user_id}) de una CTA."""
+    snapshot = json.loads(run["snapshot_json"])
+    assigned = {s["slot_key"]: int(s["user_id"]) for s in cta_get_signups(run["id"])}
+    return snapshot, assigned
+
+
+def cta_board_specs(run: dict) -> list:
+    snapshot, assigned = cta_run_context(run)
+    is_open = run["status"] == "open"
+    color = discord.Color.green() if is_open else discord.Color.dark_grey()
+    closes = _cta_parse_dt(run["closes_at"])
+    status = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>" if is_open
+              else "🔒 **Inscripciones cerradas** · esta es la composición final")
+    header = {"title": f"⚔️ CTA {run['composition_name'].upper()} · #{run['id']}",
+              "description": status, "color": color}
+    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
+    occupied = sum(1 for s in snapshot["slots"] if cta_slot_key(s) in assigned)
+    specs[-1] = dict(specs[-1], footer=f"Plazas ocupadas: {occupied}/{len(snapshot['slots'])}")
+    return specs
+
+
+def cta_build_embed(run: dict, guild: discord.Guild):
+    """Panel principal (mensaje del canal): resumen y enlace al hilo donde se hace la inscripción."""
+    snapshot, assigned = cta_run_context(run)
+    is_open = run["status"] == "open"
+    closes = _cta_parse_dt(run["closes_at"])
+    thread_ref = f"<#{run['thread_id']}>" if run.get("thread_id") else "el hilo de esta CTA"
+    if is_open:
+        desc = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>\n"
+                f"Para anotarte, escribí el número de tu posición en {thread_ref}.")
+    else:
+        desc = f"🔒 **Inscripciones cerradas** · la composición final está en {thread_ref}."
+    embed = discord.Embed(title=f"⚔️ SMOGG · CTA {run['composition_name'].upper()}", description=desc,
+                          color=discord.Color.green() if is_open else discord.Color.dark_grey())
+    numbered = cta_number_slots(snapshot["slots"])
+    parties: dict = {}
+    for n, s in numbered:
+        parties.setdefault(int(s["party_no"]), []).append((n, s))
+    for party_no in sorted(parties):
+        items = parties[party_no]
+        taken = sum(1 for _n, s in items if cta_slot_key(s) in assigned)
+        embed.add_field(name=f"Party {party_no}", value=f"Posiciones {items[0][0]}–{items[-1][0]} · {taken}/{len(items)} ocupadas",
+                        inline=True)
+    embed.set_footer(text=f"Plazas ocupadas: {len(assigned)}/{len(snapshot['slots'])} · CTA #{run['id']}")
     return embed
 
 
+def cta_instructions_text(run: dict, total: int) -> str:
+    closes = _cta_parse_dt(run["closes_at"])
+    return (
+        f"📋 **Inscripción a la CTA {run['composition_name']} (#{run['id']})**\n"
+        f"• Escribí **el número** de la posición que querés. Ejemplo: `21`.\n"
+        f"• Hay posiciones del **1 al {total}** y los números siguen entre parties.\n"
+        f"• Para cambiar de posición, escribí otro número libre.\n"
+        f"• Para salir, escribí `salir`.\n"
+        f"• Las posiciones con 🔒 piden ciertos roles.\n"
+        f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>. La lista se actualiza sola."
+    )
+
+
+cta_board_tasks: dict = {}
+cta_board_dirty: set = set()
+cta_board_locks: dict = {}
+
+
+async def cta_get_thread(run: dict):
+    if not run.get("thread_id"):
+        return None
+    tid = int(run["thread_id"])
+    guild = bot.get_guild(int(run["guild_id"]))
+    thread = (guild.get_thread(tid) if guild else None) or bot.get_channel(tid)
+    if thread is None:
+        try:
+            thread = await bot.fetch_channel(tid)
+        except Exception:
+            return None
+    return thread
+
+
+async def cta_edit_board_message(thread, message_id: int, embeds: list):
+    """Edita un mensaje del tablero; si el hilo se archivó por inactividad, lo desarchiva y reintenta."""
+    try:
+        await thread.get_partial_message(message_id).edit(content=None, embeds=embeds)
+    except discord.HTTPException as exc:
+        if getattr(exc, "code", None) == 50083 and hasattr(thread, "edit"):
+            await thread.edit(archived=False)
+            await thread.get_partial_message(message_id).edit(content=None, embeds=embeds)
+        else:
+            raise
+
+
+async def cta_refresh_board(run_id: int):
+    """Actualiza (edita) los mensajes del tablero en el hilo. No crea una copia por inscripción."""
+    lock = cta_board_locks.setdefault(run_id, asyncio.Lock())
+    async with lock:
+        run = cta_run_get(run_id)
+        if not run or not run.get("thread_id"):
+            return
+        thread = await cta_get_thread(run)
+        if thread is None:
+            return
+        groups = cta_pack_specs(cta_board_specs(run))
+        try:
+            ids = [int(x) for x in json.loads(run.get("board_message_ids_json") or "[]")]
+        except Exception:
+            ids = []
+        new_ids = []
+        for i, group in enumerate(groups):
+            embeds = [cta_spec_to_embed(spec) for spec in group]
+            msg_id = None
+            if i < len(ids):
+                try:
+                    await cta_edit_board_message(thread, ids[i], embeds)
+                    msg_id = ids[i]
+                except discord.NotFound:
+                    msg_id = None
+            if msg_id is None:
+                sent = await thread.send(embeds=embeds, allowed_mentions=CTA_NO_PINGS)
+                msg_id = sent.id
+            new_ids.append(msg_id)
+        for old_id in ids[len(groups):]:
+            try:
+                await thread.get_partial_message(old_id).delete()
+            except Exception:
+                pass
+        if new_ids != ids:
+            db_execute("UPDATE cta_runs SET board_message_ids_json=? WHERE id=?", (json.dumps(new_ids), run_id))
+
+
 async def cta_refresh_panel(bot_obj, run_id: int):
+    """Actualiza el panel principal del canal (estado, ocupación y botones)."""
     run = cta_run_get(run_id)
     if not run or not run.get("message_id"):
         return
@@ -2903,126 +3313,203 @@ async def cta_refresh_panel(bot_obj, run_id: int):
             channel = await bot_obj.fetch_channel(int(run["channel_id"]))
         except Exception:
             return
+    thread_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id']}" if run.get("thread_id") else None
     try:
         msg = await channel.fetch_message(int(run["message_id"]))
-        await msg.edit(embed=cta_build_embed(run, guild), view=CTAPanelView(run_id=int(run_id), closed=run["status"] != "open"), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        await msg.edit(embed=cta_build_embed(run, guild),
+                       view=CTAPanelView(run_id=int(run_id), closed=run["status"] != "open", thread_url=thread_url),
+                       allowed_mentions=CTA_NO_PINGS)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
         print(f"CTA #{run_id}: no se pudo actualizar el panel: {exc}")
+
+
+async def _cta_board_worker(run_id: int, delay: float):
+    while True:
+        await asyncio.sleep(delay)
+        cta_board_dirty.discard(run_id)
+        try:
+            await cta_refresh_board(run_id)
+            await cta_refresh_panel(bot, run_id)
+        except Exception as exc:
+            print(f"CTA #{run_id}: error actualizando tablero: {exc}")
+        if run_id not in cta_board_dirty:
+            break
+
+
+def cta_request_board_refresh(run_id: int, delay: float = 1.5):
+    """Pide actualizar tablero y panel. Agrupa varias inscripciones seguidas en una sola edición."""
+    task = cta_board_tasks.get(run_id)
+    if task is not None and not task.done():
+        cta_board_dirty.add(run_id)
+        return
+    cta_board_tasks[run_id] = asyncio.create_task(_cta_board_worker(run_id, delay))
 
 
 async def cta_close_run(run_id: int, reason="timeout"):
     run = cta_run_get(run_id)
     if not run or run["status"] != "open":
         return
-    db_execute("UPDATE cta_runs SET status='closed', closed_at=? WHERE id=? AND status='open'", (cta_now_iso(), run_id))
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        cur = conn.execute("UPDATE cta_runs SET status='closed', closed_at=? WHERE id=? AND status='open'",
+                           (cta_now_iso(), run_id))
+        changed = cur.rowcount
+        conn.commit()
+    if not changed:
+        return
     cta_audit(int(run["guild_id"]), int(run["created_by"]), "cta_closed", run_id, reason)
+    try:
+        await cta_refresh_board(run_id)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no se pudo actualizar el tablero final: {exc}")
+    await cta_refresh_panel(bot, run_id)
+    thread = await cta_get_thread(run)
+    if thread is not None:
+        try:
+            await thread.send("🔒 Las inscripciones de esta CTA están cerradas. La composición final quedó arriba.",
+                              allowed_mentions=CTA_NO_PINGS)
+        except Exception:
+            pass
+
+
+async def cta_ensure_thread_and_board(run_id: int):
+    """Recupera una CTA abierta tras un reinicio: hilo, instrucciones y tablero."""
+    run = cta_run_get(run_id)
+    if not run or run["status"] != "open":
+        return
+    if not run.get("thread_id") and run.get("message_id"):
+        guild = bot.get_guild(int(run["guild_id"]))
+        channel = guild.get_channel(int(run["channel_id"])) if guild else None
+        if channel is not None and hasattr(channel, "get_partial_message"):
+            try:
+                thread = await channel.get_partial_message(int(run["message_id"])).create_thread(
+                    name=f"CTA {run['composition_name']} #{run_id}"[:100], auto_archive_duration=1440)
+                db_execute("UPDATE cta_runs SET thread_id=? WHERE id=?", (thread.id, run_id))
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"CTA #{run_id}: no pude crear el hilo al recuperar: {exc}")
+                return
+        run = cta_run_get(run_id)
+    if not run.get("thread_id"):
+        return
+    thread = await cta_get_thread(run)
+    if thread is not None and hasattr(thread, "join"):
+        try:
+            await thread.join()      # asegura que el bot siga recibiendo los mensajes del hilo
+        except discord.HTTPException:
+            pass
+    ids = json.loads(run.get("board_message_ids_json") or "[]")
+    if not ids:
+        thread = await cta_get_thread(run)
+        if thread is not None:
+            snapshot = json.loads(run["snapshot_json"])
+            try:
+                await thread.send(cta_instructions_text(run, len(snapshot["slots"])), allowed_mentions=CTA_NO_PINGS)
+            except Exception as exc:
+                print(f"CTA #{run_id}: no pude publicar las instrucciones: {exc}")
+    await cta_refresh_board(run_id)
     await cta_refresh_panel(bot, run_id)
 
 
-class CTASlotPicker(discord.ui.View):
-    def __init__(self, run_id: int, user_id: int, page: int = 0):
-        super().__init__(timeout=180)
-        self.run_id, self.user_id, self.page = run_id, user_id, page
-        run = cta_run_get(run_id)
-        if not run or run["status"] != "open":
-            return
-        snapshot = json.loads(run["snapshot_json"])
-        signups = cta_get_signups(run_id)
-        occupied = {s["slot_key"] for s in signups}
-        guild = bot.get_guild(int(run["guild_id"]))
-        member = guild.get_member(user_id) if guild else None
-        available = []
-        for slot in snapshot["slots"]:
-            key = cta_slot_key(slot)
-            if key in occupied:
-                continue
-            if member and not cta_access_error(member, slot, guild):
-                available.append(slot)
-        # Discord select menu admite como máximo 25 opciones; paginar si hace falta.
-        self.pages = [available[i:i + 25] for i in range(0, len(available), 25)] or [[]]
-        self.page = max(0, min(self.page, len(self.pages) - 1))
-        page_slots = self.pages[self.page]
-        if page_slots:
-            opts = [discord.SelectOption(label=f"P{int(s['party_no'])} · {s['position_no']} · {s['role_name']}"[:100], value=cta_slot_key(s), description=f"Plaza {s['position_no']} de Party {s['party_no']}"[:100]) for s in page_slots]
-            select = discord.ui.Select(placeholder="Elegí una plaza libre", min_values=1, max_values=1, options=opts, custom_id=f"cta:pick:{run_id}:{user_id}:{self.page}")
-            select.callback = self._select_callback
-            self.add_item(select)
-        else:
-            self.add_item(discord.ui.Button(label="No hay plazas disponibles para vos", style=discord.ButtonStyle.secondary, disabled=True))
-        if len(self.pages) > 1:
-            prev = discord.ui.Button(label="Anterior", style=discord.ButtonStyle.secondary, disabled=self.page == 0)
-            nxt = discord.ui.Button(label="Siguiente", style=discord.ButtonStyle.secondary, disabled=self.page >= len(self.pages) - 1)
-            prev.callback = self._prev
-            nxt.callback = self._next
-            self.add_item(prev)
-            self.add_item(nxt)
+async def cta_reply_short(message: discord.Message, text: str, seconds: int = 12):
+    """Respuesta breve que se borra sola, para no llenar el hilo."""
+    try:
+        await message.reply(text, mention_author=False, delete_after=seconds, allowed_mentions=CTA_NO_PINGS)
+    except discord.HTTPException:
+        try:
+            await message.channel.send(text, delete_after=seconds, allowed_mentions=CTA_NO_PINGS)
+        except discord.HTTPException:
+            pass
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Este selector pertenece a otro jugador.", ephemeral=True)
-            return False
+
+async def cta_ack_ok(message: discord.Message, fallback_text: str):
+    """Confirma con una reacción ✅ (sin mensajes extra). Si no se puede reaccionar, responde breve."""
+    try:
+        await message.add_reaction("✅")
+    except discord.HTTPException:
+        await cta_reply_short(message, fallback_text, 8)
+
+
+async def cta_handle_thread_message(message: discord.Message) -> bool:
+    """Procesa los mensajes escritos en el hilo de una CTA. Devuelve True si el hilo pertenece a una CTA."""
+    rows = db_fetchall("SELECT * FROM cta_runs WHERE thread_id=?", (message.channel.id,))
+    if not rows:
+        return False
+    run = dict(rows[0])
+    command = cta_parse_thread_command(message.content)
+    if command is None or not isinstance(message.author, discord.Member):
+        return True
+    action, number = command
+    if run["status"] != "open":
+        await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+        return True
+    run_id = int(run["id"])
+    member = message.author
+
+    if action == "leave":
+        code, key = cta_try_leave(run_id, member.id)
+        if code == "closed":
+            await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+        elif code == "none":
+            await cta_reply_short(message, "No estás anotado en esta CTA.", 8)
+        else:
+            snapshot = json.loads(run["snapshot_json"])
+            old_no = cta_number_of_slot_key(snapshot["slots"], key)
+            cta_audit(int(run["guild_id"]), member.id, "cancel_signup", run_id, key)
+            cta_request_board_refresh(run_id)
+            await cta_ack_ok(message, f"Liberaste la posición {old_no}.")
         return True
 
-    async def _select_callback(self, interaction: discord.Interaction):
-        selected = interaction.data.get("values", [None])[0]
-        if not selected:
-            return await interaction.response.send_message("No se seleccionó ninguna plaza.", ephemeral=True)
-        run = cta_run_get(self.run_id)
-        if not run or run["status"] != "open":
-            return await interaction.response.send_message("Esta CTA ya está cerrada.", ephemeral=True)
-        guild = interaction.guild
-        member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        if not member or not guild:
-            return await interaction.response.send_message("No pude verificar tus roles de Discord.", ephemeral=True)
-        snapshot = json.loads(run["snapshot_json"])
-        slot = next((s for s in snapshot["slots"] if cta_slot_key(s) == selected), None)
-        if not slot:
-            return await interaction.response.send_message("La plaza ya no existe.", ephemeral=True)
-        error = cta_access_error(member, slot, guild)
-        if error:
-            return await interaction.response.send_message(error, ephemeral=True)
-        try:
-            with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("BEGIN IMMEDIATE")
-                current = conn.execute("SELECT status, closes_at FROM cta_runs WHERE id=?", (self.run_id,)).fetchone()
-                if not current or current[0] != "open" or datetime.fromisoformat(current[1]) <= datetime.now(timezone.utc):
-                    conn.execute("ROLLBACK")
-                    return await interaction.response.send_message("La inscripción ya está cerrada.", ephemeral=True)
-                existing = conn.execute("SELECT slot_key FROM cta_signups WHERE cta_id=? AND user_id=?", (self.run_id, member.id)).fetchone()
-                if existing:
-                    conn.execute("ROLLBACK")
-                    return await interaction.response.send_message("Ya estás anotado en esta CTA. Cancelá tu plaza antes de elegir otra.", ephemeral=True)
-                conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,signed_at) VALUES (?,?,?,?)", (self.run_id, selected, member.id, cta_now_iso()))
-                conn.commit()
-        except sqlite3.IntegrityError:
-            return await interaction.response.send_message("Esa plaza acaba de ser ocupada o ya estás anotado. Elegí otra.", ephemeral=True)
-        except sqlite3.Error as exc:
-            print(f"Error reservando CTA: {exc}")
-            return await interaction.response.send_message("No se pudo guardar la inscripción. Intentá de nuevo.", ephemeral=True)
-        cta_audit(guild.id, member.id, "signup", self.run_id, selected)
-        await interaction.response.send_message(f"✅ Te anotaste en **Party {slot['party_no']} · {slot['position_no']} — {slot['role_name']}**.", ephemeral=True)
-        await cta_refresh_panel(bot, self.run_id)
-
-    async def _prev(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(view=CTASlotPicker(self.run_id, self.user_id, self.page - 1))
-
-    async def _next(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(view=CTASlotPicker(self.run_id, self.user_id, self.page + 1))
+    snapshot = json.loads(run["snapshot_json"])
+    total = len(snapshot["slots"])
+    slot = cta_slot_by_number(snapshot["slots"], number)
+    if slot is None:
+        await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {total}.")
+        return True
+    error = cta_access_error(member, slot, message.guild)
+    if error:
+        await cta_reply_short(message, error)
+        return True
+    try:
+        code, extra = cta_try_signup(run_id, member.id, cta_slot_key(slot))
+    except sqlite3.Error as exc:
+        print(f"CTA #{run_id}: error guardando inscripción: {exc}")
+        await cta_reply_short(message, "No pude guardar tu inscripción. Probá de nuevo en unos segundos.")
+        return True
+    role_label = f"{slot['role_name']} (Party {slot['party_no']})"
+    if code == "closed":
+        await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+    elif code == "same":
+        await cta_reply_short(message, f"Ya estás anotado en la posición {number}.", 8)
+    elif code == "occupied":
+        await cta_reply_short(message, f"La posición {number} ya está ocupada por <@{extra}>. Elegí otra.")
+    elif code == "locked":
+        await cta_reply_short(message, "Un organizador te asignó tu plaza. Pedile a él que la cambie.")
+    elif code == "moved":
+        old_no = cta_number_of_slot_key(snapshot["slots"], extra)
+        cta_audit(int(run["guild_id"]), member.id, "move_signup", run_id, f"{extra}->{cta_slot_key(slot)}")
+        cta_request_board_refresh(run_id)
+        await cta_reply_short(message, f"Pasaste de la posición {old_no} a la {number} · {role_label}.", 10)
+    else:
+        cta_audit(int(run["guild_id"]), member.id, "signup", run_id, cta_slot_key(slot))
+        cta_request_board_refresh(run_id)
+        await cta_ack_ok(message, f"Quedaste anotado en la posición {number} · {role_label}.")
+    return True
 
 
 class CTAPanelView(discord.ui.View):
-    def __init__(self, run_id: Optional[int] = None, closed: bool = False):
+    """Panel del canal. La inscripción se hace escribiendo el número en el hilo; acá quedan el
+    acceso al hilo y la opción de cancelar la plaza. Los botones viejos siguen funcionando."""
+
+    def __init__(self, run_id: Optional[int] = None, closed: bool = False, thread_url: Optional[str] = None):
         super().__init__(timeout=None)
         self.run_id = run_id
         self.closed = closed
-        choose = discord.ui.Button(label="Elegir posición", emoji="📝", style=discord.ButtonStyle.success, custom_id="cta:choose" if run_id is None else f"cta:choose:{run_id}", disabled=closed)
+        if thread_url:
+            self.add_item(discord.ui.Button(label="Ir al hilo para anotarte", emoji="💬",
+                                            style=discord.ButtonStyle.link, url=thread_url))
         cancel = discord.ui.Button(label="Cancelar mi plaza", emoji="↩️", style=discord.ButtonStyle.secondary, custom_id="cta:cancel" if run_id is None else f"cta:cancel:{run_id}", disabled=closed)
         refresh = discord.ui.Button(label="Actualizar panel", emoji="🔄", style=discord.ButtonStyle.primary, custom_id="cta:refresh" if run_id is None else f"cta:refresh:{run_id}")
-        choose.callback = self.choose_callback
         cancel.callback = self.cancel_callback
         refresh.callback = self.refresh_callback
-        self.add_item(choose)
         self.add_item(cancel)
         self.add_item(refresh)
 
@@ -3035,38 +3522,32 @@ class CTAPanelView(discord.ui.View):
         rows = db_fetchall("SELECT id FROM cta_runs WHERE message_id=?", (msg_id,))
         return int(rows[0]["id"]) if rows else None
 
-    async def choose_callback(self, interaction: discord.Interaction):
-        run_id = self._resolve_run_id(interaction)
-        run = cta_run_get(run_id) if run_id else None
-        if not run or run["status"] != "open":
-            return await interaction.response.send_message("Esta CTA ya está cerrada.", ephemeral=True)
-        await interaction.response.send_message("Elegí una de las plazas disponibles para tus roles.", view=CTASlotPicker(run_id, interaction.user.id), ephemeral=True)
-
     async def cancel_callback(self, interaction: discord.Interaction):
         run_id = self._resolve_run_id(interaction)
-        run = cta_run_get(run_id) if run_id else None
-        if not run or run["status"] != "open":
+        if not run_id:
+            return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+        code, key = cta_try_leave(run_id, interaction.user.id)
+        if code == "closed":
             return await interaction.response.send_message("Esta CTA ya está cerrada.", ephemeral=True)
-        rows = db_fetchall("SELECT slot_key FROM cta_signups WHERE cta_id=? AND user_id=?", (run_id, interaction.user.id))
-        if not rows:
-            return await interaction.response.send_message("No tenés una plaza asignada en esta CTA.", ephemeral=True)
-        db_execute("DELETE FROM cta_signups WHERE cta_id=? AND user_id=?", (run_id, interaction.user.id))
-        cta_audit(int(run["guild_id"]), interaction.user.id, "cancel_signup", run_id, rows[0]["slot_key"])
-        await interaction.response.send_message("Tu plaza fue liberada.", ephemeral=True)
-        await cta_refresh_panel(bot, run_id)
+        if code == "none":
+            return await interaction.response.send_message("No tenés una plaza en esta CTA.", ephemeral=True)
+        run = cta_run_get(run_id)
+        cta_audit(int(run["guild_id"]), interaction.user.id, "cancel_signup", run_id, key)
+        await interaction.response.send_message("Tu plaza quedó libre.", ephemeral=True)
+        cta_request_board_refresh(run_id)
 
     async def refresh_callback(self, interaction: discord.Interaction):
         run_id = self._resolve_run_id(interaction)
         if not run_id:
-            return await interaction.response.send_message("No encontré esta CTA en la base de datos.", ephemeral=True)
-        await cta_refresh_panel(bot, run_id)
+            return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
         await interaction.response.send_message("Panel actualizado.", ephemeral=True)
+        cta_request_board_refresh(run_id, delay=0.2)
 
 
 class CTAAddSlotModal(discord.ui.Modal, title="Agregar posición"):
     party_no = discord.ui.TextInput(label="Número de party", placeholder="1", default="1", max_length=3)
-    position_no = discord.ui.TextInput(label="Número de posición dentro de la party", placeholder="21", max_length=3)
-    role_name = discord.ui.TextInput(label="Nombre del rol/build", placeholder="Ej. Longbow", max_length=80)
+    position_no = discord.ui.TextInput(label="Lugar dentro de la party", placeholder="1", max_length=3)
+    role_name = discord.ui.TextInput(label="Nombre del rol o build", placeholder="Ej. Longbow", max_length=80)
     emoji = discord.ui.TextInput(label="Emoji", placeholder="🏹", default="⚔️", max_length=30, required=False)
 
     def __init__(self, composition_id: int, guild_id: int, actor_id: int, party_default: int = 1, position_default: int = 1):
@@ -3081,20 +3562,26 @@ class CTAAddSlotModal(discord.ui.Modal, title="Agregar posición"):
             pos = int(str(self.position_no.value).strip())
             role = str(self.role_name.value).strip()
             emoji = str(self.emoji.value).strip() or "⚔️"
-            if party < 1 or pos < 1 or not role or party > 25 or pos > 25:
+            if party < 1 or pos < 1 or party > 25 or pos > 25:
                 raise ValueError
         except ValueError:
-            return await interaction.response.send_message("El rol no puede estar vacío. Party y posición deben estar entre 1 y 25 (límite de opciones de Discord por menú/party).", ephemeral=True)
+            return await interaction.response.send_message("La party y el lugar tienen que ser números entre 1 y 25.", ephemeral=True)
+        if not role:
+            return await interaction.response.send_message("El nombre del rol no puede estar vacío.", ephemeral=True)
         count = db_fetchall("SELECT COUNT(*) AS n FROM cta_slots WHERE composition_id=? AND party_no=?", (self.composition_id, party))[0]["n"]
         if pos > count + 1:
-            return await interaction.response.send_message(f"Para evitar huecos, la próxima posición de Party {party} es {count + 1}.", ephemeral=True)
+            return await interaction.response.send_message(f"Para no dejar huecos, el próximo lugar de la Party {party} es el {count + 1}.", ephemeral=True)
         try:
-            db_execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji) VALUES (?,?,?,?,?)", (self.composition_id, party, pos, role, emoji))
-            db_execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition_id))
+            with db_immediate() as conn:
+                # Si el lugar está ocupado, corre hacia abajo las posiciones siguientes de esa party.
+                conn.execute("UPDATE cta_slots SET position_no=-(position_no+1) WHERE composition_id=? AND party_no=? AND position_no>=?", (self.composition_id, party, pos))
+                conn.execute("UPDATE cta_slots SET position_no=-position_no WHERE composition_id=? AND party_no=? AND position_no<0", (self.composition_id, party))
+                conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji) VALUES (?,?,?,?,?)", (self.composition_id, party, pos, role, emoji))
+                conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition_id))
         except sqlite3.IntegrityError:
-            return await interaction.response.send_message("Ya existe esa posición. Elegí otro número.", ephemeral=True)
+            return await interaction.response.send_message("No pude agregar la posición porque ese lugar ya existe. Probá con otro.", ephemeral=True)
         cta_audit(self.guild_id, self.actor_id, "composition_add_slot", details=f"comp={self.composition_id}; party={party}; pos={pos}; role={role}")
-        await interaction.response.send_message(f"✅ Agregué **{role}** como posición **{pos}** de Party **{party}**.", ephemeral=True)
+        await interaction.response.send_message(f"✅ Agregué **{role}** en la Party **{party}**. Los números se actualizaron solos.", ephemeral=True)
 
 
 class CTAEditSlotModal(discord.ui.Modal, title="Editar posición"):
@@ -3138,7 +3625,7 @@ class CTAAccessRoleSelect(discord.ui.RoleSelect):
         db_execute("UPDATE cta_slots SET access_mode=?, role_ids_json=?, access_match=? WHERE id=?", ("roles" if role_ids else "any", json.dumps(role_ids), match, self.parent_view.slot["id"]))
         db_execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.parent_view.composition_id))
         cta_audit(self.parent_view.guild_id, self.parent_view.actor_id, "composition_access", details=f"slot={self.parent_view.slot['id']}; roles={','.join(role_ids)}; match={match}")
-        await interaction.response.send_message("✅ Restricción de la posición guardada. Si elegiste varios roles, el modo de coincidencia se configura en el selector siguiente.", ephemeral=True)
+        await interaction.response.send_message("✅ Restricción guardada. Para cambiar cómo se combinan los roles, elegí el modo en el otro menú y volvé a elegir los roles.", ephemeral=True)
 
 
 class CTAAccessModeSelect(discord.ui.Select):
@@ -3151,7 +3638,7 @@ class CTAAccessModeSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.match = self.values[0]
-        await interaction.response.send_message("Modo seleccionado. Volvé a elegir los roles en el selector para guardar la restricción con este modo.", ephemeral=True)
+        await interaction.response.send_message("Modo elegido. Volvé a elegir los roles para guardar la restricción con este modo.", ephemeral=True)
 
 
 class CTAPartyAccessView(discord.ui.View):
@@ -3176,18 +3663,18 @@ class CTAPartyAccessView(discord.ui.View):
 
     async def select_party(self, interaction: discord.Interaction):
         self.selected_party = int(interaction.data["values"][0])
-        await interaction.response.send_message(f"Seleccionada Party {self.selected_party}. Ahora elegí los roles y guardalos con el selector de roles.", ephemeral=True)
+        await interaction.response.send_message(f"Elegiste la Party {self.selected_party}. Ahora elegí los roles permitidos.", ephemeral=True)
 
     async def select_mode(self, interaction: discord.Interaction):
         self.match = interaction.data["values"][0]
-        await interaction.response.send_message("Modo guardado en el editor. Volvé a elegir los roles en el selector para aplicar la configuración.", ephemeral=True)
+        await interaction.response.send_message("Modo elegido. Volvé a elegir los roles para aplicar la configuración.", ephemeral=True)
 
     async def save_roles(self, interaction: discord.Interaction):
         role_ids = [str(r.id) for r in self.role_select.values]
         db_execute("INSERT INTO cta_party_access(composition_id,party_no,access_mode,role_ids_json,access_match) VALUES (?,?,?,?,?) ON CONFLICT(composition_id,party_no) DO UPDATE SET access_mode=excluded.access_mode, role_ids_json=excluded.role_ids_json, access_match=excluded.access_match", (self.composition["id"], self.selected_party, "roles" if role_ids else "any", json.dumps(role_ids), self.match))
         db_execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition["id"]))
         cta_audit(self.composition["guild_id"], self.actor_id, "composition_party_access", details=f"comp={self.composition['id']}; party={self.selected_party}; roles={','.join(role_ids)}; match={self.match}")
-        await interaction.response.send_message(f"✅ Restricción guardada para Party {self.selected_party}. {'Roles: ' + ', '.join(r.mention for r in self.role_select.values) if role_ids else 'La party queda abierta para todos.'}", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        await interaction.response.send_message(f"✅ Restricción guardada para la Party {self.selected_party}. {'Roles: ' + ', '.join(r.mention for r in self.role_select.values) if role_ids else 'La party queda abierta para todos.'}", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 class CTAMoveSlotModal(discord.ui.Modal, title="Mover / reordenar posición"):
@@ -3206,7 +3693,7 @@ class CTAMoveSlotModal(discord.ui.Modal, title="Mover / reordenar posición"):
             if dest_party < 1 or dest_pos < 1:
                 raise ValueError
         except ValueError:
-            return await interaction.response.send_message("Party y posición deben ser números positivos.", ephemeral=True)
+            return await interaction.response.send_message("La party y la posición tienen que ser números positivos.", ephemeral=True)
         comp_id = self.composition["id"]
         slot_id = self.slot["id"]
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
@@ -3240,6 +3727,67 @@ class CTAMoveSlotModal(discord.ui.Modal, title="Mover / reordenar posición"):
         await interaction.response.send_message(f"✅ Posición movida a Party {dest_party}, posición {dest_pos}.", ephemeral=True)
 
 
+def cta_active_runs_for_composition(composition_id: int) -> list:
+    rows = db_fetchall("SELECT id FROM cta_runs WHERE composition_id=? AND status='open'", (composition_id,))
+    return [int(r["id"]) for r in rows]
+
+
+def cta_active_notice(composition_id: int) -> str:
+    runs = cta_active_runs_for_composition(composition_id)
+    if not runs:
+        return ""
+    ids = ", ".join(f"#{r}" for r in runs[:5])
+    return (f"\nℹ️ Hay {len(runs)} CTA activa(s) con esta composición ({ids}). Los cambios solo valen para "
+            f"las CTA nuevas: las inscripciones actuales no se modifican.")
+
+
+async def cta_send_spec_groups(interaction: discord.Interaction, header: str, specs: list):
+    """Envía una composición como embeds efímeros, repartidos en varios mensajes si hace falta."""
+    groups = cta_pack_specs(specs) or [[]]
+    for index, group in enumerate(groups):
+        embeds = [cta_spec_to_embed(spec) for spec in group]
+        content = header if index == 0 else None
+        if interaction.response.is_done():
+            await interaction.followup.send(content=content, embeds=embeds, ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+        else:
+            await interaction.response.send_message(content=content, embeds=embeds, ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+
+
+class CTABulkAddModal(discord.ui.Modal, title="Agregar varias posiciones"):
+    party_no = discord.ui.TextInput(label="Party", placeholder="1", default="1", max_length=3)
+    lines = discord.ui.TextInput(label="Una posición por línea", style=discord.TextStyle.paragraph,
+                                 placeholder="Longbow\nHallow Fall\n🛡️ Tank", max_length=3000)
+
+    def __init__(self, composition_id: int, guild_id: int, actor_id: int, party_default: int = 1):
+        super().__init__()
+        self.composition_id, self.guild_id, self.actor_id = composition_id, guild_id, actor_id
+        self.party_no.default = str(party_default)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            party = int(str(self.party_no.value).strip())
+            if not 1 <= party <= 25:
+                raise ValueError
+        except ValueError:
+            return await interaction.response.send_message("La party tiene que ser un número entre 1 y 25.", ephemeral=True)
+        names = [ln.strip() for ln in str(self.lines.value).splitlines() if ln.strip()]
+        if not names:
+            return await interaction.response.send_message("Escribí al menos una posición.", ephemeral=True)
+        with db_immediate() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM cta_slots WHERE composition_id=? AND party_no=?",
+                                 (self.composition_id, party)).fetchone()[0]
+            if count + len(names) > 25:
+                return await interaction.response.send_message(
+                    f"Una party admite hasta 25 posiciones. La Party {party} tiene {count} y querés agregar {len(names)}.", ephemeral=True)
+            for offset, name in enumerate(names, start=1):
+                role = name[:80]
+                conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji) VALUES (?,?,?,?,?)",
+                             (self.composition_id, party, count + offset, role, CTA_EMOJIS_DEFAULT.get(role, "⚔️")))
+            conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition_id))
+        cta_audit(self.guild_id, self.actor_id, "composition_bulk_add", details=f"comp={self.composition_id}; party={party}; n={len(names)}")
+        await interaction.response.send_message(f"✅ Agregué {len(names)} posiciones a la Party {party}.", ephemeral=True)
+
+
 class CTACompositionEditorView(discord.ui.View):
     def __init__(self, composition: dict, actor_id: int, party_filter: Optional[int] = None):
         super().__init__(timeout=300)
@@ -3253,33 +3801,36 @@ class CTACompositionEditorView(discord.ui.View):
             pselect = discord.ui.Select(placeholder="Elegí una party para editar", options=[discord.SelectOption(label=f"Party {p}", value=str(p), default=(p == self.party_filter)) for p in parties[:25]])
             pselect.callback = self.select_party
             self.add_item(pselect)
+        numbering = {s["id"]: n for n, s in cta_number_slots(composition["slots"])}
         visible_slots = [s for s in composition["slots"] if self.party_filter is None or int(s["party_no"]) == int(self.party_filter)]
         self.selected_slot_id = visible_slots[0]["id"] if visible_slots else None
-        options = [discord.SelectOption(label=f"P{s['party_no']} · {s['position_no']} · {s['role_name']}"[:100], value=str(s["id"])) for s in visible_slots[:25]]
+        options = [discord.SelectOption(label=f"#{numbering[s['id']]} · P{s['party_no']} · {s['role_name']}"[:100], value=str(s["id"]), default=(s["id"] == self.selected_slot_id)) for s in visible_slots[:25]]
         if options:
-            select = discord.ui.Select(placeholder="Seleccioná una posición para editar", options=options)
+            select = discord.ui.Select(placeholder="Elegí una posición para editar", options=options)
             select.callback = self.select_slot
             self.add_item(select)
         add = discord.ui.Button(label="Agregar posición", style=discord.ButtonStyle.success, emoji="➕")
+        bulk = discord.ui.Button(label="Agregar varias", style=discord.ButtonStyle.success, emoji="📋")
         edit = discord.ui.Button(label="Editar nombre/icono", style=discord.ButtonStyle.primary, emoji="✏️", disabled=not options)
         access = discord.ui.Button(label="Restringir por roles", style=discord.ButtonStyle.secondary, emoji="🔒", disabled=not options)
         delete = discord.ui.Button(label="Eliminar posición", style=discord.ButtonStyle.danger, emoji="🗑️", disabled=not options)
-        preview = discord.ui.Button(label="Actualizar vista", style=discord.ButtonStyle.secondary, emoji="🔄")
+        preview = discord.ui.Button(label="Ver composición", style=discord.ButtonStyle.secondary, emoji="👁️")
         party_access = discord.ui.Button(label="Restringir party", style=discord.ButtonStyle.secondary, emoji="🛡️")
         move = discord.ui.Button(label="Mover / reordenar", style=discord.ButtonStyle.primary, emoji="↕️", disabled=not options)
         add.callback = self.add_slot
+        bulk.callback = self.bulk_add
         edit.callback = self.edit_slot
         access.callback = self.access_slot
         delete.callback = self.delete_slot
         preview.callback = self.preview
         party_access.callback = self.configure_party_access
         move.callback = self.move_slot
-        for item in (add, edit, access, delete, preview, party_access, move):
+        for item in (add, bulk, edit, access, delete, preview, party_access, move):
             self.add_item(item)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.actor_id:
-            await interaction.response.send_message("Este editor pertenece a otro administrador.", ephemeral=True)
+            await interaction.response.send_message("Este editor lo abrió otra persona.", ephemeral=True)
             return False
         if not interaction.user.guild_permissions.manage_guild and not any(r.id == STAFF_ROLE_ID for r in getattr(interaction.user, "roles", [])):
             await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
@@ -3293,7 +3844,7 @@ class CTACompositionEditorView(discord.ui.View):
 
     async def select_slot(self, interaction: discord.Interaction):
         self.selected_slot_id = int(interaction.data["values"][0])
-        await interaction.response.send_message(f"Seleccionaste la posición ID {self.selected_slot_id}. Ahora elegí una acción.", ephemeral=True)
+        await interaction.response.defer()
 
     def _current_slot(self):
         fresh = cta_get_composition(int(self.composition["guild_id"]), self.composition["name"])
@@ -3304,50 +3855,47 @@ class CTACompositionEditorView(discord.ui.View):
         count = db_fetchall("SELECT COUNT(*) AS n FROM cta_slots WHERE composition_id=? AND party_no=?", (self.composition["id"], party))[0]["n"]
         await interaction.response.send_modal(CTAAddSlotModal(self.composition["id"], self.composition["guild_id"], interaction.user.id, party_default=party, position_default=int(count) + 1))
 
+    async def bulk_add(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(CTABulkAddModal(self.composition["id"], self.composition["guild_id"], interaction.user.id, party_default=int(self.party_filter or 1)))
+
     async def edit_slot(self, interaction: discord.Interaction):
         slot = self._current_slot()
         if not slot:
-            return await interaction.response.send_message("Seleccioná una posición válida.", ephemeral=True)
+            return await interaction.response.send_message("Elegí primero una posición.", ephemeral=True)
         await interaction.response.send_modal(CTAEditSlotModal(self.composition["id"], slot, self.composition["guild_id"], interaction.user.id))
 
     async def access_slot(self, interaction: discord.Interaction):
         slot = self._current_slot()
         if not slot:
-            return await interaction.response.send_message("Seleccioná una posición válida.", ephemeral=True)
-        await interaction.response.send_message(f"Configurá los roles permitidos para **P{slot['party_no']} · {slot['position_no']} · {slot['role_name']}**. Si no elegís roles, queda abierta para todos.", view=CTAAccessRoleView(self.composition["id"], slot, self.composition["guild_id"], interaction.user.id), ephemeral=True)
+            return await interaction.response.send_message("Elegí primero una posición.", ephemeral=True)
+        await interaction.response.send_message(f"Elegí los roles permitidos para **P{slot['party_no']} · {slot['role_name']}**. Si no elegís ninguno, la posición queda abierta para todos.", view=CTAAccessRoleView(self.composition["id"], slot, self.composition["guild_id"], interaction.user.id), ephemeral=True)
 
     async def move_slot(self, interaction: discord.Interaction):
         slot = self._current_slot()
         if not slot:
-            return await interaction.response.send_message("Seleccioná una posición válida.", ephemeral=True)
+            return await interaction.response.send_message("Elegí primero una posición.", ephemeral=True)
         await interaction.response.send_modal(CTAMoveSlotModal(self.composition, slot, interaction.user.id))
 
     async def delete_slot(self, interaction: discord.Interaction):
         slot = self._current_slot()
         if not slot:
-            return await interaction.response.send_message("Seleccioná una posición válida.", ephemeral=True)
+            return await interaction.response.send_message("Elegí primero una posición.", ephemeral=True)
         view = CTAConfirmDeleteSlotView(self.composition, slot, interaction.user.id)
-        await interaction.response.send_message(f"¿Eliminar **P{slot['party_no']} · {slot['position_no']} — {slot['role_name']}**? Las posiciones posteriores de esa party se renumerarán.", view=view, ephemeral=True)
+        await interaction.response.send_message(f"¿Eliminar **P{slot['party_no']} · {slot['role_name']}**? Las posiciones siguientes de esa party se renumeran.", view=view, ephemeral=True)
 
     async def configure_party_access(self, interaction: discord.Interaction):
         fresh = cta_get_composition(int(self.composition["guild_id"]), self.composition["name"])
         parties = sorted({int(s["party_no"]) for s in fresh["slots"]}) if fresh else []
         if not parties:
-            return await interaction.response.send_message("Agregá al menos una posición antes de configurar una party.", ephemeral=True)
-        await interaction.response.send_message("Elegí la party y los roles que pueden anotarse en cualquiera de sus posiciones.", view=CTAPartyAccessView(self.composition, parties, interaction.user.id), ephemeral=True)
+            return await interaction.response.send_message("Agregá al menos una posición antes de restringir una party.", ephemeral=True)
+        await interaction.response.send_message("Elegí la party y los roles que pueden anotarse en ella.", view=CTAPartyAccessView(self.composition, parties, interaction.user.id), ephemeral=True)
 
     async def preview(self, interaction: discord.Interaction):
         comp = cta_get_composition(self.composition["guild_id"], self.composition["name"])
         if not comp:
             return await interaction.response.send_message("No encontré la composición.", ephemeral=True)
-        lines = []
-        for s in comp["slots"]:
-            roles = "Todos" if s["access_mode"] != "roles" else ", ".join(f"<@&{r}>" for r in s["role_ids"])
-            lines.append(f"**P{s['party_no']} · {s['position_no']}** {s['emoji']} {s['role_name']} · Acceso: {roles}")
-        text = "\n".join(lines)
-        if len(text) > 3900:
-            text = text[:3850] + "\n… (vista previa recortada)"
-        await interaction.response.send_message(f"**Composición: {comp['name']}**\n{text}", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        specs = cta_party_specs(cta_snapshot_from_comp(comp)["slots"], show_roles=True)
+        await cta_send_spec_groups(interaction, f"**Composición: {comp['name']}** · {len(comp['slots'])} posiciones" if comp["slots"] else f"**{comp['name']}** todavía no tiene posiciones.", specs)
 
 
 class CTAConfirmDeleteSlotView(discord.ui.View):
@@ -3363,22 +3911,23 @@ class CTAConfirmDeleteSlotView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction):
         if interaction.user.id != self.actor_id:
             return await interaction.response.send_message("Solo quien abrió la confirmación puede usarla.", ephemeral=True)
-        with sqlite3.connect(DB_PATH, timeout=30) as conn:
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("BEGIN IMMEDIATE")
+        with db_immediate() as conn:
             conn.execute("DELETE FROM cta_slots WHERE id=? AND composition_id=?", (self.slot["id"], self.composition["id"]))
-            rows = conn.execute("SELECT id, party_no FROM cta_slots WHERE composition_id=? AND party_no=? ORDER BY position_no", (self.composition["id"], self.slot["party_no"])).fetchall()
-            for new_pos, (sid, _party) in enumerate(rows, start=1):
+            rows = conn.execute("SELECT id FROM cta_slots WHERE composition_id=? AND party_no=? ORDER BY position_no", (self.composition["id"], self.slot["party_no"])).fetchall()
+            for new_pos, (sid,) in enumerate(rows, start=1):
                 conn.execute("UPDATE cta_slots SET position_no=? WHERE id=?", (new_pos, sid))
             conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition["id"]))
-            conn.commit()
         cta_audit(self.composition["guild_id"], interaction.user.id, "composition_delete_slot", details=f"slot={self.slot['id']}")
-        await interaction.response.edit_message(content="✅ Posición eliminada y numeración actualizada.", view=None)
+        await interaction.response.edit_message(content="✅ Posición eliminada. La numeración se actualizó sola.", view=None)
 
     async def cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.actor_id:
             return await interaction.response.send_message("Solo quien abrió la confirmación puede usarla.", ephemeral=True)
         await interaction.response.edit_message(content="Operación cancelada.", view=None)
+
+
+def cta_valid_composition_name(name: str) -> bool:
+    return bool(CTA_NAME_RE.fullmatch(name or ""))
 
 
 class CTACompositionGroup(app_commands.Group):
@@ -3393,61 +3942,90 @@ class CTACompositionGroup(app_commands.Group):
     @app_commands.describe(nombre="Nombre único de la composición")
     async def crear(self, interaction: discord.Interaction, nombre: str):
         if not await self._admin_check(interaction):
-            return await interaction.response.send_message("Solo administradores u organizadores autorizados pueden crear composiciones.", ephemeral=True)
+            return await interaction.response.send_message("Solo el Staff o los administradores pueden crear composiciones.", ephemeral=True)
         name = nombre.strip()
-        if not re.fullmatch(r"[\w -]{2,40}", name, re.UNICODE):
-            return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres (letras, números, espacios, guion o guion bajo).", ephemeral=True)
+        if not cta_valid_composition_name(name):
+            return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres: letras, números, espacios, guiones o guion bajo.", ephemeral=True)
         try:
             db_execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at) VALUES (?,?,?,?)", (interaction.guild_id, name, interaction.user.id, cta_now_iso()))
         except sqlite3.IntegrityError:
             return await interaction.response.send_message("Ya existe una composición con ese nombre.", ephemeral=True)
         cta_audit(interaction.guild_id, interaction.user.id, "composition_create", details=name)
-        await interaction.response.send_message(f"✅ Composición **{name}** creada. Usá `/compo editar` para agregar sus posiciones.", ephemeral=True)
+        await interaction.response.send_message(f"✅ Composición **{name}** creada. Agregale posiciones con `/compo editar`.", ephemeral=True)
 
     @app_commands.command(name="listar", description="Listar composiciones guardadas")
     async def listar(self, interaction: discord.Interaction):
-        rows = db_fetchall("SELECT name FROM cta_compositions WHERE guild_id=? ORDER BY name COLLATE NOCASE", (interaction.guild_id,))
-        names = [r["name"] for r in rows]
-        await interaction.response.send_message("**Composiciones guardadas**\n" + ("\n".join(f"• {n}" for n in names) if names else "Todavía no hay composiciones."), ephemeral=True)
+        rows = db_fetchall("""SELECT c.name, COUNT(s.id) AS n, COUNT(DISTINCT s.party_no) AS p
+                              FROM cta_compositions c LEFT JOIN cta_slots s ON s.composition_id=c.id
+                              WHERE c.guild_id=? GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (interaction.guild_id,))
+        lines = [f"• **{r['name']}** · {r['p']} parties · {r['n']} posiciones" for r in rows]
+        await interaction.response.send_message("**Composiciones guardadas**\n" + ("\n".join(lines) if lines else "Todavía no hay composiciones."), ephemeral=True)
 
     @app_commands.command(name="ver", description="Ver una composición guardada")
+    @app_commands.describe(nombre="Nombre de la composición")
     async def ver(self, interaction: discord.Interaction, nombre: str):
         comp = cta_get_composition(interaction.guild_id, nombre)
         if not comp:
-            return await interaction.response.send_message("No existe esa composición.", ephemeral=True)
-        lines = [f"**P{s['party_no']} · {s['position_no']}** {s['emoji']} {s['role_name']}" for s in comp["slots"]]
-        body = "\n".join(lines) or "No tiene posiciones todavía."
-        await interaction.response.send_message(f"**{comp['name']}**\n{body[:3900]}", ephemeral=True)
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        if not comp["slots"]:
+            return await interaction.response.send_message(f"**{comp['name']}** todavía no tiene posiciones.", ephemeral=True)
+        specs = cta_party_specs(cta_snapshot_from_comp(comp)["slots"], show_roles=True)
+        await cta_send_spec_groups(interaction, f"**Composición: {comp['name']}** · {len(comp['slots'])} posiciones", specs)
 
     @app_commands.command(name="editar", description="Abrir el editor interactivo de una composición")
+    @app_commands.describe(nombre="Nombre de la composición")
     async def editar(self, interaction: discord.Interaction, nombre: str):
         if not await self._admin_check(interaction):
             return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
         comp = cta_get_composition(interaction.guild_id, nombre)
         if not comp:
             return await interaction.response.send_message("No existe esa composición. Podés crearla con `/compo crear`.", ephemeral=True)
-        await interaction.response.send_message(f"**Editor de composición: {comp['name']}**\nElegí una posición en el menú y después una acción. Los cambios se guardan en la base de datos.", view=CTACompositionEditorView(comp, interaction.user.id), ephemeral=True)
+        await interaction.response.send_message(f"**Editor de composición: {comp['name']}**\nElegí una posición y después una acción. Los cambios se guardan al instante." + cta_active_notice(comp["id"]), view=CTACompositionEditorView(comp, interaction.user.id), ephemeral=True)
 
     @app_commands.command(name="duplicar", description="Duplicar una composición")
+    @app_commands.describe(nombre="Composición original", nuevo_nombre="Nombre de la copia")
     async def duplicar(self, interaction: discord.Interaction, nombre: str, nuevo_nombre: str):
         if not await self._admin_check(interaction):
             return await interaction.response.send_message("No tenés permisos para duplicar composiciones.", ephemeral=True)
         comp = cta_get_composition(interaction.guild_id, nombre)
         if not comp:
             return await interaction.response.send_message("No existe la composición original.", ephemeral=True)
+        new_name = nuevo_nombre.strip()
+        if not cta_valid_composition_name(new_name):
+            return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres: letras, números, espacios, guiones o guion bajo.", ephemeral=True)
         try:
-            with sqlite3.connect(DB_PATH, timeout=30) as conn:
-                cur = conn.execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at) VALUES (?,?,?,?)", (interaction.guild_id, nuevo_nombre.strip(), interaction.user.id, cta_now_iso()))
+            with db_immediate() as conn:
+                cur = conn.execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at) VALUES (?,?,?,?)", (interaction.guild_id, new_name, interaction.user.id, cta_now_iso()))
                 new_id = cur.lastrowid
                 for s in comp["slots"]:
                     conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji,access_mode,role_ids_json,access_match) VALUES (?,?,?,?,?,?,?,?)", (new_id, s["party_no"], s["position_no"], s["role_name"], s["emoji"], s["access_mode"], json.dumps(s["role_ids"]), s["access_match"]))
-                conn.commit()
+                conn.execute("""INSERT INTO cta_party_access(composition_id,party_no,access_mode,role_ids_json,access_match)
+                                SELECT ?, party_no, access_mode, role_ids_json, access_match FROM cta_party_access WHERE composition_id=?""", (new_id, comp["id"]))
         except sqlite3.IntegrityError:
-            return await interaction.response.send_message("El nuevo nombre ya existe o no es válido.", ephemeral=True)
-        cta_audit(interaction.guild_id, interaction.user.id, "composition_duplicate", details=f"{nombre} -> {nuevo_nombre}")
-        await interaction.response.send_message(f"✅ **{nombre}** se duplicó como **{nuevo_nombre}**.", ephemeral=True)
+            return await interaction.response.send_message("Ya existe una composición con ese nombre.", ephemeral=True)
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_duplicate", details=f"{comp['name']} -> {new_name}")
+        await interaction.response.send_message(f"✅ **{comp['name']}** se duplicó como **{new_name}** (con sus restricciones de roles).", ephemeral=True)
+
+    @app_commands.command(name="renombrar", description="Cambiar el nombre de una composición")
+    @app_commands.describe(nombre="Nombre actual", nuevo_nombre="Nombre nuevo")
+    async def renombrar(self, interaction: discord.Interaction, nombre: str, nuevo_nombre: str):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para renombrar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición.", ephemeral=True)
+        new_name = nuevo_nombre.strip()
+        if not cta_valid_composition_name(new_name):
+            return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres: letras, números, espacios, guiones o guion bajo.", ephemeral=True)
+        try:
+            db_execute("UPDATE cta_compositions SET name=?, updated_at=? WHERE id=?", (new_name, cta_now_iso(), comp["id"]))
+        except sqlite3.IntegrityError:
+            return await interaction.response.send_message("Ya existe una composición con ese nombre.", ephemeral=True)
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_rename", details=f"{comp['name']} -> {new_name}")
+        await interaction.response.send_message(f"✅ **{comp['name']}** ahora se llama **{new_name}**. Las CTA ya publicadas conservan su nombre.", ephemeral=True)
 
     @app_commands.command(name="eliminar", description="Eliminar una composición guardada")
+    @app_commands.describe(nombre="Nombre de la composición")
     async def eliminar(self, interaction: discord.Interaction, nombre: str):
         if not await self._admin_check(interaction):
             return await interaction.response.send_message("No tenés permisos para eliminar composiciones.", ephemeral=True)
@@ -3455,7 +4033,7 @@ class CTACompositionGroup(app_commands.Group):
         if not comp:
             return await interaction.response.send_message("No existe esa composición.", ephemeral=True)
         view = CTAConfirmDeleteCompositionView(comp, interaction.user.id)
-        await interaction.response.send_message(f"¿Eliminar **{comp['name']}**? Las CTA ya iniciadas conservarán su copia histórica.", view=view, ephemeral=True)
+        await interaction.response.send_message(f"¿Eliminar **{comp['name']}**? Las CTA ya iniciadas conservan su copia y sus inscripciones." + cta_active_notice(comp["id"]), view=view, ephemeral=True)
 
 
 class CTAConfirmDeleteCompositionView(discord.ui.View):
@@ -3470,7 +4048,7 @@ class CTAConfirmDeleteCompositionView(discord.ui.View):
             return await interaction.response.send_message("Solo quien inició la operación puede confirmarla.", ephemeral=True)
         db_execute("DELETE FROM cta_compositions WHERE id=?", (self.comp["id"],))
         cta_audit(self.comp["guild_id"], interaction.user.id, "composition_delete", details=self.comp["name"])
-        await interaction.response.edit_message(content="Composición eliminada. Las CTA históricas conservan su copia.", view=None)
+        await interaction.response.edit_message(content="✅ Composición eliminada. Las CTA ya publicadas conservan su copia.", view=None)
     async def cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.actor_id:
             return await interaction.response.send_message("Solo quien inició la operación puede cancelarla.", ephemeral=True)
@@ -3481,155 +4059,176 @@ compo_group = CTACompositionGroup()
 bot.tree.add_command(compo_group, guild=GUILD_OBJ)
 
 
+async def cta_name_autocomplete(interaction: discord.Interaction, current: str):
+    rows = db_fetchall("SELECT name FROM cta_compositions WHERE guild_id=? AND name LIKE ? COLLATE NOCASE ORDER BY name COLLATE NOCASE LIMIT 25",
+                       (interaction.guild_id, f"%{current.strip()}%"))
+    return [app_commands.Choice(name=r["name"][:100], value=r["name"]) for r in rows]
+
+
 @bot.tree.command(name="cta", description="Publicar una CTA usando una composición guardada", guild=GUILD_OBJ)
-@app_commands.describe(nombre="Nombre de la composición", tiempo="Duración HH:MM; ejemplo 00:30 para 30 minutos")
-async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: str):
+@app_commands.describe(nombre="Nombre de la composición",
+                       tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)")
+async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
     member = interaction.user
     if not (member.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in member.roles)):
         return await interaction.response.send_message("No tenés permisos para iniciar una CTA.", ephemeral=True)
-    match = re.fullmatch(r"(\d{1,2}):(\d{2})", tiempo.strip())
-    if not match:
-        return await interaction.response.send_message("Formato inválido. Usá HH:MM, por ejemplo `00:30`.", ephemeral=True)
-    hours, minutes = int(match.group(1)), int(match.group(2))
-    if minutes > 59 or (hours == 0 and minutes == 0) or hours > 23:
-        return await interaction.response.send_message("El tiempo debe ser mayor a cero y no superar 23:59.", ephemeral=True)
+    try:
+        minutes = cta_parse_duration(tiempo)
+    except ValueError as exc:
+        return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+    if isinstance(interaction.channel, discord.Thread):
+        return await interaction.response.send_message("Usá `/cta` en un canal de texto, no dentro de un hilo.", ephemeral=True)
     comp = cta_get_composition(interaction.guild_id, nombre)
     if not comp and nombre.casefold() == "brawl":
         cta_ensure_brawl(interaction.guild_id, interaction.user.id)
         comp = cta_get_composition(interaction.guild_id, nombre)
     if not comp:
-        return await interaction.response.send_message(f"No existe la composición **{nombre}**. Usá `/compo listar` para ver las guardadas.", ephemeral=True)
+        return await interaction.response.send_message(f"No existe la composición **{nombre}**. Mirá las guardadas con `/compo listar`.", ephemeral=True)
     if not comp["slots"]:
-        return await interaction.response.send_message("Esta composición no tiene posiciones. Agregalas desde `/compo editar`.", ephemeral=True)
-    if len(comp["slots"]) > 250:
-        return await interaction.response.send_message("Una CTA no puede superar 250 posiciones en este sistema.", ephemeral=True)
-    duration = timedelta(hours=hours, minutes=minutes)
+        return await interaction.response.send_message("Esta composición no tiene posiciones. Agregalas con `/compo editar`.", ephemeral=True)
+    if len(comp["slots"]) > CTA_MAX_SLOTS:
+        return await interaction.response.send_message(f"Una CTA no puede tener más de {CTA_MAX_SLOTS} posiciones.", ephemeral=True)
     now = datetime.now(timezone.utc)
-    close_at = now + duration
+    close_at = now + timedelta(minutes=minutes)
     snapshot = cta_snapshot_from_comp(comp)
-    # Las restricciones de party se copian en cada slot. La estructura permite añadirlas al editor de party.
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status) VALUES (?,?,?,?,?,?,?,?, 'open')",
                            (interaction.guild_id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), interaction.channel_id, interaction.user.id, now.isoformat(), close_at.isoformat()))
         run_id = cur.lastrowid
         conn.commit()
     run = cta_run_get(run_id)
+    message = None
     try:
-        await interaction.response.send_message(embed=cta_build_embed(run, interaction.guild), view=CTAPanelView(run_id=run_id), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        await interaction.response.send_message(embed=cta_build_embed(run, interaction.guild), view=CTAPanelView(run_id=run_id), allowed_mentions=CTA_NO_PINGS)
         message = await interaction.original_response()
         db_execute("UPDATE cta_runs SET message_id=? WHERE id=?", (message.id, run_id))
-        try:
-            thread = await message.create_thread(name=f"CTA {comp['name']} #{run_id}"[:100], auto_archive_duration=1440)
-            db_execute("UPDATE cta_runs SET thread_id=? WHERE id=?", (thread.id, run_id))
-            await thread.send(f"Hilo de coordinación para la CTA **{comp['name']}**. Las inscripciones se gestionan desde el panel principal.")
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            print(f"CTA #{run_id}: no se pudo crear el hilo: {exc}")
-        cta_audit(interaction.guild_id, interaction.user.id, "cta_created", run_id, f"composition={comp['name']}; closes={close_at.isoformat()}")
+        thread = await message.create_thread(name=f"CTA {comp['name']} #{run_id}"[:100], auto_archive_duration=1440)
+        db_execute("UPDATE cta_runs SET thread_id=? WHERE id=?", (thread.id, run_id))
+        await thread.send(cta_instructions_text(cta_run_get(run_id), len(snapshot["slots"])), allowed_mentions=CTA_NO_PINGS)
+        await cta_refresh_board(run_id)
+        await cta_refresh_panel(bot, run_id)
+        cta_audit(interaction.guild_id, interaction.user.id, "cta_created", run_id, f"composition={comp['name']}; closes={close_at.isoformat()}; minutes={minutes}")
     except Exception as exc:
         print(f"Error publicando CTA #{run_id}: {exc}")
         db_execute("UPDATE cta_runs SET status='error' WHERE id=?", (run_id,))
-        if not interaction.response.is_done():
-            await interaction.response.send_message("No pude publicar el panel, pero guardé el registro para poder diagnosticarlo. Revisá los permisos del canal.", ephemeral=True)
+        text = ("❌ No pude crear la CTA. Revisá que el bot tenga los permisos «Crear hilos públicos», "
+                "«Enviar mensajes en hilos» y «Enviar mensajes» en este canal.")
+        if message is not None:
+            try:
+                await message.edit(content=text, embed=None, view=None)
+            except Exception:
+                pass
+        elif not interaction.response.is_done():
+            await interaction.response.send_message(text, ephemeral=True)
+        else:
+            try:
+                await interaction.followup.send(text, ephemeral=True)
+            except Exception:
+                pass
         return
+
+
+cta_command.autocomplete("nombre")(cta_name_autocomplete)
 
 
 @bot.tree.command(name="cta_activas", description="Consultar las CTA activas", guild=GUILD_OBJ)
 async def cta_activas(interaction: discord.Interaction):
-    rows = db_fetchall("SELECT id, composition_name, closes_at, channel_id FROM cta_runs WHERE guild_id=? AND status='open' ORDER BY closes_at", (interaction.guild_id,))
+    rows = db_fetchall("SELECT id, composition_name, closes_at, channel_id, thread_id FROM cta_runs WHERE guild_id=? AND status='open' ORDER BY closes_at", (interaction.guild_id,))
     if not rows:
         return await interaction.response.send_message("No hay CTA activas.", ephemeral=True)
     lines = []
     for r in rows:
-        closes = datetime.fromisoformat(r["closes_at"])
-        lines.append(f"• CTA **#{r['id']} — {r['composition_name']}** · cierre <t:{int(closes.timestamp())}:R> · <#{r['channel_id']}>")
+        closes = _cta_parse_dt(r["closes_at"])
+        where = f"<#{r['thread_id']}>" if r["thread_id"] else f"<#{r['channel_id']}>"
+        lines.append(f"• CTA **#{r['id']} — {r['composition_name']}** · cierra <t:{int(closes.timestamp())}:R> · {where}")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
-@bot.tree.command(name="cta_cerrar", description="Cerrar anticipadamente una CTA", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(cta_id="Identificador numérico de la CTA")
+@bot.tree.command(name="cta_cerrar", description="Cerrar una CTA antes de tiempo", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta_activas)")
 async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
     if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in interaction.user.roles)):
         return await interaction.response.send_message("No tenés permisos para cerrar CTA.", ephemeral=True)
     run = cta_run_get(cta_id)
     if not run or int(run["guild_id"]) != interaction.guild_id or run["status"] != "open":
-        return await interaction.response.send_message("No encontré una CTA abierta con ese ID.", ephemeral=True)
+        return await interaction.response.send_message("No encontré una CTA abierta con ese número.", ephemeral=True)
+    await interaction.response.send_message(f"CTA **#{cta_id}** cerrada. La composición final queda publicada en el hilo.", ephemeral=True)
     await cta_close_run(cta_id, reason=f"closed_by:{interaction.user.id}")
-    await interaction.response.send_message(f"CTA **#{cta_id}** cerrada. El panel se conserva publicado.", ephemeral=True)
 
 
-@bot.tree.command(name="cta_asignar", description="Asignar manualmente un jugador a una plaza", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(cta_id="ID de CTA", miembro="Jugador", party="Número de party", posicion="Posición dentro de la party", excepcion="Permitir asignación aunque no cumpla roles", motivo="Motivo si se autoriza una excepción")
-async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member, party: app_commands.Range[int, 1, 50], posicion: app_commands.Range[int, 1, 250], excepcion: bool = False, motivo: Optional[str] = None):
+@bot.tree.command(name="cta_asignar", description="Asignar a un jugador a una posición de una CTA", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(cta_id="Número de la CTA", miembro="Jugador", numero="Número de posición (el mismo que se usa en el hilo)", excepcion="Asignar aunque no cumpla los roles pedidos", motivo="Motivo (obligatorio si usás excepción)")
+async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member, numero: app_commands.Range[int, 1, CTA_MAX_SLOTS], excepcion: bool = False, motivo: Optional[str] = None):
     if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in interaction.user.roles)):
-        return await interaction.response.send_message("No tenés permisos para administrar plazas.", ephemeral=True)
+        return await interaction.response.send_message("No tenés permisos para asignar posiciones.", ephemeral=True)
     run = cta_run_get(cta_id)
     if not run or int(run["guild_id"]) != interaction.guild_id or run["status"] != "open":
-        return await interaction.response.send_message("CTA inexistente o cerrada.", ephemeral=True)
+        return await interaction.response.send_message("La CTA no existe o ya está cerrada.", ephemeral=True)
     snapshot = json.loads(run["snapshot_json"])
-    slot = next((s for s in snapshot["slots"] if int(s["party_no"]) == party and int(s["position_no"]) == posicion), None)
+    slot = cta_slot_by_number(snapshot["slots"], numero)
     if not slot:
-        return await interaction.response.send_message("Esa posición no existe en la CTA.", ephemeral=True)
+        return await interaction.response.send_message(f"La posición {numero} no existe. Esta CTA tiene posiciones del 1 al {len(snapshot['slots'])}.", ephemeral=True)
     error = cta_access_error(miembro, slot, interaction.guild)
     if error and not excepcion:
-        return await interaction.response.send_message(error + " Para ignorar la restricción, marcá `excepcion` y proporcioná un motivo.", ephemeral=True)
+        return await interaction.response.send_message(error + " Si querés asignarlo igual, marcá `excepcion` e indicá el motivo.", ephemeral=True)
     if excepcion and not (motivo and motivo.strip()):
-        return await interaction.response.send_message("Para una excepción necesitás indicar el motivo.", ephemeral=True)
+        return await interaction.response.send_message("Para usar una excepción tenés que indicar el motivo.", ephemeral=True)
+    key = cta_slot_key(slot)
     try:
-        with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            cur = conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,assigned_by,override_reason,signed_at) VALUES (?,?,?,?,?,?)", (cta_id, cta_slot_key(slot), miembro.id, interaction.user.id, motivo.strip() if excepcion and motivo else None, cta_now_iso()))
-            conn.commit()
+        with db_immediate() as conn:
+            if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND slot_key=?", (cta_id, key)).fetchone():
+                return await interaction.response.send_message(f"La posición {numero} ya está ocupada. Liberala primero con `/cta_liberar`.", ephemeral=True)
+            if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, miembro.id)).fetchone():
+                return await interaction.response.send_message(f"{miembro.mention} ya está anotado en esta CTA. Liberalo primero con `/cta_liberar`.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+            conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,assigned_by,override_reason,signed_at) VALUES (?,?,?,?,?,?)", (cta_id, key, miembro.id, interaction.user.id, motivo.strip() if excepcion and motivo else None, cta_now_iso()))
     except sqlite3.IntegrityError:
-        return await interaction.response.send_message("El jugador ya está anotado o la plaza ya está ocupada.", ephemeral=True)
-    cta_audit(interaction.guild_id, interaction.user.id, "manual_assign_override" if excepcion else "manual_assign", cta_id, f"member={miembro.id}; slot={cta_slot_key(slot)}; reason={motivo or ''}")
-    await cta_refresh_panel(bot, cta_id)
-    await interaction.response.send_message(f"✅ {miembro.mention} asignado a Party {party}, posición {posicion}.", ephemeral=True)
+        return await interaction.response.send_message("La posición se ocupó justo ahora. Probá de nuevo.", ephemeral=True)
+    cta_audit(interaction.guild_id, interaction.user.id, "manual_assign_override" if excepcion else "manual_assign", cta_id, f"member={miembro.id}; slot={key}; reason={motivo or ''}")
+    cta_request_board_refresh(cta_id)
+    await interaction.response.send_message(f"✅ {miembro.mention} quedó asignado a la posición {numero} ({slot['role_name']}, Party {slot['party_no']}).", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
-@bot.tree.command(name="cta_liberar", description="Liberar la plaza de un jugador en una CTA", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="cta_liberar", description="Liberar la posición de un jugador en una CTA", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(cta_id="Número de la CTA", miembro="Jugador")
 async def cta_liberar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in interaction.user.roles)):
-        return await interaction.response.send_message("No tenés permisos para liberar plazas.", ephemeral=True)
+        return await interaction.response.send_message("No tenés permisos para liberar posiciones.", ephemeral=True)
     run = cta_run_get(cta_id)
     if not run or int(run["guild_id"]) != interaction.guild_id or run["status"] != "open":
-        return await interaction.response.send_message("CTA inexistente o cerrada.", ephemeral=True)
+        return await interaction.response.send_message("La CTA no existe o ya está cerrada.", ephemeral=True)
     rows = db_fetchall("SELECT slot_key FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, miembro.id))
     if not rows:
         return await interaction.response.send_message("Ese jugador no está anotado en esta CTA.", ephemeral=True)
     db_execute("DELETE FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, miembro.id))
     cta_audit(interaction.guild_id, interaction.user.id, "admin_release", cta_id, f"member={miembro.id}; slot={rows[0]['slot_key']}")
-    await cta_refresh_panel(bot, cta_id)
-    await interaction.response.send_message(f"Plaza de {miembro.mention} liberada.", ephemeral=True)
+    cta_request_board_refresh(cta_id)
+    await interaction.response.send_message(f"Liberé la posición de {miembro.mention}.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
-@bot.tree.command(name="cta_historial", description="Consultar las últimas CTA cerradas", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="cta_historial", description="Ver las últimas CTA cerradas", guild=discord.Object(id=GUILD_ID))
 async def cta_historial(interaction: discord.Interaction):
     rows = db_fetchall("SELECT id, composition_name, created_at, closed_at, status FROM cta_runs WHERE guild_id=? AND status IN ('closed','error') ORDER BY id DESC LIMIT 10", (interaction.guild_id,))
     if not rows:
-        return await interaction.response.send_message("Todavía no hay CTA cerradas en el historial.", ephemeral=True)
+        return await interaction.response.send_message("Todavía no hay CTA cerradas.", ephemeral=True)
     lines = []
     for r in rows:
-        created = datetime.fromisoformat(r["created_at"])
-        lines.append(f"• **#{r['id']} {r['composition_name']}** · iniciada <t:{int(created.timestamp())}:R> · `{r['status']}`")
+        created = _cta_parse_dt(r["created_at"])
+        state = "cerrada" if r["status"] == "closed" else "con error"
+        lines.append(f"• **#{r['id']} {r['composition_name']}** · iniciada <t:{int(created.timestamp())}:R> · {state}")
     await interaction.response.send_message("**Últimas CTA**\n" + "\n".join(lines), ephemeral=True)
 
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=15)
 async def cta_housekeeping():
+    """Cierra automáticamente las CTA cuyo tiempo terminó (también las que vencieron con el bot apagado)."""
     rows = db_fetchall("SELECT id, closes_at FROM cta_runs WHERE status='open'")
     now = datetime.now(timezone.utc)
     for row in rows:
         try:
-            close_at = datetime.fromisoformat(row["closes_at"])
-            if close_at.tzinfo is None:
-                close_at = close_at.replace(tzinfo=timezone.utc)
-            if close_at <= now:
+            if _cta_parse_dt(row["closes_at"]) <= now:
                 await cta_close_run(int(row["id"]), reason="timeout")
-            else:
-                # El panel se actualiza de forma periódica para reflejar la cuenta regresiva.
-                await cta_refresh_panel(bot, int(row["id"]))
         except Exception as exc:
             print(f"Error en housekeeping CTA #{row['id']}: {exc}")
 
@@ -3655,7 +4254,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             if target is None:
                 target = after.guild.get_channel(int(row["channel_id"]))
             if target:
-                await target.send(f"<@{row['created_by']}> ⚠️ {after.mention} ya no cumple la restricción de roles de **Party {slot['party_no']} · {slot['position_no']} — {slot['role_name']}** en la CTA #{row['cta_id']}. No se modificó su plaza automáticamente.", allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                await target.send(f"<@{row['created_by']}> ⚠️ {after.mention} ya no cumple los roles que pide la posición **{cta_number_of_slot_key(snapshot['slots'], row['slot_key'])} ({slot['role_name']}, Party {slot['party_no']})** de la CTA #{row['cta_id']}. Su plaza no se modificó.", allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         except Exception as exc:
             print(f"Error verificando cambio de roles para CTA #{row['cta_id']}: {exc}")
 
@@ -3705,12 +4304,20 @@ async def on_ready():
         cta_housekeeping.start()
         print("✅ CTA housekeeping iniciado")
     if not getattr(bot, "_cta_views_restored", False):
-        for cta_row in db_fetchall("SELECT id, status FROM cta_runs WHERE message_id IS NOT NULL"):
+        for cta_row in db_fetchall("SELECT id, status, message_id FROM cta_runs WHERE message_id IS NOT NULL"):
             try:
-                bot.add_view(CTAPanelView(run_id=int(cta_row["id"]), closed=cta_row["status"] != "open"), message_id=int(db_fetchall("SELECT message_id FROM cta_runs WHERE id=?", (cta_row["id"],))[0]["message_id"]))
+                bot.add_view(CTAPanelView(run_id=int(cta_row["id"]), closed=cta_row["status"] != "open"), message_id=int(cta_row["message_id"]))
             except Exception as exc:
                 print(f"CTA #{cta_row['id']}: no se pudo restaurar la vista: {exc}")
         bot._cta_views_restored = True
+        # Recuperar las CTA abiertas: hilo, tablero y panel (las inscripciones están en SQLite).
+        async def _restore_open_ctas():
+            for r in db_fetchall("SELECT id FROM cta_runs WHERE status='open'"):
+                try:
+                    await cta_ensure_thread_and_board(int(r["id"]))
+                except Exception as exc:
+                    print(f"CTA #{r['id']}: no se pudo recuperar: {exc}")
+        asyncio.create_task(_restore_open_ctas())
 
     # Tasks
     if not timer_posts_cleanup.is_running():
@@ -3760,6 +4367,15 @@ async def on_message(message: discord.Message):
     if message.guild is None or message.author.bot:
         return
 
+    # ✅ CTA: inscripción escribiendo el número de la posición en el hilo de la CTA
+    if isinstance(message.channel, discord.Thread):
+        try:
+            if await cta_handle_thread_message(message):
+                return
+        except Exception as exc:
+            print(f"Error procesando mensaje en hilo de CTA: {exc}")
+            return
+
     # ✅ RECRUIT: guardar screenshot aunque el bot haya reiniciado (por topic)
     recruit_uid = _get_recruit_uid_from_channel(message.channel)
     if recruit_uid is not None:
@@ -3803,7 +4419,4 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
-
-
-
 
