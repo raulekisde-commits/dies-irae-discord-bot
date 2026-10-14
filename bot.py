@@ -2855,6 +2855,8 @@ def cta_db_init():
         """)
         # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
+        db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
         conn.commit()
 
 
@@ -3226,7 +3228,8 @@ def cta_instructions_text(run: dict, total: int) -> str:
         f"• Para cambiar de posición, escribí otro número libre.\n"
         f"• Para salir, escribí `salir`.\n"
         f"• Las posiciones con 🔒 piden ciertos roles.\n"
-        f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>. La lista se actualiza sola."
+        f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>. La lista se actualiza sola.\n"
+        f"• Al cerrar, todos los anotados reciben un rol nuevo de esta CTA."
     )
 
 
@@ -3369,6 +3372,84 @@ async def cta_close_run(run_id: int, reason="timeout"):
                               allowed_mentions=CTA_NO_PINGS)
         except Exception:
             pass
+    task = asyncio.create_task(cta_assign_signup_role(run_id))
+    cta_role_tasks.add(task)
+    task.add_done_callback(cta_role_tasks.discard)
+
+
+cta_role_tasks: set = set()
+
+
+def cta_role_name(run: dict) -> str:
+    return f"CTA {run['composition_name']} #{run['id']}"[:100]
+
+
+async def cta_assign_signup_role(run_id: int):
+    """Al cerrar la CTA crea un rol nuevo y se lo asigna a todos los jugadores anotados.
+
+    Se reclama de forma atómica (role_id -1) para que nunca se cree dos veces el mismo rol."""
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        cur = conn.execute("UPDATE cta_runs SET role_id=-1 WHERE id=? AND status='closed' AND role_id IS NULL", (run_id,))
+        claimed = cur.rowcount
+        conn.commit()
+    if not claimed:
+        return
+    run = cta_run_get(run_id)
+    thread = await cta_get_thread(run)
+
+    async def say(text: str):
+        if thread is not None:
+            try:
+                await thread.send(text, allowed_mentions=CTA_NO_PINGS)
+            except Exception:
+                pass
+
+    user_ids = [int(r["user_id"]) for r in db_fetchall("SELECT user_id FROM cta_signups WHERE cta_id=? ORDER BY signed_at", (run_id,))]
+    if not user_ids:
+        db_execute("UPDATE cta_runs SET role_id=0 WHERE id=?", (run_id,))
+        await say("No se anotó nadie, así que no se creó ningún rol.")
+        return
+    guild = bot.get_guild(int(run["guild_id"]))
+    if guild is None:
+        db_execute("UPDATE cta_runs SET role_id=NULL WHERE id=?", (run_id,))   # se reintenta al reconectar
+        return
+    try:
+        role = await guild.create_role(name=cta_role_name(run), mentionable=False,
+                                       reason=f"CTA #{run_id} cerrada: rol para los jugadores anotados")
+    except discord.Forbidden:
+        db_execute("UPDATE cta_runs SET role_id=0 WHERE id=?", (run_id,))
+        await say("⚠️ No pude crear el rol de la CTA: me falta el permiso **Gestionar roles**.")
+        return
+    except discord.HTTPException as exc:
+        db_execute("UPDATE cta_runs SET role_id=0 WHERE id=?", (run_id,))
+        print(f"CTA #{run_id}: no pude crear el rol: {exc}")
+        await say("⚠️ Discord no me dejó crear el rol de la CTA.")
+        return
+    db_execute("UPDATE cta_runs SET role_id=? WHERE id=?", (role.id, run_id))
+    assigned, missing, failed = 0, 0, 0
+    for uid in user_ids:
+        member = guild.get_member(uid)
+        if member is None:
+            try:
+                member = await guild.fetch_member(uid)
+            except Exception:
+                member = None
+        if member is None:
+            missing += 1
+            continue
+        try:
+            await member.add_roles(role, reason=f"Anotado en la CTA #{run_id}")
+            assigned += 1
+        except discord.HTTPException as exc:
+            failed += 1
+            print(f"CTA #{run_id}: no pude dar el rol a {uid}: {exc}")
+    cta_audit(int(run["guild_id"]), int(run["created_by"]), "cta_role_assigned", run_id, f"role={role.id}; assigned={assigned}; missing={missing}; failed={failed}")
+    text = f"🎖️ Creé el rol {role.mention} y se lo asigné a **{assigned}** de {len(user_ids)} jugadores anotados."
+    if missing:
+        text += f" {missing} ya no están en el servidor."
+    if failed:
+        text += f" ⚠️ Fallé con {failed}: revisá que mi rol esté por encima del rol creado y que tenga **Gestionar roles**."
+    await say(text)
 
 
 async def cta_ensure_thread_and_board(run_id: int):
@@ -4312,6 +4393,14 @@ async def on_ready():
         bot._cta_views_restored = True
         # Recuperar las CTA abiertas: hilo, tablero y panel (las inscripciones están en SQLite).
         async def _restore_open_ctas():
+            # CTA cerradas hace menos de un día cuya asignación de rol quedó pendiente o cortada por un reinicio.
+            limit = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            db_execute("UPDATE cta_runs SET role_id=NULL WHERE status='closed' AND role_id=-1 AND closed_at>?", (limit,))
+            for r in db_fetchall("SELECT id FROM cta_runs WHERE status='closed' AND role_id IS NULL AND closed_at>?", (limit,)):
+                try:
+                    await cta_assign_signup_role(int(r["id"]))
+                except Exception as exc:
+                    print(f"CTA #{r['id']}: no se pudo asignar el rol pendiente: {exc}")
             for r in db_fetchall("SELECT id FROM cta_runs WHERE status='open'"):
                 try:
                     await cta_ensure_thread_and_board(int(r["id"]))
@@ -4419,4 +4508,6 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
+
 
