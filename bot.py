@@ -4527,6 +4527,176 @@ async def verratas_slash(interaction: discord.Interaction):
         await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
 
 
+# ================== !topkills / !topattend / !topdeaths ==================
+# Datos: página de asistencia de la guild en AlbionBB (la misma que se ve en el navegador; trae kills,
+# muertes y asistencia por jugador con el filtro por defecto de la página).
+ALBION_TOP_URL = os.getenv("ALBION_TOP_URL", f"https://albionbb.com/guilds/{ALBION_GUILD_ID}/attendance")
+ALBION_TOP_SIZE = 10
+ALBION_TOP_CACHE_SECONDS = 300          # resultado fresco
+ALBION_TOP_STALE_SECONDS = 6 * 3600     # si AlbionBB falla, se usa lo último guardado hasta este límite
+ALBION_TOP_USER_COOLDOWN = 15           # segundos entre usos por persona
+ALBION_TOP_STATS = {
+    "kills": ("topkills", "⚔️", "Top kills", "kills"),
+    "attendance": ("topattend", "🛡️", "Top asistencia", "asistencias"),
+    "deaths": ("topdeaths", "💀", "Top muertes", "muertes"),
+}
+_albion_top_cache: dict = {"at": 0.0, "players": []}
+_albion_top_last_use: dict = {}
+_albion_top_lock = asyncio.Lock()
+
+
+def _albion_nuxt_decode(raw):
+    """Decodifica el formato compacto de Nuxt (__NUXT_DATA__): lista de nodos que se referencian por índice."""
+    memo: dict = {}
+
+    def ref(x):
+        return get(x) if isinstance(x, int) and not isinstance(x, bool) and x >= 0 else None
+
+    def get(i):
+        if i in memo:
+            return memo[i]
+        v = raw[i]
+        if isinstance(v, list):
+            if v and isinstance(v[0], str):          # nodo especial, p. ej. ["ShallowReactive", 3]
+                out = ref(v[1]) if len(v) > 1 and v[0] in ("ShallowReactive", "Reactive", "ShallowRef", "Ref") else None
+                memo[i] = out
+                return out
+            out = []
+            memo[i] = out
+            out.extend(ref(x) for x in v)
+            return out
+        if isinstance(v, dict):
+            out = {}
+            memo[i] = out
+            for k, x in v.items():
+                out[k] = ref(x)
+            return out
+        memo[i] = v
+        return v
+
+    return get(0)
+
+
+def _albion_top_players(html: str) -> list:
+    """Saca la lista de jugadores (con kills/deaths/attendance) del HTML de AlbionBB. Lanza ValueError si no la encuentra."""
+    m = re.search(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', html or "", re.S)
+    if not m:
+        raise ValueError("la página no trae los datos esperados (¿bloqueo o cambio de formato?)")
+    decoded = _albion_nuxt_decode(json.loads(m.group(1)))
+    found: list = []
+
+    def walk(o, depth=0):
+        if depth > 40 or found:
+            return
+        if isinstance(o, list):
+            dicts = [x for x in o if isinstance(x, dict)]
+            if dicts and len(dicts) == len(o) and all(k in dicts[0] for k in ("name", "kills", "deaths", "attendance")):
+                found.extend(dicts)
+                return
+            for x in o:
+                walk(x, depth + 1)
+        elif isinstance(o, dict):
+            for x in o.values():
+                walk(x, depth + 1)
+
+    walk(decoded)
+    if not found:
+        raise ValueError("no encontré la tabla de jugadores en la página")
+    return found
+
+
+def _albion_top_rank(players: list, key: str, size: int = ALBION_TOP_SIZE) -> list:
+    """Top por 'key' (mayor primero; empate: orden alfabético). Ignora valores vacíos o 0 y filas inválidas."""
+    rows = []
+    for p in players:
+        try:
+            value = int(p.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        name = str(p.get("name") or "").strip()
+        if name and value > 0:
+            rows.append((name, value))
+    rows.sort(key=lambda r: (-r[1], r[0].casefold()))
+    return rows[:size]
+
+
+def _albion_top_embed(key: str, rows: list, total_players: int, age_seconds: float, stale: bool) -> discord.Embed:
+    _cmd, icon, title, unit = ALBION_TOP_STATS[key]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = [f"{medals.get(i, f'`{i:>2}.`')} **{discord.utils.escape_markdown(name)}** — {value:,} {unit}".replace(",", ".")
+             for i, (name, value) in enumerate(rows, start=1)]
+    embed = discord.Embed(title=f"{icon} {title} · {ALBION_GUILD_NAME}",
+                          description="\n".join(lines) if lines else "Todavía no hay datos para mostrar.",
+                          color=discord.Color.gold())
+    mins = int(age_seconds // 60)
+    when = "recién actualizado" if mins < 1 else f"actualizado hace {mins} min"
+    note = " · ⚠️ AlbionBB no respondió, son datos guardados" if stale else ""
+    embed.set_footer(text=f"Fuente: AlbionBB · {total_players} jugadores en la tabla · {when}{note}")
+    return embed
+
+
+async def _albion_top_fetch() -> tuple:
+    """Devuelve (jugadores, edad_en_segundos, desactualizado). Usa caché de 5 min; si AlbionBB falla,
+    sirve el último resultado guardado (hasta 6 h). Si no hay nada guardado, lanza el error."""
+    async with _albion_top_lock:
+        now = time.time()
+        if _albion_top_cache["players"] and now - _albion_top_cache["at"] < ALBION_TOP_CACHE_SECONDS:
+            return _albion_top_cache["players"], now - _albion_top_cache["at"], False
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; SmoggBot/1.0)", "Accept": "text/html"}
+        try:
+            async with bot.http_session.get(ALBION_TOP_URL, headers=headers,
+                                            timeout=aiohttp.ClientTimeout(total=ALBION_TIMEOUT_SECONDS)) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                html = await resp.text()
+            players = _albion_top_players(html)
+            _albion_top_cache.update(at=time.time(), players=players)
+            return players, 0.0, False
+        except Exception as exc:
+            print(f"!top*: no pude leer AlbionBB: {type(exc).__name__}: {exc}")
+            if _albion_top_cache["players"] and now - _albion_top_cache["at"] < ALBION_TOP_STALE_SECONDS:
+                return _albion_top_cache["players"], now - _albion_top_cache["at"], True
+            raise
+
+
+async def _albion_top_command(ctx: commands.Context, key: str):
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+        return
+    member_role = ctx.guild.get_role(MIEMBRO_ROLE_ID)
+    if not ((member_role is not None and member_role in ctx.author.roles) or is_staff_member(ctx.author)):
+        return await ctx.reply("❌ Este comando es solo para miembros de la guild.", mention_author=False)
+    now = time.time()
+    if now - _albion_top_last_use.get(ctx.author.id, 0.0) < ALBION_TOP_USER_COOLDOWN:
+        return await ctx.reply(f"⏳ Esperá unos segundos antes de volver a usar este comando.", mention_author=False,
+                               delete_after=8)
+    _albion_top_last_use[ctx.author.id] = now
+    async with ctx.typing():
+        try:
+            players, age, stale = await _albion_top_fetch()
+        except Exception as exc:
+            return await ctx.reply("❌ No pude leer los datos de AlbionBB. Probá de nuevo en un rato.\n"
+                                   f"Detalle técnico (para el administrador): `{type(exc).__name__}: {str(exc)[:300]}`",
+                                   mention_author=False)
+    rows = _albion_top_rank(players, key)
+    await ctx.send(embed=_albion_top_embed(key, rows, len(players), age, stale),
+                   allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="topkills")
+async def topkills_cmd(ctx: commands.Context):
+    await _albion_top_command(ctx, "kills")
+
+
+@bot.command(name="topattend")
+async def topattend_cmd(ctx: commands.Context):
+    await _albion_top_command(ctx, "attendance")
+
+
+@bot.command(name="topdeaths")
+async def topdeaths_cmd(ctx: commands.Context):
+    await _albion_top_command(ctx, "deaths")
+
+
 # ---------- READY (AL FINAL, así PanelView existe) ----------
 @bot.event
 async def on_ready():
@@ -4622,4 +4792,79 @@ def _is_image_attachment(att: discord.Attachment) -> bool:
         return True
     # fallback por extensión, por si content_type viene vacío
     name = (att.filename or "").lower()
-    return name.endswith((".pn
+    return name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+
+def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]:
+    if not isinstance(ch, discord.TextChannel):
+        return None
+    info = parse_recruit_topic(ch.topic)
+    uid = info.get("uid")
+    if not uid:
+        return None
+    try:
+        return int(uid)
+    except ValueError:
+        return None
+
+@bot.event
+async def on_message(message: discord.Message):
+    await bot.process_commands(message)
+
+    if message.guild is None or message.author.bot:
+        return
+
+    # ✅ CTA: inscripción escribiendo el número de la posición en el hilo de la CTA
+    if isinstance(message.channel, discord.Thread):
+        try:
+            if await cta_handle_thread_message(message):
+                return
+        except Exception as exc:
+            print(f"Error procesando mensaje en hilo de CTA: {exc}")
+            return
+
+    # ✅ RECRUIT: guardar screenshot aunque el bot haya reiniciado (por topic)
+    recruit_uid = _get_recruit_uid_from_channel(message.channel)
+    if recruit_uid is not None:
+        # Solo guardamos si el que manda la imagen es el postulante del ticket
+        if message.author.id != recruit_uid:
+            return
+
+        if not message.attachments:
+            return
+
+        img = None
+        for att in message.attachments:
+            if _is_image_attachment(att):
+                img = att
+                break
+        if img is None:
+            return
+
+        save_ticket_image(message.author.id, img.url, img.filename or "image.png")
+        return
+
+    # (Opcional) Si querés conservar tu modo viejo para tickets recién creados:
+    opener_channel_id = active_applications.get(message.author.id)
+    if opener_channel_id is None or opener_channel_id != message.channel.id:
+        return
+
+    if not message.attachments:
+        return
+
+    img = None
+    for att in message.attachments:
+        if _is_image_attachment(att):
+            img = att
+            break
+    if img is None:
+        return
+
+    ticket_images[message.author.id] = {
+        "url": img.url,
+        "filename": img.filename or "image.png",
+    }
+# ---------- RUN ----------
+bot.run(TOKEN)
+
+
+
