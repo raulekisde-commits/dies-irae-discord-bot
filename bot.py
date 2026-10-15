@@ -181,9 +181,11 @@ _ALBION_GAMEINFO_BY_REGION = {
     "west": "https://gameinfo.albiononline.com", "us": "https://gameinfo.albiononline.com",
     "east": "https://gameinfo-sgp.albiononline.com", "asia": "https://gameinfo-sgp.albiononline.com",
 }
-ALBION_GAMEINFO_BASE = os.getenv("ALBION_GAMEINFO_BASE",
-                                 _ALBION_GAMEINFO_BY_REGION.get(ALBIONBB_REGION, "https://gameinfo-ams.albiononline.com"))
-ALBION_GAMEINFO_ALL = ["https://gameinfo-ams.albiononline.com", "https://gameinfo.albiononline.com",
+# Smogg figura en el servidor de Américas (Europa y Asia devuelven la guild vacía/inexistente).
+ALBION_GAMEINFO_BASE = os.getenv("ALBION_GAMEINFO_BASE", "https://gameinfo.albiononline.com")
+ALBION_TIMEOUT_SECONDS = 45
+ALBION_RETRIES = 2
+ALBION_GAMEINFO_ALL = ["https://gameinfo.albiononline.com", "https://gameinfo-ams.albiononline.com",
                        "https://gameinfo-sgp.albiononline.com"]
 ALBION_ROSTER_CACHE_SECONDS = 120
 _albion_roster_cache: dict = {"at": 0.0, "names": set()}
@@ -257,8 +259,12 @@ class GiveawayItem:
     entrants: set[int] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     winners_count: int = 1
+    finished: bool = False
 
-giveaways: dict[int, GiveawayItem] = {}  # message_id -> GiveawayItem
+giveaways: dict[int, GiveawayItem] = {}
+giveaways_panel_tasks: dict = {}      # message_id -> tarea que actualiza el contador del panel
+giveaways_panel_dirty: set = set()
+GIVEAWAY_PANEL_REFRESH_SECONDS = 5  # message_id -> GiveawayItem
 
 
 _GIVEAWAY_UPSERT_SQL = """INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count)
@@ -484,6 +490,32 @@ async def _giveaway_channel(guild: discord.Guild, g: GiveawayItem):
         return None
     return ch
 
+async def _giveaway_panel_worker(g: GiveawayItem):
+    while True:
+        await asyncio.sleep(GIVEAWAY_PANEL_REFRESH_SECONDS)
+        giveaways_panel_dirty.discard(g.message_id)
+        if g.finished or g.message_id not in giveaways:
+            return
+        try:
+            ch = bot.get_channel(g.channel_id)
+            if ch is not None and hasattr(ch, "get_partial_message"):
+                await ch.get_partial_message(g.message_id).edit(embed=build_giveaway_embed(g))
+        except Exception as exc:
+            print(f"Sorteo {g.message_id}: no pude actualizar el contador: {exc}")
+        if g.message_id not in giveaways_panel_dirty:
+            return
+
+
+def giveaway_request_panel_refresh(g: GiveawayItem):
+    """Actualiza el número de anotados del panel. Agrupa muchos clics en una sola edición cada pocos
+    segundos para no pasarse del límite de ediciones de Discord."""
+    task = giveaways_panel_tasks.get(g.message_id)
+    if task is not None and not task.done():
+        giveaways_panel_dirty.add(g.message_id)
+        return
+    giveaways_panel_tasks[g.message_id] = asyncio.create_task(_giveaway_panel_worker(g))
+
+
 async def finish_giveaway_message(ch, g: GiveawayItem, winners: Optional[list[int]],
                                   note: Optional[str] = None):
     """Deshabilita el botón y deja visible el resultado en el mensaje original del sorteo."""
@@ -525,9 +557,11 @@ async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
         # No borrar el registro persistente por un fallo temporal de caché/conexión.
         return
 
+    g.finished = True      # frena las actualizaciones del contador para no pisar el resultado final
     ch = await _giveaway_channel(guild, g)
     if ch is None:
         # Se conserva en SQLite para reintentar en la próxima reconexión.
+        g.finished = False
         return
 
     async with g.lock:
@@ -1830,7 +1864,8 @@ class GiveawayJoinView(discord.ui.View):
             return await respond_ephemeral(
                 interaction, "❌ No pude guardar tu inscripción. Probá de nuevo en unos segundos.")
 
-        # No editamos el embed en cada click (evita rate-limit cuando muchos usuarios tocan el botón)
+        # El contador del panel se actualiza agrupado (una edición cada pocos segundos).
+        giveaway_request_panel_refresh(g)
         return await respond_ephemeral(interaction, "✅ Listo, quedaste anotado.")
 
 
@@ -1918,6 +1953,7 @@ class PanelView(discord.ui.View):
             description=(
                 "**Enviá lo siguiente:**\n\n"
                 "📸 Screenshot perfil Albion\n"
+                "🎥 POVs jugando el rol con el que postulaste\n"
                 "⚔ Rol ZvZ\n"
                 "🕒 Horarios\n"
                 "📜 Gremios anteriores en los que estuviste\n\n"
@@ -4388,11 +4424,21 @@ def chunk_lines(lines: list, limit: int = 1900) -> list:
 
 
 async def _albion_get_json(url: str, params: Optional[dict] = None):
+    """GET con timeout largo (la API de Albion a veces tarda) y reintentos solo ante timeouts o cortes de red."""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; SmoggBot/1.0)", "Accept": "application/json"}
-    async with bot.http_session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"HTTP {resp.status}")
-        return await resp.json(content_type=None)
+    last_exc: Exception = RuntimeError("sin intentos")
+    for attempt in range(1 + ALBION_RETRIES):
+        try:
+            async with bot.http_session.get(url, params=params, headers=headers,
+                                            timeout=aiohttp.ClientTimeout(total=ALBION_TIMEOUT_SECONDS)) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")      # error del servidor: no se reintenta
+                return await resp.json(content_type=None)
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            last_exc = exc
+            if attempt < ALBION_RETRIES:
+                await asyncio.sleep(2)
+    raise last_exc
 
 
 def parse_albion_guild_id(data, guild_name: str) -> Optional[str]:
@@ -4576,79 +4622,4 @@ def _is_image_attachment(att: discord.Attachment) -> bool:
         return True
     # fallback por extensión, por si content_type viene vacío
     name = (att.filename or "").lower()
-    return name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
-
-def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]:
-    if not isinstance(ch, discord.TextChannel):
-        return None
-    info = parse_recruit_topic(ch.topic)
-    uid = info.get("uid")
-    if not uid:
-        return None
-    try:
-        return int(uid)
-    except ValueError:
-        return None
-
-@bot.event
-async def on_message(message: discord.Message):
-    await bot.process_commands(message)
-
-    if message.guild is None or message.author.bot:
-        return
-
-    # ✅ CTA: inscripción escribiendo el número de la posición en el hilo de la CTA
-    if isinstance(message.channel, discord.Thread):
-        try:
-            if await cta_handle_thread_message(message):
-                return
-        except Exception as exc:
-            print(f"Error procesando mensaje en hilo de CTA: {exc}")
-            return
-
-    # ✅ RECRUIT: guardar screenshot aunque el bot haya reiniciado (por topic)
-    recruit_uid = _get_recruit_uid_from_channel(message.channel)
-    if recruit_uid is not None:
-        # Solo guardamos si el que manda la imagen es el postulante del ticket
-        if message.author.id != recruit_uid:
-            return
-
-        if not message.attachments:
-            return
-
-        img = None
-        for att in message.attachments:
-            if _is_image_attachment(att):
-                img = att
-                break
-        if img is None:
-            return
-
-        save_ticket_image(message.author.id, img.url, img.filename or "image.png")
-        return
-
-    # (Opcional) Si querés conservar tu modo viejo para tickets recién creados:
-    opener_channel_id = active_applications.get(message.author.id)
-    if opener_channel_id is None or opener_channel_id != message.channel.id:
-        return
-
-    if not message.attachments:
-        return
-
-    img = None
-    for att in message.attachments:
-        if _is_image_attachment(att):
-            img = att
-            break
-    if img is None:
-        return
-
-    ticket_images[message.author.id] = {
-        "url": img.url,
-        "filename": img.filename or "image.png",
-    }
-# ---------- RUN ----------
-bot.run(TOKEN)
-
-
-
+    return name.endswith((".pn
