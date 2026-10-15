@@ -1020,8 +1020,8 @@ def next_utc_occurrence(h: int, m: int, now: Optional[datetime] = None) -> datet
 # ---- Paneles de timers: 3 mensajes fijos (Nodos · Vortex y Cores · Dragones) que se editan solos ----
 TIMER_CATEGORY_ORDER = ("nodos", "vortex", "dragones")
 TIMER_CATEGORY_TITLES = {"nodos": "🌿 Nodos", "vortex": "🌀 Vortex y Cores", "dragones": "🐉 Dragones"}
-TIMER_MATERIAL_NAMES = {"fibra": "Fiber", "cuero": "Hide", "mineral": "Ore", "madera": "Wood",
-                        "vortex": "Vortex", "core": "Core", "dragon": "Dragon"}
+TIMER_MATERIAL_NAMES = {"fibra": "Fibra", "cuero": "Cuero", "mineral": "Mineral", "madera": "Madera",
+                        "vortex": "Vortex", "core": "Core", "dragon": "Dragón"}
 TIMER_KEEP_MINUTES = 20          # un timer se borra del panel 20 minutos después de la hora en que salió
 TIMER_PANEL_MAX_LINES = 30
 TIMER_MAPA_MAX = 60
@@ -1035,8 +1035,9 @@ def timer_category(material: str) -> str:
 
 
 def timer_entry_line(entry: dict) -> str:
-    """'🌿 7.4 Fiber - Wetgrave Marsh - en 2 horas - @quien' o, con hora fija, '... - 18:12 UTC - @quien'.
-    El «en 2 horas» lo calcula Discord y se actualiza solo en pantalla."""
+    """'🌿 7.4 Fibra - Wetgrave Marsh - en 2 horas 18:12 UTC - @quien'.
+    El «en 2 horas» (o «hace 2 horas») es el timestamp de Discord y se actualiza solo en pantalla;
+    la hora fija va siempre al lado."""
     spawn = _timer_parse_dt(entry["spawn_at"])
     material = entry["material"]
     tier = entry.get("tier")
@@ -1044,7 +1045,7 @@ def timer_entry_line(entry: dict) -> str:
     name = TIMER_MATERIAL_NAMES.get(material, str(material).title())
     label = " ".join(x for x in (tier_text, name) if x)
     icon = MATERIAL_ICONS.get(material, DEFAULT_MATERIAL_ICON)
-    when = f"{spawn.strftime('%H:%M')} UTC" if entry.get("fixed") else f"<t:{int(spawn.timestamp())}:R>"
+    when = f"<t:{int(spawn.timestamp())}:R> {spawn.strftime('%H:%M')} UTC"
     who = f" - <@{entry['created_by']}>" if entry.get("created_by") else ""
     return f"{icon} {label} - {entry['mapa']} - {when}{who}"
 
@@ -1209,7 +1210,6 @@ async def before_timer_posts_cleanup():
     mapa="Nombre del mapa",
     tiempo="Horario UTC en que sale (HH:MM) ej 16:10",
     tier="Tier (obligatorio salvo para Dragon)",
-    tiempo_fijo="True: muestra la hora final (UTC). False (por defecto): muestra el tiempo que falta para que salga",
 )
 @app_commands.choices(
     material=[
@@ -1239,7 +1239,6 @@ async def timeradd_slash(
     mapa: str,
     tiempo: str,
     tier: Optional[app_commands.Choice[str]] = None,
-    tiempo_fijo: bool = False,
 ):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
@@ -1289,7 +1288,7 @@ async def timeradd_slash(
 
     await interaction.response.defer(ephemeral=True)
 
-    timer_add_entry(interaction.guild.id, mat, tr, mapa, target_utc, interaction.user.id, fixed=tiempo_fijo)
+    timer_add_entry(interaction.guild.id, mat, tr, mapa, target_utc, interaction.user.id)
     category = timer_category(mat)
     try:
         await timer_panel_refresh(interaction.guild, {category})      # edita el panel de esa categoría (lo crea si falta)
@@ -5121,7 +5120,7 @@ HELP_SECTIONS = [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
-        ("/timeradd material mapa tiempo [tier] [tiempo_fijo]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Con `tiempo_fijo` muestra la hora final en vez del tiempo que falta."),
+        ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
     ("🎁 Sorteos y roles", [
         ("/sorteo premio tiempo [ganadores]", "Staff", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
