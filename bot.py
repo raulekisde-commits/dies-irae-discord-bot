@@ -2825,6 +2825,12 @@ CTA_BRAWL_SLOTS = [
 ]
 
 
+def cta_slot_label(s: dict) -> str:
+    """Nombre de la posición, con emoji solo si la composición tiene uno cargado a mano."""
+    emoji = (s.get("emoji") or "").strip()
+    return f"{emoji} {s['role_name']}" if emoji else str(s["role_name"])
+
+
 def cta_db_init():
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -2843,7 +2849,7 @@ def cta_db_init():
             party_no INTEGER NOT NULL DEFAULT 1,
             position_no INTEGER NOT NULL,
             role_name TEXT NOT NULL,
-            emoji TEXT NOT NULL DEFAULT '⚔️',
+            emoji TEXT NOT NULL DEFAULT '',
             access_mode TEXT NOT NULL DEFAULT 'any',
             role_ids_json TEXT NOT NULL DEFAULT '[]',
             access_match TEXT NOT NULL DEFAULT 'any',
@@ -2907,6 +2913,8 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
+        # El ⚔️ era el emoji automático: ya no se agrega, así que se limpia de las posiciones existentes.
+        conn.execute("UPDATE cta_slots SET emoji='' WHERE emoji='⚔️' OR emoji='⚔'")
         conn.commit()
 
 
@@ -2945,7 +2953,7 @@ def cta_ensure_brawl(guild_id: int, creator_id: int):
         cid = row[0]
         for pos, role_name in CTA_BRAWL_SLOTS:
             conn.execute("INSERT OR IGNORE INTO cta_slots(composition_id,party_no,position_no,role_name,emoji) VALUES (?,?,?,?,?)",
-                         (cid, 1, pos, role_name, CTA_EMOJIS_DEFAULT.get(role_name, "⚔️")))
+                         (cid, 1, pos, role_name, ""))
         conn.commit()
 
 
@@ -3174,9 +3182,9 @@ def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = F
             if assigned is not None:
                 uid = assigned.get(cta_slot_key(s))
                 who = f"<@{uid}>" if uid else "*libre*"
-                lines.append(f"**{n}.** {s.get('emoji', '⚔️')} {s['role_name']} — {who}{mark}")
+                lines.append(f"**{n}.** {cta_slot_label(s)} — {who}{mark}")
             else:
-                lines.append(f"**{n}.** {s.get('emoji', '⚔️')} {s['role_name']}{mark}{extra}")
+                lines.append(f"**{n}.** {cta_slot_label(s)}{mark}{extra}")
         label = f"PARTY {party_no} · posiciones {first}–{last}" if first != last else f"PARTY {party_no} · posición {first}"
         chunk, size, part = [], 0, 0
         for line in lines:
@@ -3679,7 +3687,7 @@ class CTAAddSlotModal(discord.ui.Modal, title="Agregar posición"):
     party_no = discord.ui.TextInput(label="Número de party", placeholder="1", default="1", max_length=3)
     position_no = discord.ui.TextInput(label="Lugar dentro de la party", placeholder="1", max_length=3)
     role_name = discord.ui.TextInput(label="Nombre del rol o build", placeholder="Ej. Longbow", max_length=80)
-    emoji = discord.ui.TextInput(label="Emoji", placeholder="🏹", default="⚔️", max_length=30, required=False)
+    emoji = discord.ui.TextInput(label="Emoji (opcional)", placeholder="Vacío = sin emoji", default="", max_length=30, required=False)
 
     def __init__(self, composition_id: int, guild_id: int, actor_id: int, party_default: int = 1, position_default: int = 1):
         super().__init__()
@@ -3692,7 +3700,7 @@ class CTAAddSlotModal(discord.ui.Modal, title="Agregar posición"):
             party = int(str(self.party_no.value).strip())
             pos = int(str(self.position_no.value).strip())
             role = str(self.role_name.value).strip()
-            emoji = str(self.emoji.value).strip() or "⚔️"
+            emoji = str(self.emoji.value).strip()
             if party < 1 or pos < 1 or party > 25 or pos > 25:
                 raise ValueError
         except ValueError:
@@ -3723,11 +3731,11 @@ class CTAEditSlotModal(discord.ui.Modal, title="Editar posición"):
         super().__init__()
         self.composition_id, self.slot, self.guild_id, self.actor_id = composition_id, slot, guild_id, actor_id
         self.role_name.default = slot["role_name"]
-        self.emoji.default = slot["emoji"]
+        self.emoji.default = slot["emoji"] or ""
 
     async def on_submit(self, interaction: discord.Interaction):
         role = str(self.role_name.value).strip()
-        emoji = str(self.emoji.value).strip() or "⚔️"
+        emoji = str(self.emoji.value).strip()
         if not role:
             return await interaction.response.send_message("El nombre del rol no puede quedar vacío.", ephemeral=True)
         db_execute("UPDATE cta_slots SET role_name=?, emoji=? WHERE id=? AND composition_id=?", (role, emoji, self.slot["id"], self.composition_id))
@@ -3913,7 +3921,7 @@ class CTABulkAddModal(discord.ui.Modal, title="Agregar varias posiciones"):
             for offset, name in enumerate(names, start=1):
                 role = name[:80]
                 conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji) VALUES (?,?,?,?,?)",
-                             (self.composition_id, party, count + offset, role, CTA_EMOJIS_DEFAULT.get(role, "⚔️")))
+                             (self.composition_id, party, count + offset, role, ""))
             conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition_id))
         cta_audit(self.guild_id, self.actor_id, "composition_bulk_add", details=f"comp={self.composition_id}; party={party}; n={len(names)}")
         await interaction.response.send_message(f"✅ Agregué {len(names)} posiciones a la Party {party}.", ephemeral=True)
@@ -4865,6 +4873,3 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
-
-
-
