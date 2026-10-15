@@ -2729,9 +2729,10 @@ def parse_number_sum(text: str) -> Optional[float]:
     return float(total)
 
 
-def calc_split_final(total: float, sale_tax: float, guild_tax: float, reparacion: float) -> int:
-    """Split final = total - (total × (tax venta + tax guild) / 100) - reparación."""
-    return round(total - (total * (sale_tax + guild_tax) / 100) - reparacion)
+def calc_split_final(total: float, sale_tax: float, guild_tax: float, reparacion: float, bolsitas: float = 0.0) -> int:
+    """Split final = total - (total × (tax venta + tax guild) / 100) - reparación + bolsitas.
+    Las bolsitas se suman al final: no pagan tax ni se restan."""
+    return round(total - (total * (sale_tax + guild_tax) / 100) - reparacion + bolsitas)
 
 
 def build_split_calc_panel(
@@ -2758,7 +2759,7 @@ def build_split_calc_panel(
 @app_commands.describe(
     total="Total. Podés poner varios números separados por espacio. Ej: 1000000 500 23333",
     reparacion="Reparación. Podés poner varios números separados por espacio. Ej: 15000 2500",
-    bolsitas="Bolsitas (opcional, por defecto 0)",
+    bolsitas="Bolsitas (opcional, por defecto 0). Se suman al split final",
     tax_de_venta="Tax de venta en % (opcional, por defecto 15)",
     tax_de_guild="Tax de guild en % (opcional, por defecto 5)",
 )
@@ -2796,7 +2797,7 @@ async def calcularsplit_slash(
     if sale_tax + guild_tax > 100:
         return await respond_ephemeral(interaction, "❌ La suma de **tax de venta** y **tax de guild** no puede superar 100%.")
 
-    final = calc_split_final(total_sum, sale_tax, guild_tax, rep_sum)
+    final = calc_split_final(total_sum, sale_tax, guild_tax, rep_sum, bag)
 
     # Mensaje público en el canal donde se ejecutó el comando
     await interaction.response.send_message(
