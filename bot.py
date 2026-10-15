@@ -173,6 +173,18 @@ TIER_LABELS_SPECIAL = {
 ALBIONBB_REGION = os.getenv("ALBIONBB_REGION", "eu")
 
 ALBIONBB_BASE_URL = f"https://api.albionbb.com/{ALBIONBB_REGION}"
+# Plantel de la guild en Albion (API oficial del juego). El ID es el mismo que aparece en la URL de AlbionBB.
+ALBION_GUILD_NAME = os.getenv("ALBION_GUILD_NAME", "Smogg")
+ALBION_GUILD_ID = os.getenv("ALBION_GUILD_ID", "FkCFeONGTeqETPtZhJEubg")
+_ALBION_GAMEINFO_BY_REGION = {
+    "eu": "https://gameinfo-ams.albiononline.com",
+    "west": "https://gameinfo.albiononline.com", "us": "https://gameinfo.albiononline.com",
+    "east": "https://gameinfo-sgp.albiononline.com", "asia": "https://gameinfo-sgp.albiononline.com",
+}
+ALBION_GAMEINFO_BASE = os.getenv("ALBION_GAMEINFO_BASE",
+                                 _ALBION_GAMEINFO_BY_REGION.get(ALBIONBB_REGION, "https://gameinfo-ams.albiononline.com"))
+ALBION_ROSTER_CACHE_SECONDS = 120
+_albion_roster_cache: dict = {"at": 0.0, "names": set()}
 ALBIONBB_BATTLE_URL = f"{ALBIONBB_BASE_URL}/battles"
 ALBIONBB_KILLS_URL = f"{ALBIONBB_BASE_URL}/battles/kills"
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
@@ -1906,7 +1918,6 @@ class PanelView(discord.ui.View):
                 "📸 Screenshot perfil Albion\n"
                 "⚔ Rol ZvZ\n"
                 "🕒 Horarios\n"
-                "📸 Povs jugando el rol que postulaste\n"
                 "📜 Gremios anteriores en los que estuviste\n\n"
                 "Un reclutador revisará tu postulación."
             ),
@@ -4339,6 +4350,99 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 await target.send(f"<@{row['created_by']}> ⚠️ {after.mention} ya no cumple los roles que pide la posición **{cta_number_of_slot_key(snapshot['slots'], row['slot_key'])} ({slot['role_name']}, Party {slot['party_no']})** de la CTA #{row['cta_id']}. Su plaza no se modificó.", allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         except Exception as exc:
             print(f"Error verificando cambio de roles para CTA #{row['cta_id']}: {exc}")
+
+
+# ============================================================
+# SLASH COMMAND: /verratas
+# ============================================================
+def parse_albion_member_names(data) -> set:
+    """Extrae los nombres (en minúsculas) de la respuesta de la API de miembros de la guild."""
+    names = set()
+    if isinstance(data, dict):
+        data = data.get("members") or data.get("Members") or data.get("data") or []
+    for item in data or []:
+        name = item.get("Name") or item.get("name") if isinstance(item, dict) else None
+        if name and str(name).strip():
+            names.add(normalizar_nombre(str(name).strip()))
+    return names
+
+
+def find_ratas(members, guild_names: set) -> list:
+    """members: lista de (id, texto_apodo). Devuelve los que NO coinciden con ningún jugador de la guild."""
+    return [(uid, label) for uid, label in members if normalizar_nombre(label.strip()) not in guild_names]
+
+
+def chunk_lines(lines: list, limit: int = 1900) -> list:
+    chunks, current, size = [], [], 0
+    for line in lines:
+        if current and size + len(line) + 1 > limit:
+            chunks.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+async def fetch_albion_guild_member_names() -> set:
+    """Una sola consulta HTTP a la API del juego; el resultado se guarda 2 minutos."""
+    now = time.time()
+    if _albion_roster_cache["names"] and now - _albion_roster_cache["at"] < ALBION_ROSTER_CACHE_SECONDS:
+        return _albion_roster_cache["names"]
+    url = f"{ALBION_GAMEINFO_BASE}/api/gameinfo/guilds/{ALBION_GUILD_ID}/members"
+    async with bot.http_session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status}")
+        data = await resp.json(content_type=None)
+    names = parse_albion_member_names(data)
+    if names:
+        _albion_roster_cache.update(at=now, names=names)
+    return names
+
+
+@bot.tree.command(name="verratas", description="(Staff) Miembros de Discord que no figuran en la guild de Albion", guild=GUILD_OBJ)
+async def verratas_slash(interaction: discord.Interaction):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Este comando solo funciona dentro del servidor.")
+    if not is_staff_member(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el **Staff** puede usar `/verratas`.")
+    role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
+    if role is None:
+        return await respond_ephemeral(interaction, "❌ No encontré el rol Miembro. Avisale a un administrador.")
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        guild_names = await fetch_albion_guild_member_names()
+    except Exception as exc:
+        print(f"/verratas: no pude consultar la guild: {exc}")
+        return await interaction.followup.send(
+            "❌ No pude consultar la lista de la guild en Albion. Probá de nuevo en un rato.", ephemeral=True)
+    if not guild_names:
+        # Sin lista no se puede comparar: evitamos marcar a todos como "ratas" por un error de la API.
+        return await interaction.followup.send(
+            f"❌ Albion devolvió una lista vacía para **{ALBION_GUILD_NAME}**. No comparé nada para no dar falsos resultados.",
+            ephemeral=True)
+
+    if not interaction.guild.chunked:
+        try:
+            await interaction.guild.chunk()
+        except Exception:
+            pass
+    members = [(m.id, m.nick or m.display_name) for m in role.members if not m.bot]
+    ratas = find_ratas(members, guild_names)
+    no_pings = discord.AllowedMentions.none()
+    header = (f"🐀 **Sin coincidencia en {ALBION_GUILD_NAME}:** {len(ratas)} de {len(members)} miembros "
+              f"(la guild tiene {len(guild_names)} jugadores).\nSe compara el apodo del servidor con el nombre en Albion, sin distinguir mayúsculas.")
+    if not ratas:
+        return await interaction.followup.send(header + "\n✅ Todos los miembros coinciden.", ephemeral=True, allowed_mentions=no_pings)
+    lines = [f"• <@{uid}> · `{label}`" for uid, label in sorted(ratas, key=lambda x: x[1].casefold())]
+    chunks = chunk_lines(lines)
+    await interaction.followup.send(header, ephemeral=True, allowed_mentions=no_pings)
+    for chunk in chunks[:8]:
+        await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=no_pings)
+    if len(chunks) > 8:
+        await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
 
 
 # ---------- READY (AL FINAL, así PanelView existe) ----------
