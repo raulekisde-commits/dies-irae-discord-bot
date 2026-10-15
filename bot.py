@@ -1906,6 +1906,7 @@ class PanelView(discord.ui.View):
                 "📸 Screenshot perfil Albion\n"
                 "⚔ Rol ZvZ\n"
                 "🕒 Horarios\n"
+                "📸 Povs jugando el rol que postulaste\n"
                 "📜 Gremios anteriores en los que estuviste\n\n"
                 "Un reclutador revisará tu postulación."
             ),
