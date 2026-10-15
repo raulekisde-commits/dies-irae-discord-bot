@@ -3078,13 +3078,17 @@ def cta_number_of_slot_key(slots, slot_key: str) -> Optional[int]:
 def cta_parse_thread_command(text: Optional[str]):
     """Interpreta lo que se escribe en el hilo.
 
-    `21` o `#21` -> ("join", 21) · `salir` / `cancelar` -> ("leave", None) · otro texto -> None."""
+    `21` o `#21` -> ("join", 21) · `-21` -> ("leave", 21) · `salir` / `cancelar` / `-` -> ("leave", None)
+    · otro texto -> None."""
     t = (text or "").strip().lower()
     if not t:
         return None
     m = re.fullmatch(r"#?\s*(\d{1,3})", t)
     if m:
         return ("join", int(m.group(1)))
+    m = re.fullmatch(r"[-−–]\s*#?\s*(\d{1,3})", t)
+    if m:
+        return ("leave", int(m.group(1)))
     if t in CTA_LEAVE_WORDS:
         return ("leave", None)
     return None
@@ -3152,6 +3156,51 @@ def cta_try_leave(run_id: int, user_id: int):
             return ("none", None)
         conn.execute("DELETE FROM cta_signups WHERE cta_id=? AND user_id=?", (run_id, user_id))
         return ("left", existing[0])
+
+
+def cta_is_organizer(member) -> bool:
+    """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta_asignar)."""
+    perms = getattr(member, "guild_permissions", None)
+    return bool((perms is not None and perms.manage_guild) or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in member.roles))
+
+
+def cta_staff_assign(run_id: int, target_id: int, slot_key: str, actor_id: int):
+    """El Staff pone a un jugador en una posición (o lo mueve si ya estaba en otra). Devuelve (código, dato):
+    closed · same · occupied(id del ocupante) · moved(clave anterior) · assigned."""
+    with db_immediate() as conn:
+        run = conn.execute("SELECT status, closes_at FROM cta_runs WHERE id=?", (run_id,)).fetchone()
+        if not run or run[0] != "open" or _cta_parse_dt(run[1]) <= datetime.now(timezone.utc):
+            return ("closed", None)
+        existing = conn.execute("SELECT slot_key FROM cta_signups WHERE cta_id=? AND user_id=?", (run_id, target_id)).fetchone()
+        if existing and existing[0] == slot_key:
+            return ("same", None)
+        occupant = conn.execute("SELECT user_id FROM cta_signups WHERE cta_id=? AND slot_key=?", (run_id, slot_key)).fetchone()
+        if occupant:
+            return ("occupied", int(occupant[0]))
+        if existing:
+            conn.execute("UPDATE cta_signups SET slot_key=?, assigned_by=?, signed_at=? WHERE cta_id=? AND user_id=?",
+                         (slot_key, actor_id, cta_now_iso(), run_id, target_id))
+            return ("moved", existing[0])
+        conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,assigned_by,signed_at) VALUES (?,?,?,?,?)",
+                     (run_id, slot_key, target_id, actor_id, cta_now_iso()))
+        return ("assigned", None)
+
+
+def cta_release_slot(run_id: int, slot_key: str, only_user: Optional[int] = None):
+    """Libera una posición por su clave. Con only_user, solo si la ocupa esa persona.
+    Devuelve (código, dato): closed · empty · other(id del ocupante) · removed(id del jugador sacado)."""
+    with db_immediate() as conn:
+        run = conn.execute("SELECT status, closes_at FROM cta_runs WHERE id=?", (run_id,)).fetchone()
+        if not run or run[0] != "open" or _cta_parse_dt(run[1]) <= datetime.now(timezone.utc):
+            return ("closed", None)
+        occupant = conn.execute("SELECT user_id FROM cta_signups WHERE cta_id=? AND slot_key=?", (run_id, slot_key)).fetchone()
+        if not occupant:
+            return ("empty", None)
+        uid = int(occupant[0])
+        if only_user is not None and uid != only_user:
+            return ("other", uid)
+        conn.execute("DELETE FROM cta_signups WHERE cta_id=? AND slot_key=?", (run_id, slot_key))
+        return ("removed", uid)
 
 
 def cta_slot_restricted(slot: dict) -> bool:
@@ -3270,7 +3319,8 @@ def cta_instructions_text(run: dict, total: int) -> str:
         f"• Escribí **el número** de la posición que querés. Ejemplo: `21`.\n"
         f"• Hay posiciones del **1 al {total}** y los números siguen entre parties.\n"
         f"• Para cambiar de posición, escribí otro número libre.\n"
-        f"• Para salir, escribí `salir`.\n"
+        f"• Staff: etiquetá a alguien y escribí el número (`@persona 21`) para anotarlo, o `@persona -21` para sacarlo.\n"
+        f"• Para salir, escribí `-` y tu número (ejemplo: `-21`) o `salir`.\n"
         f"• Las posiciones con 🔒 piden ciertos roles.\n"
         f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>.\n"
         f"• La lista de parties y el contador de anotados están en el panel principal, arriba del hilo. Se actualiza sola.\n"
@@ -3565,8 +3615,11 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if not rows:
         return False
     run = dict(rows[0])
-    command = cta_parse_thread_command(message.content)
-    if command is None or not isinstance(message.author, discord.Member):
+    if not isinstance(message.author, discord.Member):
+        return True
+    mentions = [m for m in message.mentions if not getattr(m, "bot", False) and m.id != message.author.id]
+    command = cta_parse_thread_command(re.sub(r"<@!?\d+>", "", message.content or "") if mentions else message.content)
+    if command is None:
         return True
     action, number = command
     if run["status"] != "open":
@@ -3574,6 +3627,31 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         return True
     run_id = int(run["id"])
     member = message.author
+    snapshot = json.loads(run["snapshot_json"])
+
+    if mentions:                                   # el Staff etiqueta a alguien: «@persona 21» o «@persona -21»
+        return await cta_handle_staff_command(message, run, snapshot, mentions, action, number)
+
+    if action == "leave" and number is not None:   # «-21»: sacarte de la posición 21
+        slot = cta_slot_by_number(snapshot["slots"], number)
+        if slot is None:
+            await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {len(snapshot['slots'])}.")
+            return True
+        organizer = cta_is_organizer(member)
+        code, other = cta_release_slot(run_id, cta_slot_key(slot), only_user=None if organizer else member.id)
+        if code == "closed":
+            await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+        elif code == "empty":
+            await cta_reply_short(message, f"La posición {number} ya está libre.", 8)
+        elif code == "other":
+            await cta_reply_short(message, f"La posición {number} no es tuya, está ocupada por <@{other}>.")
+        else:
+            cta_audit(int(run["guild_id"]), member.id, "cancel_signup" if other == member.id else "staff_remove_signup",
+                      run_id, f"{cta_slot_key(slot)}; member={other}")
+            cta_request_board_refresh(run_id)
+            await cta_ack_ok(message, f"Liberaste la posición {number}." if other == member.id
+                             else f"Saqué a <@{other}> de la posición {number}.")
+        return True
 
     if action == "leave":
         code, key = cta_try_leave(run_id, member.id)
@@ -3589,7 +3667,6 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
             await cta_ack_ok(message, f"Liberaste la posición {old_no}.")
         return True
 
-    snapshot = json.loads(run["snapshot_json"])
     total = len(snapshot["slots"])
     slot = cta_slot_by_number(snapshot["slots"], number)
     if slot is None:
@@ -3623,6 +3700,73 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         cta_audit(int(run["guild_id"]), member.id, "signup", run_id, cta_slot_key(slot))
         cta_request_board_refresh(run_id)
         await cta_ack_ok(message, f"Quedaste anotado en la posición {number} · {role_label}.")
+    return True
+
+
+async def cta_handle_staff_command(message, run: dict, snapshot: dict, mentions: list, action: str, number):
+    """Comandos del Staff en el hilo: «@persona 21» la pone en la posición 21 (o la mueve) y
+    «@persona -21» (o «@persona -» / «@persona salir») la saca. El Staff puede asignar aunque la posición
+    pida roles; queda anotado en la auditoría."""
+    if not cta_is_organizer(message.author):
+        await cta_reply_short(message, "Solo el Staff puede anotar o sacar a otras personas.", 8)
+        return True
+    if len(mentions) > 1:
+        await cta_reply_short(message, "Etiquetá a una sola persona por mensaje.", 8)
+        return True
+    run_id, target = int(run["id"]), mentions[0]
+    slots = snapshot["slots"]
+
+    if action == "join":
+        slot = cta_slot_by_number(slots, number)
+        if slot is None:
+            await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {len(slots)}.")
+            return True
+        code, extra = cta_staff_assign(run_id, target.id, cta_slot_key(slot), message.author.id)
+        label = f"{slot['role_name']} (Party {slot['party_no']})"
+        if code == "closed":
+            await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+        elif code == "same":
+            await cta_reply_short(message, f"{target.mention} ya está en la posición {number}.", 8)
+        elif code == "occupied":
+            await cta_reply_short(message, f"La posición {number} ya está ocupada por <@{extra}>. Sacalo primero con `-{number}`.")
+        else:
+            restricted = ""
+            if isinstance(target, discord.Member) and cta_access_error(target, slot, message.guild):
+                restricted = "; override=sin los roles pedidos"
+            cta_audit(int(run["guild_id"]), message.author.id, "manual_assign_thread" if code == "assigned" else "manual_move_thread",
+                      run_id, f"member={target.id}; slot={cta_slot_key(slot)}{restricted}")
+            cta_request_board_refresh(run_id)
+            verb = "Pasé a" if code == "moved" else "Anoté a"
+            await cta_ack_ok(message, f"{verb} {target.mention} en la posición {number} · {label}.")
+        return True
+
+    # action == "leave"
+    if number is not None:
+        slot = cta_slot_by_number(slots, number)
+        if slot is None:
+            await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {len(slots)}.")
+            return True
+        code, other = cta_release_slot(run_id, cta_slot_key(slot), only_user=target.id)
+        if code == "closed":
+            await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+        elif code == "empty":
+            await cta_reply_short(message, f"La posición {number} ya está libre.", 8)
+        elif code == "other":
+            await cta_reply_short(message, f"{target.mention} no está en la posición {number}; la ocupa <@{other}>.")
+        else:
+            cta_audit(int(run["guild_id"]), message.author.id, "staff_remove_signup", run_id, f"member={target.id}; slot={cta_slot_key(slot)}")
+            cta_request_board_refresh(run_id)
+            await cta_ack_ok(message, f"Saqué a {target.mention} de la posición {number}.")
+        return True
+    code, key = cta_try_leave(run_id, target.id)
+    if code == "closed":
+        await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
+    elif code == "none":
+        await cta_reply_short(message, f"{target.mention} no está anotado en esta CTA.", 8)
+    else:
+        cta_audit(int(run["guild_id"]), message.author.id, "staff_remove_signup", run_id, f"member={target.id}; slot={key}")
+        cta_request_board_refresh(run_id)
+        await cta_ack_ok(message, f"Saqué a {target.mention} de la posición {cta_number_of_slot_key(slots, key)}.")
     return True
 
 
