@@ -183,6 +183,8 @@ _ALBION_GAMEINFO_BY_REGION = {
 }
 ALBION_GAMEINFO_BASE = os.getenv("ALBION_GAMEINFO_BASE",
                                  _ALBION_GAMEINFO_BY_REGION.get(ALBIONBB_REGION, "https://gameinfo-ams.albiononline.com"))
+ALBION_GAMEINFO_ALL = ["https://gameinfo-ams.albiononline.com", "https://gameinfo.albiononline.com",
+                       "https://gameinfo-sgp.albiononline.com"]
 ALBION_ROSTER_CACHE_SECONDS = 120
 _albion_roster_cache: dict = {"at": 0.0, "names": set()}
 ALBIONBB_BATTLE_URL = f"{ALBIONBB_BASE_URL}/battles"
@@ -4385,20 +4387,53 @@ def chunk_lines(lines: list, limit: int = 1900) -> list:
     return chunks
 
 
+async def _albion_get_json(url: str, params: Optional[dict] = None):
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; SmoggBot/1.0)", "Accept": "application/json"}
+    async with bot.http_session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status}")
+        return await resp.json(content_type=None)
+
+
+def parse_albion_guild_id(data, guild_name: str) -> Optional[str]:
+    """Busca el ID de la guild en la respuesta de búsqueda de la API (coincidencia exacta de nombre)."""
+    guilds = data.get("guilds", []) if isinstance(data, dict) else []
+    for g in guilds:
+        if isinstance(g, dict) and str(g.get("Name", "")).casefold() == guild_name.casefold() and g.get("Id"):
+            return str(g["Id"])
+    return None
+
+
 async def fetch_albion_guild_member_names() -> set:
-    """Una sola consulta HTTP a la API del juego; el resultado se guarda 2 minutos."""
+    """Lista de jugadores de la guild. Prueba el servidor configurado y luego los demás; si el ID no
+    responde, busca la guild por nombre. Guarda el resultado 2 minutos. Si todo falla, el error
+    explica qué pasó en cada intento."""
     now = time.time()
     if _albion_roster_cache["names"] and now - _albion_roster_cache["at"] < ALBION_ROSTER_CACHE_SECONDS:
         return _albion_roster_cache["names"]
-    url = f"{ALBION_GAMEINFO_BASE}/api/gameinfo/guilds/{ALBION_GUILD_ID}/members"
-    async with bot.http_session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"HTTP {resp.status}")
-        data = await resp.json(content_type=None)
-    names = parse_albion_member_names(data)
-    if names:
-        _albion_roster_cache.update(at=now, names=names)
-    return names
+    bases = [ALBION_GAMEINFO_BASE] + [b for b in ALBION_GAMEINFO_ALL if b != ALBION_GAMEINFO_BASE]
+    problems = []
+    for base in bases:
+        host = base.split("//")[-1]
+        guild_ids = [ALBION_GUILD_ID]
+        for attempt in ("id", "búsqueda"):
+            try:
+                if attempt == "búsqueda":
+                    found = parse_albion_guild_id(
+                        await _albion_get_json(f"{base}/api/gameinfo/search", {"q": ALBION_GUILD_NAME}), ALBION_GUILD_NAME)
+                    if not found or found == ALBION_GUILD_ID:
+                        problems.append(f"{host}: no encontré la guild por nombre")
+                        break
+                    guild_ids = [found]
+                data = await _albion_get_json(f"{base}/api/gameinfo/guilds/{guild_ids[0]}/members")
+                names = parse_albion_member_names(data)
+                if names:
+                    _albion_roster_cache.update(at=now, names=names)
+                    return names
+                problems.append(f"{host}: lista vacía ({attempt})")
+            except Exception as exc:
+                problems.append(f"{host} ({attempt}): {type(exc).__name__} {exc}".strip())
+    raise RuntimeError(" | ".join(problems))
 
 
 @bot.tree.command(name="verratas", description="(Staff) Miembros de Discord que no figuran en la guild de Albion", guild=GUILD_OBJ)
@@ -4417,7 +4452,8 @@ async def verratas_slash(interaction: discord.Interaction):
     except Exception as exc:
         print(f"/verratas: no pude consultar la guild: {exc}")
         return await interaction.followup.send(
-            "❌ No pude consultar la lista de la guild en Albion. Probá de nuevo en un rato.", ephemeral=True)
+            "❌ No pude consultar la lista de la guild en Albion. Probá de nuevo en un rato.\n"
+            f"Detalle técnico (para el administrador): `{str(exc)[:900]}`", ephemeral=True)
     if not guild_names:
         # Sin lista no se puede comparar: evitamos marcar a todos como "ratas" por un error de la API.
         return await interaction.followup.send(
