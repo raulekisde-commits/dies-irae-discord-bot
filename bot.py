@@ -2920,6 +2920,7 @@ def cta_db_init():
         # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         db_ensure_column(conn, "cta_runs", "panel_extra_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        db_ensure_column(conn, "cta_compositions", "builds_url", "TEXT")
         # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
         # El ⚔️ era el emoji automático: ya no se agrega, así que se limpia de las posiciones existentes.
@@ -3006,6 +3007,21 @@ def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild) -
     return None
 
 
+CTA_BUILDS_URL_MAX = 500
+
+
+def cta_clean_builds_url(text: Optional[str]) -> Optional[str]:
+    """Valida el link de builds. Vacío -> None (quitar el link). Lanza ValueError si no sirve."""
+    t = (text or "").strip().strip("<>").strip()
+    if not t or t.casefold() in {"quitar", "borrar", "ninguno", "none", "-"}:
+        return None
+    if len(t) > CTA_BUILDS_URL_MAX:
+        raise ValueError(f"El link es demasiado largo (máximo {CTA_BUILDS_URL_MAX} caracteres).")
+    if re.search(r"\s", t) or not re.fullmatch(r"https?://[^\s/$.?#][^\s]*\.[^\s]+", t, re.I):
+        raise ValueError("El link no es válido. Tiene que empezar con `https://` y no llevar espacios. Ej: `https://mi-web.com/builds`")
+    return t.replace("(", "%28").replace(")", "%29")
+
+
 def cta_snapshot_from_comp(comp: dict):
     party_rows = db_fetchall("SELECT party_no, access_mode, role_ids_json, access_match FROM cta_party_access WHERE composition_id=?", (comp["id"],))
     party_access = {int(r["party_no"]): {"mode": r["access_mode"], "role_ids": json.loads(r["role_ids_json"] or "[]"), "match": r["access_match"]} for r in party_rows}
@@ -3018,7 +3034,7 @@ def cta_snapshot_from_comp(comp: dict):
             "access_match": s.get("access_match", "any"),
             "party_access": party_access.get(int(s["party_no"]), {"mode": "any", "role_ids": [], "match": "any"})
         })
-    return {"name": comp["name"], "slots": slots, "party_access": party_access}
+    return {"name": comp["name"], "slots": slots, "party_access": party_access, "builds_url": comp.get("builds_url") or None}
 
 
 # ================== CTA: reglas, numeración global y tablero en el hilo ==================
@@ -3311,8 +3327,9 @@ def cta_board_specs(run: dict) -> list:
                   f"Para anotarte, escribí el número de tu posición en {thread_ref}.")
     else:
         status = "🔒 **Inscripciones cerradas** · esta es la composición final"
+    builds_line = f"\n🔗 [Builds]({snapshot['builds_url']})" if snapshot.get("builds_url") else ""
     header = {"title": f"⚔️ SMOGG · CTA {run['composition_name'].upper()} · #{run['id']}",
-              "description": f"{status}\n👥 **Anotados: {occupied}/{total}**", "color": color}
+              "description": f"{status}\n👥 **Anotados: {occupied}/{total}**{builds_line}", "color": color}
     specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
     specs[-1] = dict(specs[-1], footer=f"Anotados: {occupied}/{total} · CTA #{run['id']}")
     return specs
@@ -4235,7 +4252,8 @@ class CTACompositionGroup(app_commands.Group):
         if not comp["slots"]:
             return await interaction.response.send_message(f"**{comp['name']}** todavía no tiene posiciones.", ephemeral=True)
         specs = cta_party_specs(cta_snapshot_from_comp(comp)["slots"], show_roles=True)
-        await cta_send_spec_groups(interaction, f"**Composición: {comp['name']}** · {len(comp['slots'])} posiciones", specs)
+        builds = f"\n🔗 [Builds]({comp['builds_url']})" if comp.get("builds_url") else ""
+        await cta_send_spec_groups(interaction, f"**Composición: {comp['name']}** · {len(comp['slots'])} posiciones{builds}", specs)
 
     @app_commands.command(name="editar", description="Abrir el editor interactivo de una composición")
     @app_commands.describe(nombre="Nombre de la composición")
@@ -4260,7 +4278,7 @@ class CTACompositionGroup(app_commands.Group):
             return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres: letras, números, espacios, guiones o guion bajo.", ephemeral=True)
         try:
             with db_immediate() as conn:
-                cur = conn.execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at) VALUES (?,?,?,?)", (interaction.guild_id, new_name, interaction.user.id, cta_now_iso()))
+                cur = conn.execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at,builds_url) VALUES (?,?,?,?,?)", (interaction.guild_id, new_name, interaction.user.id, cta_now_iso(), comp.get("builds_url")))
                 new_id = cur.lastrowid
                 for s in comp["slots"]:
                     conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji,access_mode,role_ids_json,access_match) VALUES (?,?,?,?,?,?,?,?)", (new_id, s["party_no"], s["position_no"], s["role_name"], s["emoji"], s["access_mode"], json.dumps(s["role_ids"]), s["access_match"]))
@@ -4288,6 +4306,26 @@ class CTACompositionGroup(app_commands.Group):
             return await interaction.response.send_message("Ya existe una composición con ese nombre.", ephemeral=True)
         cta_audit(interaction.guild_id, interaction.user.id, "composition_rename", details=f"{comp['name']} -> {new_name}")
         await interaction.response.send_message(f"✅ **{comp['name']}** ahora se llama **{new_name}**. Las CTA ya publicadas conservan su nombre.", ephemeral=True)
+
+    @app_commands.command(name="builds", description="Poner o quitar el link de builds de una composición")
+    @app_commands.describe(nombre="Nombre de la composición", link="Link a la web de builds (https://...). Vacío o «quitar» = sacar el link")
+    async def builds(self, interaction: discord.Interaction, nombre: str, link: Optional[str] = None):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        try:
+            url = cta_clean_builds_url(link)
+        except ValueError as exc:
+            return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        db_execute("UPDATE cta_compositions SET builds_url=?, updated_at=? WHERE id=?", (url, cta_now_iso(), comp["id"]))
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_builds", details=f"{comp['name']}: {url or 'quitado'}")
+        if url:
+            msg = f"✅ **{comp['name']}** ahora tiene el link [Builds]({url}). Aparece en el panel de las CTA nuevas que uses con esta composición."
+        else:
+            msg = f"✅ Saqué el link de builds de **{comp['name']}**."
+        await interaction.response.send_message(msg, ephemeral=True, suppress_embeds=True)
 
     @app_commands.command(name="eliminar", description="Eliminar una composición guardada")
     @app_commands.describe(nombre="Nombre de la composición")
@@ -4863,6 +4901,77 @@ async def topattend_slash(interaction: discord.Interaction):
 @bot.tree.command(name="topdeaths", description="Top 10 de muertes de la guild (AlbionBB)", guild=GUILD_OBJ)
 async def topdeaths_slash(interaction: discord.Interaction):
     await _albion_top_slash(interaction, "deaths")
+
+
+# ============================================================
+# /help: lista de comandos
+# ============================================================
+# (sección, [(comando, quién puede usarlo, explicación breve)])
+HELP_SECTIONS = [
+    ("🛡️ CTA y composiciones", [
+        ("/cta nombre [tiempo]", "Staff, Reclutador, Content creator", "Publica una CTA con una composición guardada. Dura 40 min por defecto (mínimo 10). La gente se anota escribiendo su número en el hilo."),
+        ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
+        ("/cta_cerrar cta_id", "Staff, Reclutador", "Cierra una CTA antes de tiempo."),
+        ("/cta_asignar · /cta_liberar", "Staff, Reclutador", "Pone o saca a un jugador de una posición."),
+        ("/cta_historial", "Todos", "Últimas CTA cerradas."),
+        ("/compo crear · listar · ver · editar", "Staff (listar y ver: todos)", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse."),
+        ("/compo duplicar · renombrar · eliminar", "Staff", "Copiar, renombrar o borrar una composición."),
+        ("/compo builds nombre link", "Staff", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
+    ]),
+    ("✍️ Dentro del hilo de una CTA", [
+        ("`21`", "Todos", "Te anota en la posición 21 (si escribís otro número libre, te cambia)."),
+        ("`-21` · `salir`", "Todos", "Te saca de la posición 21 / de donde estés."),
+        ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
+    ]),
+    ("📊 Estadísticas de la guild", [
+        ("/topkills · /topattend · /topdeaths", "Miembros", "Top 10 de kills, asistencia o muertes de la guild (datos de AlbionBB). También con `!topkills`, `!topattend`, `!topdeaths`."),
+        ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),
+        ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
+    ]),
+    ("💰 Economía y timers", [
+        ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
+        ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
+        ("/timeradd material mapa tiempo [tier] [tiempo_fijo]", "Rol Timers", "Publica un timer de recurso. Con `tiempo_fijo` agrega la hora exacta en que sale."),
+    ]),
+    ("🎁 Sorteos y roles", [
+        ("/sorteo premio tiempo [ganadores]", "Staff", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
+        ("/list_role rol", "Staff", "Lista los miembros que tienen un rol."),
+        ("/delrole rol", "Staff", "Elimina un rol sin mencionar a nadie."),
+        ("!addroll-list NombreRol @u1 @u2 …", "Staff", "Crea un rol y se lo da a las personas mencionadas."),
+    ]),
+    ("⚙️ Administración", [
+        ("!panel", "Administradores", "Publica el panel de reclutamiento."),
+        ("!panel_foco", "Administradores", "Publica el panel de tickets de foco."),
+        ("/help", "Todos", "Muestra esta lista."),
+    ]),
+]
+
+
+def build_help_embeds() -> list:
+    embeds = []
+    for title, entries in HELP_SECTIONS:
+        lines = [f"**{cmd}** · _{who}_\n{text}" for cmd, who, text in entries]
+        embeds.append(discord.Embed(title=title, description="\n\n".join(lines), color=discord.Color.blurple()))
+    embeds[0].set_author(name="Comandos del bot de Smogg")
+    embeds[-1].set_footer(text="Si un comando no te aparece o te dice que no tenés permiso, es porque necesita un rol que no tenés.")
+    return embeds
+
+
+@bot.tree.command(name="help", description="Lista y explica los comandos del bot", guild=GUILD_OBJ)
+async def help_slash(interaction: discord.Interaction):
+    embeds = build_help_embeds()
+    # Discord permite hasta 10 embeds y 6000 caracteres por mensaje: se manda en grupos que entren.
+    groups, current, used = [], [], 0
+    for emb in embeds:
+        size = len(emb)          # discord.Embed: total de caracteres
+        if current and (len(current) >= 10 or used + size > 5500):
+            groups.append(current); current, used = [], 0
+        current.append(emb); used += size
+    if current:
+        groups.append(current)
+    await interaction.response.send_message(embeds=groups[0], ephemeral=True)
+    for group in groups[1:]:
+        await interaction.followup.send(embeds=group, ephemeral=True)
 
 
 # ---------- READY (AL FINAL, así PanelView existe) ----------
