@@ -4993,4 +4993,45 @@ async def on_message(message: discord.Message):
     recruit_uid = _get_recruit_uid_from_channel(message.channel)
     if recruit_uid is not None:
         # Solo guardamos si el que manda la imagen es el postulante del ticket
-        if message.author.id != recruit
+        if message.author.id != recruit_uid:
+            return
+
+        if not message.attachments:
+            return
+
+        img = None
+        for att in message.attachments:
+            if _is_image_attachment(att):
+                img = att
+                break
+        if img is None:
+            return
+
+        save_ticket_image(message.author.id, img.url, img.filename or "image.png")
+        return
+
+    # (Opcional) Si querés conservar tu modo viejo para tickets recién creados:
+    opener_channel_id = active_applications.get(message.author.id)
+    if opener_channel_id is None or opener_channel_id != message.channel.id:
+        return
+
+    if not message.attachments:
+        return
+
+    img = None
+    for att in message.attachments:
+        if _is_image_attachment(att):
+            img = att
+            break
+    if img is None:
+        return
+
+    ticket_images[message.author.id] = {
+        "url": img.url,
+        "filename": img.filename or "image.png",
+    }
+# ---------- RUN ----------
+bot.run(TOKEN)
+
+
+
