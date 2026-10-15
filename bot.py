@@ -96,6 +96,24 @@ def init_database():
                 created_at TEXT NOT NULL,
                 warned_30 INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS timer_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                material TEXT NOT NULL,
+                tier TEXT,
+                mapa TEXT NOT NULL,
+                spawn_at TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS timer_panels (
+                guild_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, category)
+            );
             CREATE TABLE IF NOT EXISTS ticket_images (
                 user_id INTEGER PRIMARY KEY,
                 url TEXT NOT NULL,
@@ -997,25 +1015,151 @@ def next_utc_occurrence(h: int, m: int, now: Optional[datetime] = None) -> datet
     return target
 
 
-def build_timer_post(material: str, tier: Optional[str], mapa: str, target_utc: datetime, user_mention: str,
-                     fixed_time: bool = False) -> str:
-    """Arma el texto del anuncio. Si no hay tier (Dragon) la línea se omite por completo."""
+# ---- Paneles de timers: 3 mensajes fijos (Nodos · Vortex y Cores · Dragones) que se editan solos ----
+TIMER_CATEGORY_ORDER = ("nodos", "vortex", "dragones")
+TIMER_CATEGORY_TITLES = {"nodos": "🌿 Nodos", "vortex": "🌀 Vortex y Cores", "dragones": "🐉 Dragones"}
+TIMER_MATERIAL_NAMES = {"fibra": "Fiber", "cuero": "Hide", "mineral": "Ore", "madera": "Wood",
+                        "vortex": "Vortex", "core": "Core", "dragon": "Dragon"}
+TIMER_KEEP_HOURS = 12            # un timer sigue en el panel hasta 12 h después de la hora en que salió
+TIMER_PANEL_MAX_LINES = 30
+TIMER_MAPA_MAX = 60
+_timer_panel_lock = asyncio.Lock()
+
+
+def timer_category(material: str) -> str:
+    if material in MATERIALS_NO_TIER:
+        return "dragones"
+    return "vortex" if material in MATERIALS_SPECIAL else "nodos"
+
+
+def timer_entry_line(entry: dict) -> str:
+    """'🌿 7.4 Fiber - Wetgrave Marsh - <hace 7 horas> 09:36 UTC' (la parte relativa la calcula Discord)."""
+    spawn = _timer_parse_dt(entry["spawn_at"])
+    material = entry["material"]
+    tier = entry.get("tier")
+    tier_text = TIER_LABELS_SPECIAL.get(tier, tier) if tier else ""
+    name = TIMER_MATERIAL_NAMES.get(material, str(material).title())
+    label = " ".join(x for x in (tier_text, name) if x)
     icon = MATERIAL_ICONS.get(material, DEFAULT_MATERIAL_ICON)
-    unix = int(target_utc.timestamp())
-    lines = [f"{icon} **Material:** {material.title()}"]
-    if tier:
-        lines.append(f"🔹 **Tier:** {TIER_LABELS_SPECIAL.get(tier, tier)}")
-    lines += [
-        f"🗺️ **Mapa:** {mapa}",
-        f"🕒 **Tiempo:** {target_utc.strftime('%H:%M')} UTC",
-        f"🌎 **Horario:** {target_utc.astimezone(ARGENTINA_TZ).strftime('%H:%M')}",
-        f"⏳ **Falta:** <t:{unix}:R>",
-    ]
-    if fixed_time:
-        # Hora exacta fija: Discord la muestra en la zona horaria de cada persona.
-        lines.append(f"📌 **Sale a las:** <t:{unix}:t> · <t:{unix}:D>")
-    lines.append(f"👤 **Timeado por:** {user_mention}")
-    return "\n".join(lines)
+    return f"{icon} {label} - {entry['mapa']} - <t:{int(spawn.timestamp())}:R> {spawn.strftime('%H:%M')} UTC"
+
+
+def _timer_parse_dt(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def timer_build_embed(category: str, entries: list) -> discord.Embed:
+    ordered = sorted(entries, key=lambda e: (e["spawn_at"], e["id"]))[-TIMER_PANEL_MAX_LINES:]
+    lines = [timer_entry_line(e) for e in ordered]
+    while len("\n".join(lines)) > 3900 and len(lines) > 1:
+        lines.pop(0)                       # se descartan primero los más viejos
+    embed = discord.Embed(title=TIMER_CATEGORY_TITLES[category],
+                          description="\n".join(lines) if lines else "📭 No hay timers por ahora.",
+                          color=discord.Color.blurple())
+    embed.set_footer(text=f"Ordenado por hora de aparición · horario UTC · se borran {TIMER_KEEP_HOURS} h después de salir")
+    return embed
+
+
+def timer_add_entry(guild_id: int, material: str, tier: Optional[str], mapa: str, spawn_at: datetime, user_id: int) -> int:
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        cur = conn.execute(
+            "INSERT INTO timer_entries(guild_id,category,material,tier,mapa,spawn_at,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (guild_id, timer_category(material), material, tier, mapa, spawn_at.astimezone(timezone.utc).isoformat(),
+             user_id, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def timer_list_entries(guild_id: int, category: str) -> list:
+    return [dict(r) for r in db_fetchall(
+        "SELECT * FROM timer_entries WHERE guild_id=? AND category=? ORDER BY spawn_at, id", (guild_id, category))]
+
+
+def timer_purge_expired(guild_id: int, now: Optional[datetime] = None) -> set:
+    """Borra los timers que salieron hace más de TIMER_KEEP_HOURS. Devuelve las categorías afectadas."""
+    now = now or datetime.now(timezone.utc)
+    limit = (now - timedelta(hours=TIMER_KEEP_HOURS)).isoformat()
+    rows = db_fetchall("SELECT DISTINCT category FROM timer_entries WHERE guild_id=? AND spawn_at<?", (guild_id, limit))
+    if rows:
+        db_execute("DELETE FROM timer_entries WHERE guild_id=? AND spawn_at<?", (guild_id, limit))
+    return {r["category"] for r in rows}
+
+
+async def timer_panel_refresh(guild: discord.Guild, only: Optional[set] = None):
+    """Actualiza (o crea, si no existen) los paneles de timers. Los mensajes se editan, nunca se duplican."""
+    async with _timer_panel_lock:
+        channel = guild.get_channel(TIMER_POST_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(TIMER_POST_CHANNEL_ID)
+            except Exception:
+                channel = None
+        if channel is None or not hasattr(channel, "send"):
+            raise RuntimeError("No encontré el canal de timers.")
+        for category in TIMER_CATEGORY_ORDER:
+            if only is not None and category not in only:
+                continue
+            embed = timer_build_embed(category, timer_list_entries(guild.id, category))
+            view = TimerPanelView(category)
+            row = db_fetchall("SELECT message_id FROM timer_panels WHERE guild_id=? AND category=?", (guild.id, category))
+            if row:
+                try:
+                    await channel.get_partial_message(int(row[0]["message_id"])).edit(embed=embed, view=view)
+                    continue
+                except discord.NotFound:
+                    pass                      # lo borraron: se vuelve a crear abajo
+            sent = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            db_execute("INSERT INTO timer_panels(guild_id,category,channel_id,message_id) VALUES (?,?,?,?) "
+                       "ON CONFLICT(guild_id,category) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id",
+                       (guild.id, category, channel.id, sent.id))
+
+
+class TimerPanelView(discord.ui.View):
+    """Botón de cada panel para borrar un timer cargado por error."""
+
+    def __init__(self, category: str):
+        super().__init__(timeout=None)
+        self.category = category
+        button = discord.ui.Button(label="Eliminar timer", emoji="🗑️", style=discord.ButtonStyle.secondary,
+                                   custom_id=f"timer_panel_del:{category}")
+        button.callback = self.open_delete_menu
+        self.add_item(button)
+
+    async def open_delete_menu(self, interaction: discord.Interaction):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+        if not (is_timers_member(interaction.user) or is_staff_member(interaction.user)):
+            return await respond_ephemeral(interaction, "❌ No tenés permiso para eliminar timers.")
+        entries = timer_list_entries(interaction.guild.id, self.category)[-25:]
+        if not entries:
+            return await respond_ephemeral(interaction, "📭 No hay timers para eliminar.")
+        await interaction.response.send_message("¿Qué timer querés eliminar?", view=TimerDeleteSelectView(self.category, entries), ephemeral=True)
+
+
+class TimerDeleteSelectView(discord.ui.View):
+    def __init__(self, category: str, entries: list):
+        super().__init__(timeout=120)
+        self.category = category
+        options = []
+        for e in entries:
+            spawn = _timer_parse_dt(e["spawn_at"])
+            tier = TIER_LABELS_SPECIAL.get(e.get("tier"), e.get("tier")) if e.get("tier") else ""
+            label = f"{tier} {TIMER_MATERIAL_NAMES.get(e['material'], e['material'])} - {e['mapa']}".strip()[:100]
+            options.append(discord.SelectOption(label=label, value=str(e["id"]), description=f"{spawn.strftime('%H:%M')} UTC"))
+        select = discord.ui.Select(placeholder="Elegí el timer", options=options)
+        select.callback = self.delete_selected
+        self.select = select
+        self.add_item(select)
+
+    async def delete_selected(self, interaction: discord.Interaction):
+        entry_id = int(self.select.values[0])
+        db_execute("DELETE FROM timer_entries WHERE id=? AND guild_id=?", (entry_id, interaction.guild.id))
+        await interaction.response.edit_message(content="🗑️ Timer eliminado.", view=None)
+        try:
+            await timer_panel_refresh(interaction.guild, {self.category})
+        except Exception as exc:
+            print(f"timers: no pude actualizar el panel: {exc}")
 
 
 class TimerDeleteView(discord.ui.View):
@@ -1057,6 +1201,15 @@ async def timer_posts_cleanup():
     if not isinstance(channel, discord.TextChannel):
         return
 
+    # Paneles nuevos: se quitan los timers vencidos y se actualiza solo lo que cambió.
+    try:
+        changed = timer_purge_expired(guild.id)
+        if changed:
+            await timer_panel_refresh(guild, changed)
+    except Exception as exc:
+        print(f"timers: error en la limpieza de paneles: {exc}")
+
+    # Mensajes sueltos del sistema anterior (uno por timer): se siguen borrando 15 min después de la hora.
     limit_unix = int(datetime.now(timezone.utc).timestamp()) - TIMER_POST_DELETE_AFTER_MINUTES * 60
 
     try:
@@ -1086,7 +1239,6 @@ async def before_timer_posts_cleanup():
     mapa="Nombre del mapa",
     tiempo="Horario UTC en que sale (HH:MM) ej 16:10",
     tier="Tier (obligatorio salvo para Dragon)",
-    tiempo_fijo="Opcional: agrega la hora exacta en que sale (en tu horario) además de la cuenta regresiva",
 )
 @app_commands.choices(
     material=[
@@ -1116,7 +1268,6 @@ async def timeradd_slash(
     mapa: str,
     tiempo: str,
     tier: Optional[app_commands.Choice[str]] = None,
-    tiempo_fijo: bool = False,
 ):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
@@ -1161,31 +1312,22 @@ async def timeradd_slash(
 
     target_utc = next_utc_occurrence(*clock)
 
+    if len(mapa) > TIMER_MAPA_MAX:
+        return await respond_ephemeral(interaction, f"❌ El nombre del mapa es muy largo (máximo {TIMER_MAPA_MAX} caracteres).")
+
     await interaction.response.defer(ephemeral=True)
 
-    channel = interaction.guild.get_channel(TIMER_POST_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await interaction.guild.fetch_channel(TIMER_POST_CHANNEL_ID)
-        except Exception:
-            channel = None
-    if not isinstance(channel, discord.TextChannel):
-        return await interaction.followup.send("❌ No encontré el canal de timers.", ephemeral=True)
-
-    content = build_timer_post(mat, tr, mapa, target_utc, interaction.user.mention, fixed_time=tiempo_fijo)
-
+    timer_add_entry(interaction.guild.id, mat, tr, mapa, target_utc, interaction.user.id)
+    category = timer_category(mat)
     try:
-        post = await channel.send(
-            content,
-            view=TimerDeleteView(),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        await timer_panel_refresh(interaction.guild, {category})      # edita el panel de esa categoría (lo crea si falta)
     except discord.Forbidden:
-        return await interaction.followup.send("❌ No tengo permisos para escribir en el canal de timers.", ephemeral=True)
-    except Exception:
-        return await interaction.followup.send("❌ No pude publicar el timer.", ephemeral=True)
+        return await interaction.followup.send("⚠️ Guardé el timer, pero no tengo permisos para escribir en el canal de timers.", ephemeral=True)
+    except Exception as exc:
+        print(f"timers: no pude actualizar los paneles: {exc}")
+        return await interaction.followup.send("⚠️ Guardé el timer, pero no pude actualizar los paneles. Revisá el canal de timers.", ephemeral=True)
 
-    await interaction.followup.send(f"✅ Timer publicado: {post.jump_url}", ephemeral=True)
+    await interaction.followup.send(f"✅ Timer agregado al panel **{TIMER_CATEGORY_TITLES[category]}**.", ephemeral=True)
 
 @bot.tree.command(name="sorteo", description="Crear sorteo (solo Staff)", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(
@@ -4931,7 +5073,7 @@ HELP_SECTIONS = [
     ("💰 Economía y timers", [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
-        ("/timeradd material mapa tiempo [tier] [tiempo_fijo]", "Rol Timers", "Publica un timer de recurso. Con `tiempo_fijo` agrega la hora exacta en que sale."),
+        ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y tienen un botón para eliminar timers."),
     ]),
     ("🎁 Sorteos y roles", [
         ("/sorteo premio tiempo [ganadores]", "Staff", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
@@ -4988,6 +5130,8 @@ async def on_ready():
         bot.add_view(GiveawayJoinView())
         bot.add_view(SplitSoldView())
         bot.add_view(TimerDeleteView())
+        for _cat in TIMER_CATEGORY_ORDER:
+            bot.add_view(TimerPanelView(_cat))
         bot.add_view(CTAPanelView())
         bot._views_registered = True
         print("✅ Views persistentes registradas")
@@ -5053,6 +5197,10 @@ async def on_ready():
 
     guild = bot.get_guild(GUILD_ID)
     if guild:
+        try:
+            await timer_panel_refresh(guild)          # deja los 3 paneles de timers creados y al día
+        except Exception as exc:
+            print(f"timers: no pude preparar los paneles: {exc}")
         await ensure_timers_board_message(guild)
         await update_timers_board(guild)
 
