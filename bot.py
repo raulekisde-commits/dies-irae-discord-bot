@@ -2911,6 +2911,7 @@ def cta_db_init():
         """)
         # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        db_ensure_column(conn, "cta_runs", "panel_extra_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
         # El ⚔️ era el emoji automático: ya no se agrega, así que se limpia de las posiciones existentes.
@@ -3237,44 +3238,29 @@ def cta_run_context(run: dict):
 
 
 def cta_board_specs(run: dict) -> list:
+    """Embeds del panel principal: encabezado (estado + contador de anotados) y una tarjeta por party."""
     snapshot, assigned = cta_run_context(run)
     is_open = run["status"] == "open"
     color = discord.Color.green() if is_open else discord.Color.dark_grey()
-    closes = _cta_parse_dt(run["closes_at"])
-    status = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>" if is_open
-              else "🔒 **Inscripciones cerradas** · esta es la composición final")
-    header = {"title": f"⚔️ CTA {run['composition_name'].upper()} · #{run['id']}",
-              "description": status, "color": color}
-    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
+    total = len(snapshot["slots"])
     occupied = sum(1 for s in snapshot["slots"] if cta_slot_key(s) in assigned)
-    specs[-1] = dict(specs[-1], footer=f"Plazas ocupadas: {occupied}/{len(snapshot['slots'])}")
+    if is_open:
+        closes = _cta_parse_dt(run["closes_at"])
+        thread_ref = f"<#{run['thread_id']}>" if run.get("thread_id") else "el hilo de esta CTA"
+        status = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>\n"
+                  f"Para anotarte, escribí el número de tu posición en {thread_ref}.")
+    else:
+        status = "🔒 **Inscripciones cerradas** · esta es la composición final"
+    header = {"title": f"⚔️ SMOGG · CTA {run['composition_name'].upper()} · #{run['id']}",
+              "description": f"{status}\n👥 **Anotados: {occupied}/{total}**", "color": color}
+    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
+    specs[-1] = dict(specs[-1], footer=f"Anotados: {occupied}/{total} · CTA #{run['id']}")
     return specs
 
 
-def cta_build_embed(run: dict, guild: discord.Guild):
-    """Panel principal (mensaje del canal): resumen y enlace al hilo donde se hace la inscripción."""
-    snapshot, assigned = cta_run_context(run)
-    is_open = run["status"] == "open"
-    closes = _cta_parse_dt(run["closes_at"])
-    thread_ref = f"<#{run['thread_id']}>" if run.get("thread_id") else "el hilo de esta CTA"
-    if is_open:
-        desc = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>\n"
-                f"Para anotarte, escribí el número de tu posición en {thread_ref}.")
-    else:
-        desc = f"🔒 **Inscripciones cerradas** · la composición final está en {thread_ref}."
-    embed = discord.Embed(title=f"⚔️ SMOGG · CTA {run['composition_name'].upper()}", description=desc,
-                          color=discord.Color.green() if is_open else discord.Color.dark_grey())
-    numbered = cta_number_slots(snapshot["slots"])
-    parties: dict = {}
-    for n, s in numbered:
-        parties.setdefault(int(s["party_no"]), []).append((n, s))
-    for party_no in sorted(parties):
-        items = parties[party_no]
-        taken = sum(1 for _n, s in items if cta_slot_key(s) in assigned)
-        embed.add_field(name=f"Party {party_no}", value=f"Posiciones {items[0][0]}–{items[-1][0]} · {taken}/{len(items)} ocupadas",
-                        inline=True)
-    embed.set_footer(text=f"Plazas ocupadas: {len(assigned)}/{len(snapshot['slots'])} · CTA #{run['id']}")
-    return embed
+def cta_panel_groups(run: dict) -> list:
+    """Divide los embeds del panel en mensajes (máx. 10 embeds y ~5200 caracteres cada uno)."""
+    return [[cta_spec_to_embed(spec) for spec in group] for group in cta_pack_specs(cta_board_specs(run))]
 
 
 def cta_instructions_text(run: dict, total: int) -> str:
@@ -3286,7 +3272,8 @@ def cta_instructions_text(run: dict, total: int) -> str:
         f"• Para cambiar de posición, escribí otro número libre.\n"
         f"• Para salir, escribí `salir`.\n"
         f"• Las posiciones con 🔒 piden ciertos roles.\n"
-        f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>. La lista se actualiza sola.\n"
+        f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>.\n"
+        f"• La lista de parties y el contador de anotados están en el panel principal, arriba del hilo. Se actualiza sola.\n"
         f"• Al cerrar, todos los anotados reciben un rol nuevo de esta CTA."
     )
 
@@ -3310,58 +3297,63 @@ async def cta_get_thread(run: dict):
     return thread
 
 
-async def cta_edit_board_message(thread, message_id: int, embeds: list):
-    """Edita un mensaje del tablero; si el hilo se archivó por inactividad, lo desarchiva y reintenta."""
-    try:
-        await thread.get_partial_message(message_id).edit(content=None, embeds=embeds)
-    except discord.HTTPException as exc:
-        if getattr(exc, "code", None) == 50083 and hasattr(thread, "edit"):
-            await thread.edit(archived=False)
-            await thread.get_partial_message(message_id).edit(content=None, embeds=embeds)
-        else:
-            raise
-
-
 async def cta_refresh_board(run_id: int):
-    """Actualiza (edita) los mensajes del tablero en el hilo. No crea una copia por inscripción."""
+    """Mantiene la lista de parties en el CANAL: si no entra en el panel, continúa en mensajes siguientes
+    (se editan, no se duplican). Además limpia el tablero viejo que antes vivía en el hilo."""
     lock = cta_board_locks.setdefault(run_id, asyncio.Lock())
     async with lock:
         run = cta_run_get(run_id)
-        if not run or not run.get("thread_id"):
+        if not run:
             return
-        thread = await cta_get_thread(run)
-        if thread is None:
-            return
-        groups = cta_pack_specs(cta_board_specs(run))
+        # Tablero viejo en el hilo: se borra una sola vez. El [0] queda como marca de "hilo preparado".
         try:
-            ids = [int(x) for x in json.loads(run.get("board_message_ids_json") or "[]")]
+            legacy = [int(x) for x in json.loads(run.get("board_message_ids_json") or "[]")]
+        except Exception:
+            legacy = []
+        if legacy != [0]:
+            thread = await cta_get_thread(run) if run.get("thread_id") else None
+            for old_id in legacy:
+                if old_id and thread is not None:
+                    try:
+                        await thread.get_partial_message(old_id).delete()
+                    except Exception:
+                        pass
+            db_execute("UPDATE cta_runs SET board_message_ids_json='[0]' WHERE id=?", (run_id,))
+        if not run.get("message_id"):
+            return
+        guild = bot.get_guild(int(run["guild_id"]))
+        channel = (guild.get_channel(int(run["channel_id"])) if guild else None) or bot.get_channel(int(run["channel_id"]))
+        if channel is None:
+            return
+        groups = cta_panel_groups(run)[1:]           # el primer grupo va en el panel principal
+        try:
+            ids = [int(x) for x in json.loads(run.get("panel_extra_ids_json") or "[]")]
         except Exception:
             ids = []
         new_ids = []
-        for i, group in enumerate(groups):
-            embeds = [cta_spec_to_embed(spec) for spec in group]
+        for i, embeds in enumerate(groups):
             msg_id = None
             if i < len(ids):
                 try:
-                    await cta_edit_board_message(thread, ids[i], embeds)
+                    await channel.get_partial_message(ids[i]).edit(content=None, embeds=embeds)
                     msg_id = ids[i]
                 except discord.NotFound:
                     msg_id = None
             if msg_id is None:
-                sent = await thread.send(embeds=embeds, allowed_mentions=CTA_NO_PINGS)
+                sent = await channel.send(embeds=embeds, allowed_mentions=CTA_NO_PINGS)
                 msg_id = sent.id
             new_ids.append(msg_id)
         for old_id in ids[len(groups):]:
             try:
-                await thread.get_partial_message(old_id).delete()
+                await channel.get_partial_message(old_id).delete()
             except Exception:
                 pass
         if new_ids != ids:
-            db_execute("UPDATE cta_runs SET board_message_ids_json=? WHERE id=?", (json.dumps(new_ids), run_id))
+            db_execute("UPDATE cta_runs SET panel_extra_ids_json=? WHERE id=?", (json.dumps(new_ids), run_id))
 
 
 async def cta_refresh_panel(bot_obj, run_id: int):
-    """Actualiza el panel principal del canal (estado, ocupación y botones)."""
+    """Actualiza el panel principal del canal: estado, contador, lista de parties y botones."""
     run = cta_run_get(run_id)
     if not run or not run.get("message_id"):
         return
@@ -3377,7 +3369,7 @@ async def cta_refresh_panel(bot_obj, run_id: int):
     thread_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id']}" if run.get("thread_id") else None
     try:
         msg = await channel.fetch_message(int(run["message_id"]))
-        await msg.edit(embed=cta_build_embed(run, guild),
+        await msg.edit(embeds=cta_panel_groups(run)[0],
                        view=CTAPanelView(run_id=int(run_id), closed=run["status"] != "open", thread_url=thread_url),
                        allowed_mentions=CTA_NO_PINGS)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
@@ -3426,7 +3418,7 @@ async def cta_close_run(run_id: int, reason="timeout"):
     thread = await cta_get_thread(run)
     if thread is not None:
         try:
-            await thread.send("🔒 Las inscripciones de esta CTA están cerradas. La composición final quedó arriba.",
+            await thread.send("🔒 Las inscripciones de esta CTA están cerradas. La composición final quedó en el panel principal.",
                               allowed_mentions=CTA_NO_PINGS)
         except Exception:
             pass
@@ -4240,7 +4232,7 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
     run = cta_run_get(run_id)
     message = None
     try:
-        await interaction.response.send_message(embed=cta_build_embed(run, interaction.guild), view=CTAPanelView(run_id=run_id), allowed_mentions=CTA_NO_PINGS)
+        await interaction.response.send_message(embeds=cta_panel_groups(run)[0], view=CTAPanelView(run_id=run_id), allowed_mentions=CTA_NO_PINGS)
         message = await interaction.original_response()
         db_execute("UPDATE cta_runs SET message_id=? WHERE id=?", (message.id, run_id))
         thread = await message.create_thread(name=f"CTA {comp['name']} #{run_id}"[:100], auto_archive_duration=1440)
@@ -4873,3 +4865,6 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
+
+
