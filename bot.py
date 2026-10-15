@@ -119,6 +119,7 @@ CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
 
 RECRUITER_ROLE_ID = 1257896905099444354
+CONTENT_CREATOR_ROLE_ID = 1258562816512884808     # puede usar /cta (iniciar CTAs)
 MIEMBRO_ROLE_ID = 1257896455860129822
 TANK_ROLE_ID = 1260755129754189854
 HEALER_ROLE_ID = 1260755151296266331
@@ -996,7 +997,8 @@ def next_utc_occurrence(h: int, m: int, now: Optional[datetime] = None) -> datet
     return target
 
 
-def build_timer_post(material: str, tier: Optional[str], mapa: str, target_utc: datetime, user_mention: str) -> str:
+def build_timer_post(material: str, tier: Optional[str], mapa: str, target_utc: datetime, user_mention: str,
+                     fixed_time: bool = False) -> str:
     """Arma el texto del anuncio. Si no hay tier (Dragon) la línea se omite por completo."""
     icon = MATERIAL_ICONS.get(material, DEFAULT_MATERIAL_ICON)
     unix = int(target_utc.timestamp())
@@ -1008,8 +1010,11 @@ def build_timer_post(material: str, tier: Optional[str], mapa: str, target_utc: 
         f"🕒 **Tiempo:** {target_utc.strftime('%H:%M')} UTC",
         f"🌎 **Horario:** {target_utc.astimezone(ARGENTINA_TZ).strftime('%H:%M')}",
         f"⏳ **Falta:** <t:{unix}:R>",
-        f"👤 **Timeado por:** {user_mention}",
     ]
+    if fixed_time:
+        # Hora exacta fija: Discord la muestra en la zona horaria de cada persona.
+        lines.append(f"📌 **Sale a las:** <t:{unix}:t> · <t:{unix}:D>")
+    lines.append(f"👤 **Timeado por:** {user_mention}")
     return "\n".join(lines)
 
 
@@ -1081,6 +1086,7 @@ async def before_timer_posts_cleanup():
     mapa="Nombre del mapa",
     tiempo="Horario UTC en que sale (HH:MM) ej 16:10",
     tier="Tier (obligatorio salvo para Dragon)",
+    tiempo_fijo="Opcional: agrega la hora exacta en que sale (en tu horario) además de la cuenta regresiva",
 )
 @app_commands.choices(
     material=[
@@ -1110,6 +1116,7 @@ async def timeradd_slash(
     mapa: str,
     tiempo: str,
     tier: Optional[app_commands.Choice[str]] = None,
+    tiempo_fijo: bool = False,
 ):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
@@ -1165,7 +1172,7 @@ async def timeradd_slash(
     if not isinstance(channel, discord.TextChannel):
         return await interaction.followup.send("❌ No encontré el canal de timers.", ephemeral=True)
 
-    content = build_timer_post(mat, tr, mapa, target_utc, interaction.user.mention)
+    content = build_timer_post(mat, tr, mapa, target_utc, interaction.user.mention, fixed_time=tiempo_fijo)
 
     try:
         post = await channel.send(
@@ -2916,6 +2923,9 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
         # El ⚔️ era el emoji automático: ya no se agrega, así que se limpia de las posiciones existentes.
         conn.execute("UPDATE cta_slots SET emoji='' WHERE emoji='⚔️' OR emoji='⚔'")
+        # Las restricciones por rol ahora son siempre «alcanza con tener el rol»: se unifica lo guardado.
+        conn.execute("UPDATE cta_slots SET access_match='any' WHERE access_match<>'any'")
+        conn.execute("UPDATE cta_party_access SET access_match='any' WHERE access_match<>'any'")
         conn.commit()
 
 
@@ -2976,7 +2986,7 @@ def cta_user_has_role(member: discord.Member, role_ids: list[int], mode: str) ->
     required = {int(x) for x in role_ids}
     if not required:
         return True
-    return required.issubset(member_roles) if mode == "all" else bool(required & member_roles)
+    return bool(required & member_roles)      # alcanza con tener uno de los roles pedidos
 
 
 def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild) -> Optional[str]:
@@ -2990,8 +3000,8 @@ def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild) -
             continue
         if not cta_user_has_role(member, role_ids, match):
             names = [guild.get_role(int(rid)).mention if guild.get_role(int(rid)) else f"rol eliminado ({rid})" for rid in role_ids]
-            condition = "todos estos roles" if match == "all" else "uno de estos roles"
-            return f"No podés anotarte en {where}: necesitás {condition}: {' '.join(names)}."
+            condition = "el rol" if len(names) == 1 else "uno de estos roles"
+            return f"No podés anotarte en {where}: necesitás {condition} {' '.join(names)}."
     return None
 
 
@@ -3885,35 +3895,20 @@ class CTAAccessRoleView(discord.ui.View):
         super().__init__(timeout=180)
         self.composition_id, self.slot, self.guild_id, self.actor_id = composition_id, slot, guild_id, actor_id
         self.add_item(CTAAccessRoleSelect(self))
-        self.add_item(CTAAccessModeSelect(self))
 
 
 class CTAAccessRoleSelect(discord.ui.RoleSelect):
     def __init__(self, parent_view: CTAAccessRoleView):
-        super().__init__(placeholder="Elegí los roles permitidos (vacío = todos)", min_values=0, max_values=25)
+        super().__init__(placeholder="Rol necesario para anotarse (vacío = abierto a todos)", min_values=0, max_values=25)
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
         role_ids = [str(r.id) for r in self.values]
-        mode = getattr(self.parent_view, "mode", "any")
-        match = getattr(self.parent_view, "match", "any")
+        match = "any"
         db_execute("UPDATE cta_slots SET access_mode=?, role_ids_json=?, access_match=? WHERE id=?", ("roles" if role_ids else "any", json.dumps(role_ids), match, self.parent_view.slot["id"]))
         db_execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.parent_view.composition_id))
         cta_audit(self.parent_view.guild_id, self.parent_view.actor_id, "composition_access", details=f"slot={self.parent_view.slot['id']}; roles={','.join(role_ids)}; match={match}")
-        await interaction.response.send_message("✅ Restricción guardada. Para cambiar cómo se combinan los roles, elegí el modo en el otro menú y volvé a elegir los roles.", ephemeral=True)
-
-
-class CTAAccessModeSelect(discord.ui.Select):
-    def __init__(self, parent_view: CTAAccessRoleView):
-        self.parent_view = parent_view
-        super().__init__(placeholder="Cómo combinar los roles seleccionados", min_values=1, max_values=1, options=[
-            discord.SelectOption(label="Cualquiera de los roles", value="any", description="El jugador necesita al menos uno"),
-            discord.SelectOption(label="Todos los roles", value="all", description="El jugador necesita todos"),
-        ])
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.match = self.values[0]
-        await interaction.response.send_message("Modo elegido. Volvé a elegir los roles para guardar la restricción con este modo.", ephemeral=True)
+        await interaction.response.send_message("✅ Restricción guardada. Solo podrán anotarse quienes tengan ese rol." if role_ids else "✅ Posición abierta para todos.", ephemeral=True)
 
 
 class CTAPartyAccessView(discord.ui.View):
@@ -3924,11 +3919,9 @@ class CTAPartyAccessView(discord.ui.View):
         self.match = "any"
         party_select = discord.ui.Select(placeholder="Elegí una party", options=[discord.SelectOption(label=f"Party {p}", value=str(p), default=(p == parties[0])) for p in parties[:25]])
         party_select.callback = self.select_party
-        mode_select = discord.ui.Select(placeholder="Cómo combinar los roles", options=[discord.SelectOption(label="Cualquiera de los roles", value="any"), discord.SelectOption(label="Todos los roles", value="all")])
-        mode_select.callback = self.select_mode
-        self.role_select = discord.ui.RoleSelect(placeholder="Roles permitidos para esta party", min_values=0, max_values=25)
+        self.role_select = discord.ui.RoleSelect(placeholder="Rol necesario para anotarse en esta party", min_values=0, max_values=25)
         self.role_select.callback = self.save_roles
-        self.add_item(party_select); self.add_item(mode_select); self.add_item(self.role_select)
+        self.add_item(party_select); self.add_item(self.role_select)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.actor_id:
@@ -3938,11 +3931,7 @@ class CTAPartyAccessView(discord.ui.View):
 
     async def select_party(self, interaction: discord.Interaction):
         self.selected_party = int(interaction.data["values"][0])
-        await interaction.response.send_message(f"Elegiste la Party {self.selected_party}. Ahora elegí los roles permitidos.", ephemeral=True)
-
-    async def select_mode(self, interaction: discord.Interaction):
-        self.match = interaction.data["values"][0]
-        await interaction.response.send_message("Modo elegido. Volvé a elegir los roles para aplicar la configuración.", ephemeral=True)
+        await interaction.response.send_message(f"Elegiste la Party {self.selected_party}. Ahora elegí el rol necesario.", ephemeral=True)
 
     async def save_roles(self, interaction: discord.Interaction):
         role_ids = [str(r.id) for r in self.role_select.values]
@@ -4347,7 +4336,7 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
     member = interaction.user
-    if not (member.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in member.roles)):
+    if not (member.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID, CONTENT_CREATOR_ROLE_ID} for r in member.roles)):
         return await interaction.response.send_message("No tenés permisos para iniciar una CTA.", ephemeral=True)
     try:
         minutes = cta_parse_duration(tiempo)
@@ -4803,27 +4792,46 @@ async def _albion_top_fetch() -> tuple:
             raise
 
 
-async def _albion_top_command(ctx: commands.Context, key: str):
-    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
-        return
-    member_role = ctx.guild.get_role(MIEMBRO_ROLE_ID)
-    if not ((member_role is not None and member_role in ctx.author.roles) or is_staff_member(ctx.author)):
-        return await ctx.reply("❌ Este comando es solo para miembros de la guild.", mention_author=False)
+async def _albion_top_build(member, guild, key: str):
+    """Lógica común de !top* y /top*. Devuelve (texto_de_error, embed, es_privado).
+    Solo uno de los dos primeros viene con valor."""
+    if guild is None or not isinstance(member, discord.Member):
+        return ("Este comando solo funciona dentro del servidor.", None, True)
+    member_role = guild.get_role(MIEMBRO_ROLE_ID)
+    if not ((member_role is not None and member_role in member.roles) or is_staff_member(member)):
+        return ("❌ Este comando es solo para miembros de la guild.", None, True)
     now = time.time()
-    if now - _albion_top_last_use.get(ctx.author.id, 0.0) < ALBION_TOP_USER_COOLDOWN:
-        return await ctx.reply(f"⏳ Esperá unos segundos antes de volver a usar este comando.", mention_author=False,
-                               delete_after=8)
-    _albion_top_last_use[ctx.author.id] = now
-    async with ctx.typing():
-        try:
-            players, age, stale = await _albion_top_fetch()
-        except Exception as exc:
-            return await ctx.reply("❌ No pude leer los datos de AlbionBB. Probá de nuevo en un rato.\n"
-                                   f"Detalle técnico (para el administrador): `{type(exc).__name__}: {str(exc)[:300]}`",
-                                   mention_author=False)
+    if now - _albion_top_last_use.get(member.id, 0.0) < ALBION_TOP_USER_COOLDOWN:
+        return ("⏳ Esperá unos segundos antes de volver a usar este comando.", None, True)
+    _albion_top_last_use[member.id] = now
+    try:
+        players, age, stale = await _albion_top_fetch()
+    except Exception as exc:
+        return ("❌ No pude leer los datos de AlbionBB. Probá de nuevo en un rato.\n"
+                f"Detalle técnico (para el administrador): `{type(exc).__name__}: {str(exc)[:300]}`", None, True)
     rows = _albion_top_rank(players, key)
-    await ctx.send(embed=_albion_top_embed(key, rows, len(players), age, stale),
-                   allowed_mentions=discord.AllowedMentions.none())
+    return (None, _albion_top_embed(key, rows, len(players), age, stale), False)
+
+
+async def _albion_top_command(ctx: commands.Context, key: str):
+    async with ctx.typing():
+        error, embed, _private = await _albion_top_build(ctx.author, ctx.guild, key)
+    if ctx.guild is None:
+        return
+    if error:
+        return await ctx.reply(error, mention_author=False, delete_after=15 if error.startswith("⏳") else None)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+
+async def _albion_top_slash(interaction: discord.Interaction, key: str):
+    """Versión con /. El resultado se publica en el canal (público); los errores los ve solo quien lo usó."""
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Este comando solo funciona dentro del servidor.")
+    await interaction.response.defer()
+    error, embed, _private = await _albion_top_build(interaction.user, interaction.guild, key)
+    if error:
+        return await interaction.followup.send(error, ephemeral=True)
+    await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="topkills")
@@ -4839,6 +4847,21 @@ async def topattend_cmd(ctx: commands.Context):
 @bot.command(name="topdeaths")
 async def topdeaths_cmd(ctx: commands.Context):
     await _albion_top_command(ctx, "deaths")
+
+
+@bot.tree.command(name="topkills", description="Top 10 de kills de la guild (AlbionBB)", guild=GUILD_OBJ)
+async def topkills_slash(interaction: discord.Interaction):
+    await _albion_top_slash(interaction, "kills")
+
+
+@bot.tree.command(name="topattend", description="Top 10 de asistencia de la guild (AlbionBB)", guild=GUILD_OBJ)
+async def topattend_slash(interaction: discord.Interaction):
+    await _albion_top_slash(interaction, "attendance")
+
+
+@bot.tree.command(name="topdeaths", description="Top 10 de muertes de la guild (AlbionBB)", guild=GUILD_OBJ)
+async def topdeaths_slash(interaction: discord.Interaction):
+    await _albion_top_slash(interaction, "deaths")
 
 
 # ---------- READY (AL FINAL, así PanelView existe) ----------
@@ -4970,45 +4993,4 @@ async def on_message(message: discord.Message):
     recruit_uid = _get_recruit_uid_from_channel(message.channel)
     if recruit_uid is not None:
         # Solo guardamos si el que manda la imagen es el postulante del ticket
-        if message.author.id != recruit_uid:
-            return
-
-        if not message.attachments:
-            return
-
-        img = None
-        for att in message.attachments:
-            if _is_image_attachment(att):
-                img = att
-                break
-        if img is None:
-            return
-
-        save_ticket_image(message.author.id, img.url, img.filename or "image.png")
-        return
-
-    # (Opcional) Si querés conservar tu modo viejo para tickets recién creados:
-    opener_channel_id = active_applications.get(message.author.id)
-    if opener_channel_id is None or opener_channel_id != message.channel.id:
-        return
-
-    if not message.attachments:
-        return
-
-    img = None
-    for att in message.attachments:
-        if _is_image_attachment(att):
-            img = att
-            break
-    if img is None:
-        return
-
-    ticket_images[message.author.id] = {
-        "url": img.url,
-        "filename": img.filename or "image.png",
-    }
-# ---------- RUN ----------
-bot.run(TOKEN)
-
-
-
+        if message.author.id != recruit
