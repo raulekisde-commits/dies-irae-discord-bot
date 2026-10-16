@@ -214,6 +214,7 @@ ALBIONBB_BATTLE_URL = f"{ALBIONBB_BASE_URL}/battles"
 ALBIONBB_KILLS_URL = f"{ALBIONBB_BASE_URL}/battles/kills"
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
 FOCO_CATEGORY_ID = 1468340293571973273        
+FOCO_NOTIFY_USER_ID = 350688193903067140       # a quien se etiqueta cuando se abre un ticket de Foco Donor (en vez del Staff)
 FOCO_LOG_CHANNEL_ID = 1468345144502915313      
 
 FOCO_TOPIC_PREFIX = "FOCO_DONOR"
@@ -1842,6 +1843,16 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
         if bot_member:
             overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
 
+        # La persona que recibe el aviso tiene que poder ver el canal.
+        notify_member = guild.get_member(FOCO_NOTIFY_USER_ID)
+        if notify_member is None:
+            try:
+                notify_member = await guild.fetch_member(FOCO_NOTIFY_USER_ID)
+            except Exception:
+                notify_member = None
+        if notify_member is not None:
+            overwrites[notify_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
         topic = make_foco_topic(user_id, str(self.foco.value), str(self.item_spec.value))
 
         try:
@@ -1870,12 +1881,11 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
         )
         embed.set_footer(text="Smogg Foco Donor System")
 
-        staff_mention = staff_role.mention if staff_role else f"<@&{STAFF_ROLE_ID}>"
-
         await channel.send(
-            content=f"{interaction.user.mention} {staff_mention}",
+            content=f"{interaction.user.mention} <@{FOCO_NOTIFY_USER_ID}>",
             embed=embed,
-            view=FocoTicketActionView()
+            view=FocoTicketActionView(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
         )
 
         await respond_ephemeral(interaction, f"✅ Ticket creado: {channel.mention}")
@@ -5335,6 +5345,3 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
-
-
-
