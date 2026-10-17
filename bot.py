@@ -3383,6 +3383,15 @@ def cta_try_leave(run_id: int, user_id: int):
         return ("left", existing[0])
 
 
+def cta_set_party_roles(composition_id: int, party_no: int, role_ids: list):
+    """Rol general de una party: sin ese rol nadie puede anotarse en ninguna posición de la party
+    (además de los roles propios de cada posición). Lista vacía = party abierta."""
+    db_execute("INSERT INTO cta_party_access(composition_id,party_no,access_mode,role_ids_json,access_match) VALUES (?,?,?,?,'any') "
+               "ON CONFLICT(composition_id,party_no) DO UPDATE SET access_mode=excluded.access_mode, role_ids_json=excluded.role_ids_json, access_match='any'",
+               (composition_id, party_no, "roles" if role_ids else "any", json.dumps([str(r) for r in role_ids])))
+    db_execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), composition_id))
+
+
 def cta_is_organizer(member) -> bool:
     """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta_asignar)."""
     perms = getattr(member, "guild_permissions", None)
@@ -3446,9 +3455,9 @@ def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = F
         first, last = items[0][0], items[-1][0]
         lines = []
         pa = items[0][1].get("party_access") or {}
-        if show_roles and pa.get("mode") == "roles" and pa.get("role_ids"):
+        if pa.get("mode") == "roles" and pa.get("role_ids"):
             roles = " ".join(f"<@&{r}>" for r in pa["role_ids"])
-            lines.append(f"🛡️ Party restringida a: {roles}")
+            lines.append(f"🛡️ Para anotarte en esta party necesitás: {roles}")
         for n, s in items:
             mark = " 🔒" if cta_slot_restricted(s) else ""
             extra = ""
@@ -4128,12 +4137,12 @@ class CTAAccessRoleSelect(discord.ui.RoleSelect):
 
 
 class CTAPartyAccessView(discord.ui.View):
-    def __init__(self, composition: dict, parties: list[int], actor_id: int):
+    def __init__(self, composition: dict, parties: list[int], actor_id: int, selected: Optional[int] = None):
         super().__init__(timeout=180)
         self.composition, self.parties, self.actor_id = composition, parties, actor_id
-        self.selected_party = parties[0]
+        self.selected_party = selected if selected in parties else parties[0]
         self.match = "any"
-        party_select = discord.ui.Select(placeholder="Elegí una party", options=[discord.SelectOption(label=f"Party {p}", value=str(p), default=(p == parties[0])) for p in parties[:25]])
+        party_select = discord.ui.Select(placeholder="Party", options=[discord.SelectOption(label=f"Party {p}", value=str(p), default=(p == self.selected_party)) for p in parties[:25]])
         party_select.callback = self.select_party
         self.role_select = discord.ui.RoleSelect(placeholder="Rol necesario para anotarse en esta party", min_values=0, max_values=25)
         self.role_select.callback = self.save_roles
@@ -4151,8 +4160,7 @@ class CTAPartyAccessView(discord.ui.View):
 
     async def save_roles(self, interaction: discord.Interaction):
         role_ids = [str(r.id) for r in self.role_select.values]
-        db_execute("INSERT INTO cta_party_access(composition_id,party_no,access_mode,role_ids_json,access_match) VALUES (?,?,?,?,?) ON CONFLICT(composition_id,party_no) DO UPDATE SET access_mode=excluded.access_mode, role_ids_json=excluded.role_ids_json, access_match=excluded.access_match", (self.composition["id"], self.selected_party, "roles" if role_ids else "any", json.dumps(role_ids), self.match))
-        db_execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), self.composition["id"]))
+        cta_set_party_roles(self.composition["id"], self.selected_party, role_ids)
         cta_audit(self.composition["guild_id"], self.actor_id, "composition_party_access", details=f"comp={self.composition['id']}; party={self.selected_party}; roles={','.join(role_ids)}; match={self.match}")
         await interaction.response.send_message(f"✅ Restricción guardada para la Party {self.selected_party}. {'Roles: ' + ', '.join(r.mention for r in self.role_select.values) if role_ids else 'La party queda abierta para todos.'}", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
@@ -4368,7 +4376,7 @@ class CTACompositionEditorView(discord.ui.View):
         parties = sorted({int(s["party_no"]) for s in fresh["slots"]}) if fresh else []
         if not parties:
             return await interaction.response.send_message("Agregá al menos una posición antes de restringir una party.", ephemeral=True)
-        await interaction.response.send_message("Elegí la party y los roles que pueden anotarse en ella.", view=CTAPartyAccessView(self.composition, parties, interaction.user.id), ephemeral=True)
+        await interaction.response.send_message(f"Elegí el **rol general** de la **Party {self.party_filter}** (o cambiá de party en el primer menú). Sin ese rol nadie se puede anotar en la party; las posiciones con su propio rol lo siguen pidiendo además. Sin elegir ningún rol, la party queda abierta.", view=CTAPartyAccessView(self.composition, parties, interaction.user.id, selected=self.party_filter), ephemeral=True)
 
     async def preview(self, interaction: discord.Interaction):
         comp = cta_get_composition(self.composition["guild_id"], self.composition["name"])
@@ -4504,6 +4512,24 @@ class CTACompositionGroup(app_commands.Group):
             return await interaction.response.send_message("Ya existe una composición con ese nombre.", ephemeral=True)
         cta_audit(interaction.guild_id, interaction.user.id, "composition_rename", details=f"{comp['name']} -> {new_name}")
         await interaction.response.send_message(f"✅ **{comp['name']}** ahora se llama **{new_name}**. Las CTA ya publicadas conservan su nombre.", ephemeral=True)
+
+    @app_commands.command(name="rol_party", description="Rol general de una party: sin ese rol no se puede anotar nadie en ella")
+    @app_commands.describe(nombre="Nombre de la composición", party="Número de party", rol="Rol necesario (vacío = quitar la restricción)")
+    async def rol_party(self, interaction: discord.Interaction, nombre: str, party: app_commands.Range[int, 1, 25], rol: Optional[discord.Role] = None):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        if party not in {int(s["party_no"]) for s in comp["slots"]}:
+            return await interaction.response.send_message(f"La composición **{comp['name']}** no tiene una Party {party}.", ephemeral=True)
+        cta_set_party_roles(comp["id"], party, [rol.id] if rol else [])
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_party_access", details=f"comp={comp['id']}; party={party}; roles={rol.id if rol else ''}")
+        if rol:
+            msg = f"✅ Para anotarse en la **Party {party}** de **{comp['name']}** hace falta {rol.mention}. Las posiciones con su propio rol lo siguen pidiendo además."
+        else:
+            msg = f"✅ La **Party {party}** de **{comp['name']}** quedó abierta para todos."
+        await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name="builds", description="Poner o quitar el link de builds de una composición")
     @app_commands.describe(nombre="Nombre de la composición", link="Link a la web de builds (https://...). Vacío o «quitar» = sacar el link")
@@ -5114,6 +5140,7 @@ HELP_SECTIONS = [
         ("/cta_historial", "Todos", "Últimas CTA cerradas."),
         ("/compo crear · listar · ver · editar", "Staff (listar y ver: todos)", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse."),
         ("/compo duplicar · renombrar · eliminar", "Staff", "Copiar, renombrar o borrar una composición."),
+        ("/compo rol_party nombre party rol", "Staff", "Rol general de una party: sin ese rol nadie se anota en ella (además de los roles propios de cada posición)."),
         ("/compo builds nombre link", "Staff", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
@@ -5345,3 +5372,6 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
+
+
