@@ -1551,7 +1551,7 @@ async def delrole_slash(interaction: discord.Interaction, rol: discord.Role):
 @commands.guild_only()
 async def addroll_list(ctx: commands.Context, *, args: str = None):
     if not args:
-        return await ctx.reply("Uso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
+        return await ctx.reply("Uso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...` (o `@Rol @Usuario1 @Usuario2 ...` para usar un rol que ya existe)")
 
     mentioned_members = ctx.message.mentions
     if not mentioned_members:
@@ -1560,12 +1560,21 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
     role_name = args
     for m in mentioned_members:
         role_name = role_name.replace(m.mention, "").strip()
+    # Si se etiquetó un rol existente (@Rol), se usa ese rol: no se crea uno nuevo.
+    tagged_roles = [r for r in ctx.message.role_mentions if r.id != ctx.guild.id]
+    for r in tagged_roles:
+        role_name = role_name.replace(r.mention, "").strip()
     role_name = " ".join(role_name.split())
 
-    if not role_name:
+    if len(tagged_roles) > 1:
+        return await ctx.reply("Etiquetá un solo rol por comando.")
+    role = tagged_roles[0] if tagged_roles else None
+
+    if role is None and not role_name:
         return await ctx.reply("Falta el nombre del rol.\nUso: `!addroll-list NombreDelRol @Usuario1 @Usuario2 ...`")
 
-    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if role is None:
+        role = discord.utils.get(ctx.guild.roles, name=role_name)
 
     if role is None:
         try:
