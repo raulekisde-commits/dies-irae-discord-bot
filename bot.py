@@ -147,6 +147,7 @@ def init_database():
         # Migraciones aditivas: nunca borran ni recrean datos existentes.
         db_ensure_column(conn, "giveaways", "winners_count", "INTEGER NOT NULL DEFAULT 1")
         db_ensure_column(conn, "timer_entries", "fixed", "INTEGER NOT NULL DEFAULT 0")
+        db_ensure_column(conn, "venta_panels", "stock_added", "INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
@@ -5185,9 +5186,10 @@ HELP_SECTIONS = [
     ("💰 Economía y timers", [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
-        ("/panelventa crear nombre total", "Staff", "Publica en el canal un panel de venta con el total original. Cada `/venta` lo actualiza solo."),
+        ("/panelventa crear nombre total", "Council", "Publica en el canal un panel de venta con el total original. Cada `/venta` lo actualiza solo."),
         ("/venta nombre cantidad", "Staff", "Suma una venta al panel: queda tu nombre, lo acumulado, tus movimientos y cuánto falta del total."),
-        ("/panelventa eliminar nombre", "Staff", "Elimina un panel de venta y sus registros."),
+        ("/agregarstock nombre cantidad", "Council", "Suma stock al total de un panel de venta (el panel muestra el original y lo agregado)."),
+        ("/panelventa eliminar nombre", "Council", "Elimina un panel de venta y sus registros."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
@@ -5301,6 +5303,14 @@ def venta_allowed(member) -> bool:
                 or any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", [])))
 
 
+COUNCIL_ROLE_ID = 1257896977220501557
+
+
+def venta_council_only(member) -> bool:
+    """Crear/eliminar paneles y agregar stock: únicamente el rol Council."""
+    return any(r.id == COUNCIL_ROLE_ID for r in getattr(member, "roles", []))
+
+
 def venta_get_panel(guild_id: int, name: str):
     rows = db_fetchall("SELECT * FROM venta_panels WHERE guild_id=? AND name_key=?", (guild_id, (name or "").strip().casefold()))
     return rows[0] if rows else None
@@ -5315,13 +5325,16 @@ def venta_summary(panel_id: int):
     return sum(s[1] for s in sellers), sum(s[2] for s in sellers), sellers
 
 
-def venta_build_embed(name: str, total: int, sold: int, moves: int, sellers: list):
+def venta_build_embed(name: str, total: int, sold: int, moves: int, sellers: list, added: int = 0):
     pct = min(100, (sold * 100) // total) if total > 0 else 100
     filled = pct // 10
     bar = "▰" * filled + "▱" * (10 - filled)
     done = sold >= total
     emb = discord.Embed(title=f"💰 {name}", color=discord.Color.green() if done else discord.Color.gold())
-    emb.add_field(name="📦 Total original", value=venta_fmt(total), inline=True)
+    if added > 0:
+        emb.add_field(name="📦 Total", value=f"{venta_fmt(total)}\n_(original {venta_fmt(total - added)} + {venta_fmt(added)} de stock)_", inline=True)
+    else:
+        emb.add_field(name="📦 Total original", value=venta_fmt(total), inline=True)
     emb.add_field(name="✅ Vendido", value=venta_fmt(sold), inline=True)
     emb.add_field(name="⏳ Restante", value=venta_fmt(max(0, total - sold)), inline=True)
     lines = [f"{bar} **{pct}%**" + ("  ·  ¡Completado! 🎉" if done else "")]
@@ -5346,7 +5359,7 @@ def venta_build_embed(name: str, total: int, sold: int, moves: int, sellers: lis
 
 def venta_panel_embed(panel_row):
     sold, moves, sellers = venta_summary(int(panel_row["id"]))
-    return venta_build_embed(panel_row["name"], int(panel_row["total"]), sold, moves, sellers)
+    return venta_build_embed(panel_row["name"], int(panel_row["total"]), sold, moves, sellers, int(panel_row["stock_added"] or 0))
 
 
 async def venta_refresh_panel(guild, panel_id: int):
@@ -5379,8 +5392,8 @@ class VentaPanelGroup(app_commands.Group):
     async def crear(self, interaction: discord.Interaction, nombre: str, total: app_commands.Range[int, 1, VENTA_MAX_AMOUNT]):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-        if not venta_allowed(interaction.user):
-            return await respond_ephemeral(interaction, "❌ Solo el Staff puede crear paneles de venta.")
+        if not venta_council_only(interaction.user):
+            return await respond_ephemeral(interaction, "❌ Solo el rol **Council** puede crear paneles de venta.")
         name = " ".join((nombre or "").split())
         if not name or len(name) > VENTA_MAX_NAME:
             return await respond_ephemeral(interaction, f"❌ El nombre tiene que tener entre 1 y {VENTA_MAX_NAME} caracteres.")
@@ -5406,8 +5419,8 @@ class VentaPanelGroup(app_commands.Group):
     async def eliminar(self, interaction: discord.Interaction, nombre: str):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-        if not venta_allowed(interaction.user):
-            return await respond_ephemeral(interaction, "❌ Solo el Staff puede eliminar paneles de venta.")
+        if not venta_council_only(interaction.user):
+            return await respond_ephemeral(interaction, "❌ Solo el rol **Council** puede eliminar paneles de venta.")
         row = venta_get_panel(interaction.guild.id, nombre)
         if row is None:
             return await respond_ephemeral(interaction, "❌ No encontré un panel con ese nombre.")
@@ -5464,6 +5477,33 @@ async def venta_slash(interaction: discord.Interaction, nombre: str, cantidad: a
 
 
 venta_slash.autocomplete("nombre")(venta_name_autocomplete)
+
+
+@bot.tree.command(name="agregarstock", description="Suma stock al total de un panel de venta", guild=GUILD_OBJ)
+@app_commands.describe(nombre="Panel al que se le suma stock", cantidad="Cantidad a sumar al total")
+async def agregarstock_slash(interaction: discord.Interaction, nombre: str, cantidad: app_commands.Range[int, 1, VENTA_MAX_AMOUNT]):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+    if not venta_council_only(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el rol **Council** puede agregar stock.")
+    row = venta_get_panel(interaction.guild.id, nombre)
+    if row is None:
+        return await respond_ephemeral(interaction, "❌ No encontré un panel con ese nombre. Elegilo de la lista que aparece al escribir.")
+    if int(row["total"]) + int(cantidad) > VENTA_MAX_AMOUNT:
+        return await respond_ephemeral(interaction, "❌ Con esa cantidad el total pasaría el máximo permitido.")
+    await interaction.response.defer(ephemeral=True)
+    db_execute("UPDATE venta_panels SET total=total+?, stock_added=stock_added+? WHERE id=?", (int(cantidad), int(cantidad), int(row["id"])))
+    new_row = db_fetchall("SELECT total FROM venta_panels WHERE id=?", (int(row["id"]),))[0]
+    warn = ""
+    try:
+        await venta_refresh_panel(interaction.guild, int(row["id"]))
+    except Exception as exc:
+        print(f"venta: no pude actualizar el panel: {exc}")
+        warn = "\n⚠️ Guardé el stock pero no pude actualizar el panel."
+    await interaction.followup.send(f"✅ Sumé **{venta_fmt(cantidad)}** al panel **{row['name']}**. Nuevo total: **{venta_fmt(new_row['total'])}**.{warn}", ephemeral=True)
+
+
+agregarstock_slash.autocomplete("nombre")(venta_name_autocomplete)
 
 
 # ---------- READY (AL FINAL, así PanelView existe) ----------
