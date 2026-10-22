@@ -5305,7 +5305,7 @@ HELP_SECTIONS = [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
         ("/panelventa crear nombre total", "Council", "Publica en el canal un panel de venta con el total original. Cada `/venta` lo actualiza solo."),
-        ("/venta nombre cantidad", "Staff", "Suma una venta al panel: queda tu nombre, lo acumulado, tus movimientos y cuánto falta del total."),
+        ("/venta nombre cantidad", "Staff, Seller", "Suma una venta al panel: queda tu nombre, lo acumulado, tus movimientos y cuánto falta del total."),
         ("/agregarstock nombre cantidad", "Council", "Suma stock al total de un panel de venta (el panel muestra el original y lo agregado)."),
         ("/panelventa eliminar nombre", "Council", "Elimina un panel de venta y sus registros."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
@@ -5415,10 +5415,14 @@ def venta_fmt(n) -> str:
     return f"{int(n):,}".replace(",", ".")
 
 
+VENTA_SELLER_ROLE_ID = 1562621875597615225
+
+
 def venta_allowed(member) -> bool:
+    """Quién puede registrar ventas con /venta: Staff, rol Seller o Gestionar servidor."""
     perms = getattr(member, "guild_permissions", None)
     return bool((perms is not None and perms.manage_guild)
-                or any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", [])))
+                or any(r.id in {STAFF_ROLE_ID, VENTA_SELLER_ROLE_ID} for r in getattr(member, "roles", [])))
 
 
 COUNCIL_ROLE_ID = 1257896977220501557
@@ -5573,7 +5577,7 @@ async def venta_slash(interaction: discord.Interaction, nombre: str, cantidad: a
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
     if not venta_allowed(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo el Staff puede registrar ventas.")
+        return await respond_ephemeral(interaction, "❌ Solo el Staff o el rol **Seller** pueden registrar ventas.")
     row = venta_get_panel(interaction.guild.id, nombre)
     if row is None:
         return await respond_ephemeral(interaction, "❌ No encontré un panel con ese nombre. Elegilo de la lista que aparece al escribir.")
