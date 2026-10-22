@@ -5307,6 +5307,7 @@ HELP_SECTIONS = [
         ("/panelventa crear nombre total", "Council", "Publica en el canal un panel de venta con el total original. Cada `/venta` lo actualiza solo."),
         ("/venta nombre cantidad", "Staff, Seller", "Suma una venta al panel: queda tu nombre, lo acumulado, tus movimientos y cuánto falta del total."),
         ("/agregarstock nombre cantidad", "Council", "Suma stock al total de un panel de venta (el panel muestra el original y lo agregado)."),
+        ("/moverpanel nombre", "Council", "Mueve un panel de venta al canal donde usás el comando (conserva ventas y total)."),
         ("/panelventa eliminar nombre", "Council", "Elimina un panel de venta y sus registros."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
@@ -5505,6 +5506,26 @@ async def venta_refresh_panel(guild, panel_id: int):
         db_execute("UPDATE venta_panels SET message_id=? WHERE id=?", (sent.id, panel_id))
 
 
+async def venta_move_panel(guild, panel_id: int, channel):
+    """Publica el panel en `channel`, guarda la nueva ubicación y recién después borra el mensaje viejo
+    (si algo falla al publicar, el panel original queda intacto). Devuelve False si el panel ya no existe."""
+    lock = venta_locks.setdefault(panel_id, asyncio.Lock())
+    async with lock:
+        rows = db_fetchall("SELECT * FROM venta_panels WHERE id=?", (panel_id,))
+        if not rows:
+            return False
+        row = rows[0]
+        sent = await channel.send(embed=venta_panel_embed(row), allowed_mentions=discord.AllowedMentions.none())
+        db_execute("UPDATE venta_panels SET channel_id=?, message_id=? WHERE id=?", (channel.id, sent.id, panel_id))
+        if row["message_id"]:
+            try:
+                old = guild.get_channel(int(row["channel_id"])) or await guild.fetch_channel(int(row["channel_id"]))
+                await old.get_partial_message(int(row["message_id"])).delete()
+            except Exception:
+                pass                      # ya no estaba o no tengo acceso: no importa
+        return True
+
+
 class VentaPanelGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="panelventa", description="Paneles para llevar la cuenta de una venta")
@@ -5599,6 +5620,30 @@ async def venta_slash(interaction: discord.Interaction, nombre: str, cantidad: a
 
 
 venta_slash.autocomplete("nombre")(venta_name_autocomplete)
+
+
+@bot.tree.command(name="moverpanel", description="Mueve un panel de venta a este canal", guild=GUILD_OBJ)
+@app_commands.describe(nombre="Panel que querés mover a este canal")
+async def moverpanel_slash(interaction: discord.Interaction, nombre: str):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+    if not venta_council_only(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el rol **Council** puede mover paneles de venta.")
+    row = venta_get_panel(interaction.guild.id, nombre)
+    if row is None:
+        return await respond_ephemeral(interaction, "❌ No encontré un panel con ese nombre. Elegilo de la lista que aparece al escribir.")
+    channel = interaction.channel
+    if channel is None or not hasattr(channel, "send"):
+        return await respond_ephemeral(interaction, "❌ No puedo publicar el panel en este canal.")
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await venta_move_panel(interaction.guild, int(row["id"]), channel)
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        return await interaction.followup.send(f"❌ No pude publicar el panel en este canal (el original queda donde estaba): {exc}", ephemeral=True)
+    await interaction.followup.send(f"✅ Panel **{row['name']}** movido a este canal. Las ventas y el total se conservan.", ephemeral=True)
+
+
+moverpanel_slash.autocomplete("nombre")(venta_name_autocomplete)
 
 
 @bot.tree.command(name="agregarstock", description="Suma stock al total de un panel de venta", guild=GUILD_OBJ)
