@@ -4953,6 +4953,123 @@ async def verratas_slash(interaction: discord.Interaction):
         await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
 
 
+# ================== /comparar: killboard vs. rol de Discord ==================
+COMPARAR_MAX_MESSAGES = 8
+
+
+def discord_label(member) -> str:
+    """Texto que se compara con el nombre de Albion: el apodo del servidor (o el nombre visible si no tiene)."""
+    return (getattr(member, "nick", None) or getattr(member, "display_name", None) or getattr(member, "name", "") or "").strip()
+
+
+def comparar_listas(jugadores_guild: list, role_members: list, all_members: list) -> dict:
+    """jugadores_guild: nombres de Albion de la guild en el killboard.
+    role_members / all_members: listas de (id, apodo). Comparación exacta, sin distinguir mayúsculas.
+    Devuelve:
+      coinciden      -> [(nombre_albion, [ids con el rol])]
+      sin_rol        -> [(nombre_albion, [ids en el server sin el rol])]  (lista vacía = no está en Discord)
+      sin_killboard  -> [(id, apodo)] tienen el rol pero no figuran en el killboard."""
+    unique: dict = {}
+    for n in jugadores_guild:
+        if n and n.strip():
+            unique.setdefault(normalizar_nombre(n.strip()), n.strip())
+    names = list(unique.values())
+    keys = set(unique)
+    role_idx: dict = {}
+    for uid, label in role_members:
+        role_idx.setdefault(normalizar_nombre(label.strip()), []).append(uid)
+    all_idx: dict = {}
+    for uid, label in all_members:
+        all_idx.setdefault(normalizar_nombre(label.strip()), []).append(uid)
+    coinciden, sin_rol = [], []
+    for name in names:
+        k = normalizar_nombre(name)
+        if k in role_idx:
+            coinciden.append((name, role_idx[k]))
+        else:
+            sin_rol.append((name, all_idx.get(k, [])))
+    sin_killboard = [(uid, label) for uid, label in role_members if normalizar_nombre(label.strip()) not in keys]
+    return {"coinciden": coinciden, "sin_rol": sin_rol, "sin_killboard": sin_killboard}
+
+
+def comparar_allowed(member) -> bool:
+    perms = getattr(member, "guild_permissions", None)
+    return bool((perms is not None and (perms.manage_roles or perms.manage_guild))
+                or any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", [])))
+
+
+@bot.tree.command(name="comparar", description="Compara los jugadores de una guild en un killboard con la gente que tiene un rol", guild=GUILD_OBJ)
+@app_commands.describe(
+    killboard="Link o ID de AlbionBB. Ej: https://albionbb.com/battles/1468514406 (podés poner varios)",
+    rol="Rol de Discord a comparar",
+    guild="Nombre exacto de la guild de Albion. Ej: Smogg",
+)
+async def comparar_slash(interaction: discord.Interaction, killboard: str, rol: discord.Role, guild: str):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+    if not comparar_allowed(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el Staff o quien pueda gestionar roles puede usar `/comparar`.")
+    battle_ids = extraer_ids(killboard)
+    if not battle_ids:
+        return await respond_ephemeral(interaction, "❌ No encontré ningún ID de batalla en el killboard. Ejemplo: `https://albionbb.com/battles/1468514406`")
+    if len(battle_ids) > 50:
+        return await respond_ephemeral(interaction, "❌ Podés consultar como máximo 50 batallas por comando.")
+    guild_name = " ".join((guild or "").split())
+    if not guild_name:
+        return await respond_ephemeral(interaction, "❌ Tenés que indicar el nombre de la guild.")
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        jugadores = await obtener_jugadores_albion(battle_ids)
+    except Exception as exc:
+        print(f"/comparar AlbionBB: {exc!r}")
+        return await interaction.followup.send("❌ No pude obtener los participantes de AlbionBB. Revisá el link y probá de nuevo en un rato.", ephemeral=True)
+    gkey = normalizar_nombre(guild_name)
+    nombres = [d["name"] for d in jugadores.values() if normalizar_nombre(d["guild"]) == gkey]
+    if not nombres:
+        # Sin jugadores no se puede comparar: evita marcar a todo el rol como ausente por un error o un nombre mal escrito.
+        guilds_vistas = sorted({d["guild"] for d in jugadores.values()}, key=str.casefold)
+        extra = f"\nGuilds que aparecen en esa batalla: {', '.join(f'`{g}`' for g in guilds_vistas[:15])}" if guilds_vistas else ""
+        return await interaction.followup.send(f"❌ No encontré jugadores de **{guild_name}** en el killboard. Revisá cómo está escrito el nombre.{extra}", ephemeral=True)
+
+    if not interaction.guild.chunked:
+        try:
+            await interaction.guild.chunk()
+        except Exception:
+            pass
+    role_members = [(m.id, discord_label(m)) for m in rol.members if not m.bot]
+    all_members = [(m.id, discord_label(m)) for m in interaction.guild.members if not m.bot]
+    res = comparar_listas(nombres, role_members, all_members)
+
+    header = (f"## ⚖️ Killboard vs {rol.name}\n"
+              f"**Guild:** `{guild_name}` · **Batallas:** {len(battle_ids)}\n"
+              f"**Jugadores de la guild en el killboard:** {len(set(normalizar_nombre(n) for n in nombres))}\n"
+              f"**Miembros con el rol:** {len(role_members)}\n"
+              f"✅ **Están en los dos:** {len(res['coinciden'])}\n"
+              f"➖ **Estuvieron pero NO tienen el rol:** {len(res['sin_rol'])}\n"
+              f"❓ **Tienen el rol pero NO estuvieron:** {len(res['sin_killboard'])}\n"
+              "_Se compara el apodo de Discord con el nombre de Albion, sin distinguir mayúsculas._")
+    messages = [header]
+    if res["sin_rol"]:
+        lines = []
+        for name, ids in sorted(res["sin_rol"], key=lambda x: x[0].casefold()):
+            if ids:
+                lines.append(f"• `{name}` · en el server sin el rol: " + ", ".join(f"<@{u}>" for u in ids[:3]))
+            else:
+                lines.append(f"• `{name}` · no encontré a nadie con ese apodo en Discord")
+        messages += [f"**➖ Estuvieron en el killboard pero no tienen el rol ({len(lines)}):**\n{c}" if i == 0 else c
+                     for i, c in enumerate(chunk_lines(lines, 1800))]
+    if res["sin_killboard"]:
+        lines = [f"• <@{uid}> · `{label}`" for uid, label in sorted(res["sin_killboard"], key=lambda x: x[1].casefold())]
+        messages += [f"**❓ Tienen el rol pero no estuvieron en el killboard ({len(lines)}):**\n{c}" if i == 0 else c
+                     for i, c in enumerate(chunk_lines(lines, 1800))]
+    no_pings = discord.AllowedMentions.none()
+    for msg in messages[:COMPARAR_MAX_MESSAGES]:
+        await interaction.followup.send(msg, ephemeral=True, allowed_mentions=no_pings)
+    if len(messages) > COMPARAR_MAX_MESSAGES:
+        await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
+
+
 # ================== !topkills / !topattend / !topdeaths ==================
 # Datos: página de asistencia de la guild en AlbionBB (la misma que se ve en el navegador; trae kills,
 # muertes y asistencia por jugador con el filtro por defecto de la página).
@@ -5180,6 +5297,7 @@ HELP_SECTIONS = [
     ]),
     ("📊 Estadísticas de la guild", [
         ("/topkills · /topattend · /topdeaths", "Miembros", "Top 10 de kills, asistencia o muertes de la guild (datos de AlbionBB). También con `!topkills`, `!topattend`, `!topdeaths`."),
+        ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
         ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
@@ -5678,6 +5796,3 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
-
-
-
