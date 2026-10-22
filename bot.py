@@ -4271,6 +4271,95 @@ async def cta_send_spec_groups(interaction: discord.Interaction, header: str, sp
             await interaction.response.send_message(content=content, embeds=embeds, ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
+CTA_PARTY_MAX_SLOTS = 25
+
+
+def cta_plan_party_edit(old_slots: list, new_lines: list) -> dict:
+    """Decide qué pasa con cada posición al reescribir la lista completa de una party.
+    old_slots: dicts con id, role_name, emoji, en orden. new_lines: textos nuevos, en orden.
+    1) Una línea idéntica a una posición actual la conserva tal cual (con su emoji y restricciones de rol).
+    2) Las líneas que quedan sin pareja se emparejan en orden con las posiciones que quedaron sin línea:
+       es un renombre y conserva las restricciones de rol.
+    3) Líneas de sobra = posiciones nuevas. Posiciones de sobra = eliminadas.
+    Devuelve {"items": [("keep"|"rename"|"new", slot_id|None, texto)], "deleted": [ids]}"""
+    by_label: dict = {}
+    for s_ in old_slots:
+        by_label.setdefault(cta_slot_label(s_), []).append(int(s_["id"]))
+    items: list = []
+    unmatched_idx = []
+    used = set()
+    for i, line in enumerate(new_lines):
+        pool = by_label.get(line)
+        if pool:
+            sid = pool.pop(0); used.add(sid)
+            items.append(["keep", sid, line])
+        else:
+            items.append(None); unmatched_idx.append(i)
+    leftover_old = [int(s_["id"]) for s_ in old_slots if int(s_["id"]) not in used]
+    for n, i in enumerate(unmatched_idx):
+        if n < len(leftover_old):
+            items[i] = ["rename", leftover_old[n], new_lines[i][:80]]
+        else:
+            items[i] = ["new", None, new_lines[i][:80]]
+    deleted = leftover_old[len(unmatched_idx):]
+    return {"items": [tuple(x) for x in items], "deleted": deleted}
+
+
+def cta_apply_party_edit(composition_id: int, party: int, new_lines: list) -> dict:
+    """Reescribe la party completa en una sola transacción. Devuelve los conteos del cambio."""
+    with db_immediate() as conn:
+        rows = conn.execute("SELECT id, role_name, emoji FROM cta_slots WHERE composition_id=? AND party_no=? ORDER BY position_no",
+                            (composition_id, party)).fetchall()
+        old = [{"id": r[0], "role_name": r[1], "emoji": r[2]} for r in rows]
+        plan = cta_plan_party_edit(old, new_lines)
+        conn.execute("UPDATE cta_slots SET position_no=-id WHERE composition_id=? AND party_no=?", (composition_id, party))
+        for sid in plan["deleted"]:
+            conn.execute("DELETE FROM cta_slots WHERE id=?", (sid,))
+        final_ids = []
+        for n, (kind, sid, text) in enumerate(plan["items"]):
+            if kind == "rename":
+                conn.execute("UPDATE cta_slots SET role_name=?, emoji='' WHERE id=?", (text, sid))
+            elif kind == "new":
+                sid = conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji) VALUES (?,?,?,?,'')",
+                                   (composition_id, party, -(10 ** 6 + n), text)).lastrowid
+            final_ids.append(sid)
+        for pos, sid in enumerate(final_ids, start=1):
+            conn.execute("UPDATE cta_slots SET position_no=? WHERE id=?", (pos, sid))
+        conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), composition_id))
+    kinds = [k for k, _, _ in plan["items"]]
+    return {"keep": kinds.count("keep"), "rename": kinds.count("rename"), "new": kinds.count("new"), "deleted": len(plan["deleted"])}
+
+
+class CTAEditPartyModal(discord.ui.Modal):
+    lines = discord.ui.TextInput(label="Posiciones (una por línea)", style=discord.TextStyle.paragraph, max_length=4000)
+
+    def __init__(self, composition_id: int, guild_id: int, actor_id: int, party: int, slots: list):
+        super().__init__(title=f"Editar Party {party}"[:45])
+        self.composition_id, self.guild_id, self.actor_id, self.party = composition_id, guild_id, actor_id, party
+        self.lines.default = "\n".join(cta_slot_label(s_) for s_ in slots)[:4000]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        names = [ln.strip() for ln in str(self.lines.value).splitlines() if ln.strip()]
+        if not names:
+            return await interaction.response.send_message("La lista quedó vacía. Para sacar posiciones borrá solo esas líneas (o usá «Eliminar posición»).", ephemeral=True)
+        if len(names) > CTA_PARTY_MAX_SLOTS:
+            return await interaction.response.send_message(f"Una party admite hasta {CTA_PARTY_MAX_SLOTS} posiciones y escribiste {len(names)}.", ephemeral=True)
+        try:
+            res = cta_apply_party_edit(self.composition_id, self.party, names)
+        except sqlite3.Error as exc:
+            print(f"compo: no pude reescribir la party: {exc}")
+            return await interaction.response.send_message("❌ No pude guardar los cambios. No se modificó nada, probá de nuevo.", ephemeral=True)
+        cta_audit(self.guild_id, self.actor_id, "composition_edit_party", details=f"comp={self.composition_id}; party={self.party}; {res}")
+        parts = [f"{res['keep']} sin cambios"]
+        if res["rename"]: parts.append(f"{res['rename']} renombrada(s)")
+        if res["new"]: parts.append(f"{res['new']} nueva(s)")
+        if res["deleted"]: parts.append(f"{res['deleted']} eliminada(s)")
+        await interaction.response.send_message(
+            f"✅ Party {self.party} actualizada: " + ", ".join(parts) + ". Los números se actualizaron solos.\n"
+            "Las posiciones que solo renombraste mantienen sus roles permitidos; las nuevas quedan abiertas."
+            + cta_active_notice(self.composition_id), ephemeral=True)
+
+
 class CTABulkAddModal(discord.ui.Modal, title="Agregar varias posiciones"):
     party_no = discord.ui.TextInput(label="Party", placeholder="1", default="1", max_length=3)
     lines = discord.ui.TextInput(label="Una posición por línea", style=discord.TextStyle.paragraph,
@@ -4329,6 +4418,7 @@ class CTACompositionEditorView(discord.ui.View):
             self.add_item(select)
         add = discord.ui.Button(label="Agregar posición", style=discord.ButtonStyle.success, emoji="➕")
         bulk = discord.ui.Button(label="Agregar varias", style=discord.ButtonStyle.success, emoji="📋")
+        edit_party = discord.ui.Button(label="Editar party completa", style=discord.ButtonStyle.primary, emoji="📝", disabled=not options)
         edit = discord.ui.Button(label="Editar nombre/icono", style=discord.ButtonStyle.primary, emoji="✏️", disabled=not options)
         access = discord.ui.Button(label="Restringir por roles", style=discord.ButtonStyle.secondary, emoji="🔒", disabled=not options)
         delete = discord.ui.Button(label="Eliminar posición", style=discord.ButtonStyle.danger, emoji="🗑️", disabled=not options)
@@ -4337,13 +4427,14 @@ class CTACompositionEditorView(discord.ui.View):
         move = discord.ui.Button(label="Mover / reordenar", style=discord.ButtonStyle.primary, emoji="↕️", disabled=not options)
         add.callback = self.add_slot
         bulk.callback = self.bulk_add
+        edit_party.callback = self.edit_party
         edit.callback = self.edit_slot
         access.callback = self.access_slot
         delete.callback = self.delete_slot
         preview.callback = self.preview
         party_access.callback = self.configure_party_access
         move.callback = self.move_slot
-        for item in (add, bulk, edit, access, delete, preview, party_access, move):
+        for item in (add, bulk, edit_party, edit, access, delete, preview, party_access, move):
             self.add_item(item)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -4375,6 +4466,15 @@ class CTACompositionEditorView(discord.ui.View):
 
     async def bulk_add(self, interaction: discord.Interaction):
         await interaction.response.send_modal(CTABulkAddModal(self.composition["id"], self.composition["guild_id"], interaction.user.id, party_default=int(self.party_filter or 1)))
+
+    async def edit_party(self, interaction: discord.Interaction):
+        party = int(self.party_filter or 1)
+        fresh = cta_get_composition(int(self.composition["guild_id"]), self.composition["name"])
+        slots = [s_ for s_ in (fresh["slots"] if fresh else []) if int(s_["party_no"]) == party]
+        slots.sort(key=lambda s_: int(s_["position_no"]))
+        if not slots:
+            return await interaction.response.send_message("Esa party todavía no tiene posiciones. Usá «Agregar varias».", ephemeral=True)
+        await interaction.response.send_modal(CTAEditPartyModal(self.composition["id"], self.composition["guild_id"], interaction.user.id, party, slots))
 
     async def edit_slot(self, interaction: discord.Interaction):
         slot = self._current_slot()
@@ -5285,7 +5385,7 @@ HELP_SECTIONS = [
         ("/cta_cerrar cta_id", "Staff, Reclutador", "Cierra una CTA antes de tiempo."),
         ("/cta_asignar · /cta_liberar", "Staff, Reclutador", "Pone o saca a un jugador de una posición."),
         ("/cta_historial", "Todos", "Últimas CTA cerradas."),
-        ("/compo crear · listar · ver · editar", "Staff (listar y ver: todos)", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse."),
+        ("/compo crear · listar · ver · editar", "Staff (listar y ver: todos)", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
         ("/compo duplicar · renombrar · eliminar", "Staff", "Copiar, renombrar o borrar una composición."),
         ("/compo rol_party nombre party rol", "Staff", "Rol general de una party: sin ese rol nadie se anota en ella (además de los roles propios de cada posición)."),
         ("/compo builds nombre link", "Staff", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
