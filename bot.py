@@ -5170,6 +5170,206 @@ async def comparar_slash(interaction: discord.Interaction, killboard: str, rol: 
         await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
 
 
+# ================== /disarray ==================
+# Disarray no usa una fórmula: Albion define una TABLA de umbrales de jugadores por nivel.
+# Valores vigentes desde el patch 22.090.1 (todos los umbrales de la temporada 13 bajaron 5 jugadores).
+# Fuentes: AlbionZVZ (niveles 1-60, con rangos) y AlbionManager (niveles 1-67), ambas basadas en la wiki de Albion.
+# Cada valor es la cantidad MÍNIMA de jugadores para alcanzar ese nivel. Las monturas de batalla suman puntos
+# aparte y NO se cuentan acá.
+DISARRAY_THRESHOLDS = (
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30,          # 1-10
+    31, 32, 33, 34, 36, 37, 39, 41, 44, 46,          # 11-20
+    48, 49, 51, 54, 56, 58, 61, 64, 67, 70,          # 21-30
+    74, 79, 83, 89, 95, 99, 103, 108, 114, 119,      # 31-40
+    126, 133, 141, 148, 154, 160, 167, 175, 183, 192,  # 41-50
+    200, 207, 215, 223, 232, 242, 252, 264, 276, 290,  # 51-60
+    305, 322, 341, 361, 385, 412, 445,               # 61-67
+)
+DISARRAY_MAX_LEVEL = len(DISARRAY_THRESHOLDS)
+DISARRAY_SINGLE_SOURCE_FROM = 62     # del 62 en adelante solo lo trae una fuente (el 61 coincide con el fin del rango del 60)
+DISARRAY_PATCH = "22.090.1"
+
+
+def disarray_players_for_level(level: int) -> int:
+    if not isinstance(level, int) or not 1 <= level <= DISARRAY_MAX_LEVEL:
+        raise ValueError(f"El nivel de Disarray tiene que estar entre 1 y {DISARRAY_MAX_LEVEL}.")
+    return DISARRAY_THRESHOLDS[level - 1]
+
+
+def disarray_range(level: int):
+    """(mínimo, máximo) de jugadores que dan exactamente ese nivel. El máximo es None en el último nivel."""
+    lo = disarray_players_for_level(level)
+    hi = DISARRAY_THRESHOLDS[level] - 1 if level < DISARRAY_MAX_LEVEL else None
+    return lo, hi
+
+
+def disarray_message(level: int) -> str:
+    lo, hi = disarray_range(level)
+    text = f"🌀 El nivel de Disarray **{level}** requiere **{lo} jugadores**, sin contar monturas de batalla."
+    if hi is None:
+        text += f"\nEs el nivel máximo: {lo} jugadores o más."
+    elif hi > lo:
+        text += f"\nCon entre {lo} y {hi} jugadores quedás en el nivel {level}; el nivel {level + 1} empieza en {hi + 1}."
+    else:
+        text += f"\nEl nivel {level + 1} empieza en {hi + 1} jugadores."
+    if level >= DISARRAY_SINGLE_SOURCE_FROM:
+        text += "\n⚠️ Este valor sale de una sola fuente de la comunidad; no pude confirmarlo con la wiki oficial."
+    text += f"\n_Tabla vigente desde el patch {DISARRAY_PATCH}._"
+    return text
+
+
+@bot.tree.command(name="disarray", description="Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas)", guild=GUILD_OBJ)
+@app_commands.describe(numero=f"Nivel de Disarray (1 a {DISARRAY_MAX_LEVEL})")
+async def disarray_slash(interaction: discord.Interaction, numero: int):
+    if not 1 <= numero <= DISARRAY_MAX_LEVEL:
+        return await respond_ephemeral(interaction, f"❌ El nivel de Disarray tiene que ser un número entero entre 1 y {DISARRAY_MAX_LEVEL}.")
+    await interaction.response.send_message(disarray_message(numero))
+
+
+# ================== /addrolllist: dar un rol a una lista de apodos ==================
+ADDROL_MAX_NAMES = 150
+ADDROL_ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
+
+
+def addrol_parse_names(text: str) -> list:
+    """Apodos separados por coma, punto y coma o salto de línea. Sin repetidos (sin distinguir mayúsculas)."""
+    seen, out = set(), []
+    for raw in re.split(r"[,;\n]+", text or ""):
+        name = " ".join(raw.split())
+        if name.startswith("@"):
+            name = name[1:].strip()
+        key = normalizar_nombre(name)
+        if name and key not in seen:
+            seen.add(key); out.append(name)
+    return out
+
+
+def addrol_parse_role(text: str):
+    """('mention', id) si etiquetaron un rol, ('name', texto) si es una palabra, (None, None) si no hay nada."""
+    m = ADDROL_ROLE_MENTION_RE.search(text or "")
+    if m:
+        return "mention", int(m.group(1))
+    name = " ".join((text or "").split())
+    return ("name", name) if name else (None, None)
+
+
+def addrol_resolve(names: list, members: list) -> dict:
+    """members: [(id, apodo)]. Coincidencia exacta del apodo, sin distinguir mayúsculas.
+    Si dos personas tienen el mismo apodo no se adivina: queda como ambiguo."""
+    idx: dict = {}
+    for uid, label in members:
+        idx.setdefault(normalizar_nombre(label.strip()), []).append(uid)
+    found, not_found, ambiguous = [], [], []
+    for name in names:
+        ids = idx.get(normalizar_nombre(name), [])
+        if len(ids) == 1:
+            found.append((name, ids[0]))
+        elif not ids:
+            not_found.append(name)
+        else:
+            ambiguous.append((name, ids))
+    return {"found": found, "not_found": not_found, "ambiguous": ambiguous}
+
+
+@bot.tree.command(name="addrolllist", description="Da un rol a una lista de apodos de Discord (crea el rol si escribís un nombre)", guild=GUILD_OBJ)
+@app_commands.describe(
+    apodos="Apodos de Discord separados por coma (también sirve un apodo por línea)",
+    rol="Una palabra/nombre para crear el rol, o etiquetá (@) un rol que ya existe",
+)
+async def addrolllist_slash(interaction: discord.Interaction, apodos: str, rol: str):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
+    if not comparar_allowed(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el Staff o quien pueda gestionar roles puede usar este comando.")
+    names = addrol_parse_names(apodos)
+    if not names:
+        return await respond_ephemeral(interaction, "❌ No encontré ningún apodo. Escribilos separados por coma. Ej: `Juan, Pedro, Maria`")
+    if len(names) > ADDROL_MAX_NAMES:
+        return await respond_ephemeral(interaction, f"❌ Máximo {ADDROL_MAX_NAMES} apodos por comando (escribiste {len(names)}).")
+    kind, value = addrol_parse_role(rol)
+    if kind is None:
+        return await respond_ephemeral(interaction, "❌ Indicá el rol: una palabra para crearlo o etiquetá uno existente.")
+    if kind == "name" and len(value) > 100:
+        return await respond_ephemeral(interaction, "❌ El nombre del rol puede tener hasta 100 caracteres.")
+    guild = interaction.guild
+    role = None
+    if kind == "mention":
+        role = guild.get_role(value)
+        if role is None:
+            return await respond_ephemeral(interaction, "❌ No encontré ese rol en el servidor.")
+    else:
+        role = discord.utils.get(guild.roles, name=value)          # si ya existe uno con ese nombre se usa
+    if role is not None:
+        if role.is_default() or role.managed:
+            return await respond_ephemeral(interaction, "❌ Ese rol no se puede asignar manualmente (es @everyone o lo administra una integración).")
+        bot_top = guild.me.top_role if guild.me else None
+        if bot_top is None or role >= bot_top:
+            return await respond_ephemeral(interaction, "❌ Ese rol está por encima (o al mismo nivel) del rol del bot. Mové el rol del bot más arriba.")
+        if guild.owner_id != interaction.user.id and role >= interaction.user.top_role:
+            return await respond_ephemeral(interaction, "❌ No podés dar un rol que está por encima (o al mismo nivel) de tu rol más alto.")
+
+    await interaction.response.defer(ephemeral=True)
+    if not guild.chunked:
+        try:
+            await guild.chunk()
+        except Exception:
+            pass
+    members = [(m.id, discord_label(m)) for m in guild.members if not m.bot]
+    res = addrol_resolve(names, members)
+    if not res["found"]:
+        hint = "\nSi pegaste los apodos separados por espacios, separalos con comas." if len(names) == 1 and " " in names[0] else ""
+        return await interaction.followup.send(
+            f"❌ No encontré a nadie con esos apodos, así que no hice cambios{' (no creé el rol)' if role is None else ''}.{hint}",
+            ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    created = False
+    if role is None:
+        try:
+            role = await guild.create_role(name=value, reason=f"Creado por {interaction.user} con /addrolllist")
+            created = True
+        except discord.Forbidden:
+            return await interaction.followup.send("❌ No pude crear el rol. Me falta el permiso **Gestionar roles**.", ephemeral=True)
+        except discord.HTTPException as exc:
+            return await interaction.followup.send(f"❌ Discord rechazó la creación del rol: `{exc}`", ephemeral=True)
+
+    assigned, already, failed = [], [], []
+    for name, uid in res["found"]:
+        member = guild.get_member(uid)
+        if member is None:
+            failed.append(name); continue
+        if role in member.roles:
+            already.append(name); continue
+        try:
+            await member.add_roles(role, reason=f"Asignado por {interaction.user} con /addrolllist")
+            assigned.append(name)
+        except discord.HTTPException as exc:
+            print(f"/addrolllist: no pude dar {role.name} a {member}: {exc}")
+            failed.append(name)
+
+    lines = [f"## ✅ Rol {role.name}",
+             f"{'🆕 Rol creado.' if created else 'Usé el rol que ya existía.'}",
+             f"**Apodos en la lista:** {len(names)}",
+             f"**Asignados ahora:** {len(assigned)}",
+             f"**Ya lo tenían:** {len(already)}",
+             f"**No encontrados:** {len(res['not_found'])}"]
+    if res["ambiguous"]:
+        lines.append(f"**Apodo repetido (no asigné a nadie):** {len(res['ambiguous'])}")
+    if failed:
+        lines.append(f"**No pude asignar:** {len(failed)}")
+    messages = ["\n".join(lines)]
+    def add_section(title, items):
+        if items:
+            chunks = chunk_lines([f"• `{i}`" for i in items], 1800)
+            messages.extend(f"{title} ({len(items)}):\n{c}" if k == 0 else c for k, c in enumerate(chunks))
+    add_section("❓ **No encontré a nadie con estos apodos**", res["not_found"])
+    add_section("👥 **Hay más de una persona con estos apodos (no asigné ninguna)**", [n for n, _ in res["ambiguous"]])
+    add_section("⚠️ **No pude asignar el rol a**", failed)
+    for msg in messages[:COMPARAR_MAX_MESSAGES]:
+        await interaction.followup.send(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    if len(messages) > COMPARAR_MAX_MESSAGES:
+        await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
+
+
 # ================== !topkills / !topattend / !topdeaths ==================
 # Datos: página de asistencia de la guild en AlbionBB (la misma que se ve en el navegador; trae kills,
 # muertes y asistencia por jugador con el filtro por defecto de la página).
@@ -5398,6 +5598,8 @@ HELP_SECTIONS = [
     ("📊 Estadísticas de la guild", [
         ("/topkills · /topattend · /topdeaths", "Miembros", "Top 10 de kills, asistencia o muertes de la guild (datos de AlbionBB). También con `!topkills`, `!topattend`, `!topdeaths`."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
+        ("/addrolllist apodos rol", "Staff, Gestionar roles", "Da un rol a una lista de apodos de Discord (separados por coma). Si escribís una palabra crea el rol; si etiquetás un rol existente lo usa. Te avisa qué apodos no encontró."),
+        ("/disarray numero", "Todos", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
@@ -5945,3 +6147,6 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
+
+
