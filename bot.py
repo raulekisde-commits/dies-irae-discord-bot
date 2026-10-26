@@ -3147,6 +3147,7 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         db_ensure_column(conn, "cta_runs", "panel_extra_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         db_ensure_column(conn, "cta_compositions", "builds_url", "TEXT")
+        db_ensure_column(conn, "cta_compositions", "legacy_first", "INTEGER NOT NULL DEFAULT 0")
         # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
         # El ⚔️ era el emoji automático: ya no se agrega, así que se limpia de las posiciones existentes.
@@ -3217,6 +3218,45 @@ def cta_user_has_role(member: discord.Member, role_ids: list[int], mode: str) ->
     return bool(required & member_roles)      # alcanza con tener uno de los roles pedidos
 
 
+CTA_LEGACY_ROLE_ID = 1465833385804038427
+CTA_LEGACY_MINUTES = 5
+
+
+def cta_legacy_window_end(run: dict, snapshot: dict):
+    """Fin de la ventana en que la Party 1 es solo para Legacy. None si la composición no tiene la opción."""
+    if not snapshot.get("legacy_first"):
+        return None
+    return _cta_parse_dt(run["created_at"]) + timedelta(minutes=CTA_LEGACY_MINUTES)
+
+
+cta_legacy_tasks: set = set()
+
+
+async def cta_legacy_refresh_later(run_id: int, delay: float):
+    """Cuando termina la ventana Legacy, actualiza el panel para sacar el aviso."""
+    try:
+        await asyncio.sleep(delay)
+        run = cta_run_get(run_id)
+        if run and run["status"] == "open":
+            await cta_refresh_panel(bot, run_id)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude actualizar el panel al terminar la ventana Legacy: {exc}")
+
+
+def cta_legacy_error(member, slot: dict, snapshot: dict, run: dict, now: Optional[datetime] = None) -> Optional[str]:
+    """Primeros minutos de la CTA: la Party 1 es solo para el rol Legacy (se suma a los demás permisos)."""
+    end = cta_legacy_window_end(run, snapshot)
+    if end is None or int(slot["party_no"]) != 1:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if now >= end:
+        return None
+    if any(r.id == CTA_LEGACY_ROLE_ID for r in getattr(member, "roles", [])):
+        return None
+    return (f"⏳ Durante los primeros {CTA_LEGACY_MINUTES} minutos la **Party 1** es solo para <@&{CTA_LEGACY_ROLE_ID}>. "
+            f"Se abre para todos <t:{int(end.timestamp())}:R>. Mientras tanto podés anotarte en las otras parties.")
+
+
 def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild) -> Optional[str]:
     if any(r.id == FLEX_ROLE_ID for r in member.roles):
         return None          # rol Flex: puede anotarse en lo que quiera
@@ -3262,7 +3302,8 @@ def cta_snapshot_from_comp(comp: dict):
             "access_match": s.get("access_match", "any"),
             "party_access": party_access.get(int(s["party_no"]), {"mode": "any", "role_ids": [], "match": "any"})
         })
-    return {"name": comp["name"], "slots": slots, "party_access": party_access, "builds_url": comp.get("builds_url") or None}
+    return {"name": comp["name"], "slots": slots, "party_access": party_access, "builds_url": comp.get("builds_url") or None,
+            "legacy_first": bool(comp.get("legacy_first"))}
 
 
 # ================== CTA: reglas, numeración global y tablero en el hilo ==================
@@ -3565,8 +3606,13 @@ def cta_board_specs(run: dict) -> list:
     else:
         status = "🔒 **Inscripciones cerradas** · esta es la composición final"
     builds_line = f"\n🔗 [Builds]({snapshot['builds_url']})" if snapshot.get("builds_url") else ""
+    legacy_line = ""
+    legacy_end = cta_legacy_window_end(run, snapshot) if is_open else None
+    if legacy_end is not None and datetime.now(timezone.utc) < legacy_end:
+        legacy_line = (f"\n⏳ **Party 1 solo para <@&{CTA_LEGACY_ROLE_ID}>** hasta las <t:{int(legacy_end.timestamp())}:t> "
+                       f"(<t:{int(legacy_end.timestamp())}:R>)")
     header = {"title": f"⚔️ SMOGG · CTA {run['composition_name'].upper()} · #{run['id']}",
-              "description": f"{status}\n👥 **Anotados: {occupied}/{total}**{builds_line}", "color": color}
+              "description": f"{status}\n👥 **Anotados: {occupied}/{total}**{builds_line}{legacy_line}", "color": color}
     specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
     specs[-1] = dict(specs[-1], footer=f"Anotados: {occupied}/{total} · CTA #{run['id']}")
     return specs
@@ -3587,6 +3633,8 @@ def cta_instructions_text(run: dict, total: int) -> str:
         f"• Staff: etiquetá a alguien y escribí el número (`@persona 21`) para anotarlo, o `@persona -21` para sacarlo.\n"
         f"• Para salir, escribí `-` y tu número (ejemplo: `-21`) o `salir`.\n"
         f"• Las posiciones con 🔒 piden ciertos roles.\n"
+        + (f"• ⏳ Los primeros {CTA_LEGACY_MINUTES} minutos la **Party 1** es solo para el rol Legacy.\n"
+           if json.loads(run["snapshot_json"]).get("legacy_first") else "") +
         f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>.\n"
         f"• La lista de parties y el contador de anotados están en el panel principal, arriba del hilo. Se actualiza sola.\n"
         f"• Al cerrar, todos los anotados reciben un rol nuevo de esta CTA."
@@ -3937,7 +3985,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if slot is None:
         await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {total}.")
         return True
-    error = cta_access_error(member, slot, message.guild)
+    error = cta_legacy_error(member, slot, snapshot, run) or cta_access_error(member, slot, message.guild)
     if error:
         await cta_reply_short(message, error)
         return True
@@ -4589,7 +4637,8 @@ class CTACompositionGroup(app_commands.Group):
             return await interaction.response.send_message(f"**{comp['name']}** todavía no tiene posiciones.", ephemeral=True)
         specs = cta_party_specs(cta_snapshot_from_comp(comp)["slots"], show_roles=True)
         builds = f"\n🔗 [Builds]({comp['builds_url']})" if comp.get("builds_url") else ""
-        await cta_send_spec_groups(interaction, f"**Composición: {comp['name']}** · {len(comp['slots'])} posiciones{builds}", specs)
+        legacy = f"\n⏳ Prioridad Legacy: la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} min de la CTA." if comp.get("legacy_first") else ""
+        await cta_send_spec_groups(interaction, f"**Composición: {comp['name']}** · {len(comp['slots'])} posiciones{builds}{legacy}", specs)
 
     @app_commands.command(name="editar", description="Abrir el editor interactivo de una composición")
     @app_commands.describe(nombre="Nombre de la composición")
@@ -4614,7 +4663,7 @@ class CTACompositionGroup(app_commands.Group):
             return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres: letras, números, espacios, guiones o guion bajo.", ephemeral=True)
         try:
             with db_immediate() as conn:
-                cur = conn.execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at,builds_url) VALUES (?,?,?,?,?)", (interaction.guild_id, new_name, interaction.user.id, cta_now_iso(), comp.get("builds_url")))
+                cur = conn.execute("INSERT INTO cta_compositions(guild_id,name,created_by,updated_at,builds_url,legacy_first) VALUES (?,?,?,?,?,?)", (interaction.guild_id, new_name, interaction.user.id, cta_now_iso(), comp.get("builds_url"), int(bool(comp.get("legacy_first")))))
                 new_id = cur.lastrowid
                 for s in comp["slots"]:
                     conn.execute("INSERT INTO cta_slots(composition_id,party_no,position_no,role_name,emoji,access_mode,role_ids_json,access_match) VALUES (?,?,?,?,?,?,?,?)", (new_id, s["party_no"], s["position_no"], s["role_name"], s["emoji"], s["access_mode"], json.dumps(s["role_ids"]), s["access_match"]))
@@ -4660,6 +4709,23 @@ class CTACompositionGroup(app_commands.Group):
         else:
             msg = f"✅ La **Party {party}** de **{comp['name']}** quedó abierta para todos."
         await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name="legacy", description=f"Activar o desactivar la prioridad Legacy (Party 1 solo para Legacy los primeros {CTA_LEGACY_MINUTES} min)")
+    @app_commands.describe(nombre="Nombre de la composición", activar=f"true = la Party 1 es solo para Legacy los primeros {CTA_LEGACY_MINUTES} minutos de cada /cta; false = sin prioridad")
+    async def legacy(self, interaction: discord.Interaction, nombre: str, activar: bool):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        db_execute("UPDATE cta_compositions SET legacy_first=?, updated_at=? WHERE id=?", (int(activar), cta_now_iso(), comp["id"]))
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_legacy", details=f"{comp['name']}: {'activada' if activar else 'desactivada'}")
+        if activar:
+            msg = (f"✅ **{comp['name']}**: en las CTA nuevas, los primeros {CTA_LEGACY_MINUTES} minutos la **Party 1** es solo para <@&{CTA_LEGACY_ROLE_ID}>. "
+                   "Después se abre para todos con las reglas de siempre.")
+        else:
+            msg = f"✅ **{comp['name']}**: sin prioridad Legacy."
+        await interaction.response.send_message(msg + cta_active_notice(comp["id"]), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name="builds", description="Poner o quitar el link de builds de una composición")
     @app_commands.describe(nombre="Nombre de la composición", link="Link a la web de builds (https://...). Vacío o «quitar» = sacar el link")
@@ -4766,6 +4832,9 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
         await thread.send(cta_instructions_text(cta_run_get(run_id), len(snapshot["slots"])), allowed_mentions=CTA_NO_PINGS)
         await cta_refresh_board(run_id)
         await cta_refresh_panel(bot, run_id)
+        if snapshot.get("legacy_first"):
+            task = asyncio.create_task(cta_legacy_refresh_later(run_id, CTA_LEGACY_MINUTES * 60 + 2))
+            cta_legacy_tasks.add(task); task.add_done_callback(cta_legacy_tasks.discard)
         cta_audit(interaction.guild_id, interaction.user.id, "cta_created", run_id, f"composition={comp['name']}; closes={close_at.isoformat()}; minutes={minutes}")
     except Exception as exc:
         print(f"Error publicando CTA #{run_id}: {exc}")
@@ -5218,9 +5287,16 @@ def disarray_message(level: int) -> str:
     return text
 
 
+def disarray_allowed(member) -> bool:
+    """Rol Miembro (o Staff)."""
+    return any(r.id in {MIEMBRO_ROLE_ID, STAFF_ROLE_ID} for r in getattr(member, "roles", []))
+
+
 @bot.tree.command(name="disarray", description="Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas)", guild=GUILD_OBJ)
 @app_commands.describe(numero=f"Nivel de Disarray (1 a {DISARRAY_MAX_LEVEL})")
 async def disarray_slash(interaction: discord.Interaction, numero: int):
+    if not (isinstance(interaction.user, discord.Member) and disarray_allowed(interaction.user)):
+        return await respond_ephemeral(interaction, "❌ Solo los miembros de la guild pueden usar `/disarray`.")
     if not 1 <= numero <= DISARRAY_MAX_LEVEL:
         return await respond_ephemeral(interaction, f"❌ El nivel de Disarray tiene que ser un número entero entre 1 y {DISARRAY_MAX_LEVEL}.")
     await interaction.response.send_message(disarray_message(numero))
@@ -5588,6 +5664,7 @@ HELP_SECTIONS = [
         ("/compo crear · listar · ver · editar", "Staff (listar y ver: todos)", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
         ("/compo duplicar · renombrar · eliminar", "Staff", "Copiar, renombrar o borrar una composición."),
         ("/compo rol_party nombre party rol", "Staff", "Rol general de una party: sin ese rol nadie se anota en ella (además de los roles propios de cada posición)."),
+        ("/compo legacy nombre activar", "Staff", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
         ("/compo builds nombre link", "Staff", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
@@ -5599,7 +5676,7 @@ HELP_SECTIONS = [
         ("/topkills · /topattend · /topdeaths", "Miembros", "Top 10 de kills, asistencia o muertes de la guild (datos de AlbionBB). También con `!topkills`, `!topattend`, `!topdeaths`."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
         ("/addrolllist apodos rol", "Staff, Gestionar roles", "Da un rol a una lista de apodos de Discord (separados por coma). Si escribís una palabra crea el rol; si etiquetás un rol existente lo usa. Te avisa qué apodos no encontró."),
-        ("/disarray numero", "Todos", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
+        ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
@@ -6147,6 +6224,3 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
-
-
-
