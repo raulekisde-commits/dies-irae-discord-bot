@@ -2628,7 +2628,7 @@ async def calcularsplit_slash(
     interaction: discord.Interaction,
     total: str,
     reparacion: str,
-    bolsitas: Optional[app_commands.Range[float, 0, 1e15]] = None,
+    bolsitas: Optional[app_commands.Range[float, 0.0, 1e15]] = None,
     tax_de_venta: Optional[app_commands.Range[float, 0, 100]] = None,
     tax_de_guild: Optional[app_commands.Range[float, 0, 100]] = None,
 ):
@@ -2798,3 +2798,5 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
+
