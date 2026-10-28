@@ -1,0 +1,6 @@
+bot_data.sqlite3
+bot_data.sqlite3-wal
+bot_data.sqlite3-shm
+token.env
+.env
+__pycache__/
