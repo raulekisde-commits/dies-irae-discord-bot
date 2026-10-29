@@ -6,7 +6,7 @@ La API pública de Albion (gameinfo) no tiene inicio de sesión ni OAuth, y no e
 un personaje. Consultarla solo demuestra que el personaje EXISTE y a qué guild pertenece: NO demuestra quién lo controla.
 Por eso este sistema NO verifica la propiedad del personaje. Lo que sí garantiza:
   * El nombre se toma EXACTO de la API (no se puede inventar uno) y el personaje debe figurar en la guild configurada.
-  * Un personaje solo puede estar vinculado a UNA cuenta de Discord; una cuenta puede tener varios personajes.
+  * Un personaje solo puede estar vinculado a UNA cuenta de Discord y una cuenta solo puede tener UN personaje.
   * Nadie registra a otra persona sin su consentimiento: debe aceptar ella misma, desde su cuenta, o no se guarda nada.
   * Si dos personas reclaman el mismo personaje, gana quien lo registró primero y un administrador resuelve con /admin_desvincular.
 """
@@ -366,7 +366,7 @@ class RegistrationCog(commands.Cog):
                         inline=False)
         return e
 
-    @app_commands.command(name="mi_registro", description="Mostrá los personajes de Albion vinculados a tu cuenta")
+    @app_commands.command(name="mi_registro", description="Mostrá el personaje de Albion vinculado a tu cuenta")
     @app_commands.guild_only()
     async def mi_registro(self, interaction: discord.Interaction):
         regs = await self.run(rdb.get_registrations, interaction.user.id)
@@ -374,34 +374,22 @@ class RegistrationCog(commands.Cog):
             return await _say(interaction, "ℹ️ Todavía no estás registrado. Usá `/registrar usuario_de_albion:TuPersonaje`.")
         await interaction.response.send_message(embed=self._regs_embed(regs, "🔗 Tu registro"), ephemeral=True)
 
-    @app_commands.command(name="desvincular", description="Quitá un personaje de Albion de tu cuenta")
-    @app_commands.describe(personaje="Personaje a quitar (si tenés uno solo, no hace falta)")
+    @app_commands.command(name="desvincular", description="Quitá el personaje de Albion vinculado a tu cuenta")
     @app_commands.guild_only()
-    async def desvincular(self, interaction: discord.Interaction, personaje: Optional[str] = None):
-        regs = await self.run(rdb.get_registrations, interaction.user.id)
-        if not regs:
+    async def desvincular(self, interaction: discord.Interaction):
+        reg = await self.run(rdb.get_registration, interaction.user.id)
+        if reg is None:
             return await _say(interaction, "ℹ️ No tenés ningún registro para quitar.")
-        chosen = self._pick(regs, personaje)
-        if chosen is None:
-            names = ", ".join(f"`{r.char_name}`" for r in regs)
-            return await _say(interaction, f"ℹ️ Tenés varios personajes ({names}). Indicá cuál con `personaje:`.")
 
         async def yes(i: discord.Interaction):
-            removed = await self.run(rdb.unlink, interaction.user.id, interaction.user.id, chosen.char_name, "desvinculado por el propio usuario")
+            removed = await self.run(rdb.unlink, interaction.user.id, interaction.user.id, reg.char_name, "desvinculado por el propio usuario")
             await i.response.edit_message(content="✅ Listo, el personaje quedó desvinculado." if removed else "ℹ️ Ya no estaba vinculado.", view=None)
             if removed:
-                await self.audit_log(f"🔓 <@{interaction.user.id}> se desvinculó de **{discord.utils.escape_markdown(chosen.char_name)}**.")
+                await self.audit_log(f"🔓 <@{interaction.user.id}> se desvinculó de **{discord.utils.escape_markdown(reg.char_name)}**.")
 
-        extra = " Era tu último personaje: vas a perder el acceso a los comandos de miembros hasta volver a registrarte." if len(regs) == 1 else ""
         await interaction.response.send_message(
-            f"¿Desvincular **{discord.utils.escape_markdown(chosen.char_name)}** de tu cuenta?{extra}",
+            f"¿Desvincular **{discord.utils.escape_markdown(reg.char_name)}** de tu cuenta? Vas a perder el acceso a los comandos de miembros hasta volver a registrarte.",
             view=YesNoView(interaction.user.id, yes, "Sí, desvincular"), ephemeral=True)
-
-    @staticmethod
-    def _pick(regs: List[rdb.Registration], name: Optional[str]) -> Optional[rdb.Registration]:
-        if name:
-            return next((r for r in regs if r.char_name.casefold() == _clean_name(name).casefold()), None)
-        return regs[0] if len(regs) == 1 else None
 
     @app_commands.command(name="admin_registro", description="(Staff) Personajes vinculados a un miembro")
     @app_commands.describe(usuario="Miembro")
@@ -421,10 +409,10 @@ class RegistrationCog(commands.Cog):
             e.add_field(name="Últimos movimientos", value="\n".join(lines)[:1000], inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="admin_desvincular", description="(Staff) Quita un personaje (o todos) de un miembro")
-    @app_commands.describe(usuario="Miembro", personaje="Personaje a quitar (vacío = todos los de esa cuenta)", motivo="Motivo (queda en la auditoría)")
+    @app_commands.command(name="admin_desvincular", description="(Staff) Quita el personaje vinculado a un miembro")
+    @app_commands.describe(usuario="Miembro", motivo="Motivo (queda en la auditoría)")
     @app_commands.guild_only()
-    async def admin_desvincular(self, interaction: discord.Interaction, usuario: discord.Member, personaje: Optional[str] = None, motivo: Optional[str] = None):
+    async def admin_desvincular(self, interaction: discord.Interaction, usuario: discord.Member, motivo: Optional[str] = None):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
         regs = await self.run(rdb.get_registrations, usuario.id)
@@ -432,15 +420,11 @@ class RegistrationCog(commands.Cog):
             n = await self.run(rdb.cancel_active_for, usuario.id, interaction.user.id, "cancelada por un administrador")
             return await _say(interaction, "ℹ️ Esa persona no tiene registro." + (f" Se canceló {n} solicitud(es) en curso." if n else ""))
         name = None
-        if personaje:
-            if self._pick(regs, personaje) is None:
-                return await _say(interaction, "❌ Esa cuenta no tiene vinculado ese personaje.")
-            name = self._pick(regs, personaje).char_name
-        label = f"**{discord.utils.escape_markdown(name)}**" if name else "**todos sus personajes** (" + ", ".join(r.char_name for r in regs) + ")"
+        label = "**" + discord.utils.escape_markdown(regs[0].char_name) + "**"
 
         async def yes(i: discord.Interaction):
             removed = await self.run(rdb.unlink, usuario.id, interaction.user.id, name, f"por administrador. Motivo: {(motivo or 'sin motivo')[:200]}")
-            await i.response.edit_message(content=f"✅ {usuario.mention}: se desvinculó {len(removed)} personaje(s)." if removed else "ℹ️ Ya no tenía registro.",
+            await i.response.edit_message(content=f"✅ {usuario.mention}: se desvinculó su personaje." if removed else "ℹ️ Ya no tenía registro.",
                                           view=None, allowed_mentions=NO_MENTIONS)
             if removed:
                 await self.audit_log(f"🔓 <@{interaction.user.id}> desvinculó a <@{usuario.id}> de " + ", ".join(f"**{discord.utils.escape_markdown(r.char_name)}**" for r in removed)
@@ -498,7 +482,7 @@ class RegistrationCog(commands.Cog):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
         on = accion.value == "activar"
-        await self.run(rdb.set_flag, rdb.REQUIRED_KEY, "1" if on else None)
+        await self.run(rdb.set_flag, rdb.REQUIRED_KEY, "1" if on else "0")
         await self.run(rdb.audit, interaction.user.id, "required_on" if on else "required_off", None, None)
         gate = getattr(self.bot, "registration_gate", None)
         if gate is not None:
@@ -543,13 +527,13 @@ class RegistrationCog(commands.Cog):
 # ============================================================
 class RegistrationGate:
     """Una sola comprobación para TODOS los comandos de miembros (slash y con prefijo).
-    Apagada por defecto: se activa con /registro_obligatorio activar (o REGISTRO_OBLIGATORIO=1 en el entorno)."""
+    Activa por defecto; un administrador puede apagarla con /registro_obligatorio desactivar."""
 
     MESSAGE = ("🔒 Para usar los comandos del bot tenés que estar **registrado**. "
                "Usá `/registrar usuario_de_albion:TuPersonaje` y seguí los pasos.")
 
-    def __init__(self, bot: commands.Bot, db_path: str, env_default: bool = False):
-        self.bot, self.db_path, self.env_default = bot, db_path, env_default
+    def __init__(self, bot: commands.Bot, db_path: str, env_off: bool = False):
+        self.bot, self.db_path, self.env_off = bot, db_path, env_off
         self._flag_cache = (0.0, False)
 
     def invalidate(self):
@@ -560,7 +544,7 @@ class RegistrationGate:
         at, val = self._flag_cache
         if time.monotonic() - at < 10:
             return val
-        val = self.env_default or bool(await asyncio.to_thread(rdb.get_flag, self.db_path, rdb.REQUIRED_KEY))
+        val = (await asyncio.to_thread(rdb.registration_required, self.db_path)) and not self.env_off
         self._flag_cache = (time.monotonic(), val)
         return val
 
@@ -600,7 +584,7 @@ async def require_registered_user(db_path: str, user) -> bool:
 
 
 def install_gate(bot: commands.Bot, db_path: str) -> RegistrationGate:
-    gate = RegistrationGate(bot, db_path, env_default=os.getenv("REGISTRO_OBLIGATORIO", "").strip() in ("1", "true", "True", "si"))
+    gate = RegistrationGate(bot, db_path, env_off=os.getenv("REGISTRO_OBLIGATORIO", "").strip().lower() in ("0", "false", "no"))
     bot.registration_gate = gate
     bot.tree.interaction_check = gate.check_interaction            # corre antes de CADA comando slash
     bot.add_check(gate.check_context)                              # y de cada comando con prefijo

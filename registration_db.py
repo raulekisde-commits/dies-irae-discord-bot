@@ -1,8 +1,8 @@
 """Registro y vinculación Discord ↔ personajes de Albion (lógica y persistencia, sin Discord).
 
 Reglas:
-  * Un personaje de Albion solo puede estar vinculado a UNA cuenta de Discord (índices únicos por ID y por nombre).
-  * Una cuenta de Discord puede tener VARIOS personajes.
+  * Un personaje de Albion solo puede estar vinculado a UNA cuenta de Discord, y una cuenta de Discord solo puede tener UN personaje
+    (índices únicos por cuenta, por ID y por nombre).
   * Registrar a otra persona exige que ella misma acepte la solicitud desde su cuenta; hasta entonces no se guarda nada.
   * No hay verificación de propiedad del personaje (la API pública de Albion no la permite): ver registration.py.
 """
@@ -17,7 +17,6 @@ from dbutil import connect, utcnow_iso
 
 PENDING_TTL_MINUTES = 15                                 # el dueño de la cuenta tiene 15 min para aceptar
 MAX_REQUESTS_PER_HOUR = 5                                # por persona que inicia solicitudes (anti-spam / suplantación repetida)
-MAX_CHARACTERS_PER_DISCORD = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS albion_links (
@@ -32,7 +31,7 @@ CREATE TABLE IF NOT EXISTS albion_links (
     registered_at TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_albion_links_discord ON albion_links(discord_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_links_discord ON albion_links(discord_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_links_char_id ON albion_links(char_id) WHERE char_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_links_char_name ON albion_links(lower(char_name));
 CREATE TABLE IF NOT EXISTS albion_link_requests (
@@ -189,6 +188,16 @@ def get_registrations(db_path: str, discord_id: int) -> List[Registration]:
         conn.close()
 
 
+def get_registration(db_path: str, discord_id: int) -> Optional[Registration]:
+    regs = get_registrations(db_path, discord_id)
+    return regs[0] if regs else None
+
+
+def registration_required(db_path: str) -> bool:
+    """Por defecto SÍ se exige estar registrado; un administrador puede apagarlo con /registro_obligatorio desactivar."""
+    return get_flag(db_path, REQUIRED_KEY) != "0"
+
+
 def is_registered(db_path: str, discord_id: int) -> bool:
     conn = connect(db_path)
     try:
@@ -274,8 +283,10 @@ def create_request(db_path: str, *, target_id: int, initiator_id: int, char_id: 
                     raise RegError("Esa cuenta ya tiene vinculado ese personaje.")
                 _audit(conn, initiator_id, "dup_character_attempt", target_id, None, f"personaje={char_name}")
                 raise PersistedRegError("Ese personaje ya está vinculado a otra cuenta de Discord. Si es un error, pedile a un administrador que lo revise.")
-            if conn.execute("SELECT COUNT(*) FROM albion_links WHERE discord_id=?", (target_id,)).fetchone()[0] >= MAX_CHARACTERS_PER_DISCORD:
-                raise RegError(f"Una cuenta puede tener como máximo {MAX_CHARACTERS_PER_DISCORD} personajes vinculados.")
+            mine = conn.execute("SELECT char_name FROM albion_links WHERE discord_id=?", (target_id,)).fetchone()
+            if mine is not None:
+                raise RegError(f"Esa cuenta ya tiene un personaje vinculado (**{mine['char_name']}**). Una cuenta de Discord solo puede tener uno: "
+                               "primero hay que desvincularlo (`/desvincular`).")
             if conn.execute("SELECT 1 FROM albion_link_requests WHERE lower(char_name)=lower(?) AND status='pending_target'", (char_name,)).fetchone():
                 _audit(conn, initiator_id, "dup_request_attempt", target_id, None, f"personaje={char_name}")
                 raise PersistedRegError("Ya hay una solicitud en curso para ese personaje.")
@@ -321,10 +332,10 @@ def accept(db_path: str, request_id: int, user_id: int) -> Registration:
                 cur = conn.execute(
                     "INSERT INTO albion_links(discord_id, char_id, char_name, region, guild_name, method, linked_by, registered_at, updated_at) "
                     "VALUES (?,?,?,?,?, 'confirmed', ?, ?, ?)", (user_id, r.char_id, r.char_name, r.region, r.guild_name, r.initiator_id, now, now))
-            except sqlite3.IntegrityError:               # otra solicitud ganó la carrera por el mismo personaje
+            except sqlite3.IntegrityError:               # carrera: se vinculó antes ese personaje, o esta cuenta ya quedó con otro
+                if conn.execute("SELECT 1 FROM albion_links WHERE discord_id=?", (user_id,)).fetchone():
+                    raise RegError("Esa cuenta ya tiene un personaje vinculado: una cuenta de Discord solo puede tener uno. No se guardó nada.")
                 raise RegError("Ese personaje acaba de quedar vinculado a otra cuenta. No se guardó nada.")
-            if conn.execute("SELECT COUNT(*) FROM albion_links WHERE discord_id=?", (user_id,)).fetchone()[0] > MAX_CHARACTERS_PER_DISCORD:
-                raise RegError(f"Una cuenta puede tener como máximo {MAX_CHARACTERS_PER_DISCORD} personajes vinculados.")
             conn.execute("UPDATE albion_link_requests SET status='completed', updated_at=? WHERE id=?", (_iso(_now()), request_id))
             _audit(conn, user_id, "registered", user_id, request_id, f"personaje={r.char_name} iniciado_por={r.initiator_id}")
             return _reg(conn.execute("SELECT * FROM albion_links WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -391,8 +402,10 @@ def admin_link(db_path: str, discord_id: int, char_name: str, actor_id: int, *, 
                 if int(owner["discord_id"]) == discord_id:
                     raise RegError("Esa cuenta ya tiene vinculado ese personaje.")
                 raise RegError("Ese personaje ya está vinculado a otra cuenta. Desvinculalo primero con `/admin_desvincular`.")
-            if conn.execute("SELECT COUNT(*) FROM albion_links WHERE discord_id=?", (discord_id,)).fetchone()[0] >= MAX_CHARACTERS_PER_DISCORD:
-                raise RegError(f"Una cuenta puede tener como máximo {MAX_CHARACTERS_PER_DISCORD} personajes vinculados.")
+            mine = conn.execute("SELECT char_name FROM albion_links WHERE discord_id=?", (discord_id,)).fetchone()
+            if mine is not None:
+                raise RegError(f"Esa cuenta ya tiene vinculado **{mine['char_name']}** (solo se permite un personaje por cuenta). "
+                               "Desvinculalo primero con `/admin_desvincular`.")
             now = utcnow_iso()
             try:
                 cur = conn.execute(

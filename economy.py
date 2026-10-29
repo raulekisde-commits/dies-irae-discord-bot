@@ -683,7 +683,7 @@ class EconomyCog(commands.Cog):
         self._emoji_raw = raw
         await self._ephemeral(interaction, f"✅ Icono de {eco.CURRENCY_NAME} actualizado: {emoji}")
 
-    @app_commands.command(name="registro-bal", description="(Admin) Canal donde se publican los movimientos de Wuju Coins")
+    @app_commands.command(name="bal-registro", description="(Admin) Canal donde se publican los movimientos de Wuju Coins")
     @app_commands.describe(canal="Canal de auditoría económica")
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
@@ -698,7 +698,7 @@ class EconomyCog(commands.Cog):
         await self._ephemeral(interaction, f"✅ Los movimientos económicos se publicarán en {canal.mention}. "
                                            "Si había registros pendientes se publicarán en unos minutos.")
 
-    @app_commands.command(name="registro-reintentar", description="(Admin) Reintenta publicar registros económicos pendientes")
+    @app_commands.command(name="bal-reintentar-registro", description="(Admin) Reintenta publicar registros económicos pendientes")
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def registro_reintentar(self, interaction: discord.Interaction):
