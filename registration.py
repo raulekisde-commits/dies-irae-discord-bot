@@ -35,6 +35,8 @@ GAMEINFO_BASES = [
     ("Asia", "https://gameinfo-sgp.albiononline.com"),
 ]
 HTTP_TIMEOUT = 20
+ROSTER_REFRESH_MINUTES = 30            # cada cuánto se vuelve a bajar la lista de miembros de la guild
+ROSTER_MAX_AGE_SECONDS = 3 * 3600       # si la lista es más vieja que esto (la API falló varias veces), se consulta la API en vivo
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular",
@@ -138,8 +140,12 @@ class YesNoView(discord.ui.View):
 # Cog
 # ============================================================
 class RegistrationCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "", default_log_channel: int = 0):
+    def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "", default_log_channel: int = 0,
+                 albion_guild_id: str = ""):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
+        self.albion_guild_id = (albion_guild_id or "").strip()
+        self.roster: Dict[str, Character] = {}      # nombre (casefold) → personaje, de la última lista bajada
+        self.roster_at = 0.0                        # time.monotonic() de la última lista buena
         self.required_guild = (required_guild or "").strip()
         self.default_log_channel = int(default_log_channel or 0)
         self.fetch_json = self._fetch_json          # los tests lo reemplazan: nunca tocan la red
@@ -150,9 +156,53 @@ class RegistrationCog(commands.Cog):
         self.bot.add_view(TargetView(self))
         if not self.sweeper.is_running():
             self.sweeper.start()
+        if self.albion_guild_id and not self.roster_loop.is_running():
+            self.roster_loop.start()
 
     async def cog_unload(self):
         self.sweeper.cancel()
+        self.roster_loop.cancel()
+
+    # ---------- lista de miembros de la guild (se baja cada tanto, no en cada registro) ----------
+    async def refresh_roster(self) -> bool:
+        """Baja la lista de miembros de la guild y la guarda en memoria. Si falla, conserva la anterior."""
+        import time
+        if not self.albion_guild_id:
+            return False
+        errors = []
+        for region, base in GAMEINFO_BASES:
+            try:
+                data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/guilds/{self.albion_guild_id}/members"), HTTP_TIMEOUT + 5)
+            except Exception as exc:
+                errors.append(f"{region}: {type(exc).__name__} {exc}")
+                continue
+            members = [c for c in (_character(m, region) for m in (data if isinstance(data, list) else []) if isinstance(m, dict)) if c is not None]
+            if not members:                           # lista vacía = respuesta sospechosa: no pisamos la buena
+                errors.append(f"{region}: lista vacía")
+                continue
+            for c in members:
+                if not c.guild:
+                    c.guild = self.required_guild
+            self.roster = {c.name.casefold(): c for c in members}
+            self.roster_at = time.monotonic()
+            return True
+        print(f"⚠️ Registro: no pude actualizar la lista de la guild: {' | '.join(errors)[:300]}")
+        return False
+
+    def roster_fresh(self) -> bool:
+        import time
+        return bool(self.roster) and (time.monotonic() - self.roster_at) < ROSTER_MAX_AGE_SECONDS
+
+    @tasks.loop(minutes=ROSTER_REFRESH_MINUTES)
+    async def roster_loop(self):
+        try:
+            await self.refresh_roster()
+        except Exception:
+            traceback.print_exc()
+
+    @roster_loop.before_loop
+    async def _roster_ready(self):
+        await self.bot.wait_until_ready()
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -207,6 +257,12 @@ class RegistrationCog(commands.Cog):
         name = _clean_name(name)
         if not (2 <= len(name) <= 30) or not re.fullmatch(r"[\w .'\-]+", name, re.UNICODE):
             return Lookup("none", detail="Nombre de personaje inválido.")
+
+        if self.roster_fresh():                       # camino normal: se resuelve con la lista guardada, sin tocar la API
+            hit = self.roster.get(name.casefold())
+            if hit is not None:
+                return Lookup("ok", character=hit)
+            # no figura en la lista: puede ser alguien que entró hace poco o que no es de la guild → una consulta en vivo para decidir
 
         async def one(region, base):
             data = await self.fetch_json(f"{base}/api/gameinfo/search", {"q": name})
@@ -600,9 +656,10 @@ def install_gate(bot: commands.Bot, db_path: str) -> RegistrationGate:
 
 
 async def setup_registration(bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "",
-                             default_log_channel: int = 0) -> RegistrationCog:
+                             default_log_channel: int = 0, albion_guild_id: str = "") -> RegistrationCog:
     cog = RegistrationCog(bot, db_path, guild_id, required_guild=required_guild,
-                          default_log_channel=int(os.getenv("REGISTRO_CANAL_ID", "0") or default_log_channel or 0))
+                          default_log_channel=int(os.getenv("REGISTRO_CANAL_ID", "0") or default_log_channel or 0),
+                          albion_guild_id=albion_guild_id)
     await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
     install_gate(bot, db_path)
     return cog
