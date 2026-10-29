@@ -19,7 +19,7 @@ ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 # Comandos de administración de saldo: funcionan en cualquier canal (solo se exige el rol/permiso).
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
 # Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
-EXTRA_PERMISSION_COMMANDS = ("apuesta", "verhistorial")
+EXTRA_PERMISSION_COMMANDS = ("apuesta", "verhistorial", "set-balance")
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
 CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS)   # bal, top
 
@@ -88,6 +88,7 @@ MOVEMENT_LABELS = {
     "bet_payout": "Premio de apuesta",
     "bet_refund": "Devolución de apuesta",
     "balance_set": "Saldo ajustado",
+    "balance_reset": "Saldo restablecido",
 }
 
 
@@ -117,6 +118,8 @@ def clean_reason(text: Optional[str], default: str) -> str:
 # Importación de saldos desde una lista "apodo + cantidad"
 # ============================================================
 IMPORT_REASON = "Importación inicial de saldos"
+LEAVE_REASON = "Salió del servidor: saldo restablecido"
+SET_BALANCE_DEFAULT_REASON = "Ajuste manual de saldo"
 
 
 def parse_balance_value(text: str) -> int:
@@ -268,20 +271,82 @@ def get_balance(db_path: str, user_id: int) -> int:
 LIFETIME_DEPOSIT_TYPES = ("addmoney", "addmoney-role", "balance_set")
 
 
-def get_lifetime_deposits(db_path: str, user_id: int) -> int:
-    """Balance histórico: suma de todo lo depositado a la persona. Solo suma, nunca resta.
+def _lifetime_baseline(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM eco_settings WHERE key = 'lifetime_baseline_id'").fetchone()
+    try:
+        return int(row["value"]) if row else 0
+    except (TypeError, ValueError):
+        return 0
 
-    Se calcula desde el historial de movimientos (por eso incluye también lo cargado antes de existir el contador).
-    Un ajuste de saldo (importación) suma únicamente si subió el saldo.
-    """
+
+def _lifetime_sum(conn: sqlite3.Connection, user_id: Optional[int] = None) -> int:
     marks = ",".join("?" for _ in LIFETIME_DEPOSIT_TYPES)
+    args: list = [_lifetime_baseline(conn), *LIFETIME_DEPOSIT_TYPES]
+    where_user = ""
+    if user_id is not None:
+        where_user = " AND user_id = ?"
+        args.append(int(user_id))
+    row = conn.execute(
+        f"SELECT COALESCE(SUM(delta), 0) AS total FROM eco_movements "
+        f"WHERE id > ? AND delta > 0 AND COALESCE(kind, 'addmoney') IN ({marks}){where_user}", args).fetchone()
+    return int(row["total"])
+
+
+def get_lifetime_deposits(db_path: str, user_id: int) -> int:
+    """Balance histórico: suma de todo lo depositado a la persona desde el último reset. Solo suma, nunca resta.
+
+    Se calcula desde el historial de movimientos (por eso incluye lo cargado antes de existir el contador).
+    Un ajuste de saldo (importación / set-balance) suma únicamente si subió el saldo.
+    """
+    conn = connect(db_path)
+    try:
+        return _lifetime_sum(conn, user_id)
+    finally:
+        conn.close()
+
+
+def reset_lifetime(db_path: str, actor_id: int) -> Tuple[int, int]:
+    """Pone en 0 el balance histórico de TODOS (no borra el historial de movimientos ni cambia saldos).
+    Devuelve (total_que_había, id_de_corte)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            total = _lifetime_sum(conn)
+            row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM eco_movements").fetchone()
+            cut = int(row["m"])
+            now = utcnow_iso()
+            for key, value in (("lifetime_baseline_id", str(cut)), ("lifetime_reset_at", now), ("lifetime_reset_by", str(actor_id))):
+                conn.execute("INSERT INTO eco_settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                             (key, value))
+            return total, cut
+    finally:
+        conn.close()
+
+
+@dataclass
+class EcoStats:
+    accounts: int
+    with_positive: int
+    total_net: int
+    total_positive: int
+    total_negative: int
+    lifetime_total: int
+    lifetime_reset_at: Optional[str]
+
+
+def get_stats(db_path: str) -> EcoStats:
     conn = connect(db_path)
     try:
         row = conn.execute(
-            f"SELECT COALESCE(SUM(delta), 0) AS total FROM eco_movements "
-            f"WHERE user_id = ? AND delta > 0 AND COALESCE(kind, 'addmoney') IN ({marks})",
-            (int(user_id), *LIFETIME_DEPOSIT_TYPES)).fetchone()
-        return int(row["total"])
+            """SELECT COUNT(*) AS n,
+                      COUNT(CASE WHEN balance > 0 THEN 1 END) AS pos_n,
+                      COALESCE(SUM(balance), 0) AS net,
+                      COALESCE(SUM(CASE WHEN balance > 0 THEN balance END), 0) AS pos,
+                      COALESCE(SUM(CASE WHEN balance < 0 THEN balance END), 0) AS neg
+               FROM eco_accounts""").fetchone()
+        reset = conn.execute("SELECT value FROM eco_settings WHERE key = 'lifetime_reset_at'").fetchone()
+        return EcoStats(int(row["n"]), int(row["pos_n"]), int(row["net"]), int(row["pos"]), int(row["neg"]),
+                        _lifetime_sum(conn), reset["value"] if reset else None)
     finally:
         conn.close()
 
@@ -518,7 +583,8 @@ def get_history(db_path: str, user_id: int, limit: int = 20) -> List[HistoryRow]
         conn.close()
 
 
-def set_balance(db_path: str, *, user_id: int, target: int, actor_id: int, request_key: str, reason: str):
+def set_balance(db_path: str, *, user_id: int, target: int, actor_id: int, request_key: str, reason: str,
+                mov_type: str = "balance_set"):
     """Deja el balance EXACTAMENTE en `target` (calcula la diferencia dentro de la transacción).
 
     Devuelve (estado, antes, después): estado = 'applied' | 'unchanged' (ya estaba igual) | 'repeated' (misma solicitud ya aplicada).
@@ -539,7 +605,7 @@ def set_balance(db_path: str, *, user_id: int, target: int, actor_id: int, reque
                 return "unchanged", before, before
             op_id = tx_new_operation(conn, kind="add" if delta > 0 else "remove", actor_id=actor_id, request_key=request_key,
                                      total_amount=abs(delta), target_count=1, reason=reason, related_id=request_key)
-            _, after = tx_move(conn, op_id=op_id, user_id=user_id, delta=delta, mov_type="balance_set", reason=reason,
+            _, after = tx_move(conn, op_id=op_id, user_id=user_id, delta=delta, mov_type=mov_type, reason=reason,
                                actor_id=actor_id, related_id=request_key)
             return "applied", before, after
     finally:
