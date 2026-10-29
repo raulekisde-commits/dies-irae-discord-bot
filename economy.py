@@ -711,4 +711,302 @@ class EconomyCog(commands.Cog):
         await self._ephemeral(interaction, "\n".join(lines))
 
 
-    # ===
+    # ============================================================
+    # Importación única de saldos (admin)
+    # ============================================================
+    def _match_nickname(self, guild: discord.Guild, name: str):
+        """Coincidencia EXACTA (sin distinguir mayúsculas) con el nombre de usuario de Discord o su nombre visible global.
+        No se usan los apodos del servidor."""
+        key = " ".join(name.split()).casefold()
+        found = {}
+        for m in guild.members:
+            if m.bot:
+                continue
+            for candidate in (m.name, getattr(m, "global_name", None)):
+                if candidate and " ".join(candidate.split()).casefold() == key:
+                    found[m.id] = m
+                    break
+        return list(found.values())
+
+    @app_commands.command(name="importar-bal", description="(Admin) Deja el saldo de cada persona EXACTAMENTE en el valor del archivo (nombre;cantidad)")
+    @app_commands.describe(archivo="Archivo .txt o .csv con líneas `nombre_de_discord;saldo` (ej: juan123;5000)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def importar_bal(self, interaction: discord.Interaction, archivo: discord.Attachment):
+        if not await self._require_admin(interaction):
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+            if archivo.size > 256 * 1024:
+                return await self._ephemeral(interaction, "❌ El archivo es demasiado grande (máximo 256 KB).")
+            raw = await archivo.read()
+            text = raw.decode("utf-8-sig", errors="replace")
+            try:
+                entries, errors = eco.parse_import_text(text)
+            except eco.AmountError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            await self._ensure_members(interaction.guild)
+
+            matched, not_found, ambiguous, seen = [], [], [], {}
+            for line, name, amount in entries:
+                users = self._match_nickname(interaction.guild, name)
+                if len(users) == 1:
+                    uid = users[0].id
+                    if uid in seen:
+                        errors.append((line, name, f"Repetido (ya estaba en la línea {seen[uid]}); se ignora."))
+                        continue
+                    seen[uid] = line
+                    matched.append((users[0], amount))
+                elif not users:
+                    not_found.append((line, name, amount))
+                else:
+                    ambiguous.append((line, name, amount, len(users)))
+
+            report = None
+            if not_found or ambiguous or errors:
+                parts = [f"# Personas NO encontradas: {len(not_found)}. Corregí los nombres y volvé a importar este mismo archivo",
+                         "# (las líneas que empiezan con # se ignoran)."]
+                parts += [f"{name};{amount}" for _, name, amount in not_found] or ["# (ninguna)"]
+                if ambiguous:
+                    parts += ["", "# --- Nombres con más de una coincidencia (usá el nombre de usuario exacto) ---"]
+                    parts += [f"# línea {l}: {n};{a} — {c} personas" for l, n, a, c in ambiguous]
+                if errors:
+                    parts += ["", "# --- Otras líneas con problemas ---"]
+                    parts += [f"# línea {l}: {t[:60]} — {m}" for l, t, m in errors]
+                report = "\n".join(parts) + "\n"
+
+            def attach():
+                return discord.File(io.BytesIO(report.encode("utf-8")), filename="no_encontrados.txt") if report else None
+
+            def problems_summary() -> str:
+                lines = []
+                if not_found:
+                    shown = ", ".join(f"**{n}**" for _, n, _ in not_found[:10])
+                    lines.append(f"🔎 **{len(not_found)} no encontrado(s):** {shown}" + (" …" if len(not_found) > 10 else ""))
+                if ambiguous:
+                    lines.append(f"👥 {len(ambiguous)} con más de una coincidencia")
+                if errors:
+                    lines.append(f"⚠️ {len(errors)} línea(s) con formato inválido o repetidas")
+                lines.append("📎 La lista completa va en el archivo adjunto `no_encontrados.txt`.")
+                return "\n".join(lines)
+
+            if not matched:
+                body = "❌ No pude vincular a nadie. No se modificó ningún balance."
+                if report:
+                    body += "\n" + problems_summary()
+                kwargs = {"file": attach()} if report else {}
+                return await interaction.followup.send(body[:1900], ephemeral=True, allowed_mentions=NO_MENTIONS, **kwargs)
+
+            current = await self._db(eco.get_all_balances)
+            changing = sum(1 for m, a in matched if current.get(m.id, 0) != a)
+            preview = [f"{m.mention}: {self.plain(current.get(m.id, 0))} → **{self.plain(a)}**" for m, a in matched[:10]]
+            if len(matched) > 10:
+                preview.append(f"… y {len(matched) - 10} más")
+            body = (f"**Vista previa** — el saldo de **{len(matched)}** persona(s) quedará **exactamente** en el valor del archivo "
+                    f"({changing} cambian, {len(matched) - changing} ya estaban igual).\n" + "\n".join(preview))
+            if report:
+                body += "\n\n" + problems_summary() + "\nEsas líneas NO se cargarán."
+            body += "\n\nSi está bien, tocá **Confirmar**. Es seguro repetirlo con el mismo archivo: el saldo queda igual."
+            view = ImportConfirmView(self, interaction.user.id, matched, interaction.id)
+            kwargs = {"file": attach()} if report else {}
+            await interaction.followup.send(body[:1950], view=view, ephemeral=True, allowed_mentions=NO_MENTIONS, **kwargs)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No pude procesar el archivo.")
+
+    async def apply_import(self, actor_id: int, matched, token: int) -> Tuple[int, int, int, int]:
+        """Deja cada saldo en el valor pedido (operación propia e idempotente por persona).
+        Devuelve (ajustadas, sin_cambio, repetidas, fallidas)."""
+        applied = unchanged = repeated = failed = 0
+        for member, target in matched:
+            try:
+                status, _, _ = await self._db(eco.set_balance, user_id=member.id, target=target, actor_id=actor_id,
+                                              request_key=f"import:{token}:{member.id}", reason=eco.IMPORT_REASON)
+                if status == "applied":
+                    applied += 1
+                elif status == "unchanged":
+                    unchanged += 1
+                else:
+                    repeated += 1
+            except Exception:
+                traceback.print_exc()
+                failed += 1
+        return applied, unchanged, repeated, failed
+
+    # ============================================================
+    # Salida del servidor y /set-balance
+    # ============================================================
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        """Si alguien abandona (o lo sacan) del servidor, su balance se restablece a 0."""
+        try:
+            if getattr(member, "bot", False):
+                return
+            if self.guild_id is not None and getattr(member.guild, "id", None) != self.guild_id:
+                return
+            actor = self.bot.user.id if getattr(self.bot, "user", None) else 0
+            status, before, after = await self._db(
+                eco.set_balance, user_id=member.id, target=0, actor_id=actor,
+                request_key=f"leave:{member.id}:{uuid.uuid4().hex}", reason=eco.LEAVE_REASON)
+            if status == "applied":
+                print(f"ℹ️ {member} ({member.id}) salió del servidor: balance {before} → 0")
+                await self._post_audit_note(f"🚪 <@{member.id}> salió del servidor: su balance se restableció "
+                                            f"({self.plain(before)} → 0).")
+        except Exception:
+            traceback.print_exc()
+
+    async def _post_audit_note(self, text: str):
+        """Aviso breve en el canal de registro (si está configurado). Nunca rompe la operación principal."""
+        try:
+            channel = await self._get_log_channel()
+            if channel is not None:
+                await channel.send(text, allowed_mentions=NO_MENTIONS)
+        except Exception as exc:
+            print(f"⚠️ No pude publicar el aviso en el registro económico: {exc!r}")
+
+    @app_commands.command(name="set-balance", description="(Admin) Deja el balance de una persona EXACTAMENTE en el número indicado")
+    @app_commands.describe(usuario="Persona (también sirve si ya salió del servidor)", cantidad="Nuevo balance (ej: 150.000; admite 0 y negativos)",
+                           motivo="Motivo del ajuste (opcional)")
+    @app_commands.guild_only()
+    async def set_balance(self, interaction: discord.Interaction, usuario: discord.User, cantidad: str, motivo: Optional[str] = None):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not isinstance(member, discord.Member) \
+                    or not await self.has_command_permission(member, "set-balance"):
+                return await self._ephemeral(interaction, "❌ Solo el propietario, los administradores o un rol autorizado pueden usar este comando.")
+            if getattr(usuario, "bot", False):
+                return await self._ephemeral(interaction, "❌ No se puede operar sobre bots.")
+            try:
+                target = eco.parse_balance_value(cantidad)
+            except eco.AmountError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            reason = eco.clean_reason(motivo, eco.SET_BALANCE_DEFAULT_REASON)
+            try:
+                status, before, after = await self._db(
+                    eco.set_balance, user_id=usuario.id, target=target, actor_id=member.id,
+                    request_key=f"set:{interaction.id}", reason=reason)
+            except OverflowError:
+                return await self._ephemeral(interaction, "❌ El número supera el límite permitido. No se modificó nada.")
+            if status == "unchanged":
+                return await self._ephemeral(interaction, f"ℹ️ {usuario.mention} ya tenía exactamente {self.money(after)}. No se cambió nada.")
+            if status == "repeated":
+                return await self._ephemeral(interaction, "ℹ️ Esta solicitud ya había sido procesada; no se repitió.")
+            await interaction.response.send_message(
+                f"✅ Balance de {usuario.mention} ajustado: {self.money(before)} → **{self.money(after)}**\nMotivo: {reason}",
+                ephemeral=True, allowed_mentions=NO_MENTIONS) if not interaction.response.is_done() else await interaction.followup.send(
+                f"✅ Balance de {usuario.mention} ajustado: {self.money(before)} → **{self.money(after)}**\nMotivo: {reason}",
+                ephemeral=True, allowed_mentions=NO_MENTIONS)
+            await self._post_audit_note(f"🧾 {member.mention} ajustó el balance de <@{usuario.id}>: "
+                                        f"{self.plain(before)} → **{self.plain(after)}** · {reason}")
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No se pudo completar el ajuste. No se modificó ningún balance.")
+
+    # ============================================================
+    # Salida del servidor, /set-balance, /historico-bal, /eco-stats
+    # ============================================================
+    async def _audit_note(self, embed: discord.Embed):
+        """Aviso en el canal de registro (mejor esfuerzo: si falla no afecta a la operación ya confirmada)."""
+        try:
+            channel = await self._get_log_channel()
+            if channel is not None:
+                await channel.send(embed=embed, allowed_mentions=NO_MENTIONS)
+        except Exception as exc:
+            print(f"⚠️ No pude publicar el aviso en el registro económico: {exc!r}")
+
+    historico_bal = app_commands.Group(name="historico-bal", description="Balance histórico de Wuju Coins", guild_only=True)
+
+    @historico_bal.command(name="reset", description="(Admin) Pone en cero el Balance histórico de TODOS (no toca los balances)")
+    async def historico_reset(self, interaction: discord.Interaction):
+        try:
+            if interaction.guild is None or not is_admin_member(interaction.user):
+                return await self._ephemeral(interaction, "❌ Este comando es solo para el propietario del servidor o administradores.")
+
+            async def go(inter):
+                affected = await self._db(eco.reset_lifetime, interaction.user.id)
+                await inter.response.edit_message(
+                    content=f"✅ Balance histórico reiniciado para todos ({affected} persona(s) tenían histórico). Los balances no cambiaron.", view=None)
+                emb = discord.Embed(title="♻️ Balance histórico reiniciado", color=discord.Color.orange())
+                emb.add_field(name="Ejecutado por", value=interaction.user.mention, inline=True)
+                emb.add_field(name="Personas con histórico", value=str(affected), inline=True)
+                await self._audit_note(emb)
+            view = ConfirmActionView(interaction.user.id, go, "Sí, reiniciar histórico de todos")
+            await interaction.response.send_message(
+                "⚠️ Vas a poner en **cero el Balance histórico de TODOS**. Los balances actuales y el historial de movimientos no se tocan. "
+                "Desde ahora el histórico contará solo lo que se deposite de nuevo. ¿Confirmás?",
+                view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No pude completar la operación.")
+
+    @app_commands.command(name="eco-stats", description="(Staff) Muestra cuánto Wuju Coins hay cargado en total")
+    @app_commands.guild_only()
+    async def eco_stats(self, interaction: discord.Interaction):
+        try:
+            if interaction.guild is None or not await self.has_command_permission(interaction.user, "eco-stats", staff_ok=True):
+                return await self._ephemeral(interaction, "❌ Este comando es solo para el staff.")
+            st = await self._db(eco.get_stats)
+            emb = discord.Embed(title=f"📊 {eco.CURRENCY_NAME} — estadísticas", color=discord.Color.gold())
+            emb.add_field(name="Total cargado (suma de todos los balances)", value=f"**{self.money(st.total_net)}**", inline=False)
+            emb.add_field(name="Balances positivos", value=f"{self.money(st.total_positive)} · {st.with_positive} persona(s)", inline=True)
+            emb.add_field(name="Balances negativos", value=self.money(st.total_negative), inline=True)
+            emb.add_field(name="Balance histórico total (depositado)", value=self.money(st.lifetime_total), inline=False)
+            emb.set_footer(text=f"{st.accounts} cuenta(s) registradas")
+            await interaction.response.send_message(embed=emb, ephemeral=True, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No pude obtener las estadísticas.")
+
+    # ============================================================
+    # Historial de movimientos
+    # ============================================================
+    def history_embed(self, rows: List["eco.HistoryRow"], title: str) -> discord.Embed:
+        lines = []
+        for r in rows:
+            when = datetime.fromisoformat(r.created_at)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            reason = r.reason if len(r.reason) <= 70 else r.reason[:67] + "…"
+            lines.append(f"<t:{int(when.timestamp())}:f> · **{r.label}** · `{self.plain(r.delta, signed=True)}` · {reason} · saldo: `{eco.format_amount(r.balance_after)}`")
+        emb = discord.Embed(title=title, description="\n".join(lines)[:4000], color=discord.Color.blurple())
+        emb.set_footer(text=f"Últimos {len(rows)} movimientos · del más reciente al más antiguo")
+        return emb
+
+    @app_commands.command(name="verhistorial", description="Mirá tu historial de Wuju Coins (el staff puede ver el de otra persona)")
+    @app_commands.describe(usuario="(Solo staff) Persona cuyo historial querés consultar")
+    @app_commands.guild_only()
+    async def verhistorial(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not isinstance(member, discord.Member):
+                return await self._ephemeral(interaction, "❌ Usá este comando dentro del servidor.")
+
+            if usuario is not None and usuario.id != member.id:
+                if not await self.has_command_permission(member, "verhistorial", staff_ok=True):
+                    return await self._ephemeral(interaction, "❌ Solo el staff puede consultar el historial de otra persona.")
+                rows = await self._db(eco.get_history, usuario.id, 20)
+                if not rows:
+                    return await self._ephemeral(interaction, f"ℹ️ {usuario.mention} todavía no tiene movimientos.")
+                emb = self.history_embed(rows, f"📜 Historial de {usuario.display_name}")
+                # Respuesta efímera: solo la ve quien ejecutó el comando; nunca va al canal ni a un DM.
+                return await interaction.response.send_message(embed=emb, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+            rows = await self._db(eco.get_history, member.id, 20)
+            if not rows:
+                return await self._ephemeral(interaction, "ℹ️ Todavía no tenés movimientos de Wuju Coins.")
+            emb = self.history_embed(rows, "📜 Tu historial de Wuju Coins")
+            try:
+                await member.send(embed=emb)
+            except (discord.Forbidden, discord.HTTPException):
+                return await self._ephemeral(interaction, "❌ No pude enviarte el historial por mensaje privado. Activá tus DMs para este servidor y probá de nuevo.")
+            await self._ephemeral(interaction, "✅ Te envié tu historial por mensaje privado.")
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No pude obtener el historial en este momento.")
+
+
+async def setup_economy(bot: commands.Bot, db_path: str, guild_id: int, member_role_id: int,
+                        staff_role_id: Optional[int] = None) -> EconomyCog:
+    cog = EconomyCog(bot, db_path, member_role_id, staff_role_id, guild_id)
+    await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
+    return cog
