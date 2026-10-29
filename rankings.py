@@ -17,6 +17,7 @@ import casino_db as cdb
 import economy_db as eco
 import rankings_db as rdb
 import stats_db
+from names import fallback, resolve_names
 from paging import PagedView, chunk
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -103,7 +104,7 @@ class RankingsCog(commands.Cog):
     def value_text(self, kind: str, value) -> str:
         return self.money(value, signed=True) if kind == "net" and value > 0 else self.money(value)
 
-    def page_embed(self, kind: str, rows: List[Tuple[int, int]], page: int) -> discord.Embed:
+    def page_embed(self, kind: str, rows: List[Tuple[int, int]], page: int, names: Optional[dict] = None) -> discord.Embed:
         title, label, color = INFO[kind]
         pages = max(1, -(-len(rows) // PAGE_SIZE))
         chunk = rows[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
@@ -113,7 +114,7 @@ class RankingsCog(commands.Cog):
             emb.description = "_Todavía no hay datos._"
         else:
             emb.description = "\n".join(
-                f"{medals.get(pos, f'`{pos:>2}.`')} <@{uid}> — **{self.value_text(kind, value)}**"
+                f"{medals.get(pos, f'`{pos:>2}.`')} {(names or {}).get(uid) or fallback(uid)} — **{self.value_text(kind, value)}**"
                 for pos, (uid, value) in enumerate(chunk, start=page * PAGE_SIZE + 1))
         emb.set_footer(text=f"{label} (apuestas, dados, coinflip y 1v1) · Página {page + 1}/{pages}")
         return emb
@@ -125,7 +126,8 @@ class RankingsCog(commands.Cog):
             emb.description = "_Nadie está bloqueado._"
         else:
             shown = ids[:BLACKLIST_MAX]
-            emb.description = "\n".join(f"`{i}.` <@{uid}>" for i, uid in enumerate(shown, 1))
+            names = await resolve_names(self.bot.get_guild(self.guild_id), shown)
+            emb.description = "\n".join(f"`{i}.` {names[uid]}" for i, uid in enumerate(shown, 1))
             if len(ids) > len(shown):
                 emb.description += f"\n… y {len(ids) - len(shown)} más"
         emb.set_footer(text=f"{len(ids)} persona(s) bloqueada(s) · Council: /casinoban")
@@ -134,7 +136,9 @@ class RankingsCog(commands.Cog):
     async def panel_embed(self, kind: str) -> discord.Embed:
         if kind == "blacklist":
             return await self.blacklist_embed()
-        return self.page_embed(kind, await self.rows_of(kind), 0)
+        rows = await self.rows_of(kind)
+        names = await resolve_names(self.bot.get_guild(self.guild_id), [u for u, _ in rows[:PAGE_SIZE]])
+        return self.page_embed(kind, rows, 0, names)
 
     # ---------- /panel apuestas ----------
     async def publish_panels(self, interaction: discord.Interaction):
@@ -201,7 +205,8 @@ class RankingsCog(commands.Cog):
             groups = chunk(rows, PAGE_SIZE)
             if len(groups) <= 1:
                 return await self._say(interaction, "ℹ️ No hay más personas en esta lista: el panel ya las muestra a todas.")
-            pages = [self.page_embed(kind, rows, i) for i in range(len(groups))]
+            names = await resolve_names(self.bot.get_guild(self.guild_id), [u for u, _ in rows])
+            pages = [self.page_embed(kind, rows, i, names) for i in range(len(groups))]
             view = PagedView(pages, owner_id=interaction.user.id)
             view.index = 1                                       # «Siguiente» desde el panel = puestos 11–20
             view._sync()

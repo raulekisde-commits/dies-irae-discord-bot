@@ -20,6 +20,7 @@ import economy_db as eco
 from slashctx import SlashContext
 from paging import PagedView, chunk
 import stats_db
+from names import clean as clean_name
 
 NO_MENTIONS = discord.AllowedMentions.none()
 EMBED_DESC_BUDGET = 3600          # margen bajo el límite de 4096 caracteres de la descripción
@@ -413,8 +414,10 @@ class EconomyCog(commands.Cog):
         emb.add_field(name="📈 Balance histórico", value=self.money(lifetime), inline=False)
         gamble = await self._db(stats_db.get_user_stats, target.id)
         emb.add_field(name="🎲 Total apostado", value=self.money(gamble.wagered), inline=True)
-        emb.add_field(name="🏆 Total ganado apostando", value=self.money(gamble.won), inline=True)
-        emb.add_field(name="📉 Total perdido apostando", value=self.money(gamble.lost), inline=True)
+        # Mismos números que los paneles «Top ganado» / «Top perdido» de /panel apuestas (ganado − perdido): positivo o negativo.
+        net = gamble.net
+        emb.add_field(name="🏆 Total ganado apostando", value=self.money(net, signed=True) if net > 0 else self.money(0), inline=True)
+        emb.add_field(name="📉 Total perdido apostando", value=self.money(net) if net < 0 else self.money(0), inline=True)
         try:
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
@@ -455,6 +458,7 @@ class EconomyCog(commands.Cog):
         groups = chunk(ranking, page_size)
         pages = len(groups)
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        names = {m.id: clean_name(m.display_name) for m in ctx.guild.members}
 
         def build(page: int) -> discord.Embed:
             rows = groups[page]
@@ -464,7 +468,7 @@ class EconomyCog(commands.Cog):
                 emb.description = "Todavía no hay usuarios para mostrar."
             else:
                 emb.description = "\n".join(
-                    f"{medals.get(pos, f'`{pos}.`')} <@{uid}> — **{self.money(bal)}**" for pos, uid, bal in rows)
+                    f"{medals.get(pos, f'`{pos}.`')} {names.get(uid) or f'Usuario {uid}'} — **{self.money(bal)}**" for pos, uid, bal in rows)
             emb.set_footer(text=f"{eco.CURRENCY_NAME} · Página {page + 1}/{pages}" if pages > 1 else eco.CURRENCY_NAME)
             return emb
 
