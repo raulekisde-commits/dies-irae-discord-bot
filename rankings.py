@@ -1,6 +1,7 @@
 """Paneles de ludópatas: /apuestas panel (capa de Discord).
 
-Tres paneles públicos con el top 10 (más ganaron · más perdieron · más apostaron). Cada uno tiene un botón
+Dos paneles públicos con el top 10: «Top apostado» (total apostado) y «Top ganado» (ganado − perdido: puede dar
+negativo). Cada uno tiene un botón
 «Siguiente ▶» que abre, solo para quien lo toca, la lista completa de a 10 personas por página.
 Los paneles se refrescan solos cada minuto; los datos salen de stats_db (calculados del historial, no duplicados).
 """
@@ -22,10 +23,10 @@ PAGE_SIZE = 10
 COMMAND_PERMISSION = "apuestas"
 
 INFO = {
-    "won": ("🏆 Ludópatas — los que más ganaron", "Total ganado apostando", 0x2ECC71),
-    "lost": ("💸 Ludópatas — los que más perdieron", "Total perdido apostando", 0xE74C3C),
-    "wagered": ("🎰 Ludópatas — los que más apostaron", "Total apostado", 0xF1C40F),
+    "wagered": ("🎰 Top apostado", "Total apostado", 0xF1C40F),
+    "net": ("🏆 Top ganado", "Ganado − perdido", 0x2ECC71),
 }
+LEGACY_NOTE = "ℹ️ Este panel es de una versión anterior y ya no se actualiza. Pedí que se publiquen los nuevos con `/apuestas panel`."
 
 
 class RankPanelView(discord.ui.View):
@@ -52,7 +53,7 @@ class RankingsCog(commands.Cog):
     async def cog_load(self):
         await self.run(rdb.init_schema)
         await self.run(stats_db.init_schema)
-        for kind in rdb.KINDS:
+        for kind in rdb.KINDS + rdb.LEGACY_KINDS:
             self.bot.add_view(RankPanelView(self, kind))
         if not self.refresher.is_running():
             self.refresher.start()
@@ -67,9 +68,12 @@ class RankingsCog(commands.Cog):
     def economy(self):
         return self.bot.get_cog("EconomyCog")
 
-    def money(self, amount: int) -> str:
+    def money(self, amount: int, signed: bool = False) -> str:
         e = self.economy
-        return e.money(amount) if e is not None else f"{eco.format_amount(amount)} {eco.CURRENCY_NAME}"
+        if e is not None:
+            return e.money(amount, signed=signed)
+        text = ("+" if signed and amount > 0 else "") + eco.format_amount(amount)
+        return f"{text} {eco.CURRENCY_NAME}"
 
     async def _get_channel(self, channel_id: int):
         ch = self.bot.get_channel(channel_id)
@@ -82,9 +86,12 @@ class RankingsCog(commands.Cog):
 
     async def rows_of(self, kind: str) -> List[Tuple[int, int]]:
         stats = await self.run(stats_db.top_by, kind)
-        return [(st.user_id, getattr(st, kind)) for st in stats]
+        return [(st.user_id, st.net if kind == "net" else getattr(st, kind)) for st in stats]
 
     # ---------- embeds ----------
+    def value_text(self, kind: str, value: int) -> str:
+        return self.money(value, signed=True) if kind == "net" and value > 0 else self.money(value)
+
     def page_embed(self, kind: str, rows: List[Tuple[int, int]], page: int) -> discord.Embed:
         title, label, color = INFO[kind]
         pages = max(1, -(-len(rows) // PAGE_SIZE))
@@ -95,13 +102,13 @@ class RankingsCog(commands.Cog):
             emb.description = "_Todavía no hay datos._"
         else:
             emb.description = "\n".join(
-                f"{medals.get(pos, f'`{pos:>2}.`')} <@{uid}> — **{self.money(value)}**"
+                f"{medals.get(pos, f'`{pos:>2}.`')} <@{uid}> — **{self.value_text(kind, value)}**"
                 for pos, (uid, value) in enumerate(chunk, start=page * PAGE_SIZE + 1))
         emb.set_footer(text=f"{label} (apuestas, dados y coinflip) · Página {page + 1}/{pages}")
         return emb
 
     # ---------- /apuestas panel ----------
-    @apuestas.command(name="panel", description="Publica los tres paneles de ludópatas (más ganaron, perdieron y apostaron) en este canal")
+    @apuestas.command(name="panel", description="Publica los paneles Top apostado y Top ganado en este canal")
     async def panel(self, interaction: discord.Interaction):
         try:
             eco_cog = self.economy
@@ -134,6 +141,15 @@ class RankingsCog(commands.Cog):
                         await (await och.fetch_message(old[1])).delete()
                     except Exception:
                         pass
+            for legacy in rdb.LEGACY_KINDS:                                   # paneles de la versión anterior
+                old = await self.run(rdb.get_panel, interaction.guild.id, legacy)
+                if old:
+                    try:
+                        och = await self._get_channel(old[0])
+                        await (await och.fetch_message(old[1])).delete()
+                    except Exception:
+                        pass
+                    await self.run(rdb.clear_panel, interaction.guild.id, legacy)
             await interaction.followup.send("✅ Paneles publicados. Se actualizan solos cada minuto.", ephemeral=True)
         except Exception:
             traceback.print_exc()
@@ -152,6 +168,8 @@ class RankingsCog(commands.Cog):
     # ---------- botón «Siguiente» ----------
     async def on_next(self, interaction: discord.Interaction, kind: str):
         try:
+            if kind not in INFO:
+                return await self._say(interaction, LEGACY_NOTE)
             rows = await self.rows_of(kind)
             groups = chunk(rows, PAGE_SIZE)
             if len(groups) <= 1:

@@ -20,7 +20,7 @@ ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
 # Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
 GAME_COMMANDS = ("dados", "coinflip")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
-EXTRA_PERMISSION_COMMANDS = ("apuesta", "apuestas", "verhistorial", "set-balance") + GAME_COMMANDS
+EXTRA_PERMISSION_COMMANDS = ("apuesta", "apuestas", "verhistorial", "set-balance", "eco-stats", "give-money") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
 CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + GAME_COMMANDS   # bal, top, dados, coinflip
 
@@ -91,6 +91,8 @@ MOVEMENT_LABELS = {
     "balance_set": "Saldo ajustado",
     "balance_reset": "Saldo restablecido",
     "guildshop_purchase": "Compra en Guild Shop",
+    "transfer_out": "Transferencia enviada",
+    "transfer_in": "Transferencia recibida",
     "dice_stake": "Entrada a dados",
     "dice_win": "Premio de dados",
     "dice_refund": "Devolución de dados",
@@ -126,8 +128,6 @@ def clean_reason(text: Optional[str], default: str) -> str:
 # Importación de saldos desde una lista "apodo + cantidad"
 # ============================================================
 IMPORT_REASON = "Importación inicial de saldos"
-LEAVE_REASON = "Salió del servidor: saldo restablecido"
-SET_BALANCE_DEFAULT_REASON = "Ajuste manual de saldo"
 
 
 def parse_balance_value(text: str) -> int:
@@ -279,82 +279,78 @@ def get_balance(db_path: str, user_id: int) -> int:
 LIFETIME_DEPOSIT_TYPES = ("addmoney", "addmoney-role", "balance_set")
 
 
-def _lifetime_baseline(conn: sqlite3.Connection) -> int:
-    row = conn.execute("SELECT value FROM eco_settings WHERE key = 'lifetime_baseline_id'").fetchone()
-    try:
-        return int(row["value"]) if row else 0
-    except (TypeError, ValueError):
-        return 0
-
-
-def _lifetime_sum(conn: sqlite3.Connection, user_id: Optional[int] = None) -> int:
-    marks = ",".join("?" for _ in LIFETIME_DEPOSIT_TYPES)
-    args: list = [_lifetime_baseline(conn), *LIFETIME_DEPOSIT_TYPES]
-    where_user = ""
-    if user_id is not None:
-        where_user = " AND user_id = ?"
-        args.append(int(user_id))
-    row = conn.execute(
-        f"SELECT COALESCE(SUM(delta), 0) AS total FROM eco_movements "
-        f"WHERE id > ? AND delta > 0 AND COALESCE(kind, 'addmoney') IN ({marks}){where_user}", args).fetchone()
-    return int(row["total"])
-
-
 def get_lifetime_deposits(db_path: str, user_id: int) -> int:
-    """Balance histórico: suma de todo lo depositado a la persona desde el último reset. Solo suma, nunca resta.
+    """Balance histórico: suma de todo lo depositado a la persona. Solo suma, nunca resta.
 
-    Se calcula desde el historial de movimientos (por eso incluye lo cargado antes de existir el contador).
-    Un ajuste de saldo (importación / set-balance) suma únicamente si subió el saldo.
+    Se calcula desde el historial de movimientos (por eso incluye también lo cargado antes de existir el contador).
+    Un ajuste de saldo (importación) suma únicamente si subió el saldo.
     """
+    marks = ",".join("?" for _ in LIFETIME_DEPOSIT_TYPES)
     conn = connect(db_path)
     try:
-        return _lifetime_sum(conn, user_id)
+        after_id = _lifetime_reset_id(conn)
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(delta), 0) AS total FROM eco_movements "
+            f"WHERE user_id = ? AND id > ? AND delta > 0 AND COALESCE(kind, 'addmoney') IN ({marks})",
+            (int(user_id), after_id, *LIFETIME_DEPOSIT_TYPES)).fetchone()
+        return int(row["total"])
     finally:
         conn.close()
 
 
-def reset_lifetime(db_path: str, actor_id: int) -> Tuple[int, int]:
-    """Pone en 0 el balance histórico de TODOS (no borra el historial de movimientos ni cambia saldos).
-    Devuelve (total_que_había, id_de_corte)."""
+def _lifetime_reset_id(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM eco_settings WHERE key = 'lifetime_reset_movement_id'").fetchone()
+    return int(row["value"]) if row else 0
+
+
+def reset_lifetime(db_path: str, actor_id: int) -> int:
+    """Pone en cero el Balance histórico de TODOS. No borra movimientos ni toca balances: solo guarda una marca
+    y, desde ese momento, el contador cuenta únicamente lo depositado después. Devuelve cuántas personas tenían histórico."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            total = _lifetime_sum(conn)
-            row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM eco_movements").fetchone()
-            cut = int(row["m"])
+            before_id = _lifetime_reset_id(conn)
+            marks = ",".join("?" for _ in LIFETIME_DEPOSIT_TYPES)
+            affected = int(conn.execute(
+                f"SELECT COUNT(DISTINCT user_id) c FROM eco_movements WHERE id > ? AND delta > 0 "
+                f"AND COALESCE(kind, 'addmoney') IN ({marks})", (before_id, *LIFETIME_DEPOSIT_TYPES)).fetchone()["c"])
+            last = conn.execute("SELECT COALESCE(MAX(id), 0) m FROM eco_movements").fetchone()["m"]
             now = utcnow_iso()
-            for key, value in (("lifetime_baseline_id", str(cut)), ("lifetime_reset_at", now), ("lifetime_reset_by", str(actor_id))):
-                conn.execute("INSERT INTO eco_settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                             (key, value))
-            return total, cut
+            for key, value in (("lifetime_reset_movement_id", str(int(last))), ("lifetime_reset_at", now), ("lifetime_reset_by", str(int(actor_id)))):
+                conn.execute("INSERT INTO eco_settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+            return affected
     finally:
         conn.close()
 
 
 @dataclass
 class EcoStats:
-    accounts: int
-    with_positive: int
-    total_net: int
-    total_positive: int
-    total_negative: int
-    lifetime_total: int
-    lifetime_reset_at: Optional[str]
+    total: int            # suma de todos los balances cargados
+    positive: int         # suma de balances positivos
+    negative: int         # suma de balances negativos (valor negativo)
+    accounts: int         # cuentas con balance distinto de 0
+    holders_positive: int
+    holders_negative: int
+    lifetime_total: int   # suma del Balance histórico de todos (desde el último reset)
 
 
 def get_stats(db_path: str) -> EcoStats:
+    marks = ",".join("?" for _ in LIFETIME_DEPOSIT_TYPES)
     conn = connect(db_path)
     try:
         row = conn.execute(
-            """SELECT COUNT(*) AS n,
-                      COUNT(CASE WHEN balance > 0 THEN 1 END) AS pos_n,
-                      COALESCE(SUM(balance), 0) AS net,
-                      COALESCE(SUM(CASE WHEN balance > 0 THEN balance END), 0) AS pos,
-                      COALESCE(SUM(CASE WHEN balance < 0 THEN balance END), 0) AS neg
+            """SELECT COALESCE(SUM(balance),0) t,
+                      COALESCE(SUM(CASE WHEN balance > 0 THEN balance END),0) p,
+                      COALESCE(SUM(CASE WHEN balance < 0 THEN balance END),0) n,
+                      COALESCE(SUM(CASE WHEN balance != 0 THEN 1 END),0) a,
+                      COALESCE(SUM(CASE WHEN balance > 0 THEN 1 END),0) hp,
+                      COALESCE(SUM(CASE WHEN balance < 0 THEN 1 END),0) hn
                FROM eco_accounts""").fetchone()
-        reset = conn.execute("SELECT value FROM eco_settings WHERE key = 'lifetime_reset_at'").fetchone()
-        return EcoStats(int(row["n"]), int(row["pos_n"]), int(row["net"]), int(row["pos"]), int(row["neg"]),
-                        _lifetime_sum(conn), reset["value"] if reset else None)
+        after_id = _lifetime_reset_id(conn)
+        life = conn.execute(
+            f"SELECT COALESCE(SUM(delta),0) t FROM eco_movements WHERE id > ? AND delta > 0 "
+            f"AND COALESCE(kind, 'addmoney') IN ({marks})", (after_id, *LIFETIME_DEPOSIT_TYPES)).fetchone()["t"]
+        return EcoStats(int(row["t"]), int(row["p"]), int(row["n"]), int(row["a"]), int(row["hp"]), int(row["hn"]), int(life))
     finally:
         conn.close()
 
@@ -587,6 +583,39 @@ def get_history(db_path: str, user_id: int, limit: int = 20) -> List[HistoryRow]
                 related_id=r["m_related"] or r["o_id"],
             ))
         return result
+    finally:
+        conn.close()
+
+
+GIVE_DEFAULT_REASON = "Transferencia entre usuarios"
+
+
+def transfer(db_path: str, *, from_id: int, to_id: int, amount: int, request_key: str,
+             reason: str = GIVE_DEFAULT_REASON) -> Tuple[str, int, int]:
+    """Pasa `amount` del balance de `from_id` al de `to_id` en UNA transacción (o se hace todo o no se hace nada).
+
+    Devuelve (estado, saldo_origen, saldo_destino): estado "applied" o "repeated" (misma solicitud ya procesada).
+    Lanza InsufficientFunds si el origen no alcanza y OverflowError si el destino superaría el límite.
+    """
+    if from_id == to_id:
+        raise ValueError("no se puede transferir a uno mismo")
+    if amount <= 0 or amount > MAX_AMOUNT:
+        raise ValueError("cantidad inválida")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM eco_operations WHERE request_key = ?", (f"{request_key}:out",)).fetchone():
+                return "repeated", get_balance(db_path, from_id), get_balance(db_path, to_id)
+            related = f"give:{from_id}:{to_id}"
+            op_out = tx_new_operation(conn, kind="remove", actor_id=from_id, request_key=f"{request_key}:out",
+                                      total_amount=amount, target_count=1, reason=reason, related_id=related)
+            _, after_from = tx_move(conn, op_id=op_out, user_id=from_id, delta=-amount, mov_type="transfer_out", reason=reason,
+                                    actor_id=from_id, related_id=related, require_funds=True)
+            op_in = tx_new_operation(conn, kind="add", actor_id=from_id, request_key=f"{request_key}:in",
+                                     total_amount=amount, target_count=1, reason=reason, related_id=related)
+            _, after_to = tx_move(conn, op_id=op_in, user_id=to_id, delta=amount, mov_type="transfer_in", reason=reason,
+                                  actor_id=from_id, related_id=related)
+            return "applied", after_from, after_to
     finally:
         conn.close()
 
