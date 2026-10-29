@@ -220,6 +220,9 @@ class GamesCog(commands.Cog):
             amount = gdb.validate_stake(eco.parse_amount(amount_text.strip()))
         except (eco.AmountError, gdb.GameError) as exc:
             return await ctx.reply(f"❌ {exc}", mention_author=False, allowed_mentions=NO_MENTIONS)
+        over = await self.run(eco.check_bet_limit, command, amount)
+        if over:
+            return await ctx.reply(f"❌ {over}", mention_author=False, allowed_mentions=NO_MENTIONS)
         panel_channel = ctx.channel
         if kind == "dice":                                  # los dados se publican en un canal aparte (/canal dados)
             cid = await self.run(gdb.get_panel_channel_id, kind)
