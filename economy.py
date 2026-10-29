@@ -17,8 +17,11 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import economy_db as eco
+from paging import PagedView, chunk
 from slashctx import SlashContext
+import stats_db
 
+TOP_PAGE_SIZE = 10
 NO_MENTIONS = discord.AllowedMentions.none()
 EMBED_DESC_BUDGET = 3600          # margen bajo el límite de 4096 caracteres de la descripción
 _MENTION_USER_RE = re.compile(r"^<@!?(\d{15,25})>$")
@@ -422,6 +425,10 @@ class EconomyCog(commands.Cog):
         emb = discord.Embed(title=eco.CURRENCY_NAME, color=color)
         emb.description = f"{target.mention}\n\n**Balance actual**\n# {self.money(balance)}"
         emb.add_field(name="📈 Balance histórico", value=self.money(lifetime), inline=False)
+        gamble = await self._db(stats_db.get_user_stats, target.id)
+        emb.add_field(name="🎲 Total apostado", value=self.money(gamble.wagered), inline=True)
+        emb.add_field(name="🏆 Total ganado apostando", value=self.money(gamble.won), inline=True)
+        emb.add_field(name="📉 Total perdido apostando", value=self.money(gamble.lost), inline=True)
         try:
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
@@ -439,18 +446,24 @@ class EconomyCog(commands.Cog):
         await self._ensure_members(ctx.guild)
         balances = await self._db(eco.get_all_balances)
         eligible = [m.id for m in ctx.guild.members if not m.bot]
-        ranking = eco.rank_top(balances, eligible, limit=10)
+        ranking = eco.rank_top(balances, eligible, limit=max(len(eligible), 1))
 
-        emb = discord.Embed(title=f"🏆 Top 10 — {eco.CURRENCY_NAME}", color=discord.Color.gold())
-        if not ranking:
-            emb.description = "Todavía no hay usuarios para mostrar."
-        else:
-            medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-            emb.description = "\n".join(
-                f"{medals.get(pos, f'`{pos}.`')} <@{uid}> — **{self.money(bal)}**" for pos, uid, bal in ranking
-            )
-        emb.set_footer(text=eco.CURRENCY_NAME)
-        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        groups = chunk(ranking, TOP_PAGE_SIZE)
+        pages: List[discord.Embed] = []
+        for n, group in enumerate(groups, 1):
+            emb = discord.Embed(title=f"🏆 Top — {eco.CURRENCY_NAME}", color=discord.Color.gold())
+            if not group:
+                emb.description = "Todavía no hay usuarios para mostrar."
+            else:
+                emb.description = "\n".join(
+                    f"{medals.get(pos, f'`{pos}.`')} <@{uid}> — **{self.money(bal)}**" for pos, uid, bal in group)
+            emb.set_footer(text=f"{eco.CURRENCY_NAME} · Página {n}/{len(groups)}" if len(groups) > 1 else eco.CURRENCY_NAME)
+            pages.append(emb)
+        if len(pages) == 1:
+            return await ctx.send(embed=pages[0], allowed_mentions=NO_MENTIONS)
+        view = PagedView(pages, owner_id=ctx.author.id)
+        view.message = await ctx.send(embed=pages[0], view=view, allowed_mentions=NO_MENTIONS)
 
     # ---------------- addmoney / remove-money ----------------
     async def _parse_amount_or_reply(self, ctx: commands.Context, text: str) -> Optional[int]:
@@ -688,7 +701,9 @@ class EconomyCog(commands.Cog):
 
     @staticmethod
     def _cmd_label(command: str) -> str:
-        if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
+        if command in eco.GAME_COMMANDS:
+            return f"`!{command}`"
+        if command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta") else f"`!{command}`"
 
@@ -752,7 +767,7 @@ class EconomyCog(commands.Cog):
                 chan_txt = f"<#{chan}>" if chan else "⚠️ sin canal (deshabilitado)"
             else:
                 chan_txt = "cualquier canal"
-            lines.append(f"**{'/' + extra}** — canal: {chan_txt} — roles: {roles_txt}")
+            lines.append(f"**{('!' if extra in eco.GAME_COMMANDS else '/') + extra}** — canal: {chan_txt} — roles: {roles_txt}")
         lines.append(f"\n**Registro:** {f'<#{log_raw}>' if log_raw else '⚠️ sin configurar'}")
         icon = self.icon()
         lines.append(f"**Icono:** {icon if icon else f'{eco.CURRENCY_NAME} (sin emoji)'}")
