@@ -16,6 +16,12 @@ MAX_AMOUNT = 10 ** 15          # tope por operación (por usuario)
 MAX_BALANCE_ABS = 10 ** 18     # protección contra desbordar el entero de 64 bits de SQLite
 
 ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
+# Comandos de administración de saldo: funcionan en cualquier canal (solo se exige el rol/permiso).
+ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
+# Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
+EXTRA_PERMISSION_COMMANDS = ("apuesta", "verhistorial")
+GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
+CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS)   # bal, top
 
 
 # ============================================================
@@ -65,6 +71,45 @@ def parse_amount(text: str) -> int:
 def format_amount(n: int) -> str:
     """150000 -> '150.000' | -150000 -> '-150.000' (siempre puntos, nunca comas)."""
     return f"{int(n):,}".replace(",", ".")
+
+
+# ============================================================
+# Motivos de las operaciones
+# ============================================================
+REASON_ADD_DEFAULT = "Sin motivo especificado"
+REASON_REMOVE_DEFAULT = "cobro el bal"
+MAX_REASON = 200
+
+MOVEMENT_LABELS = {
+    "addmoney": "Agregado",
+    "addmoney-role": "Agregado por rol",
+    "remove-money": "Retiro",
+    "bet_stake": "Apuesta realizada",
+    "bet_payout": "Premio de apuesta",
+    "bet_refund": "Devolución de apuesta",
+}
+
+
+_NUMBERISH_RE = re.compile(r"^[\d.,]+$")
+
+
+def reason_from_tokens(tokens: List[str], default: str) -> str:
+    """tokens = [objetivo, cantidad, motivo...]. Si el motivo empieza con un número suelto se rechaza,
+    porque probablemente la cantidad estaba escrita con espacios (`12 345`) y se leería mal."""
+    rest = tokens[2] if len(tokens) > 2 else ""
+    first = rest.split(None, 1)[0] if rest.strip() else ""
+    if first and _NUMBERISH_RE.match(first):
+        raise AmountError("La cantidad es ambigua: no uses espacios dentro del número (ej: `12345` o `12.345`). "
+                          "Si querés un motivo que empiece con un número, escribí primero una palabra.")
+    return clean_reason(rest, default)
+
+
+def clean_reason(text: Optional[str], default: str) -> str:
+    """Motivo en una línea, sin espacios sobrantes y con tope de largo. Vacío => `default`."""
+    value = " ".join((text or "").split())
+    if not value:
+        return default
+    return value[:MAX_REASON]
 
 
 # ============================================================
@@ -119,10 +164,36 @@ CREATE TABLE IF NOT EXISTS eco_command_channels (
 """
 
 
+# Columnas agregadas después (migración aditiva: nunca borra ni reescribe datos existentes)
+_ADDED_COLUMNS = (
+    ("eco_operations", "reason", "TEXT"),
+    ("eco_operations", "related_id", "TEXT"),
+    ("eco_movements", "kind", "TEXT"),
+    ("eco_movements", "reason", "TEXT"),
+    ("eco_movements", "actor_id", "INTEGER"),
+    ("eco_movements", "related_id", "TEXT"),
+)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADDED_COLUMNS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            except sqlite3.OperationalError:
+                # otro proceso la agregó en el medio
+                cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if column not in cols:
+                    raise
+
+
 def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        _ensure_columns(conn)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eco_movements_related ON eco_movements(related_id)")
     finally:
         conn.close()
 
@@ -191,6 +262,7 @@ class OperationResult:
     log_status: str = "pending"
     log_pages_sent: int = 0
     movements: List[Movement] = field(default_factory=list)
+    reason: str = ""
 
 
 def _load_result(conn: sqlite3.Connection, row: sqlite3.Row, created: bool) -> OperationResult:
@@ -204,6 +276,7 @@ def _load_result(conn: sqlite3.Connection, row: sqlite3.Row, created: bool) -> O
         per_user_amount=int(row["per_user_amount"]), total_amount=int(row["total_amount"]),
         created_at=row["created_at"], created=created, log_status=row["log_status"],
         log_pages_sent=int(row["log_pages_sent"]), movements=movements,
+        reason=(row["reason"] if "reason" in row.keys() and row["reason"] else ""),
     )
 
 
@@ -216,6 +289,7 @@ def apply_operation(
     amount: int,
     request_key: str,
     role_id: Optional[int] = None,
+    reason: Optional[str] = None,
     _test_hook: Optional[Callable[[int, int], None]] = None,
 ) -> OperationResult:
     """Suma o resta `amount` a CADA usuario de `user_ids`, todo en UNA transacción.
@@ -241,6 +315,8 @@ def apply_operation(
         raise ValueError("sin destinatarios")
 
     sign = 1 if kind == "add" else -1
+    reason = clean_reason(reason, REASON_ADD_DEFAULT if kind == "add" else REASON_REMOVE_DEFAULT)
+    mov_type = ("addmoney-role" if role_id is not None else "addmoney") if kind == "add" else "remove-money"
     now = utcnow_iso()
     conn = connect(db_path)
     try:
@@ -253,9 +329,9 @@ def apply_operation(
             scope = "role" if role_id is not None else "user"
             conn.execute(
                 """INSERT INTO eco_operations(op_id, request_key, kind, scope, actor_id, role_id,
-                       per_user_amount, target_count, total_amount, status, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?, 'completed', ?)""",
-                (op_id, request_key, kind, scope, actor_id, role_id, amount, len(ids), amount * len(ids), now),
+                       per_user_amount, target_count, total_amount, status, created_at, reason, related_id)
+                   VALUES (?,?,?,?,?,?,?,?,?, 'completed', ?, ?, ?)""",
+                (op_id, request_key, kind, scope, actor_id, role_id, amount, len(ids), amount * len(ids), now, reason, op_id),
             )
             for index, uid in enumerate(ids):
                 conn.execute(
@@ -268,14 +344,101 @@ def apply_operation(
                     raise OverflowError("El balance resultante excede el límite permitido.")
                 conn.execute("UPDATE eco_accounts SET balance = ?, updated_at = ? WHERE user_id = ?", (after, now, uid))
                 conn.execute(
-                    """INSERT INTO eco_movements(op_id, user_id, delta, balance_before, balance_after, created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (op_id, uid, sign * amount, before, after, now),
+                    """INSERT INTO eco_movements(op_id, user_id, delta, balance_before, balance_after, created_at,
+                           kind, reason, actor_id, related_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (op_id, uid, sign * amount, before, after, now, mov_type, reason, actor_id, op_id),
                 )
                 if _test_hook is not None:
                     _test_hook(index, uid)
             row = conn.execute("SELECT * FROM eco_operations WHERE op_id = ?", (op_id,)).fetchone()
             return _load_result(conn, row, created=True)
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------
+# Piezas para otros módulos (apuestas): operan DENTRO de una transacción abierta por quien las llama,
+# así el saldo, el historial y el registro del otro módulo se confirman o se revierten juntos.
+# ------------------------------------------------------------
+class InsufficientFunds(Exception):
+    pass
+
+
+def tx_new_operation(conn: sqlite3.Connection, *, kind: str, actor_id: int, request_key: str,
+                     total_amount: int, target_count: int, reason: str, related_id: str) -> str:
+    """Crea la operación que agrupa varios movimientos. No genera registro de auditoría público."""
+    if kind not in ("add", "remove"):
+        raise ValueError("kind inválido")
+    op_id = uuid.uuid4().hex
+    conn.execute(
+        """INSERT INTO eco_operations(op_id, request_key, kind, scope, actor_id, role_id, per_user_amount,
+               target_count, total_amount, status, created_at, log_status, reason, related_id)
+           VALUES (?,?,?,'user',?,NULL,0,?,?, 'completed', ?, 'sent', ?, ?)""",
+        (op_id, request_key, kind, actor_id, target_count, total_amount, utcnow_iso(), reason, related_id),
+    )
+    return op_id
+
+
+def tx_move(conn: sqlite3.Connection, *, op_id: str, user_id: int, delta: int, mov_type: str, reason: str,
+            actor_id: int, related_id: str, require_funds: bool = False) -> Tuple[int, int]:
+    """Aplica un movimiento a un balance dentro de la transacción en curso. Devuelve (antes, después)."""
+    now = utcnow_iso()
+    conn.execute("INSERT OR IGNORE INTO eco_accounts(user_id, balance, created_at, updated_at) VALUES (?,0,?,?)",
+                 (user_id, now, now))
+    before = int(conn.execute("SELECT balance FROM eco_accounts WHERE user_id = ?", (user_id,)).fetchone()["balance"])
+    after = before + delta
+    if require_funds and after < 0:
+        raise InsufficientFunds(before)
+    if abs(after) > MAX_BALANCE_ABS:
+        raise OverflowError("El balance resultante excede el límite permitido.")
+    conn.execute("UPDATE eco_accounts SET balance = ?, updated_at = ? WHERE user_id = ?", (after, now, user_id))
+    conn.execute(
+        """INSERT INTO eco_movements(op_id, user_id, delta, balance_before, balance_after, created_at,
+               kind, reason, actor_id, related_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (op_id, user_id, delta, before, after, now, mov_type, reason, actor_id, related_id),
+    )
+    return before, after
+
+
+@dataclass
+class HistoryRow:
+    created_at: str
+    mov_type: str
+    delta: int
+    reason: str
+    balance_after: int
+    actor_id: Optional[int]
+    related_id: Optional[str]
+
+    @property
+    def label(self) -> str:
+        return MOVEMENT_LABELS.get(self.mov_type, self.mov_type)
+
+
+def get_history(db_path: str, user_id: int, limit: int = 20) -> List[HistoryRow]:
+    """Últimos movimientos de un usuario (más reciente primero). Los registros anteriores a la migración
+    se completan con los datos de su operación."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT m.id, m.created_at, m.delta, m.balance_after, m.related_id AS m_related, m.kind AS m_kind,
+                      m.reason AS m_reason, m.actor_id AS m_actor,
+                      o.kind AS o_kind, o.scope AS o_scope, o.actor_id AS o_actor, o.reason AS o_reason, o.op_id AS o_id
+               FROM eco_movements m JOIN eco_operations o ON o.op_id = m.op_id
+               WHERE m.user_id = ? ORDER BY m.id DESC LIMIT ?""", (int(user_id), int(limit))).fetchall()
+        result = []
+        for r in rows:
+            mov_type = r["m_kind"] or (("addmoney-role" if r["o_scope"] == "role" else "addmoney") if r["o_kind"] == "add" else "remove-money")
+            reason = r["m_reason"] or r["o_reason"] or "—"
+            result.append(HistoryRow(
+                created_at=r["created_at"], mov_type=mov_type, delta=int(r["delta"]), reason=reason,
+                balance_after=int(r["balance_after"]),
+                actor_id=int(r["m_actor"] if r["m_actor"] is not None else r["o_actor"]),
+                related_id=r["m_related"] or r["o_id"],
+            ))
+        return result
     finally:
         conn.close()
 
@@ -431,12 +594,15 @@ def authorize(
     configured_channel_id: Optional[int],
 ) -> AuthResult:
     """Regla: (rol autorizado o Administrator/propietario) Y canal configurado para ese comando.
+    Excepción: addmoney, addmoney-role y remove-money se pueden usar en cualquier canal.
 
     El canal se exige SIEMPRE, también a los administradores. Si el comando no tiene canal configurado
     queda deshabilitado para todos hasta que un administrador use /perms-canal.
     """
     if not (is_admin or (member_role_ids & allowed_role_ids)):
         return AuthResult(False, "No tenés permiso para usar este comando.")
+    if command in ANY_CHANNEL_COMMANDS:
+        return AuthResult(True)
     if configured_channel_id is None:
         return AuthResult(False, f"`{command}` todavía no está habilitado en ningún canal. Un administrador debe usar `/perms-canal`.")
     if channel_id != configured_channel_id:

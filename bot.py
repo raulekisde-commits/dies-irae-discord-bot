@@ -17,6 +17,7 @@ import sqlite3
 import json
 from decimal import Decimal
 from economy import setup_economy
+from bets import setup_bets
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -260,8 +261,9 @@ class MyBot(commands.Bot):
         self.http_session = aiohttp.ClientSession()
         # Wuju Coins: se carga ANTES del sync para que sus comandos slash se registren
         try:
-            await setup_economy(self, DB_PATH, GUILD_ID, MIEMBRO_ROLE_ID)
-            print("✅ Wuju Coins cargado")
+            await setup_economy(self, DB_PATH, GUILD_ID, MIEMBRO_ROLE_ID, STAFF_ROLE_ID)
+            await setup_bets(self, DB_PATH, GUILD_ID)
+            print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
             print("❌ Error cargando Wuju Coins:", e)
         try:
@@ -5696,6 +5698,10 @@ HELP_SECTIONS = [
         ("/moverpanel nombre", "Council", "Mueve un panel de venta al canal donde usás el comando (conserva ventas y total)."),
         ("/panelventa eliminar nombre", "Council", "Elimina un panel de venta y sus registros."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
+        ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
+        ("!apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
+        ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
+        ("/verhistorial [usuario]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. El staff puede ver los de otra persona (solo lo ves vos)."),
         ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
     ("🎁 Sorteos y roles", [
@@ -5753,6 +5759,7 @@ def borrar_protected_ids(guild_id: int) -> set:
         ("SELECT message_id FROM timer_panels WHERE guild_id=?", (guild_id,)),
         ("SELECT message_id FROM venta_panels WHERE guild_id=? AND message_id IS NOT NULL", (guild_id,)),
         ("SELECT message_id FROM cta_runs WHERE guild_id=? AND status='open' AND message_id IS NOT NULL", (guild_id,)),
+        ("SELECT message_id FROM bets WHERE guild_id=? AND status IN ('open','closed') AND message_id IS NOT NULL", (guild_id,)),
     )
     for query, params in queries:
         try:
@@ -6231,4 +6238,5 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 

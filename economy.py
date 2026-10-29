@@ -73,10 +73,11 @@ def guard(func):
 
 
 class EconomyCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, db_path: str, member_role_id: int):
+    def __init__(self, bot: commands.Bot, db_path: str, member_role_id: int, staff_role_id: Optional[int] = None):
         self.bot = bot
         self.db_path = db_path
         self.member_role_id = member_role_id
+        self.staff_role_id = staff_role_id
         # roles que pueden usar el comando sin /perms-comando (además de los configurados y de los admins)
         self.default_roles = {"bal": {member_role_id}, "top": {member_role_id}}
         self._emoji_raw: Optional[str] = None
@@ -192,6 +193,18 @@ class EconomyCog(commands.Cog):
             return False
         return True
 
+    async def has_command_permission(self, member, command: str, *, staff_ok: bool = False) -> bool:
+        """Administrador/propietario, o un rol otorgado con /perms-comando (y, si staff_ok, el rol Staff)."""
+        if not isinstance(member, discord.Member):
+            return False
+        if is_admin_member(member):
+            return True
+        role_ids = {r.id for r in member.roles}
+        if staff_ok and self.staff_role_id and self.staff_role_id in role_ids:
+            return True
+        granted = await self._db(eco.get_command_roles, command)
+        return bool(role_ids & set(granted))
+
     @staticmethod
     async def _ephemeral(interaction: discord.Interaction, content: str):
         try:
@@ -220,6 +233,8 @@ class EconomyCog(commands.Cog):
             emb.add_field(name="Ejecutado por", value=f"<@{op.actor_id}>", inline=True)
             emb.add_field(name="Destinatario", value=f"<@{mv.user_id}>", inline=True)
             emb.add_field(name=f"Cantidad {verb}", value=f"**{self.money(op.per_user_amount)}**", inline=False)
+            if op.reason:
+                emb.add_field(name="Motivo", value=op.reason[:1000], inline=False)
             emb.add_field(name="Balance anterior", value=self.money(mv.before), inline=True)
             emb.add_field(name="Balance nuevo", value=f"**{self.money(mv.after)}**", inline=True)
             if detail:
@@ -250,6 +265,8 @@ class EconomyCog(commands.Cog):
                 emb.add_field(name=f"Total {verb}", value=f"**{self.money(op.total_amount)}**", inline=True)
                 emb.add_field(name="Ejecutado por", value=f"<@{op.actor_id}>", inline=True)
                 emb.add_field(name="Estado", value="✅ Completada", inline=True)
+                if op.reason:
+                    emb.add_field(name="Motivo", value=op.reason[:1000], inline=False)
                 if detail:
                     emb.add_field(name="IDs", value=f"```actor: {op.actor_id}\nrol: {op.role_id}```", inline=False)
             emb.set_footer(text=f"Operación {short_id} · Página {idx + 1}/{total_pages}")
@@ -367,12 +384,19 @@ class EconomyCog(commands.Cog):
             await ctx.reply(f"❌ {exc}", mention_author=False, allowed_mentions=NO_MENTIONS)
             return None
 
+    async def _reason_or_reply(self, ctx: commands.Context, tokens: List[str], default: str) -> Optional[str]:
+        try:
+            return eco.reason_from_tokens(tokens, default)
+        except eco.AmountError as exc:
+            await ctx.reply(f"❌ {exc}", mention_author=False, allowed_mentions=NO_MENTIONS)
+            return None
+
     async def _apply_and_report(self, ctx: commands.Context, *, kind: str, user_ids: List[int],
-                                amount: int, role_id: Optional[int]):
+                                amount: int, role_id: Optional[int], reason: Optional[str] = None):
         try:
             op = await self._db(
                 eco.apply_operation, kind=kind, actor_id=ctx.author.id, user_ids=user_ids, amount=amount,
-                request_key=f"msg:{ctx.message.id}", role_id=role_id,
+                request_key=f"msg:{ctx.message.id}", role_id=role_id, reason=reason,
             )
         except OverflowError:
             return await ctx.reply("❌ El balance resultante superaría el límite permitido. No se modificó nada.",
@@ -405,9 +429,9 @@ class EconomyCog(commands.Cog):
             return
         if not await self._authorize(ctx, "addmoney"):
             return
-        tokens = args.split()
-        if len(tokens) != 2:
-            return await ctx.reply("Uso: `!addmoney @Usuario cantidad` (ej: `!addmoney @Jugador 150.000`)",
+        tokens = args.split(None, 2)          # usuario, cantidad y motivo opcional (varias palabras)
+        if len(tokens) < 2:
+            return await ctx.reply("Uso: `!addmoney @Usuario cantidad [motivo]` (ej: `!addmoney @Jugador 150.000 recompensa evento`)",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         member = await self._resolve_member_strict(ctx.guild, tokens[0])
         if member is None:
@@ -417,18 +441,21 @@ class EconomyCog(commands.Cog):
         amount = await self._parse_amount_or_reply(ctx, tokens[1])
         if amount is None:
             return
-        await self._apply_and_report(ctx, kind="add", user_ids=[member.id], amount=amount, role_id=None)
+        reason = await self._reason_or_reply(ctx, tokens, eco.REASON_ADD_DEFAULT)
+        if reason is None:
+            return
+        await self._apply_and_report(ctx, kind="add", user_ids=[member.id], amount=amount, role_id=None, reason=reason)
 
     async def _role_members(self, guild: discord.Guild, role: discord.Role) -> List[discord.Member]:
         await self._ensure_members(guild)
         return sorted((m for m in role.members if not m.bot), key=lambda m: m.id)
 
-    async def _role_operation(self, ctx: commands.Context, kind: str, role: discord.Role, amount: int):
+    async def _role_operation(self, ctx: commands.Context, kind: str, role: discord.Role, amount: int, reason: Optional[str] = None):
         members = await self._role_members(ctx.guild, role)
         if not members:
             return await ctx.reply(f"❌ El rol {role.mention} no tiene miembros elegibles (los bots no cuentan). No se modificó ningún balance.",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
-        await self._apply_and_report(ctx, kind=kind, user_ids=[m.id for m in members], amount=amount, role_id=role.id)
+        await self._apply_and_report(ctx, kind=kind, user_ids=[m.id for m in members], amount=amount, role_id=role.id, reason=reason)
 
     @commands.command(name="addmoney-role")
     @guard
@@ -437,10 +464,10 @@ class EconomyCog(commands.Cog):
             return
         if not await self._authorize(ctx, "addmoney-role"):
             return
-        tokens = args.split()
-        m = _MENTION_ROLE_RE.match(tokens[0]) if len(tokens) == 2 else None
+        tokens = args.split(None, 2)
+        m = _MENTION_ROLE_RE.match(tokens[0]) if len(tokens) >= 2 else None
         if not m:
-            return await ctx.reply("Uso: `!addmoney-role @Rol cantidad` (la cantidad es para **cada** miembro).",
+            return await ctx.reply("Uso: `!addmoney-role @Rol cantidad [motivo]` (la cantidad es para **cada** miembro).",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         role = ctx.guild.get_role(int(m.group(1)))
         if role is None:
@@ -448,7 +475,10 @@ class EconomyCog(commands.Cog):
         amount = await self._parse_amount_or_reply(ctx, tokens[1])
         if amount is None:
             return
-        await self._role_operation(ctx, "add", role, amount)
+        reason = await self._reason_or_reply(ctx, tokens, eco.REASON_ADD_DEFAULT)
+        if reason is None:
+            return
+        await self._role_operation(ctx, "add", role, amount, reason)
 
     @commands.command(name="remove-money")
     @guard
@@ -457,9 +487,9 @@ class EconomyCog(commands.Cog):
             return
         if not await self._authorize(ctx, "remove-money"):
             return
-        tokens = args.split()
-        if len(tokens) != 2:
-            return await ctx.reply("Uso: `!remove-money @Usuario cantidad` o `!remove-money @Rol cantidad`",
+        tokens = args.split(None, 2)
+        if len(tokens) < 2:
+            return await ctx.reply("Uso: `!remove-money @Usuario cantidad [motivo]` o `!remove-money @Rol cantidad [motivo]`",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         target_token = tokens[0]
         role: Optional[discord.Role] = None
@@ -473,15 +503,18 @@ class EconomyCog(commands.Cog):
         amount = await self._parse_amount_or_reply(ctx, tokens[1])
         if amount is None:
             return
+        reason = await self._reason_or_reply(ctx, tokens, eco.REASON_REMOVE_DEFAULT)
+        if reason is None:
+            return
         if role is not None:
-            return await self._role_operation(ctx, "remove", role, amount)
+            return await self._role_operation(ctx, "remove", role, amount, reason)
 
         member = await self._resolve_member_strict(ctx.guild, target_token)
         if member is None:
             return await ctx.reply("❌ Indicá a la persona o al rol con una mención (o ID).", mention_author=False, allowed_mentions=NO_MENTIONS)
         if member.bot:
             return await ctx.reply("❌ No se puede operar sobre bots.", mention_author=False, allowed_mentions=NO_MENTIONS)
-        await self._apply_and_report(ctx, kind="remove", user_ids=[member.id], amount=amount, role_id=None)
+        await self._apply_and_report(ctx, kind="remove", user_ids=[member.id], amount=amount, role_id=None, reason=reason)
 
     # ============================================================
     # Comandos slash de administración
@@ -543,7 +576,7 @@ class EconomyCog(commands.Cog):
 
     @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando económico en ESTE canal")
     @app_commands.describe(comando="Comando que querés habilitar en este canal")
-    @app_commands.choices(comando=[app_commands.Choice(name=c, value=c) for c in eco.ECON_COMMANDS])
+    @app_commands.choices(comando=[app_commands.Choice(name=c, value=c) for c in eco.CHANNEL_COMMANDS])
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def perms_canal(self, interaction: discord.Interaction, comando: app_commands.Choice[str]):
@@ -555,7 +588,7 @@ class EconomyCog(commands.Cog):
     @app_commands.command(name="perms-comando", description="(Admin) Otorga o revoca a un rol el uso de un comando económico")
     @app_commands.describe(rol="Rol", comando="Comando económico", accion="Otorgar (por defecto) o revocar")
     @app_commands.choices(
-        comando=[app_commands.Choice(name=c, value=c) for c in eco.ECON_COMMANDS],
+        comando=[app_commands.Choice(name=c, value=c) for c in eco.GRANTABLE_COMMANDS],
         accion=[app_commands.Choice(name="Otorgar", value="otorgar"), app_commands.Choice(name="Revocar", value="revocar")],
     )
     @app_commands.default_permissions(administrator=True)
@@ -588,15 +621,71 @@ class EconomyCog(commands.Cog):
             info = overview[cmd]
             roles = set(info["roles"]) | self.default_roles.get(cmd, set())
             roles_txt = ", ".join(f"<@&{r}>" for r in sorted(roles)) or "solo administradores"
-            chan_txt = f"<#{info['channel']}>" if info["channel"] else "⚠️ sin canal (deshabilitado)"
+            if cmd in eco.ANY_CHANNEL_COMMANDS:
+                chan_txt = "cualquier canal"
+            else:
+                chan_txt = f"<#{info['channel']}>" if info["channel"] else "⚠️ sin canal (deshabilitado)"
             lines.append(f"**!{cmd}** — canal: {chan_txt} — roles: {roles_txt}")
+        for extra in eco.EXTRA_PERMISSION_COMMANDS:
+            roles = set(await self._db(eco.get_command_roles, extra))
+            roles_txt = ", ".join(f"<@&{r}>" for r in sorted(roles)) or "solo administradores" + (" y Staff" if extra == "verhistorial" else "")
+            lines.append(f"**{'/' + extra}** — canal: cualquier canal — roles: {roles_txt}")
         lines.append(f"\n**Registro:** {f'<#{log_raw}>' if log_raw else '⚠️ sin configurar'}")
         icon = self.icon()
         lines.append(f"**Icono:** {icon if icon else f'{eco.CURRENCY_NAME} (sin emoji)'}")
         await self._ephemeral(interaction, "\n".join(lines))
 
 
-async def setup_economy(bot: commands.Bot, db_path: str, guild_id: int, member_role_id: int) -> EconomyCog:
-    cog = EconomyCog(bot, db_path, member_role_id)
+    # ============================================================
+    # Historial de movimientos
+    # ============================================================
+    def history_embed(self, rows: List["eco.HistoryRow"], title: str) -> discord.Embed:
+        lines = []
+        for r in rows:
+            when = datetime.fromisoformat(r.created_at)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            reason = r.reason if len(r.reason) <= 70 else r.reason[:67] + "…"
+            lines.append(f"<t:{int(when.timestamp())}:f> · **{r.label}** · `{self.plain(r.delta, signed=True)}` · {reason} · saldo: `{eco.format_amount(r.balance_after)}`")
+        emb = discord.Embed(title=title, description="\n".join(lines)[:4000], color=discord.Color.blurple())
+        emb.set_footer(text=f"Últimos {len(rows)} movimientos · del más reciente al más antiguo")
+        return emb
+
+    @app_commands.command(name="verhistorial", description="Mirá tu historial de Wuju Coins (el staff puede ver el de otra persona)")
+    @app_commands.describe(usuario="(Solo staff) Persona cuyo historial querés consultar")
+    @app_commands.guild_only()
+    async def verhistorial(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not isinstance(member, discord.Member):
+                return await self._ephemeral(interaction, "❌ Usá este comando dentro del servidor.")
+
+            if usuario is not None and usuario.id != member.id:
+                if not await self.has_command_permission(member, "verhistorial", staff_ok=True):
+                    return await self._ephemeral(interaction, "❌ Solo el staff puede consultar el historial de otra persona.")
+                rows = await self._db(eco.get_history, usuario.id, 20)
+                if not rows:
+                    return await self._ephemeral(interaction, f"ℹ️ {usuario.mention} todavía no tiene movimientos.")
+                emb = self.history_embed(rows, f"📜 Historial de {usuario.display_name}")
+                # Respuesta efímera: solo la ve quien ejecutó el comando; nunca va al canal ni a un DM.
+                return await interaction.response.send_message(embed=emb, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+            rows = await self._db(eco.get_history, member.id, 20)
+            if not rows:
+                return await self._ephemeral(interaction, "ℹ️ Todavía no tenés movimientos de Wuju Coins.")
+            emb = self.history_embed(rows, "📜 Tu historial de Wuju Coins")
+            try:
+                await member.send(embed=emb)
+            except (discord.Forbidden, discord.HTTPException):
+                return await self._ephemeral(interaction, "❌ No pude enviarte el historial por mensaje privado. Activá tus DMs para este servidor y probá de nuevo.")
+            await self._ephemeral(interaction, "✅ Te envié tu historial por mensaje privado.")
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No pude obtener el historial en este momento.")
+
+
+async def setup_economy(bot: commands.Bot, db_path: str, guild_id: int, member_role_id: int,
+                        staff_role_id: Optional[int] = None) -> EconomyCog:
+    cog = EconomyCog(bot, db_path, member_role_id, staff_role_id)
     await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
     return cog
