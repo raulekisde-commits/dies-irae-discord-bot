@@ -115,6 +115,31 @@ def get_by_channel(db_path: str, channel_id: int) -> Optional[Ticket]:
         conn.close()
 
 
+SELL_COOLDOWN_SECONDS = 8 * 3600       # quien abre un ticket de «Cobrar balance» no puede abrir otro hasta pasadas 8 horas
+
+
+def sell_cooldown_remaining(db_path: str, guild_id: int, user_id: int, now=None) -> int:
+    """Segundos que faltan para que pueda volver a abrir un ticket de cobro (0 = puede). Cuenta desde que abrió el último,
+    aunque ya esté cerrado o cancelado."""
+    from datetime import datetime, timezone
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT created_at FROM cm_tickets WHERE guild_id = ? AND user_id = ? AND kind = 'sell' ORDER BY id DESC LIMIT 1",
+                         (guild_id, user_id)).fetchone()
+    finally:
+        conn.close()
+    if r is None:
+        return 0
+    try:
+        opened = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 0
+    now = now or datetime.now(timezone.utc)
+    return max(0, int(SELL_COOLDOWN_SECONDS - (now - opened).total_seconds()))
+
+
 def open_ticket_of(db_path: str, guild_id: int, user_id: int, kind: str) -> Optional[Ticket]:
     conn = connect(db_path)
     try:
