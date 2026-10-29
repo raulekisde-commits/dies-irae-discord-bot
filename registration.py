@@ -35,10 +35,14 @@ GAMEINFO_BASES = [
     ("Asia", "https://gameinfo-sgp.albiononline.com"),
 ]
 HTTP_TIMEOUT = 20
+RECRUIT_PENDING_DAYS = 14                # si no entra a la guild en este tiempo, se cancela la espera
+ROSTER_REFRESH_MINUTES = 30            # cada cuánto se vuelve a bajar la lista de miembros de la guild
+ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h aunque la API falle; recién después se vuelve a consultar en vivo
+ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular",
-                   "registro_canal", "registro_obligatorio"}
+                   "registro_canal", "registro_obligatorio", "listarregistros", "reclutas-pendientes"}
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -74,7 +78,7 @@ class Character:
 
 @dataclass
 class Lookup:
-    kind: str                                  # ok | none | wrong_guild | ambiguous | error
+    kind: str                                  # ok | none | wrong_guild | not_in_roster | ambiguous | error
     character: Optional[Character] = None
     options: List[Character] = field(default_factory=list)
     detail: str = ""
@@ -138,8 +142,15 @@ class YesNoView(discord.ui.View):
 # Cog
 # ============================================================
 class RegistrationCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "", default_log_channel: int = 0):
+    def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "", default_log_channel: int = 0,
+                 albion_guild_id: str = "", member_role_id: int = 0, public_role_id: int = 0):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
+        self.albion_guild_id = (albion_guild_id or "").strip()
+        self.member_role_id = int(member_role_id or 0)
+        self.public_role_id = int(public_role_id or 0)
+        self.roster: Dict[str, Character] = {}      # nombre (casefold) → personaje, de la última lista bajada
+        self.roster_at = 0.0                        # time.time() de la última lista buena
+        self.roster_miss_at = 0.0
         self.required_guild = (required_guild or "").strip()
         self.default_log_channel = int(default_log_channel or 0)
         self.fetch_json = self._fetch_json          # los tests lo reemplazan: nunca tocan la red
@@ -147,12 +158,86 @@ class RegistrationCog(commands.Cog):
     # ---------- infraestructura ----------
     async def cog_load(self):
         await self.run(rdb.init_schema)
+        await self._load_saved_roster()
         self.bot.add_view(TargetView(self))
         if not self.sweeper.is_running():
             self.sweeper.start()
+        if self.albion_guild_id and not self.roster_loop.is_running():
+            self.roster_loop.start()
+        if not self.recruit_loop.is_running():
+            self.recruit_loop.start()
 
     async def cog_unload(self):
         self.sweeper.cancel()
+        self.roster_loop.cancel()
+        self.recruit_loop.cancel()
+
+    # ---------- lista de miembros de la guild (se baja cada tanto, no en cada registro) ----------
+    async def _load_saved_roster(self):
+        """Recupera la última lista guardada, para no depender de la API al reiniciar el bot."""
+        import json
+        try:
+            raw = await self.run(rdb.get_flag, rdb.ROSTER_KEY)
+            data = json.loads(raw) if raw else None
+            if data and data.get("guild") == self.albion_guild_id:
+                members = [Character(*m) for m in data["members"]]
+                if members:
+                    self.roster = {c.name.casefold(): c for c in members}
+                    self.roster_at = float(data["at"])
+        except Exception:
+            traceback.print_exc()
+
+    async def _save_roster(self):
+        import json
+        try:
+            payload = {"guild": self.albion_guild_id, "at": self.roster_at,
+                       "members": [[c.char_id, c.name, c.region, c.guild, c.alliance, c.kill_fame, c.death_fame] for c in self.roster.values()]}
+            await self.run(rdb.set_flag, rdb.ROSTER_KEY, json.dumps(payload, separators=(",", ":")))
+        except Exception:
+            traceback.print_exc()
+
+    async def refresh_roster(self) -> bool:
+        """Baja la lista de miembros de la guild y la guarda en memoria. Si falla, conserva la anterior."""
+        import time
+        if not self.albion_guild_id:
+            return False
+        errors = []
+        bases = sorted(GAMEINFO_BASES, key=lambda rb: rb[0] != getattr(self, "_roster_region", None))   # primero el servidor que ya funcionó
+        for region, base in bases:
+            try:
+                data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/guilds/{self.albion_guild_id}/members"), HTTP_TIMEOUT + 5)
+            except Exception as exc:
+                errors.append(f"{region}: {type(exc).__name__} {exc}")
+                continue
+            members = [c for c in (_character(m, region) for m in (data if isinstance(data, list) else []) if isinstance(m, dict)) if c is not None]
+            if not members:                           # lista vacía = respuesta sospechosa: no pisamos la buena
+                errors.append(f"{region}: lista vacía")
+                continue
+            for c in members:
+                if not c.guild:
+                    c.guild = self.required_guild
+            self.roster = {c.name.casefold(): c for c in members}
+            self.roster_at = time.time()
+            self._roster_region = region
+            await self._save_roster()
+            return True
+        print(f"⚠️ Registro: no pude actualizar la lista de la guild: {' | '.join(errors)[:300]}")
+        return False
+
+    def roster_fresh(self) -> bool:
+        import time
+        return bool(self.roster) and (time.time() - self.roster_at) < ROSTER_MAX_AGE_SECONDS
+
+    @tasks.loop(minutes=ROSTER_REFRESH_MINUTES)
+    async def roster_loop(self):
+        try:
+            await self.refresh_roster()
+        except Exception:
+            traceback.print_exc()
+
+    @roster_loop.before_loop
+    async def _roster_ready(self):
+        await self.bot.wait_until_ready()
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -203,10 +288,25 @@ class RegistrationCog(commands.Cog):
             print(f"⚠️ Registro: no pude escribir en el canal de registros: {exc!r}")
 
     # ---------- consulta de personaje ----------
-    async def lookup_character(self, name: str) -> Lookup:
+    async def lookup_character(self, name: str, any_guild: bool = False, live: bool = False) -> Lookup:
         name = _clean_name(name)
         if not (2 <= len(name) <= 30) or not re.fullmatch(r"[\w .'\-]+", name, re.UNICODE):
             return Lookup("none", detail="Nombre de personaje inválido.")
+
+        if self.roster_fresh():                       # camino normal: se resuelve con la lista guardada, sin tocar la API
+            hit = self.roster.get(name.casefold())
+            if hit is not None:
+                return Lookup("ok", character=hit)
+            if not any_guild and not live:
+                # No figura: puede haber entrado hace poco. Se baja la lista de nuevo (UNA consulta, como máximo cada 5 min) y se decide con ella.
+                import time
+                if time.time() - self.roster_miss_at >= ROSTER_MISS_REFRESH_SECONDS:
+                    self.roster_miss_at = time.time()
+                    await self.refresh_roster()
+                    hit = self.roster.get(name.casefold())
+                    if hit is not None:
+                        return Lookup("ok", character=hit)
+                return Lookup("not_in_roster", detail=self.required_guild)
 
         async def one(region, base):
             data = await self.fetch_json(f"{base}/api/gameinfo/search", {"q": name})
@@ -226,7 +326,11 @@ class RegistrationCog(commands.Cog):
             if errors:
                 return Lookup("error", detail=" | ".join(errors)[:400])
             return Lookup("none")
-        if self.required_guild:
+        if any_guild and len(exact) > 1 and self.required_guild:      # reclutamiento: si hay homónimos, gana el que ya está en la guild
+            mine = [c for c in exact if c.guild.casefold() == self.required_guild.casefold()]
+            if len(mine) == 1:
+                exact = mine
+        if self.required_guild and not any_guild:
             in_guild = [c for c in exact if c.guild.casefold() == self.required_guild.casefold()]
             if not in_guild:
                 return Lookup("wrong_guild", character=exact[0], detail=self.required_guild)
@@ -246,6 +350,13 @@ class RegistrationCog(commands.Cog):
         return e
 
     # ---------- /registrar ----------
+    @commands.command(name="registrar")
+    async def registrar_prefijo(self, ctx: commands.Context, *, _resto: str = ""):
+        """`!registrar` no registra: explica que es un comando de barra (muchos lo prueban con `!`)."""
+        await ctx.reply("ℹ️ El registro se hace con el comando de barra: escribí `/registrar` y elegí **usuario_de_albion** "
+                        "(tu nombre exacto en el juego). Si al escribir `/` no te aparece, reiniciá Discord (Ctrl+R) o revisá que el bot "
+                        "tenga permisos de comandos de aplicación en el canal.", mention_author=False, allowed_mentions=NO_MENTIONS)
+
     @app_commands.command(name="registrar", description="Vinculá tu cuenta de Discord con un personaje de Albion Online")
     @app_commands.describe(usuario_de_albion="Nombre exacto del personaje en Albion",
                            usuario="(Opcional) Otro miembro: él mismo tendrá que aceptar desde su cuenta")
@@ -265,6 +376,10 @@ class RegistrationCog(commands.Cog):
         if look.kind == "none":
             return await _say(interaction, f"❌ No encontré ningún personaje llamado **{discord.utils.escape_markdown(_clean_name(usuario_de_albion))}**. "
                                            "Escribilo exactamente como aparece en el juego.")
+        if look.kind == "not_in_roster":
+            return await _say(interaction, f"❌ No encuentro **{discord.utils.escape_markdown(_clean_name(usuario_de_albion))}** entre los miembros de la guild **{look.detail}**. "
+                                           "Revisá que esté escrito exactamente como en el juego y que ya hayas entrado a la guild. "
+                                           "Si entraste hace poco, probá de nuevo en unos minutos (la lista se actualiza sola).")
         if look.kind == "wrong_guild":
             return await _say(interaction, f"❌ Ese personaje existe pero no figura en la guild **{look.detail}**, así que no se puede registrar acá. "
                                            "Si acabás de entrar a la guild, esperá unos minutos a que la API se actualice.")
@@ -360,7 +475,7 @@ class RegistrationCog(commands.Cog):
     def _regs_embed(self, regs: List[rdb.Registration], title: str) -> discord.Embed:
         e = discord.Embed(title=title, color=GOLD)
         for r in regs:
-            how = "aceptado por la persona" if r.method == "confirmed" else "⚠️ vinculado por un administrador"
+            how = {"confirmed": "aceptado por la persona", "recruitment": "registrado al aceptar su postulación"}.get(r.method, "⚠️ vinculado por un administrador")
             e.add_field(name=discord.utils.escape_markdown(r.char_name),
                         value=f"{r.region or '—'} · guild {discord.utils.escape_markdown(r.guild_name or '—')}\n{how}\nRegistrado {r.registered_at[:10]}",
                         inline=False)
@@ -442,7 +557,7 @@ class RegistrationCog(commands.Cog):
         if usuario.bot:
             return await _say(interaction, "❌ No se puede vincular a un bot.")
         await interaction.response.defer(ephemeral=True)
-        look = await self.lookup_character(personaje)
+        look = await self.lookup_character(personaje, live=True)
         char = look.character if look.kind in ("ok", "wrong_guild") else None
         note = ""
         if look.kind == "ambiguous":
@@ -463,6 +578,163 @@ class RegistrationCog(commands.Cog):
             f"⚠️ {usuario.mention} quedó vinculado a **{discord.utils.escape_markdown(reg.char_name)}** como **vínculo administrativo** "
             f"(la persona no lo aceptó).{note}\n{nick_msg}", ephemeral=True, allowed_mentions=NO_MENTIONS)
         await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**")
+
+    # ---------- reclutamiento: registro al aceptar y roles recién cuando entra a la guild ----------
+    async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter) -> tuple:
+        """Registra al postulante con su nick de Albion. Devuelve (ok, texto, roles_dados_ya).
+        Si el personaje ya figura en la guild, se dan los roles en el momento; si no, quedan PENDIENTES hasta que aparezca en la lista."""
+        look = await self.lookup_character(nick, any_guild=True)
+        if look.kind == "error":
+            return False, "No pude consultar la API de Albion para validar el nick. Probá de nuevo en unos minutos.", False
+        if look.kind == "none":
+            return False, f"No existe ningún personaje llamado **{discord.utils.escape_markdown(_clean_name(nick))}** en Albion. Pedile al postulante que corrija su nick.", False
+        if look.kind == "ambiguous":
+            return False, "Hay varios personajes con ese nombre en distintos servidores de Albion. Vinculalo con `/admin_vincular` y dale los roles a mano.", False
+        c = look.character
+        try:
+            await self.run(rdb.admin_link, member.id, c.name, recruiter.id, char_id=c.char_id, region=c.region, guild_name=c.guild or None, method="recruitment")
+        except rdb.RegError as exc:
+            return False, f"{exc}", False
+        in_guild = (bool(self.required_guild) and c.guild.casefold() == self.required_guild.casefold()) or c.name.casefold() in self.roster
+        await self.audit_log(f"🧾 <@{recruiter.id}> aceptó y registró a <@{member.id}> como **{discord.utils.escape_markdown(c.name)}**.")
+        if in_guild and await self.grant_recruit_roles(member, role_id, role_name, c.name, recruiter.id):
+            return True, f"Registrado como **{discord.utils.escape_markdown(c.name)}** y ya está en la guild: roles entregados.", True
+        await self.run(rdb.add_pending_recruit, member.id, c.name, c.char_id, role_id, role_name, recruiter.id)
+        try:
+            await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}**. Entrá a la guild en el juego con tu personaje "
+                              f"**{c.name}**: apenas el bot te vea adentro, te da los roles automáticamente (puede tardar hasta unos 10 minutos).")
+        except Exception:
+            pass
+        return True, (f"Registrado como **{discord.utils.escape_markdown(c.name)}**. ⏳ **Todavía no está en la guild**: los roles se le dan solos cuando "
+                      "aparezca adentro (se revisa cada 10 min)."), False
+
+    async def grant_recruit_roles(self, member: discord.Member, role_id: int, role_name: str, char_name: str, recruiter_id=None) -> bool:
+        guild = member.guild
+        roles = [r for r in (guild.get_role(self.member_role_id), guild.get_role(role_id)) if r is not None]
+        if not roles:
+            print("⚠️ Reclutamiento: no encuentro los roles a asignar")
+            return False
+        try:
+            await member.add_roles(*roles, reason=f"Reclutamiento: ingresó a la guild como {role_name}")
+            public = guild.get_role(self.public_role_id) if self.public_role_id else None
+            if public is not None and public in member.roles:
+                await member.remove_roles(public, reason="Reclutamiento: se quita rol Public")
+        except discord.Forbidden:
+            await self.audit_log(f"⚠️ No pude darle los roles a <@{member.id}>: revisá que mi rol esté por encima de los roles a asignar.")
+            return False
+        except Exception:
+            traceback.print_exc()
+            return False
+        nick_msg = await self.apply_nickname(member, char_name)
+        await self.audit_log(f"✅ <@{member.id}> ya está en la guild como **{discord.utils.escape_markdown(char_name)}**: roles entregados ({role_name}). {nick_msg}")
+        return True
+
+    async def check_pending_recruits(self):
+        pending = await self.run(rdb.list_pending_recruits)
+        if not pending:
+            return
+        if self.albion_guild_id:
+            await self.refresh_roster()
+        guild = self.bot.get_guild(self.guild_id)
+        if guild is None:
+            return
+        from datetime import datetime, timedelta, timezone
+        for p in pending:
+            member = guild.get_member(p.discord_id)
+            if member is None:
+                await self.run(rdb.remove_pending_recruit, p.discord_id, None, "la persona ya no está en el servidor")
+                continue
+            if p.char_name.casefold() in self.roster:
+                if await self.grant_recruit_roles(member, p.role_id, p.role_name, p.char_name, p.recruiter_id):
+                    await self.run(rdb.remove_pending_recruit, p.discord_id, None, "ingresó a la guild: roles entregados")
+                    try:
+                        await member.send(f"🎉 Ya te vimos dentro de la guild: te di los roles de **{p.role_name}**. ¡Bienvenido!")
+                    except Exception:
+                        pass
+                continue
+            try:
+                age = datetime.now(timezone.utc) - datetime.strptime(p.created_at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if age > timedelta(days=RECRUIT_PENDING_DAYS):
+                await self.run(rdb.remove_pending_recruit, p.discord_id, None, f"venció a los {RECRUIT_PENDING_DAYS} días sin ingresar")
+                await self.audit_log(f"⌛ <@{p.discord_id}> ({discord.utils.escape_markdown(p.char_name)}) no entró a la guild en {RECRUIT_PENDING_DAYS} días: "
+                                     "se canceló la espera (sigue registrado, sin roles).")
+
+    @tasks.loop(minutes=10)
+    async def recruit_loop(self):
+        try:
+            await self.check_pending_recruits()
+        except Exception:
+            traceback.print_exc()
+
+    @recruit_loop.before_loop
+    async def _recruit_ready(self):
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="reclutas-pendientes", description="(Staff) Aceptados que todavía no entraron a la guild (sin roles)")
+    @app_commands.guild_only()
+    async def reclutas_pendientes(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        pending = await self.run(rdb.list_pending_recruits)
+        if not pending:
+            return await _say(interaction, "✅ No hay aceptados esperando ingresar a la guild.")
+        lines = [f"• <@{p.discord_id}> → **{discord.utils.escape_markdown(p.char_name)}** ({p.role_name}) · aceptado {p.created_at[:10]}" for p in pending]
+        await interaction.response.send_message("⏳ **Aceptados sin entrar a la guild todavía:**\n" + "\n".join(lines)[:1800], ephemeral=True,
+                                                allowed_mentions=NO_MENTIONS)
+
+    @staticmethod
+    def _chunks(lines: List[str], limit: int = 1800) -> List[str]:
+        out, cur = [], ""
+        for ln in lines:
+            if len(cur) + len(ln) + 1 > limit and cur:
+                out.append(cur)
+                cur = ""
+            cur += ln + "\n"
+        if cur:
+            out.append(cur)
+        return out
+
+    @app_commands.command(name="listarregistros", description="(Staff) Cuántos están registrados y quién falta: guild sin Discord y Discord sin Albion")
+    @app_commands.guild_only()
+    async def listarregistros(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        if not self.albion_guild_id:
+            return await _say(interaction, "❌ No tengo configurada la guild de Albion (ALBION_GUILD_ID), así que no puedo comparar la lista.")
+        if not self.roster_fresh():
+            await self.refresh_roster()
+        if not self.roster:
+            return await _say(interaction, "❌ No pude bajar la lista de miembros de la guild desde la API de Albion. Probá de nuevo en unos minutos.")
+        links = await self.run(rdb.all_registrations)
+        linked_names = {r.char_name.casefold() for r in links}
+        linked_ids = {r.char_id for r in links if r.char_id}
+        linked_discord = {r.discord_id for r in links}
+        guild = interaction.guild
+        role = guild.get_role(self.member_role_id) if self.member_role_id else None
+        discord_pool = [m for m in (role.members if role is not None else guild.members) if not getattr(m, "bot", False)]
+        in_guild_linked = sum(1 for c in self.roster.values() if c.name.casefold() in linked_names or c.char_id in linked_ids)
+        guild_unlinked = sorted((c.name for c in self.roster.values() if c.name.casefold() not in linked_names and c.char_id not in linked_ids),
+                                key=str.casefold)
+        discord_unlinked = sorted((m for m in discord_pool if m.id not in linked_discord), key=lambda m: m.display_name.casefold())
+        who = f"con el rol **{role.name}**" if role is not None else "del servidor"
+        e = discord.Embed(title="📋 Registros Discord ↔ Albion", color=GOLD)
+        e.add_field(name="Registrados", value=f"**{len(links)}** cuentas vinculadas", inline=True)
+        e.add_field(name=f"Guild {self.required_guild or ''}".strip(),
+                    value=f"{len(self.roster)} miembros · {in_guild_linked} vinculados · **{len(guild_unlinked)}** sin Discord", inline=False)
+        e.add_field(name="Discord", value=f"{len(discord_pool)} miembros {who} · **{len(discord_unlinked)}** sin personaje vinculado", inline=False)
+        e.set_footer(text="La lista de la guild se actualiza cada 30 min.")
+        await interaction.followup.send(embed=e, ephemeral=True)
+        sections = [("🎮 En la guild pero SIN Discord vinculado", [f"• {discord.utils.escape_markdown(n)}" for n in guild_unlinked]),
+                    ("💬 En Discord pero SIN personaje de Albion", [f"• <@{m.id}> ({discord.utils.escape_markdown(m.display_name)})" for m in discord_unlinked])]
+        for title, lines in sections:
+            if not lines:
+                await interaction.followup.send(f"**{title}**\n✅ Ninguno.", ephemeral=True)
+                continue
+            for n, chunk in enumerate(self._chunks(lines)):
+                await interaction.followup.send(f"**{title}**{' (cont.)' if n else ''}\n{chunk}", ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="registro_canal", description="(Admin) Canal donde el bot avisa los registros y desvinculaciones")
     @app_commands.describe(canal="Canal de texto")
@@ -515,6 +787,7 @@ class RegistrationCog(commands.Cog):
             return
         try:
             await self.run(rdb.cancel_active_for, member.id, None, "el miembro salió del servidor")
+            await self.run(rdb.remove_pending_recruit, member.id, None, "el miembro salió del servidor")
             removed = await self.run(rdb.unlink, member.id, None, None, "el miembro salió del servidor")
             if removed:
                 await self.audit_log(f"🔓 <@{member.id}> salió del servidor: se liberó " + ", ".join(f"**{discord.utils.escape_markdown(r.char_name)}**" for r in removed) + ".")
@@ -600,9 +873,11 @@ def install_gate(bot: commands.Bot, db_path: str) -> RegistrationGate:
 
 
 async def setup_registration(bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "",
-                             default_log_channel: int = 0) -> RegistrationCog:
+                             default_log_channel: int = 0, albion_guild_id: str = "", member_role_id: int = 0,
+                             public_role_id: int = 0) -> RegistrationCog:
     cog = RegistrationCog(bot, db_path, guild_id, required_guild=required_guild,
-                          default_log_channel=int(os.getenv("REGISTRO_CANAL_ID", "0") or default_log_channel or 0))
+                          default_log_channel=int(os.getenv("REGISTRO_CANAL_ID", "0") or default_log_channel or 0),
+                          albion_guild_id=albion_guild_id, member_role_id=member_role_id, public_role_id=public_role_id)
     await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
     install_gate(bot, db_path)
     return cog
