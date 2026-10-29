@@ -36,6 +36,15 @@ except Exception:
     async def setup_splits(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar splits.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from registration import setup_registration, RegistrationRequired
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    class RegistrationRequired(Exception):
+        pass
+    async def setup_registration(*_a, _imp_err=_imp_err, **_k):
+        raise RuntimeError('No se pudo importar registration.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from deposits import setup_deposits
 except Exception:
     import traceback as _tb
@@ -337,6 +346,13 @@ async def _safe_setup(name, fn, *args):
 
 
 
+async def _setup_registration(bot, db_path, guild_id):
+    """Registro Discord ↔ Albion. Se exige que el personaje esté en la guild configurada (ALBION_GUILD_NAME);
+    los oficiales que verifican son el Council/administradores y el rol Staff."""
+    await setup_registration(bot, db_path, guild_id, required_guild=os.getenv("REGISTRO_GUILD", ALBION_GUILD_NAME),
+                             reviewer_role_ids={STAFF_ROLE_ID})
+
+
 class MyBot(commands.Bot):
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
@@ -353,6 +369,7 @@ class MyBot(commands.Bot):
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
+            await _safe_setup("registration", _setup_registration, self, DB_PATH, GUILD_ID)
             self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
@@ -5983,6 +6000,10 @@ HELP_SECTIONS = [
         ("/panel cambiomoneda [canal]", "Council / Admin", "Publica dos paneles con tickets: vender Wuju Coins por silver (el Council acepta y retira el balance) y comprar Wuju Coins (depósito + foto; el Council los agrega con doble confirmación)."),
         ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /dados, /coinflip y /1v1."),
         ("/limite juego cantidad", "Council", "Pone la apuesta máxima de dados, coinflip o 1v1 (0 quita el límite). Se aplica a las partidas nuevas."),
+        ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con tu personaje de Albion. Se verifica con un código de un solo uso que mandás por el juego a un oficial; con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar y confirmar desde su cuenta."),
+        ("/mi_registro  ·  /desvincular", "Miembros", "Ver tu personaje vinculado / quitar la vinculación (con confirmación)."),
+        ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver el estado de un registro, retirarlo, o vincular a mano SIN verificar (queda auditado)."),
+        ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal donde los oficiales verifican los registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
         ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz: la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
         ("!coinflip cantidad", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos: lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
@@ -6182,7 +6203,7 @@ async def on_ready():
 # ✅ Ignorar comandos desconocidos (!bal, etc.)
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):
-    if isinstance(error, commands.CommandNotFound):
+    if isinstance(error, (commands.CommandNotFound, RegistrationRequired)):
         return
     raise error
 
