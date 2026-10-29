@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS albion_links (
     char_name     TEXT NOT NULL,
     region        TEXT,
     guild_name    TEXT,
-    method        TEXT NOT NULL DEFAULT 'confirmed',      -- confirmed (aceptó la persona) | admin_override
+    method        TEXT NOT NULL DEFAULT 'confirmed',      -- confirmed (aceptó la persona) | admin_override | recruitment
     linked_by     INTEGER,
     registered_at TEXT NOT NULL,
     updated_at    TEXT NOT NULL
@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS albion_link_requests (
     updated_at    TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_linkreq_char_active ON albion_link_requests(lower(char_name)) WHERE status = 'pending_target';
+CREATE TABLE IF NOT EXISTS recruit_pending (
+    discord_id   INTEGER PRIMARY KEY,
+    char_name    TEXT NOT NULL,
+    char_id      TEXT,
+    role_id      INTEGER NOT NULL,                       -- rol principal (Tank, Healer…) que se da junto con Miembro
+    role_name    TEXT NOT NULL,
+    recruiter_id INTEGER,
+    created_at   TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS albion_link_audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     at         TEXT NOT NULL,
@@ -396,7 +405,7 @@ def unlink(db_path: str, discord_id: int, actor_id: Optional[int], char_name: Op
 
 
 def admin_link(db_path: str, discord_id: int, char_name: str, actor_id: int, *, char_id: Optional[str] = None,
-               region: Optional[str] = None, guild_name: Optional[str] = None) -> Registration:
+               region: Optional[str] = None, guild_name: Optional[str] = None, method: str = "admin_override") -> Registration:
     """Vínculo administrativo excepcional: la persona no tuvo que aceptar. Queda marcado como 'admin_override' y auditado."""
     char_name = (char_name or "").strip()
     if not char_name or len(char_name) > 40:
@@ -418,13 +427,62 @@ def admin_link(db_path: str, discord_id: int, char_name: str, actor_id: int, *, 
             try:
                 cur = conn.execute(
                     "INSERT INTO albion_links(discord_id, char_id, char_name, region, guild_name, method, linked_by, registered_at, updated_at) "
-                    "VALUES (?,?,?,?,?, 'admin_override', ?, ?, ?)", (discord_id, char_id, char_name, region, guild_name, actor_id, now, now))
+                    "VALUES (?,?,?,?,?, ?, ?, ?, ?)", (discord_id, char_id, char_name, region, guild_name, method, actor_id, now, now))
             except sqlite3.IntegrityError:
                 raise RegError("Ese personaje ya está vinculado a otra cuenta.")
             conn.execute("UPDATE albion_link_requests SET status='cancelled', updated_at=? WHERE lower(char_name)=lower(?) AND status='pending_target'",
                          (_iso(_now()), char_name))
-            _audit(conn, actor_id, "admin_linked", discord_id, None, f"personaje={char_name} (sin que la persona lo aceptara)")
+            _audit(conn, actor_id, "recruit_linked" if method == "recruitment" else "admin_linked", discord_id, None,
+                   f"personaje={char_name} " + ("(aceptado en reclutamiento)" if method == "recruitment" else "(sin que la persona lo aceptara)"))
             return _reg(conn.execute("SELECT * FROM albion_links WHERE id=?", (cur.lastrowid,)).fetchone())
+    finally:
+        conn.close()
+
+
+# ---------- reclutas aceptados que todavía no entraron a la guild ----------
+@dataclass
+class PendingRecruit:
+    discord_id: int
+    char_name: str
+    char_id: Optional[str]
+    role_id: int
+    role_name: str
+    recruiter_id: Optional[int]
+    created_at: str
+
+
+def _pend(r) -> PendingRecruit:
+    return PendingRecruit(int(r["discord_id"]), r["char_name"], r["char_id"], int(r["role_id"]), r["role_name"], r["recruiter_id"], r["created_at"])
+
+
+def add_pending_recruit(db_path: str, discord_id: int, char_name: str, char_id: Optional[str], role_id: int, role_name: str,
+                        recruiter_id: Optional[int]) -> None:
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            conn.execute("INSERT OR REPLACE INTO recruit_pending(discord_id, char_name, char_id, role_id, role_name, recruiter_id, created_at) "
+                         "VALUES (?,?,?,?,?,?,?)", (discord_id, char_name, char_id, role_id, role_name, recruiter_id, utcnow_iso()))
+            _audit(conn, recruiter_id, "recruit_pending", discord_id, None, f"personaje={char_name} rol={role_name}")
+    finally:
+        conn.close()
+
+
+def list_pending_recruits(db_path: str) -> List[PendingRecruit]:
+    conn = connect(db_path)
+    try:
+        return [_pend(r) for r in conn.execute("SELECT * FROM recruit_pending ORDER BY created_at")]
+    finally:
+        conn.close()
+
+
+def remove_pending_recruit(db_path: str, discord_id: int, actor_id: Optional[int] = None, reason: str = "") -> bool:
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            n = conn.execute("DELETE FROM recruit_pending WHERE discord_id=?", (discord_id,)).rowcount
+            if n:
+                _audit(conn, actor_id, "recruit_pending_removed", discord_id, None, reason)
+            return bool(n)
     finally:
         conn.close()
 

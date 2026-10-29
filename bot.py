@@ -5,6 +5,7 @@ from discord import app_commands
 import os
 import time
 import re
+import traceback
 import io
 import aiohttp
 from datetime import datetime, timezone, timedelta
@@ -350,7 +351,7 @@ async def _setup_registration(bot, db_path, guild_id):
     """Registro Discord ↔ Albion. Se exige que el personaje esté en la guild configurada (ALBION_GUILD_NAME)."""
     await setup_registration(bot, db_path, guild_id, required_guild=os.getenv("REGISTRO_GUILD", ALBION_GUILD_NAME),
                               albion_guild_id=("" if os.getenv("REGISTRO_GUILD") else ALBION_GUILD_ID),
-                              member_role_id=MIEMBRO_ROLE_ID)
+                              member_role_id=MIEMBRO_ROLE_ID, public_role_id=PUBLIC_ROLE_ID)
 
 
 class MyBot(commands.Bot):
@@ -1789,19 +1790,38 @@ class RecruitView(discord.ui.View):
         if role is None or member_role is None:
             return await respond_ephemeral(interaction, "❌ Los roles del bot no están bien configurados. Avisale a un administrador.")
 
-        try:
-            await member.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
-            if public_role and public_role in member.roles:
-                await member.remove_roles(public_role, reason="Aceptado: se quita rol Public")
-        except discord.Forbidden:
-            return await respond_ephemeral(interaction, "❌ No tengo permisos para asignar roles. Revisá que mi rol esté por encima de los roles a asignar.")
-        except Exception:
-            return await respond_ephemeral(interaction, "❌ Ocurrió un error inesperado al asignar los roles.")
+        # Si el ticket trae el nick de Albion: se REGISTRA al postulante y los roles se dan recién cuando figure dentro de la guild.
+        nick = recruit_nick_from_message(getattr(interaction, "message", None))
+        reg_cog = interaction.client.get_cog("RegistrationCog") if nick else None
+        roles_pending = False
+        if nick and reg_cog is not None:
+            ok, reg_text, granted_now = await reg_cog.accept_recruit(member, nick, role_id, role_name, interaction.user)
+            if not ok:
+                return await respond_ephemeral(interaction, f"❌ No se aceptó: {reg_text}")
+            roles_pending = not granted_now
+            await respond_ephemeral(interaction, f"✅ {reg_text}")
+            try:
+                if roles_pending:
+                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}**. Falta que entre a la guild en el juego como "
+                                                   f"**{discord.utils.escape_markdown(nick)}**: recibe los roles automáticamente al aparecer adentro. ⚔️")
+                else:
+                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
+            except Exception:
+                pass
+        else:
+            try:
+                await member.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
+                if public_role and public_role in member.roles:
+                    await member.remove_roles(public_role, reason="Aceptado: se quita rol Public")
+            except discord.Forbidden:
+                return await respond_ephemeral(interaction, "❌ No tengo permisos para asignar roles. Revisá que mi rol esté por encima de los roles a asignar.")
+            except Exception:
+                return await respond_ephemeral(interaction, "❌ Ocurrió un error inesperado al asignar los roles.")
 
-        try:
-            await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
-        except Exception:
-            pass
+            try:
+                await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
+            except Exception:
+                pass
 
         # LOG
         try:
@@ -1811,7 +1831,7 @@ class RecruitView(discord.ui.View):
 
         if log_channel:
             embed = discord.Embed(
-                title="✅ POSTULACIÓN ACEPTADA",
+                title="✅ POSTULACIÓN ACEPTADA" + (" (roles pendientes de ingreso)" if roles_pending else ""),
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
@@ -1930,6 +1950,72 @@ class RecruitView(discord.ui.View):
         await self.reject_player(interaction)
 
     @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger, custom_id="recruit_close")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.close_ticket(interaction)
+
+
+RECRUIT_NICK_FIELD = "🎮 Nick en Albion"
+
+
+def recruit_nick_from_message(message) -> str:
+    """Nick de Albion que escribió el postulante, leído del embed de datos del ticket ('' si es un ticket viejo sin ese dato)."""
+    for emb in (getattr(message, "embeds", None) or []):
+        for f in emb.fields:
+            if f.name == RECRUIT_NICK_FIELD and f.value and f.value.strip() not in ("", "—"):
+                return f.value.strip()
+    return ""
+
+
+RECRUIT_MAIN_FIELD = "⚔ Rol main"
+# Palabras del "rol main" → rol de Discord que se agrega junto con Miembro al aceptar (si no coincide, solo Miembro).
+RECRUIT_MAIN_ROLES = [
+    (("battle mount", "battlemount", "bm"), "BATTLE_MOUNT_ROLE_ID", "Battle Mount"),
+    (("tank", "tanque"), "TANK_ROLE_ID", "Tank"),
+    (("healer", "heal", "curador"), "HEALER_ROLE_ID", "Healer"),
+    (("support", "supp", "soporte"), "SUPP_ROLE_ID", "Support"),
+    (("dps", "damage"), "DPS_ROLE_ID", "DPS"),
+]
+
+
+def recruit_role_for_main(main_text: str) -> tuple:
+    """(role_id, nombre) según lo que escribió como rol main; Miembro si no se reconoce."""
+    words = set(re.findall(r"[a-záéíóúñ]+", (main_text or "").lower()))
+    low = (main_text or "").lower()
+    for keys, const, name in RECRUIT_MAIN_ROLES:
+        if any((k in low) if " " in k else (k in words) for k in keys):
+            return globals()[const], name
+    return MIEMBRO_ROLE_ID, "Miembro"
+
+
+class RecruitTicketView(discord.ui.View):
+    """Botones del ticket de reclutamiento: SOLO aceptar, rechazar o cerrar."""
+    interaction_check = RecruitView.interaction_check
+    _get_applicant = RecruitView._get_applicant
+    accept_player = RecruitView.accept_player
+    reject_player = RecruitView.reject_player
+    close_ticket = RecruitView.close_ticket
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✔ Aceptar", style=discord.ButtonStyle.success, custom_id="recruit2_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        main = ""
+        for emb in (getattr(interaction.message, "embeds", None) or []):
+            for f in emb.fields:
+                if f.name == RECRUIT_MAIN_FIELD:
+                    main = f.value
+        role_id, role_name = recruit_role_for_main(main)
+        await self.accept_player(interaction, role_id, role_name)
+
+    @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.reject_player(interaction)
+
+    @discord.ui.button(label="🔒 Cerrar", style=discord.ButtonStyle.danger, custom_id="recruit2_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await self.close_ticket(interaction)
@@ -2264,64 +2350,123 @@ class PanelView(discord.ui.View):
             return await respond_ephemeral(interaction, "⏳ Esperá un momento antes de volver a intentar.")
 
         cooldowns[user_id] = now
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.send_modal(RecruitFormModal())
 
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, id=CATEGORY_ID)
-        recruiter_role = guild.get_role(RECRUITER_ROLE_ID)
 
-        if category is None:
-            return await interaction.followup.send("❌ No encontré la categoría de postulaciones. Avisale a un administrador.", ephemeral=True)
+class RecruitFormModal(discord.ui.Modal, title="Postulación a Smogg"):
+    nick = discord.ui.TextInput(label="Nick en Albion", placeholder="Tu nombre exacto en el juego", required=True, max_length=40)
+    main = discord.ui.TextInput(label="Rol main", placeholder="Ej: Healer, Tank, DPS, Support, Battle Mount", required=True, max_length=60)
+    otros = discord.ui.TextInput(label="Otros roles que sabés jugar", placeholder="Ej: Tank y Support (o «ninguno»)", required=True,
+                                 style=discord.TextStyle.paragraph, max_length=300)
+    horarios = discord.ui.TextInput(label="Horarios UTC en los que jugás", placeholder="Ej: 18:00 a 23:00 UTC", required=True, max_length=100)
+    gremio = discord.ui.TextInput(label="Gremio anterior donde estuviste", placeholder="Nombre del gremio (o «ninguno»)", required=True,
+                                  style=discord.TextStyle.paragraph, max_length=300)
 
-        if recruiter_role is None:
-            return await interaction.followup.send("❌ No encontré el rol de reclutador. Avisale a un administrador.", ephemeral=True)
+    def __init__(self):
+        super().__init__(timeout=None)
 
-        channel_name = safe_channel_name(interaction.user.name, interaction.user.id)
-        bot_member = guild.get_member(bot.user.id) if bot.user else None
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            recruiter_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    async def on_submit(self, interaction: discord.Interaction):
+        answers = {
+            "nick": str(self.nick).strip(), "main": str(self.main).strip(), "otros": str(self.otros).strip(),
+            "horarios": str(self.horarios).strip(), "gremio": str(self.gremio).strip(),
         }
-        if bot_member:
-            overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
+        await interaction.response.send_message(
+            "🎥 Última pregunta: **¿podés grabar tus CTAs en la guild?**", view=RecruitRecordView(answers), ephemeral=True)
 
-        topic = make_recruit_topic(user_id)
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        traceback.print_exc()
+        await respond_ephemeral(interaction, "❌ No pude procesar tu postulación. Probá de nuevo.")
 
-        channel = await guild.create_text_channel(
-            name=channel_name,
-            category=category,
-            overwrites=overwrites,
-            topic=topic
-        )
 
-        active_applications[user_id] = channel.id
+class RecruitRecordView(discord.ui.View):
+    """Paso final del formulario (efímero): al responder se crea el ticket."""
+    def __init__(self, answers: dict):
+        super().__init__(timeout=300)
+        self.answers = answers
 
-        embed = discord.Embed(
-            title="⚔️ Reclutamiento Smogg",
-            description=(
-                "**Enviá lo siguiente:**\n\n"
-                "📸 Screenshot perfil Albion\n"
-                "🎥 POVs jugando el rol con el que postulaste\n"
-                "⚔ Rol ZvZ\n"
-                "🕒 Horarios\n"
-                "📜 Gremios anteriores en los que estuviste\n\n"
-                "Un reclutador revisará tu postulación."
-            ),
-            color=discord.Color.gold()
-        )
+    @discord.ui.button(label="Sí, puedo grabar", style=discord.ButtonStyle.success, emoji="✅")
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create(interaction, True)
 
-        recruiter_mention = recruiter_role.mention if recruiter_role else "@Reclutadores"
+    @discord.ui.button(label="No puedo grabar", style=discord.ButtonStyle.secondary, emoji="🚫")
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create(interaction, False)
 
-        await channel.send(
-            content=f"{interaction.user.mention} {recruiter_mention}",
-            embed=embed,
-            view=RecruitView()
-        )
+    async def _create(self, interaction: discord.Interaction, can_record: bool):
+        for b in self.children:
+            b.disabled = True
+        self.stop()
+        try:
+            await interaction.response.edit_message(content="⏳ Creando tu postulación…", view=self)
+        except Exception:
+            pass
+        await create_recruit_ticket(interaction, self.answers, can_record)
 
-        await send_log(guild, f"📥 **NUEVA POSTULACIÓN** {interaction.user} → {channel.mention}")
-        await interaction.followup.send(f"✅ Postulación creada: {channel.mention}", ephemeral=True)
+
+async def create_recruit_ticket(interaction: discord.Interaction, answers: dict, can_record: bool):
+    async def say(text: str):
+        try:
+            await interaction.edit_original_response(content=text, view=None)
+        except Exception:
+            try:
+                await interaction.followup.send(text, ephemeral=True)
+            except Exception:
+                pass
+
+    guild = interaction.guild
+    user = interaction.user
+    if guild is None:
+        return
+    if user.id in active_applications:
+        return await say("❌ Ya tenés una postulación activa.")
+
+    category = discord.utils.get(guild.categories, id=CATEGORY_ID)
+    recruiter_role = guild.get_role(RECRUITER_ROLE_ID)
+    if category is None:
+        return await say("❌ No encontré la categoría de postulaciones. Avisale a un administrador.")
+    if recruiter_role is None:
+        return await say("❌ No encontré el rol de reclutador. Avisale a un administrador.")
+
+    bot_member = guild.get_member(bot.user.id) if bot.user else None
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
+        recruiter_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    if bot_member:
+        overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
+
+    channel = await guild.create_text_channel(
+        name=safe_channel_name(user.name, user.id), category=category, overwrites=overwrites, topic=make_recruit_topic(user.id))
+    active_applications[user.id] = channel.id
+
+    data = discord.Embed(title="📋 Datos del postulante", color=discord.Color.gold())
+    data.add_field(name=RECRUIT_NICK_FIELD, value=answers["nick"][:1000] or "—", inline=True)
+    data.add_field(name=RECRUIT_MAIN_FIELD, value=answers["main"][:1000] or "—", inline=True)
+    data.add_field(name="🎭 Otros roles que sabe jugar", value=answers["otros"][:1000] or "—", inline=False)
+    data.add_field(name="🕒 Horarios (UTC)", value=answers["horarios"][:1000] or "—", inline=False)
+    data.add_field(name="📜 Gremio anterior", value=answers["gremio"][:1000] or "—", inline=False)
+    data.add_field(name="🎥 ¿Puede grabar sus CTAs?", value="✅ Sí" if can_record else "🚫 No", inline=True)
+    data.set_footer(text=f"Postulante: {user} · Aceptar / Rechazar / Cerrar: solo reclutadores")
+
+    pedido = discord.Embed(
+        title="⚔️ Reclutamiento Smogg",
+        description=(
+            f"{user.mention}, para que un reclutador pueda evaluarte **subí en este canal**:\n\n"
+            "📸 **Foto (captura) de tu perfil de Albion**\n"
+            "🎥 **VODs jugando** el rol con el que postulás (links de YouTube/Twitch o los videos)\n\n"
+            "Un reclutador revisará tu postulación."
+        ),
+        color=discord.Color.gold(),
+    )
+    await channel.send(
+        content=f"{user.mention} {recruiter_role.mention}",
+        embeds=[pedido, data],
+        view=RecruitTicketView(),
+        allowed_mentions=discord.AllowedMentions(users=[user], roles=[recruiter_role], everyone=False),
+    )
+    await send_log(guild, f"📥 **NUEVA POSTULACIÓN** {user} → {channel.mention}")
+    await say(f"✅ Postulación creada: {channel.mention}")
 
 # ---------- COMANDO PANEL (RECLUTAMIENTO) ----------
 @bot.command()
@@ -6117,7 +6262,8 @@ async def on_ready():
         bot.add_view(PanelView())
         bot.add_view(FocoPanelView())
         bot.add_view(FocoTicketActionView())
-        bot.add_view(RecruitView())
+        bot.add_view(RecruitView())            # tickets viejos (con los botones por rol)
+        bot.add_view(RecruitTicketView())      # tickets nuevos: Aceptar / Rechazar / Cerrar
         bot.add_view(GiveawayJoinView())
         bot.add_view(SplitSoldView())
         bot.add_view(TimerDeleteView())
