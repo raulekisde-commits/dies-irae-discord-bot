@@ -50,7 +50,16 @@ CREATE TABLE IF NOT EXISTS splits (
     created_at       TEXT NOT NULL,
     closed_at        TEXT,
     closed_by        INTEGER,
-    source_cta_id    INTEGER                           -- CTA de la que salió este split (NULL = creado a mano)
+    source_cta_id    INTEGER,                          -- CTA de la que salió este split (NULL = creado a mano)
+    kind             TEXT NOT NULL DEFAULT 'normal',   -- normal | ava (scouts con pago fijo, sin looters)
+    bolsitas         INTEGER NOT NULL DEFAULT 0,       -- se suma al total
+    scout_pay        INTEGER NOT NULL DEFAULT 0        -- pago fijo por scout (solo kind=ava)
+);
+CREATE TABLE IF NOT EXISTS split_scouts (
+    split_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    pos      INTEGER NOT NULL,
+    PRIMARY KEY (split_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS split_requests (            -- anotados después del cierre de la CTA: el organizador decide
     split_id   INTEGER NOT NULL,
@@ -116,8 +125,16 @@ class Split:
     creator_id: int
     status: str
     source_cta_id: Optional[int] = None
+    kind: str = "normal"
+    bolsitas: int = 0
+    scout_pay: int = 0
+    scouts: List[int] = field(default_factory=list)
     people: List[int] = field(default_factory=list)
     looters: List[Looter] = field(default_factory=list)
+
+    @property
+    def is_ava(self) -> bool:
+        return self.kind == "ava"
 
     @property
     def is_open(self) -> bool:
@@ -140,6 +157,7 @@ class Calc:
     people: int
     per_person: int
     leftover: int
+    scouts_total: int = 0
 
     @property
     def looter_tax_total(self) -> int:
@@ -151,17 +169,19 @@ def _floor(x: Decimal) -> int:
 
 
 def compute(s: Split) -> Calc:
-    looted_total = sum(l.looted for l in s.looters)
-    repair_total = s.repair + sum(l.repair for l in s.looters)
-    gross = s.total + looted_total
+    looters = [] if s.is_ava else s.looters                  # en el split ava no hay looters
+    looted_total = sum(l.looted for l in looters)
+    repair_total = s.repair + sum(l.repair for l in looters)
+    gross = s.total + s.bolsitas + looted_total
     net = max(gross - repair_total, 0)
     sale = _floor(Decimal(net) * Decimal(str(s.tax_sale)) / 100)
     guild = _floor(Decimal(net) * Decimal(str(s.tax_guild)) / 100)
-    lt = {l.user_id: _floor(Decimal(max(l.looted - l.repair, 0)) * Decimal(str(s.looter_pct(l))) / 100) for l in s.looters}
-    to_split = max(net - sale - guild - sum(lt.values()), 0)
+    lt = {l.user_id: _floor(Decimal(max(l.looted - l.repair, 0)) * Decimal(str(s.looter_pct(l))) / 100) for l in looters}
+    scouts_total = s.scout_pay * len(s.scouts) if s.is_ava else 0
+    to_split = max(net - sale - guild - sum(lt.values()) - scouts_total, 0)
     n = len(s.people)
     per = to_split // n if n else 0
-    return Calc(looted_total, repair_total, gross, net, sale, guild, lt, to_split, n, per, to_split - per * n)
+    return Calc(looted_total, repair_total, gross, net, sale, guild, lt, to_split, n, per, to_split - per * n, scouts_total)
 
 
 # ---------- validaciones ----------
@@ -209,12 +229,17 @@ def init_schema(db_path: str) -> None:
         if "source_cta_id" not in cols:                      # base creada antes de esta columna
             conn.execute("ALTER TABLE splits ADD COLUMN source_cta_id INTEGER")
             conn.commit()
+        for col, ddl in (("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("bolsitas", "INTEGER NOT NULL DEFAULT 0"),
+                         ("scout_pay", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in {r[1] for r in conn.execute("PRAGMA table_info(splits)")}:
+                conn.execute(f"ALTER TABLE splits ADD COLUMN {col} {ddl}")
+                conn.commit()
     finally:
         conn.close()
 
 
 _COLS = ("id, guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, channel_id, message_id, "
-         "thread_id, list_message_id, data_message_id, creator_id, status, source_cta_id")
+         "thread_id, list_message_id, data_message_id, creator_id, status, source_cta_id, kind, bolsitas, scout_pay")
 
 
 def _load(conn: sqlite3.Connection, split_id: int) -> Optional[Split]:
@@ -223,6 +248,7 @@ def _load(conn: sqlite3.Connection, split_id: int) -> Optional[Split]:
         return None
     s = Split(*tuple(r))
     s.people = [int(x["user_id"]) for x in conn.execute("SELECT user_id FROM split_people WHERE split_id=? ORDER BY pos", (split_id,))]
+    s.scouts = [int(x["user_id"]) for x in conn.execute("SELECT user_id FROM split_scouts WHERE split_id=? ORDER BY pos", (split_id,))]
     s.looters = [Looter(int(x["user_id"]), int(x["looted"]), int(x["repair"]), x["tax_pct"])
                  for x in conn.execute("SELECT user_id, looted, repair, tax_pct FROM split_looters WHERE split_id=? ORDER BY pos", (split_id,))]
     return s
@@ -273,11 +299,15 @@ def _require_open(conn, split_id: int) -> None:
 # ---------- alta y edición ----------
 def create_split(db_path: str, *, guild_id: int, creator_id: int, title: str, tab: Optional[str] = None, city: Optional[str] = None,
                  role_id: Optional[int] = None, total: int = 0, repair: int = 0,
-                 people: Iterable[int] = (), looters: Iterable[int] = (), source_cta_id: Optional[int] = None) -> int:
+                 people: Iterable[int] = (), looters: Iterable[int] = (), source_cta_id: Optional[int] = None,
+                 kind: str = "normal", bolsitas: int = 0, scouts: Iterable[int] = (), scout_pay: int = 0) -> int:
     title = _clean(title, MAX_TITLE, "Título", required=True)
     tab, city = _clean(tab, MAX_TEXT, "Tab"), _clean(city, MAX_TEXT, "City")
     people_l = list(dict.fromkeys(int(p) for p in people))
-    looters_l = list(dict.fromkeys(int(p) for p in looters))
+    looters_l = list(dict.fromkeys(int(p) for p in looters)) if kind != "ava" else []
+    scouts_l = list(dict.fromkeys(int(p) for p in scouts)) if kind == "ava" else []
+    if len(scouts_l) > MAX_PEOPLE:
+        raise SplitError(f"Máximo {MAX_PEOPLE} scouts.")
     for l in looters_l:
         if l not in people_l:
             people_l.append(l)
@@ -289,14 +319,16 @@ def create_split(db_path: str, *, guild_id: int, creator_id: int, title: str, ta
     try:
         with write_tx(conn):
             cur = conn.execute(
-                "INSERT INTO splits(guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, creator_id, status, created_at, source_cta_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?)",
-                (guild_id, title, tab, city, role_id, total, repair, DEFAULT_TAX_SALE, DEFAULT_TAX_GUILD, DEFAULT_TAX_LOOTER, creator_id, utcnow_iso(), source_cta_id))
+                "INSERT INTO splits(guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, creator_id, status, created_at, source_cta_id, kind, bolsitas, scout_pay) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?, ?, ?, ?)",
+                (guild_id, title, tab, city, role_id, total, repair, DEFAULT_TAX_SALE, DEFAULT_TAX_GUILD, DEFAULT_TAX_LOOTER, creator_id, utcnow_iso(), source_cta_id, kind, bolsitas, scout_pay))
             sid = int(cur.lastrowid)
             for i, uid in enumerate(people_l, 1):
                 conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (sid, uid, i))
             for i, uid in enumerate(looters_l, 1):
                 conn.execute("INSERT INTO split_looters(split_id, user_id, pos) VALUES (?,?,?)", (sid, uid, i))
+            for i, uid in enumerate(scouts_l, 1):
+                conn.execute("INSERT INTO split_scouts(split_id, user_id, pos) VALUES (?,?,?)", (sid, uid, i))
             return sid
     finally:
         conn.close()
@@ -340,8 +372,9 @@ def update_info(db_path: str, split_id: int, *, title=None, tab=None, city=None,
         conn.close()
 
 
-def update_amounts(db_path: str, split_id: int, *, total=None, repair=None, tax_sale=None, tax_guild=None, tax_looter=None) -> None:
-    sets = {k: v for k, v in dict(total=total, repair=repair, tax_sale=tax_sale, tax_guild=tax_guild, tax_looter=tax_looter).items() if v is not None}
+def update_amounts(db_path: str, split_id: int, *, total=None, repair=None, tax_sale=None, tax_guild=None, tax_looter=None, bolsitas=None, scout_pay=None) -> None:
+    sets = {k: v for k, v in dict(total=total, repair=repair, tax_sale=tax_sale, tax_guild=tax_guild, tax_looter=tax_looter,
+                                  bolsitas=bolsitas, scout_pay=scout_pay).items() if v is not None}
     if not sets:
         return
     conn = connect(db_path)
@@ -414,6 +447,40 @@ def add_looters(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
                     conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (split_id, uid, _next_pos(conn, "split_people", split_id)))
                     have_p.add(uid)
         return new
+    finally:
+        conn.close()
+
+
+def add_scouts(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
+    """Agrega scouts (cobran un monto fijo; no entran a la lista general). Devuelve cuántos eran nuevos."""
+    new = 0
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            _require_open(conn, split_id)
+            have = {int(r["user_id"]) for r in conn.execute("SELECT user_id FROM split_scouts WHERE split_id=?", (split_id,))}
+            for uid in dict.fromkeys(int(u) for u in user_ids):
+                if uid in have:
+                    continue
+                if len(have) >= MAX_PEOPLE:
+                    raise SplitError(f"Máximo {MAX_PEOPLE} scouts.")
+                conn.execute("INSERT INTO split_scouts(split_id, user_id, pos) VALUES (?,?,?)", (split_id, uid, _next_pos(conn, "split_scouts", split_id)))
+                have.add(uid)
+                new += 1
+        return new
+    finally:
+        conn.close()
+
+
+def remove_scouts(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
+    n = 0
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            _require_open(conn, split_id)
+            for uid in dict.fromkeys(int(u) for u in user_ids):
+                n += conn.execute("DELETE FROM split_scouts WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount
+        return n
     finally:
         conn.close()
 
@@ -602,6 +669,10 @@ def tax_key(split_id: int, user_id: int) -> str:
     return f"split:{split_id}:tax:{user_id}"
 
 
+def scout_key(split_id: int, user_id: int) -> str:
+    return f"split:{split_id}:scout:{user_id}"
+
+
 def pay_out(db_path: str, s: Split, actor_id: int) -> Tuple[Calc, Dict[int, int], List[str]]:
     """Acredita los pagos (idempotente por request_key). Devuelve (cálculo, {usuario: total acreditado}, [op_id nuevos])."""
     calc = compute(s)
@@ -614,6 +685,13 @@ def pay_out(db_path: str, s: Split, actor_id: int) -> Tuple[Calc, Dict[int, int]
             ops.append(res.op_id)
         for u in s.people:
             paid[u] = paid.get(u, 0) + calc.per_person
+    if s.is_ava and s.scout_pay > 0:
+        for uid in s.scouts:
+            res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=[uid], amount=s.scout_pay,
+                                      request_key=scout_key(s.id, uid), reason=f"Split {s.title} (#{s.id}): pago de scout")
+            if res.created:
+                ops.append(res.op_id)
+            paid[uid] = paid.get(uid, 0) + s.scout_pay
     for uid, tax in calc.looter_taxes.items():
         if tax > 0:
             res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=[uid], amount=tax,

@@ -59,7 +59,11 @@ def people_embed(s: sdb.Split, names=None) -> discord.Embed:
 def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
     c = sdb.compute(s)
     out: List[discord.Embed] = []
-    if s.looters:
+    if s.is_ava and s.scouts:
+        lines = "\n".join(f"• {_nm(names, u)} — {fmt(s.scout_pay)}" for u in s.scouts)
+        out.append(discord.Embed(title=f"🔭 Scouts ({len(s.scouts)}) · pago fijo {fmt(s.scout_pay)} c/u",
+                                 description=lines[:3900], color=GOLD))
+    if s.looters and not s.is_ava:
         blocks = []
         for l in s.looters:
             blocks.append(
@@ -72,14 +76,20 @@ def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
             text = text[:3900] + "\n…"
         out.append(discord.Embed(title="🪙 Looters", description=text, color=GOLD))
     summary = discord.Embed(title="📊 Datos del split", color=GOLD)
+    if s.is_ava:
+        mid = (f"**Pago por scout:** {fmt(s.scout_pay)} × {len(s.scouts)} = {fmt(c.scouts_total)}\n\n"
+               f"Reparación total: {fmt(c.repair_total)}\n\n")
+    else:
+        mid = (f"**Tax looter (por defecto):** {pct(s.tax_looter)}\n\n"
+               f"Looteado por los looters: {fmt(c.looted_total)} · Reparación total: {fmt(c.repair_total)}\n"
+               f"Taxes de looters: {fmt(c.looter_tax_total)}\n\n")
     summary.description = (
         f"**Total:** {fmt(s.total)}\n"
+        f"**Bolsitas:** {fmt(s.bolsitas)}\n"
         f"**Reparación:** {fmt(s.repair)}\n"
         f"**Tax de venta:** {pct(s.tax_sale)} ({fmt(c.sale_tax)})\n"
         f"**Tax de guild:** {pct(s.tax_guild)} ({fmt(c.guild_tax)})\n"
-        f"**Tax looter (por defecto):** {pct(s.tax_looter)}\n\n"
-        f"Looteado por los looters: {fmt(c.looted_total)} · Reparación total: {fmt(c.repair_total)}\n"
-        f"Taxes de looters: {fmt(c.looter_tax_total)}\n\n"
+        + mid +
         f"**Total a splitear:** {fmt(c.to_split)}\n"
         f"**Cantidad de personas:** {c.people}\n"
         f"**Total por persona:** {fmt(c.per_person)}")
@@ -103,8 +113,9 @@ def panel_embed(s: sdb.Split, names=None) -> discord.Embed:
     if s.role_id:
         extra.append(f"**Rol:** <@&{s.role_id}>")
     lines = extra + [
-        f"**Total:** {fmt(s.total)} · **Reparación:** {fmt(s.repair)}",
-        f"**Personas:** {c.people} · **Looters:** {len(s.looters)}",
+        f"**Total:** {fmt(s.total)} · **Bolsitas:** {fmt(s.bolsitas)} · **Reparación:** {fmt(s.repair)}",
+        (f"**Personas:** {c.people} · **Scouts:** {len(s.scouts)} (AVA)" if s.is_ava
+         else f"**Personas:** {c.people} · **Looters:** {len(s.looters)}"),
         f"**Total a splitear:** {fmt(c.to_split)}",
         f"**Total por persona:** {fmt(c.per_person)}",
         f"Estado: {STATUS_TEXT.get(s.status, s.status)}",
@@ -226,13 +237,18 @@ class _OwnedView(discord.ui.View):
 class EditView(_OwnedView):
     """Panel de /editar (efímero): cada botón abre un formulario o un selector."""
 
-    def __init__(self, cog, split_id, owner_id):
+    def __init__(self, cog, split_id, owner_id, ava: bool = False):
         super().__init__(cog, split_id, owner_id)
         self.add_button("Datos (título, tab, city)", self._info, emoji="📝", row=0)
         self.add_button("Montos y taxes", self._amounts, emoji="💰", row=0)
-        self.add_button("Agregar looters", self._add_looters, style=discord.ButtonStyle.success, emoji="🪙", row=1)
-        self.add_button("Editar looter", self._edit_looter, emoji="✏️", row=1)
-        self.add_button("Quitar looters", self._rm_looters, style=discord.ButtonStyle.danger, emoji="➖", row=1)
+        self.add_button("Bolsitas", self._bolsitas, emoji="👜", row=0)
+        if ava:
+            self.add_button("Agregar scouts", self._add_scouts, style=discord.ButtonStyle.success, emoji="🔭", row=1)
+            self.add_button("Quitar scouts", self._rm_scouts, style=discord.ButtonStyle.danger, emoji="➖", row=1)
+        else:
+            self.add_button("Agregar looters", self._add_looters, style=discord.ButtonStyle.success, emoji="🪙", row=1)
+            self.add_button("Editar looter", self._edit_looter, emoji="✏️", row=1)
+            self.add_button("Quitar looters", self._rm_looters, style=discord.ButtonStyle.danger, emoji="➖", row=1)
         self.add_button("Agregar personas", self._add_people, style=discord.ButtonStyle.success, emoji="👥", row=2)
         self.add_button("Quitar personas", self._rm_people, style=discord.ButtonStyle.danger, emoji="🧹", row=2)
         self.add_button("Agregar rol", self._add_role, emoji="🎭", row=2)
@@ -253,6 +269,21 @@ class EditView(_OwnedView):
         s = await self._split(interaction)
         if s:
             await interaction.response.send_modal(AmountsModal(self.cog, s))
+
+    async def _bolsitas(self, interaction):
+        s = await self._split(interaction)
+        if s:
+            await interaction.response.send_modal(BolsitasModal(self.cog, s))
+
+    async def _add_scouts(self, interaction):
+        if await self._split(interaction):
+            await _say(interaction, "Elegí a los scouts (cobran el pago fijo; no entran a la lista general):",
+                       view=UserPickView(self.cog, self.split_id, self.owner_id, "add_scouts"))
+
+    async def _rm_scouts(self, interaction):
+        if await self._split(interaction):
+            await _say(interaction, "Elegí los scouts a quitar:",
+                       view=UserPickView(self.cog, self.split_id, self.owner_id, "rm_scouts"))
 
     async def _add_looters(self, interaction):
         if await self._split(interaction):
@@ -372,13 +403,29 @@ class AmountsModal(discord.ui.Modal):
         self.repair_in = mk("Reparación", fmt(s.repair))
         self.sale_in = mk("Tax de venta (%)", f"{s.tax_sale:g}")
         self.guild_in = mk("Tax de guild (%)", f"{s.tax_guild:g}")
-        self.looter_in = mk("Tax looter por defecto (%)", f"{s.tax_looter:g}")
+        self.ava = s.is_ava
+        self.looter_in = mk("Pago fijo por scout", fmt(s.scout_pay)) if s.is_ava else mk("Tax looter por defecto (%)", f"{s.tax_looter:g}")
         for i in (self.total_in, self.repair_in, self.sale_in, self.guild_in, self.looter_in):
             self.add_item(i)
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.apply_amounts(interaction, self.split_id, str(self.total_in.value), str(self.repair_in.value),
                                      str(self.sale_in.value), str(self.guild_in.value), str(self.looter_in.value))
+
+    async def on_error(self, interaction, error):
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await _say(interaction, "❌ No pude guardar los cambios.")
+
+
+class BolsitasModal(discord.ui.Modal):
+    def __init__(self, cog, s: sdb.Split):
+        super().__init__(title="Bolsitas")
+        self.cog, self.split_id = cog, s.id
+        self.b_in = discord.ui.TextInput(label="Bolsitas (se suman al total)", default=fmt(s.bolsitas), max_length=25, required=True)
+        self.add_item(self.b_in)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.apply_bolsitas(interaction, self.split_id, str(self.b_in.value))
 
     async def on_error(self, interaction, error):
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -491,60 +538,94 @@ class SplitsCog(commands.Cog):
             except Exception as exc:
                 print(f"⚠️ Split #{split_id}: no pude actualizar {col}: {exc!r}")
 
-    # ---------- /transparencia ----------
+    # ---------- /transparencia y /transparencia-ava ----------
+    async def _parse_mentions(self, interaction, text: Optional[str], what: str):
+        """Devuelve (ids, error). Las menciones tienen que ser de gente del servidor y no bots."""
+        guild = interaction.guild
+        ids: List[int] = []
+        for m in MENTION_RE.finditer(text or ""):
+            uid = int(m.group(1))
+            member = guild.get_member(uid) if guild else None
+            if member is None:
+                return [], f"❌ No encuentro en el servidor a <@{uid}>."
+            if getattr(member, "bot", False):
+                return [], f"❌ <@{uid}> es un bot: no puede ser {what}."
+            if uid not in ids:
+                ids.append(uid)
+        if (text or "").strip() and not ids:
+            return [], f"❌ En `{what}s` mencioná a las personas con @ (ej: @Ana @Beto)."
+        return ids, None
+
+    async def _create_command(self, interaction, *, ava: bool, titulo, tab, city, rol, total, reparacion, bolsitas, extra, pago_scout=None):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council (o un administrador) puede crear splits.")
+        try:
+            total_v = sdb.parse_money(total, field_name="Total")
+            repair_v = sdb.parse_money(reparacion, field_name="Reparación")
+            bols_v = sdb.parse_money(bolsitas, field_name="Bolsitas")
+            pay_v = sdb.parse_money(pago_scout, field_name="Pago por scout") if ava else 0
+        except sdb.SplitError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        ids, err = await self._parse_mentions(interaction, extra, "scout" if ava else "looter")
+        if err:
+            return await _say(interaction, err)
+        people: List[int] = []
+        if rol is not None:
+            people = [m.id for m in getattr(rol, "members", []) if not getattr(m, "bot", False)]
+        await interaction.response.defer(ephemeral=True)
+        kw = dict(scouts=ids, scout_pay=pay_v, kind="ava") if ava else dict(looters=ids)
+        split, msg, error = await self._publish(
+            creator_id=interaction.user.id, title=titulo, tab=tab, city=city, role_id=rol.id if rol else None,
+            total=total_v, repair=repair_v, bolsitas=bols_v, people=people, **kw)
+        if error:
+            return await interaction.followup.send(error, ephemeral=True)
+        what = "los montos, los scouts y las personas" if ava else "los datos de cada looter, los montos y las personas"
+        await interaction.followup.send(
+            f"✅ Split **{split.title}** creado: {getattr(msg, 'jump_url', '')}\n"
+            f"Con `/editar` (dentro del hilo) cargás {what}.", ephemeral=True)
+
     @app_commands.command(name="transparencia", description="Crea un split: panel + hilo con la lista de personas y el cálculo")
     @app_commands.describe(
         titulo="Título del split",
         tab="Tab (opcional)", city="City (opcional)",
         rol="Rol cuyos miembros entran al split (opcional)",
         total="Total del split, en silver (opcional)", reparacion="Reparación total (opcional)",
+        bolsitas="Bolsitas: se suman al total (opcional, por defecto 0)",
         looters="Mencioná a los looters, por ejemplo @Ana @Beto (opcional)")
     @app_commands.guild_only()
     async def transparencia(self, interaction: discord.Interaction, titulo: str, tab: Optional[str] = None, city: Optional[str] = None,
                             rol: Optional[discord.Role] = None, total: Optional[str] = None, reparacion: Optional[str] = None,
-                            looters: Optional[str] = None):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council (o un administrador) puede crear splits.")
-        try:
-            total_v = sdb.parse_money(total, field_name="Total")
-            repair_v = sdb.parse_money(reparacion, field_name="Reparación")
-        except sdb.SplitError as exc:
-            return await _say(interaction, f"❌ {exc}")
-        guild = interaction.guild
-        looter_ids: List[int] = []
-        for m in MENTION_RE.finditer(looters or ""):
-            uid = int(m.group(1))
-            member = guild.get_member(uid) if guild else None
-            if member is None:
-                return await _say(interaction, f"❌ No encuentro en el servidor a <@{uid}>.")
-            if getattr(member, "bot", False):
-                return await _say(interaction, f"❌ <@{uid}> es un bot: no puede ser looter.")
-            if uid not in looter_ids:
-                looter_ids.append(uid)
-        if (looters or "").strip() and not looter_ids:
-            return await _say(interaction, "❌ En `looters` mencioná a las personas con @ (ej: @Ana @Beto).")
-        people: List[int] = []
-        if rol is not None:
-            people = [m.id for m in getattr(rol, "members", []) if not getattr(m, "bot", False)]
-        await interaction.response.defer(ephemeral=True)
-        split, msg, error = await self._publish(
-            creator_id=interaction.user.id, title=titulo, tab=tab, city=city, role_id=rol.id if rol else None,
-            total=total_v, repair=repair_v, people=people, looters=looter_ids)
-        if error:
-            return await interaction.followup.send(error, ephemeral=True)
-        await interaction.followup.send(
-            f"✅ Split **{split.title}** creado: {getattr(msg, 'jump_url', '')}\n"
-            f"Con `/editar` (dentro del hilo) cargás los datos de cada looter, los montos y las personas.", ephemeral=True)
+                            bolsitas: Optional[str] = None, looters: Optional[str] = None):
+        await self._create_command(interaction, ava=False, titulo=titulo, tab=tab, city=city, rol=rol, total=total,
+                                   reparacion=reparacion, bolsitas=bolsitas, extra=looters)
+
+    @app_commands.command(name="transparencia-ava", description="Como /transparencia, pero sin looters: los scouts cobran un monto fijo")
+    @app_commands.describe(
+        titulo="Título del split",
+        tab="Tab (opcional)", city="City (opcional)",
+        rol="Rol cuyos miembros entran al split (opcional)",
+        total="Total del split, en silver (opcional)", reparacion="Reparación total (opcional)",
+        bolsitas="Bolsitas: se suman al total (opcional, por defecto 0)",
+        scouts="Mencioná a los scouts, por ejemplo @Ana @Beto (opcional)",
+        pago_scout="Monto fijo que cobra cada scout, se descuenta del total a repartir (opcional)")
+    @app_commands.guild_only()
+    async def transparencia_ava(self, interaction: discord.Interaction, titulo: str, tab: Optional[str] = None, city: Optional[str] = None,
+                                rol: Optional[discord.Role] = None, total: Optional[str] = None, reparacion: Optional[str] = None,
+                                bolsitas: Optional[str] = None, scouts: Optional[str] = None, pago_scout: Optional[str] = None):
+        await self._create_command(interaction, ava=True, titulo=titulo, tab=tab, city=city, rol=rol, total=total,
+                                   reparacion=reparacion, bolsitas=bolsitas, extra=scouts, pago_scout=pago_scout)
 
     async def _publish(self, *, creator_id: int, title: str, tab=None, city=None, role_id=None, total: int = 0, repair: int = 0,
-                       people=(), looters=(), source_cta_id: Optional[int] = None):
+                       people=(), looters=(), source_cta_id: Optional[int] = None,
+                       kind: str = "normal", bolsitas: int = 0, scouts=(), scout_pay: int = 0):
         """Crea el split, publica el panel en el canal de splits y arma el hilo. Devuelve (split, mensaje, error)."""
         channel = await self._get_channel(self.channel_id)
         if channel is None:
             return None, None, f"❌ No encuentro el canal de splits (<#{self.channel_id}>). Revisá que el bot lo vea."
         try:
             sid = await self.run(sdb.create_split, guild_id=self.guild_id, creator_id=creator_id, title=title, tab=tab, city=city,
-                                 role_id=role_id, total=total, repair=repair, people=people, looters=looters, source_cta_id=source_cta_id)
+                                 role_id=role_id, total=total, repair=repair, people=people, looters=looters, source_cta_id=source_cta_id,
+                                 kind=kind, bolsitas=bolsitas, scouts=scouts, scout_pay=scout_pay)
         except sdb.SplitError as exc:
             return None, None, f"❌ {exc}"
         s = await self.run(sdb.get_split, sid)
@@ -656,7 +737,7 @@ class SplitsCog(commands.Cog):
         if not s.is_open:
             return await _say(interaction, "❌ Ese split ya está cerrado: no se puede editar.")
         await _say(interaction, f"✏️ Editando **Split {s.title}** (#{s.id}). Los cambios se reflejan al instante en el hilo.",
-                   view=EditView(self, s.id, interaction.user.id))
+                   view=EditView(self, s.id, interaction.user.id, ava=s.is_ava))
 
     # ---------- acciones de edición ----------
     async def _guard(self, interaction, split_id: int) -> Optional[sdb.Split]:
@@ -683,16 +764,29 @@ class SplitsCog(commands.Cog):
         await self._done(interaction, split_id, "✅ Datos actualizados.")
 
     async def apply_amounts(self, interaction, split_id, total, repair, sale, guild, looter):
-        if not await self._guard(interaction, split_id):
+        s = await self._guard(interaction, split_id)
+        if not s:
             return
         try:
             vals = dict(total=sdb.parse_money(total, field_name="Total"), repair=sdb.parse_money(repair, field_name="Reparación"),
-                        tax_sale=sdb.parse_pct(sale, field_name="Tax de venta"), tax_guild=sdb.parse_pct(guild, field_name="Tax de guild"),
-                        tax_looter=sdb.parse_pct(looter, field_name="Tax looter"))
+                        tax_sale=sdb.parse_pct(sale, field_name="Tax de venta"), tax_guild=sdb.parse_pct(guild, field_name="Tax de guild"))
+            if s.is_ava:
+                vals["scout_pay"] = sdb.parse_money(looter, field_name="Pago por scout")
+            else:
+                vals["tax_looter"] = sdb.parse_pct(looter, field_name="Tax looter")
             await self.run(sdb.update_amounts, split_id, **vals)
         except sdb.SplitError as exc:
             return await _say(interaction, f"❌ {exc}")
         await self._done(interaction, split_id, "✅ Montos actualizados.")
+
+    async def apply_bolsitas(self, interaction, split_id, bolsitas):
+        if not await self._guard(interaction, split_id):
+            return
+        try:
+            await self.run(sdb.update_amounts, split_id, bolsitas=sdb.parse_money(bolsitas, field_name="Bolsitas"))
+        except sdb.SplitError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        await self._done(interaction, split_id, "✅ Bolsitas actualizadas.")
 
     async def apply_looter(self, interaction, split_id, user_id, looted, repair, tax):
         if not await self._guard(interaction, split_id):
@@ -715,6 +809,12 @@ class SplitsCog(commands.Cog):
             if action == "add_looters":
                 n = await self.run(sdb.add_looters, split_id, ids)
                 text = f"✅ {n} looter(s) agregado(s). Cargales los montos con **Editar looter**." if n else "ℹ️ Ya eran looters."
+            elif action == "add_scouts":
+                n = await self.run(sdb.add_scouts, split_id, ids)
+                text = f"✅ {n} scout(s) agregado(s)." if n else "ℹ️ Ya eran scouts."
+            elif action == "rm_scouts":
+                n = await self.run(sdb.remove_scouts, split_id, ids)
+                text = f"✅ {n} scout(s) quitado(s)." if n else "ℹ️ No eran scouts."
             elif action == "add_people":
                 n = await self.run(sdb.add_people, split_id, ids)
                 text = f"✅ {n} persona(s) agregada(s) a la lista." if n else "ℹ️ Ya estaban en la lista."
@@ -879,7 +979,12 @@ class SplitsCog(commands.Cog):
             extra = ""
             if u in looters and calc.looter_taxes.get(u):
                 extra = f" (parte {fmt(calc.per_person)} + tax looter {fmt(calc.looter_taxes[u])})"
+            if s.is_ava and u in s.scouts:
+                extra = f" (parte {fmt(calc.per_person)} + pago de scout {fmt(s.scout_pay)})"
             lines.append(f"• <@{u}> → +{self.money(amount)}{extra}")
+        for u in ([x for x in s.scouts if x not in s.people] if s.is_ava else []):
+            if paid.get(u):
+                lines.append(f"• <@{u}> → +{self.money(paid[u])} (pago de scout {fmt(s.scout_pay)})")
         for u in looters - set(s.people):                      # looter sacado de la lista general: igual cobra su tax
             if paid.get(u):
                 lines.append(f"• <@{u}> → +{self.money(paid[u])} (tax looter)")
