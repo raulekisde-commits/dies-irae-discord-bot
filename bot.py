@@ -347,10 +347,8 @@ async def _safe_setup(name, fn, *args):
 
 
 async def _setup_registration(bot, db_path, guild_id):
-    """Registro Discord ↔ Albion. Se exige que el personaje esté en la guild configurada (ALBION_GUILD_NAME);
-    los oficiales que verifican son el Council/administradores y el rol Staff."""
-    await setup_registration(bot, db_path, guild_id, required_guild=os.getenv("REGISTRO_GUILD", ALBION_GUILD_NAME),
-                             reviewer_role_ids={STAFF_ROLE_ID})
+    """Registro Discord ↔ Albion. Se exige que el personaje esté en la guild configurada (ALBION_GUILD_NAME)."""
+    await setup_registration(bot, db_path, guild_id, required_guild=os.getenv("REGISTRO_GUILD", ALBION_GUILD_NAME))
 
 
 class MyBot(commands.Bot):
@@ -6000,10 +5998,10 @@ HELP_SECTIONS = [
         ("/panel cambiomoneda [canal]", "Council / Admin", "Publica dos paneles con tickets: vender Wuju Coins por silver (el Council acepta y retira el balance) y comprar Wuju Coins (depósito + foto; el Council los agrega con doble confirmación)."),
         ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /dados, /coinflip y /1v1."),
         ("/limite juego cantidad", "Council", "Pone la apuesta máxima de dados, coinflip o 1v1 (0 quita el límite). Se aplica a las partidas nuevas."),
-        ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con tu personaje de Albion. Se verifica con un código de un solo uso que mandás por el juego a un oficial; con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar y confirmar desde su cuenta."),
-        ("/mi_registro  ·  /desvincular", "Miembros", "Ver tu personaje vinculado / quitar la vinculación (con confirmación)."),
-        ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver el estado de un registro, retirarlo, o vincular a mano SIN verificar (queda auditado)."),
-        ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal donde los oficiales verifican los registros / exigir (o no) estar registrado para usar los comandos de miembros."),
+        ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
+        ("/mi_registro  ·  /desvincular", "Miembros", "Ver tus personajes vinculados / quitar uno (con confirmación)."),
+        ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
+        ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
         ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz: la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
         ("!coinflip cantidad", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos: lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
