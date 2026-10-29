@@ -87,6 +87,7 @@ MOVEMENT_LABELS = {
     "bet_stake": "Apuesta realizada",
     "bet_payout": "Premio de apuesta",
     "bet_refund": "Devolución de apuesta",
+    "balance_set": "Saldo ajustado",
 }
 
 
@@ -116,6 +117,16 @@ def clean_reason(text: Optional[str], default: str) -> str:
 # Importación de saldos desde una lista "apodo + cantidad"
 # ============================================================
 IMPORT_REASON = "Importación inicial de saldos"
+
+
+def parse_balance_value(text: str) -> int:
+    """Saldo objetivo: entero con el mismo formato de miles que parse_amount, pero admite 0 y negativos."""
+    s = (text or "").strip()
+    if s in ("0", "-0", "+0"):
+        return 0
+    negative = s.startswith("-")
+    value = parse_amount(s[1:] if negative else s)
+    return -value if negative else value
 MAX_IMPORT_LINES = 500
 
 
@@ -147,7 +158,7 @@ def parse_import_text(text: str):
             errors.append((n, raw, "Falta el apodo o la cantidad."))
             continue
         try:
-            entries.append((n, name, parse_amount(amount_text)))
+            entries.append((n, name, parse_balance_value(amount_text)))
         except AmountError as exc:
             errors.append((n, raw, str(exc)))
     return entries, errors
@@ -248,6 +259,29 @@ def get_balance(db_path: str, user_id: int) -> int:
     try:
         row = conn.execute("SELECT balance FROM eco_accounts WHERE user_id = ?", (int(user_id),)).fetchone()
         return int(row["balance"]) if row else 0
+    finally:
+        conn.close()
+
+
+# Movimientos que cuentan como "depositados a la persona" en el Balance histórico.
+# NO cuentan: remove-money, apuestas (apostar / premio / devolución), que son movimientos internos.
+LIFETIME_DEPOSIT_TYPES = ("addmoney", "addmoney-role", "balance_set")
+
+
+def get_lifetime_deposits(db_path: str, user_id: int) -> int:
+    """Balance histórico: suma de todo lo depositado a la persona. Solo suma, nunca resta.
+
+    Se calcula desde el historial de movimientos (por eso incluye también lo cargado antes de existir el contador).
+    Un ajuste de saldo (importación) suma únicamente si subió el saldo.
+    """
+    marks = ",".join("?" for _ in LIFETIME_DEPOSIT_TYPES)
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(delta), 0) AS total FROM eco_movements "
+            f"WHERE user_id = ? AND delta > 0 AND COALESCE(kind, 'addmoney') IN ({marks})",
+            (int(user_id), *LIFETIME_DEPOSIT_TYPES)).fetchone()
+        return int(row["total"])
     finally:
         conn.close()
 
@@ -480,6 +514,34 @@ def get_history(db_path: str, user_id: int, limit: int = 20) -> List[HistoryRow]
                 related_id=r["m_related"] or r["o_id"],
             ))
         return result
+    finally:
+        conn.close()
+
+
+def set_balance(db_path: str, *, user_id: int, target: int, actor_id: int, request_key: str, reason: str):
+    """Deja el balance EXACTAMENTE en `target` (calcula la diferencia dentro de la transacción).
+
+    Devuelve (estado, antes, después): estado = 'applied' | 'unchanged' (ya estaba igual) | 'repeated' (misma solicitud ya aplicada).
+    """
+    if abs(target) > MAX_BALANCE_ABS:
+        raise OverflowError("El balance objetivo excede el límite permitido.")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM eco_operations WHERE request_key = ?", (request_key,)).fetchone():
+                row = conn.execute("SELECT balance FROM eco_accounts WHERE user_id = ?", (user_id,)).fetchone()
+                bal = int(row["balance"]) if row else 0
+                return "repeated", bal, bal
+            row = conn.execute("SELECT balance FROM eco_accounts WHERE user_id = ?", (user_id,)).fetchone()
+            before = int(row["balance"]) if row else 0
+            delta = target - before
+            if delta == 0:
+                return "unchanged", before, before
+            op_id = tx_new_operation(conn, kind="add" if delta > 0 else "remove", actor_id=actor_id, request_key=request_key,
+                                     total_amount=abs(delta), target_count=1, reason=reason, related_id=request_key)
+            _, after = tx_move(conn, op_id=op_id, user_id=user_id, delta=delta, mov_type="balance_set", reason=reason,
+                               actor_id=actor_id, related_id=request_key)
+            return "applied", before, after
     finally:
         conn.close()
 

@@ -94,10 +94,12 @@ class ImportConfirmView(discord.ui.View):
         self.done = True
         self.stop()
         await interaction.response.edit_message(content="⏳ Cargando saldos…", view=None)
-        applied, repeated, failed = await self.cog.apply_import(self.owner_id, self.matched, self.token)
-        msg = f"✅ Listo: **{applied}** saldo(s) cargado(s)."
+        applied, unchanged, repeated, failed = await self.cog.apply_import(self.owner_id, self.matched, self.token)
+        msg = f"✅ Listo: **{applied}** saldo(s) ajustado(s)."
+        if unchanged:
+            msg += f" {unchanged} ya estaban en ese valor."
         if repeated:
-            msg += f" {repeated} ya estaban cargados (no se repitieron)."
+            msg += f" {repeated} ya se habían procesado en esta ejecución."
         if failed:
             msg += f" ⚠️ {failed} fallaron; revisá con `!bal`."
         await interaction.edit_original_response(content=msg)
@@ -379,9 +381,11 @@ class EconomyCog(commands.Cog):
             target = ctx.author
 
         balance = await self._db(eco.get_balance, target.id)
+        lifetime = await self._db(eco.get_lifetime_deposits, target.id)
         color = discord.Color.green() if balance > 0 else (discord.Color.red() if balance < 0 else discord.Color.light_grey())
         emb = discord.Embed(title=f"💰 Balance de {eco.CURRENCY_NAME}", color=color)
         emb.description = f"{target.mention}\n\n# {self.money(balance)}"
+        emb.add_field(name="📈 Balance histórico", value=self.money(lifetime), inline=False)
         try:
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
@@ -676,20 +680,21 @@ class EconomyCog(commands.Cog):
     # Importación única de saldos (admin)
     # ============================================================
     def _match_nickname(self, guild: discord.Guild, name: str):
-        """Coincidencia EXACTA (sin distinguir mayúsculas) con apodo, nombre visible, usuario o nombre global."""
+        """Coincidencia EXACTA (sin distinguir mayúsculas) con el nombre de usuario de Discord o su nombre visible global.
+        No se usan los apodos del servidor."""
         key = " ".join(name.split()).casefold()
         found = {}
         for m in guild.members:
             if m.bot:
                 continue
-            for candidate in (m.nick, m.display_name, m.name, getattr(m, "global_name", None)):
+            for candidate in (m.name, getattr(m, "global_name", None)):
                 if candidate and " ".join(candidate.split()).casefold() == key:
                     found[m.id] = m
                     break
         return list(found.values())
 
-    @app_commands.command(name="importar-bal", description="(Admin) Carga saldos desde un archivo de texto: una línea por persona (apodo;cantidad)")
-    @app_commands.describe(archivo="Archivo .txt o .csv con líneas `apodo;cantidad` (ej: Juan;5000)")
+    @app_commands.command(name="importar-bal", description="(Admin) Deja el saldo de cada persona EXACTAMENTE en el valor del archivo (nombre;cantidad)")
+    @app_commands.describe(archivo="Archivo .txt o .csv con líneas `nombre_de_discord;saldo` (ej: juan123;5000)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def importar_bal(self, interaction: discord.Interaction, archivo: discord.Attachment):
@@ -718,7 +723,7 @@ class EconomyCog(commands.Cog):
                     seen[uid] = line
                     matched.append((users[0], amount))
                 elif not users:
-                    unmatched.append(f"línea {line}: **{name}** — no encontré a nadie con ese apodo")
+                    unmatched.append(f"línea {line}: **{name}** — no encontré a nadie con ese nombre de Discord")
                 else:
                     unmatched.append(f"línea {line}: **{name}** — hay {len(users)} personas con ese nombre")
             problems = unmatched + [f"línea {n}: `{t[:40]}` — {m}" for n, t, m in errors]
@@ -729,39 +734,42 @@ class EconomyCog(commands.Cog):
                     body += "\n" + "\n".join(problems[:15])
                 return await self._ephemeral(interaction, body[:1900])
 
-            total = sum(a for _, a in matched)
-            preview = [f"{m.mention} → **{self.plain(a)}**" for m, a in matched[:15]]
+            current = await self._db(eco.get_all_balances)
+            changing = sum(1 for m, a in matched if current.get(m.id, 0) != a)
+            preview = [f"{m.mention}: {self.plain(current.get(m.id, 0))} → **{self.plain(a)}**" for m, a in matched[:15]]
             if len(matched) > 15:
                 preview.append(f"… y {len(matched) - 15} más")
-            body = (f"**Vista previa** — se agregarán **{self.plain(total)}** {eco.CURRENCY_NAME} a **{len(matched)}** persona(s).\n"
-                    + "\n".join(preview))
+            body = (f"**Vista previa** — el saldo de **{len(matched)}** persona(s) quedará **exactamente** en el valor del archivo "
+                    f"({changing} cambian, {len(matched) - changing} ya estaban igual).\n" + "\n".join(preview))
             if problems:
                 body += f"\n\n⚠️ **{len(problems)} línea(s) NO se cargarán:**\n" + "\n".join(problems[:12])
                 if len(problems) > 12:
                     body += f"\n… y {len(problems) - 12} más"
-            body += "\n\nSi está bien, tocá **Confirmar**. Esta carga se hace una sola vez."
+            body += "\n\nSi está bien, tocá **Confirmar**. Es seguro repetirlo con el mismo archivo: el saldo queda igual."
             view = ImportConfirmView(self, interaction.user.id, matched, interaction.id)
             await interaction.followup.send(body[:1950], view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No pude procesar el archivo.")
 
-    async def apply_import(self, actor_id: int, matched, token: int) -> Tuple[int, int, int]:
-        """Aplica cada línea como una operación propia e idempotente. Devuelve (aplicadas, repetidas, fallidas)."""
-        applied = repeated = failed = 0
-        for member, amount in matched:
+    async def apply_import(self, actor_id: int, matched, token: int) -> Tuple[int, int, int, int]:
+        """Deja cada saldo en el valor pedido (operación propia e idempotente por persona).
+        Devuelve (ajustadas, sin_cambio, repetidas, fallidas)."""
+        applied = unchanged = repeated = failed = 0
+        for member, target in matched:
             try:
-                op = await self._db(eco.apply_operation, kind="add", actor_id=actor_id, user_ids=[member.id], amount=amount,
-                                    request_key=f"import:{token}:{member.id}", reason=eco.IMPORT_REASON)
-                if op.created:
+                status, _, _ = await self._db(eco.set_balance, user_id=member.id, target=target, actor_id=actor_id,
+                                              request_key=f"import:{token}:{member.id}", reason=eco.IMPORT_REASON)
+                if status == "applied":
                     applied += 1
-                    await self._db(eco.set_log_progress, op.op_id, 1, True)     # sin registro público por cada persona
+                elif status == "unchanged":
+                    unchanged += 1
                 else:
                     repeated += 1
             except Exception:
                 traceback.print_exc()
                 failed += 1
-        return applied, repeated, failed
+        return applied, unchanged, repeated, failed
 
     # ============================================================
     # Historial de movimientos
