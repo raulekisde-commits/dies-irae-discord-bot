@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS gshop_tickets (
     channel_id  INTEGER NOT NULL UNIQUE,
     buyer_id    INTEGER NOT NULL,
     items       TEXT NOT NULL,
+    payment     TEXT,                              -- wuju | silver (método que eligió el comprador)
     status      TEXT NOT NULL DEFAULT 'open',      -- open | closed | sold
     created_at  TEXT NOT NULL,
     closed_at   TEXT,
@@ -78,6 +79,9 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(gshop_tickets)")}
+        if "payment" not in cols:                     # bases creadas antes de esta columna
+            conn.execute("ALTER TABLE gshop_tickets ADD COLUMN payment TEXT")
     finally:
         conn.close()
 
@@ -139,24 +143,27 @@ class Ticket:
     buyer_id: int
     items: str
     status: str
+    payment: Optional[str] = None
 
 
 def _ticket(row) -> Optional[Ticket]:
     if row is None:
         return None
-    return Ticket(int(row["id"]), int(row["guild_id"]), int(row["channel_id"]), int(row["buyer_id"]), row["items"], row["status"])
+    return Ticket(int(row["id"]), int(row["guild_id"]), int(row["channel_id"]), int(row["buyer_id"]), row["items"], row["status"], row["payment"])
 
 
-def create_ticket(db_path: str, guild_id: int, channel_id: int, buyer_id: int, items: str) -> int:
+def create_ticket(db_path: str, guild_id: int, channel_id: int, buyer_id: int, items: str, payment: Optional[str] = None) -> int:
     items = (items or "").strip()
     if not items:
         raise ShopError("La lista de compra está vacía.")
+    if payment is not None and payment not in CURRENCIES:
+        raise ShopError("Método de pago inválido.")
     conn = connect(db_path)
     try:
         with write_tx(conn):
             cur = conn.execute(
-                "INSERT INTO gshop_tickets(guild_id, channel_id, buyer_id, items, status, created_at) VALUES (?,?,?,?, 'open', ?)",
-                (guild_id, channel_id, buyer_id, items[:MAX_ITEMS_LEN], utcnow_iso()))
+                "INSERT INTO gshop_tickets(guild_id, channel_id, buyer_id, items, payment, status, created_at) VALUES (?,?,?,?,?, 'open', ?)",
+                (guild_id, channel_id, buyer_id, items[:MAX_ITEMS_LEN], payment, utcnow_iso()))
             return int(cur.lastrowid)
     finally:
         conn.close()

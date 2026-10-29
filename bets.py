@@ -15,6 +15,7 @@ from discord.ext import commands, tasks
 
 import bets_db as bdb
 import economy_db as eco
+from slashctx import SlashContext
 
 NO_MENTIONS = discord.AllowedMentions.none()
 STATUS_LABEL = {"open": "🟢 Abierta", "closed": "🔒 Cerrada (esperando resultado)", "resolved": "🏆 Resuelta", "cancelled": "🚫 Cancelada"}
@@ -385,6 +386,70 @@ class BetsCog(commands.Cog):
         await ctx.reply(f"✅ {ctx.author.mention} apostó **{self.money(amount)}** a **{label}**. Tu saldo ahora: {self.money(result.balance)}.",
                         mention_author=False, allowed_mentions=NO_MENTIONS)
         # el panel se actualiza solo (ticker) a partir de la marca guardada en la base
+
+    # ---------- !apostartodo ----------
+    @commands.command(name="apostartodo")
+    @guard
+    async def apostartodo(self, ctx: commands.Context, *, opcion: str = ""):
+        """Apuesta TODO el saldo a una opción, pidiendo confirmación antes de descontar nada."""
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        bet = await self.run(bdb.find_by_thread, ctx.channel.id)
+        if bet is None:
+            return await ctx.reply("❌ `!apostartodo` solo se puede usar dentro del hilo de una apuesta abierta.",
+                                   mention_author=False, allowed_mentions=NO_MENTIONS)
+        option_text = " ".join((opcion or "").split())
+        if not option_text:
+            return await ctx.reply("Uso: `!apostartodo [opción]` (apuesta todo tu saldo a esa opción).",
+                                   mention_author=False, allowed_mentions=NO_MENTIONS)
+        if bet.status != "open":
+            return await ctx.reply("❌ Esa apuesta ya no acepta más apuestas.", mention_author=False, allowed_mentions=NO_MENTIONS)
+        idx = bet.find_option(option_text)
+        if idx is None:
+            listing = " · ".join(f"`{o}`" for o in bet.options)
+            return await ctx.reply(f"❌ Esa opción no existe. Opciones: {listing}", mention_author=False, allowed_mentions=NO_MENTIONS)
+        balance = await self.run(eco.get_balance, ctx.author.id)
+        if balance <= 0:
+            return await ctx.reply("❌ No tenés saldo para apostar.", mention_author=False, allowed_mentions=NO_MENTIONS)
+        label = bet.options[idx]
+        author_id = ctx.author.id
+        thread_id = ctx.channel.id
+
+        async def go(inter):
+            now_balance = await self.run(eco.get_balance, author_id)
+            if now_balance != balance:
+                return await inter.response.edit_message(
+                    content=f"⚠️ Tu saldo cambió ({self.money(balance)} → {self.money(now_balance)}). No se apostó nada: volvé a usar el comando.", view=None)
+            result = await self.run(bdb.place_wager, bet.id, author_id, label, balance, thread_id=thread_id)
+            if not result.ok:
+                return await inter.response.edit_message(content=f"❌ {result.message}", view=None)
+            await inter.response.edit_message(
+                content=f"✅ <@{author_id}> apostó **todo su saldo ({self.money(balance)})** a **{label}**. Tu saldo ahora: {self.money(result.balance)}.", view=None)
+
+        await ctx.reply(f"⚠️ ¿Confirmás apostar **TODO tu saldo ({self.money(balance)})** a **{label}**?\n"
+                        "Se descuenta al instante y no se puede retirar.",
+                        view=ConfirmView(author_id, go, "Sí, apostar todo"), mention_author=False, allowed_mentions=NO_MENTIONS)
+
+    # ---------- versiones slash ----------
+    @app_commands.command(name="apostar", description="Apostá Wuju Coins a una opción (dentro del hilo de la apuesta)")
+    @app_commands.describe(opcion="Opción a la que apostás", cantidad="Cantidad (ej: 5.000)")
+    @app_commands.guild_only()
+    async def apostar_slash(self, interaction: discord.Interaction, opcion: str, cantidad: str):
+        await self.apostar.callback(self, SlashContext(interaction), args=f"{opcion} {cantidad}")
+
+    @app_commands.command(name="apostartodo", description="Apostá TODO tu saldo a una opción (pide confirmación)")
+    @app_commands.describe(opcion="Opción a la que apostás todo")
+    @app_commands.guild_only()
+    async def apostartodo_slash(self, interaction: discord.Interaction, opcion: str):
+        await self.apostartodo.callback(self, SlashContext(interaction), opcion=opcion)
+
+    @apostar_slash.autocomplete("opcion")
+    async def _ac_apostar(self, interaction, current: str):
+        return await self.option_autocomplete(interaction, current)
+
+    @apostartodo_slash.autocomplete("opcion")
+    async def _ac_apostartodo(self, interaction, current: str):
+        return await self.option_autocomplete(interaction, current)
 
     # ---------- cerrar / resolver / cancelar ----------
     async def _target_bet(self, interaction, bet_id: Optional[int]) -> Optional[bdb.Bet]:
