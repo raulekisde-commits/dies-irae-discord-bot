@@ -352,7 +352,7 @@ class GamesCog(commands.Cog):
                 return await self._say(interaction, "❌ No encuentro ese juego.")
             if getattr(interaction.user, "bot", False) or interaction.guild is None:
                 return
-            blocked = await self.run(cdb.block_reason, interaction.guild.id, interaction.user.id)
+            blocked = await self.run(cdb.block_reason, interaction.guild.id, interaction.user.id, check_open=False)   # anotarse sigue permitido con el casino cerrado
             if blocked:
                 return await self._say(interaction, blocked)
             res = await self.run(gdb.join_game, game.id, interaction.user.id)

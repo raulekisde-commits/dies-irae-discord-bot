@@ -4,7 +4,7 @@ Los tickets solo registran quién, de qué tipo y (si es compra) cuántos Wuju C
 el Council con un botón y se aplica con `economy_db.apply_operation`, que es idempotente por `request_key`.
 """
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import economy_db as eco
 from dbutil import connect, utcnow_iso, write_tx
@@ -67,6 +67,11 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cm_tickets)")}
+        if "message_id" not in cols:                                  # migración aditiva: mensaje del ticket y balance que muestra
+            conn.execute("ALTER TABLE cm_tickets ADD COLUMN message_id INTEGER")
+        if "shown_balance" not in cols:
+            conn.execute("ALTER TABLE cm_tickets ADD COLUMN shown_balance INTEGER")
     finally:
         conn.close()
 
@@ -165,5 +170,34 @@ def set_panel(db_path: str, guild_id: int, kind: str, channel_id: int, message_i
         with write_tx(conn):
             conn.execute("INSERT OR REPLACE INTO cm_panels(guild_id, kind, channel_id, message_id) VALUES (?,?,?,?)",
                          (guild_id, kind, channel_id, message_id))
+    finally:
+        conn.close()
+
+
+# ---------- mantener al día el balance que muestran los tickets de cobro ----------
+def set_ticket_message(db_path: str, ticket_id: int, message_id: int, balance: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE cm_tickets SET message_id = ?, shown_balance = ? WHERE id = ?", (message_id, balance, ticket_id))
+    finally:
+        conn.close()
+
+
+def set_shown_balance(db_path: str, ticket_id: int, balance: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE cm_tickets SET shown_balance = ? WHERE id = ?", (balance, ticket_id))
+    finally:
+        conn.close()
+
+
+def live_sell_tickets(db_path: str) -> List[Tuple[Ticket, int, Optional[int]]]:
+    """Tickets de cobro abiertos y sin procesar: (ticket, id del mensaje, balance que muestran)."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT * FROM cm_tickets WHERE kind = 'sell' AND status = 'open' AND processed = 0 AND message_id IS NOT NULL").fetchall()
+        return [(_row(r), int(r["message_id"]), None if r["shown_balance"] is None else int(r["shown_balance"])) for r in rows]
     finally:
         conn.close()

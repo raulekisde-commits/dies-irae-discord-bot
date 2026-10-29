@@ -710,6 +710,8 @@ class EconomyCog(commands.Cog):
 
     @staticmethod
     def _cmd_label(command: str) -> str:
+        if command == "1v1":
+            return "`/1v1`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money") else f"`!{command}`"
@@ -934,6 +936,10 @@ class EconomyCog(commands.Cog):
             status, before, _ = await self._db(
                 eco.set_balance, user_id=member.id, target=0, actor_id=actor,
                 request_key=f"leave:{member.id}:{uuid.uuid4().hex}", reason="Salió del servidor", mov_type="balance_reset")
+            try:                                  # además de la plata, se reinician sus estadísticas (tops y winrate)
+                await self._db(stats_db.reset_user, member.id)
+            except Exception:
+                traceback.print_exc()
             if status == "applied":
                 emb = discord.Embed(title="🚪 Balance restablecido por salida del servidor", color=discord.Color.orange())
                 emb.add_field(name="Usuario", value=f"<@{member.id}> (`{member.id}`)", inline=True)
@@ -943,7 +949,7 @@ class EconomyCog(commands.Cog):
             traceback.print_exc()
 
     @app_commands.command(name="set-balance", description="(Admin) Deja el balance de una persona EXACTAMENTE en el número indicado")
-    @app_commands.describe(usuario="Persona", cantidad="Nuevo balance (admite 0 y negativos, ej: 5.000)")
+    @app_commands.describe(usuario="Persona", cantidad="Nuevo balance (admite 0 y negativos, ej: 5,000)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def set_balance_cmd(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
@@ -1022,7 +1028,7 @@ class EconomyCog(commands.Cog):
     # /give-money: pasar Wuju Coins propios a otra persona
     # ============================================================
     @app_commands.command(name="give-money", description="Dale Wuju Coins de tu balance a otra persona")
-    @app_commands.describe(usuario="Quién los recibe", cantidad="Cantidad (ej: 5.000)", motivo="Motivo (opcional)")
+    @app_commands.describe(usuario="Quién los recibe", cantidad="Cantidad (ej: 5,000)", motivo="Motivo (opcional)")
     @app_commands.guild_only()
     async def give_money(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
         try:

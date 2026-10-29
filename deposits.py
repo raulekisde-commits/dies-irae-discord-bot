@@ -4,7 +4,7 @@ import traceback
 from typing import Optional
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import deposits_db as ddb
 import economy_db as eco
@@ -13,6 +13,7 @@ from guildshop import COUNCIL_ROLE_ID, can_manage, safe_channel_name
 NO_MENTIONS = discord.AllowedMentions.none()
 PING = discord.AllowedMentions(roles=True, users=True, everyone=False)
 CLOSE_DELAY_SECONDS = 5
+SELL_REFRESH_SECONDS = 10
 GREEN, ORANGE = 0x2ECC71, 0xE67E22
 
 
@@ -172,6 +173,11 @@ class DepositsCog(commands.Cog):
         await self.run(ddb.init_schema)
         for view in (SellPanelView(self), BuyPanelView(self), SellTicketView(self), BuyTicketView(self)):
             self.bot.add_view(view)
+        if not self.sell_refresher.is_running():
+            self.sell_refresher.start()
+
+    async def cog_unload(self):
+        self.sell_refresher.cancel()
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -301,10 +307,7 @@ class DepositsCog(commands.Cog):
             eco_cog = self.economy
             bal_emb = await eco_cog.bal_embed(user) if eco_cog is not None else None
             if kind == "sell":
-                emb = discord.Embed(title=f"💸 Ticket de venta #{ticket_id}", color=ORANGE)
-                emb.add_field(name="Usuario", value=user.mention, inline=True)
-                emb.add_field(name="Qué quiere", value="Cambiar sus Wuju Coins por silver", inline=True)
-                emb.add_field(name="Council", value="**Aceptar** para elegir el monto y retirar los Wuju Coins, o **Cerrar** para cancelar.", inline=False)
+                emb = self.sell_ticket_embed(ticket_id, user)
                 view = SellTicketView(self)
             else:
                 emb = discord.Embed(title=f"🪙 Ticket de compra #{ticket_id}", color=GREEN)
@@ -315,13 +318,63 @@ class DepositsCog(commands.Cog):
                 emb.set_footer(text="Solo los Council pueden agregar los Wuju Coins o cerrar este ticket.")
                 view = BuyTicketView(self)
             embeds = [emb] + ([bal_emb] if bal_emb is not None else [])
-            await channel.send(f"{user.mention} <@&{COUNCIL_ROLE_ID}>", embeds=embeds, view=view, allowed_mentions=PING)
+            sent = await channel.send(f"{user.mention} <@&{COUNCIL_ROLE_ID}>", embeds=embeds, view=view, allowed_mentions=PING)
+            if kind == "sell":
+                shown = await self.run(eco.get_balance, user.id)
+                await self.run(ddb.set_ticket_message, ticket_id, sent.id, shown)
         except Exception:
             traceback.print_exc()
             await self.run(ddb.discard_ticket, ticket_id)
             await self._try_delete(channel)
             return await interaction.followup.send("❌ No pude abrir el ticket. Probá de nuevo.", ephemeral=True)
         await interaction.followup.send(f"✅ Ticket abierto: {channel.mention}", ephemeral=True)
+
+    @staticmethod
+    def sell_ticket_embed(ticket_id: int, user) -> discord.Embed:
+        emb = discord.Embed(title=f"💰 Cobro de balance #{ticket_id}", color=ORANGE)
+        emb.add_field(name="Usuario", value=user.mention, inline=True)
+        emb.add_field(name="Qué quiere", value="Cobrar su balance de Wuju Coins en silver", inline=True)
+        emb.add_field(name="Council", value="**Aceptar** para elegir el monto y retirar los Wuju Coins, o **Cerrar** para cancelar.", inline=False)
+        emb.set_footer(text="El balance de abajo se actualiza solo si la persona juega o recibe/gasta Wuju Coins mientras el ticket está abierto.")
+        return emb
+
+    # ---------- el balance del ticket de cobro se mantiene al día ----------
+    @tasks.loop(seconds=SELL_REFRESH_SECONDS)
+    async def sell_refresher(self):
+        try:
+            await self.refresh_sell_tickets()
+        except Exception:
+            traceback.print_exc()
+
+    @sell_refresher.before_loop
+    async def _before_sell_refresher(self):
+        await self.bot.wait_until_ready()
+
+    async def refresh_sell_tickets(self) -> int:
+        """Si la persona de un ticket de cobro abierto tuvo un movimiento en su balance (jugó en el casino, le pagaron, etc.),
+        el balance que muestra el ticket se actualiza. Devuelve cuántos tickets se actualizaron."""
+        done = 0
+        for ticket, message_id, shown in await self.run(ddb.live_sell_tickets):
+            try:
+                current = await self.run(eco.get_balance, ticket.user_id)
+                if shown is not None and current == shown:
+                    continue
+                guild = self.bot.get_guild(ticket.guild_id)
+                member = guild.get_member(ticket.user_id) if guild is not None else None
+                channel = self.bot.get_channel(ticket.channel_id)
+                eco_cog = self.economy
+                if member is None or channel is None or eco_cog is None:
+                    continue
+                msg = await channel.fetch_message(message_id)
+                embeds = [self.sell_ticket_embed(ticket.id, member), await eco_cog.bal_embed(member)]
+                await msg.edit(embeds=embeds, view=SellTicketView(self), allowed_mentions=NO_MENTIONS)
+                await self.run(ddb.set_shown_balance, ticket.id, current)
+                done += 1
+            except discord.NotFound:
+                await self.run(ddb.set_shown_balance, ticket.id, await self.run(eco.get_balance, ticket.user_id))   # mensaje borrado: no insistir
+            except Exception as exc:
+                print(f"⚠️ Ticket de cobro #{ticket.id}: no pude actualizar el balance: {exc!r}")
+        return done
 
     @staticmethod
     async def _try_delete(channel):

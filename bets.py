@@ -436,7 +436,7 @@ class BetsCog(commands.Cog):
 
     # ---------- versiones slash ----------
     @app_commands.command(name="apostar", description="Apostá Wuju Coins a una opción (dentro del hilo de la apuesta)")
-    @app_commands.describe(opcion="Opción a la que apostás", cantidad="Cantidad (ej: 5.000)")
+    @app_commands.describe(opcion="Opción a la que apostás", cantidad="Cantidad (ej: 5,000)")
     @app_commands.guild_only()
     async def apostar_slash(self, interaction: discord.Interaction, opcion: str, cantidad: str):
         await self.apostar.callback(self, SlashContext(interaction), args=f"{opcion} {cantidad}")

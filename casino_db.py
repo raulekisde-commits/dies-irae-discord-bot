@@ -91,9 +91,12 @@ def list_banned(db_path: str, guild_id: int) -> List[int]:
         conn.close()
 
 
-def block_reason(db_path: str, guild_id: int, *user_ids: int) -> Optional[str]:
-    """Texto para mostrar si el casino está cerrado o alguna de las personas está bloqueada (None = puede jugar)."""
-    if not is_open(db_path, guild_id):
+def block_reason(db_path: str, guild_id: int, *user_ids: int, check_open: bool = True) -> Optional[str]:
+    """Texto para mostrar si el casino está cerrado o alguna de las personas está bloqueada (None = puede jugar).
+
+    `check_open=False` se usa al ANOTARSE en un juego que ya estaba en marcha (dados, coinflip, 1v1): con el casino cerrado no se
+    puede crear nada nuevo, pero lo que ya empezó se puede terminar. La lista negra se aplica siempre."""
+    if check_open and not is_open(db_path, guild_id):
         return CLOSED_TEXT
     for uid in user_ids:
         if is_banned(db_path, guild_id, uid):

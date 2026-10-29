@@ -15,7 +15,7 @@ import bets_db as bdb
 import economy_db as eco
 import duels_db as ddl
 import games_db as gdb
-from dbutil import connect
+from dbutil import connect, utcnow_iso, write_tx
 
 STAKE_TYPES = ("bet_stake", "dice_stake", "coinflip_stake", "duel_stake")
 RESULT_TYPES = STAKE_TYPES + ("bet_payout", "dice_win", "coinflip_win", "duel_win")
@@ -34,10 +34,35 @@ class GamblerStats:
         return self.won - self.lost
 
 
+RESET_SCHEMA = """
+CREATE TABLE IF NOT EXISTS stats_reset (
+    user_id  INTEGER PRIMARY KEY,
+    reset_at TEXT NOT NULL
+);
+"""
+
+
 def init_schema(db_path: str) -> None:
     bdb.init_schema(db_path)
     gdb.init_schema(db_path)
     ddl.init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        conn.executescript(RESET_SCHEMA)
+    finally:
+        conn.close()
+
+
+def reset_user(db_path: str, user_id: int) -> None:
+    """Reinicia las estadísticas de una persona (cuando sale del servidor): lo jugado hasta ahora deja de contar en tops y
+    winrate. El historial de movimientos NO se borra (queda para auditoría); solo se ignora lo anterior a este momento."""
+    init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT OR REPLACE INTO stats_reset(user_id, reset_at) VALUES (?, ?)", (user_id, utcnow_iso()))
+    finally:
+        conn.close()
 
 
 _SQL = """
@@ -54,8 +79,10 @@ SELECT user_id,
           LEFT JOIN bets  b ON m.related_id = 'bet:'  || b.id
           LEFT JOIN games g ON m.related_id = 'game:' || g.id
           LEFT JOIN duels d ON m.related_id = 'duel:' || d.id
+          LEFT JOIN stats_reset r ON r.user_id = m.user_id
          WHERE m.kind IN ({results})
            AND (b.status = 'resolved' OR g.status = 'done' OR d.status = 'done')
+           AND (r.reset_at IS NULL OR m.created_at > r.reset_at)
            {user_filter}
          GROUP BY m.user_id, m.related_id
        )
@@ -99,10 +126,19 @@ def top_by(db_path: str, field: str) -> List[GamblerStats]:
     - 'wagered': lo apostado (quien tiene 0 no aparece).
     - 'net':     ganado − perdido; puede ser negativo. Aparece quien jugó al menos una partida terminada
                  (los negativos van al final).
+    - 'gain' / 'loss': Top ganado (solo positivos) y Top perdido (solo negativos, el que más perdió primero).
     - 'won' / 'lost': solo quienes tienen algo en ese campo.
     """
-    if field not in ("won", "lost", "wagered", "net"):
+    if field not in ("won", "lost", "wagered", "net", "gain", "loss"):
         raise ValueError("campo inválido")
+    if field == "gain":                    # Top ganado: solo quienes están en positivo (ganado − perdido > 0), de mayor a menor
+        rows = [s for s in all_stats(db_path) if s.net > 0]
+        rows.sort(key=lambda s: (-s.net, s.user_id))
+        return rows
+    if field == "loss":                    # Top perdido: solo quienes están en negativo, del que más perdió al que menos
+        rows = [s for s in all_stats(db_path) if s.net < 0]
+        rows.sort(key=lambda s: (s.net, s.user_id))
+        return rows
     if field == "net":
         rows = [s for s in all_stats(db_path) if s.games > 0]
     else:
@@ -136,7 +172,9 @@ class WinRate:
 def _winrates(db_path: str, kind: str, user_id: Optional[int]) -> List[WinRate]:
     sql = """SELECT p.user_id AS u, COUNT(*) AS played, SUM(CASE WHEN g.winner_id = p.user_id THEN 1 ELSE 0 END) AS wins
                FROM game_players p JOIN games g ON g.id = p.game_id
-              WHERE g.kind = ? AND g.status = 'done' AND g.winner_id IS NOT NULL {flt}
+              LEFT JOIN stats_reset r ON r.user_id = p.user_id
+              WHERE g.kind = ? AND g.status = 'done' AND g.winner_id IS NOT NULL
+                AND (r.reset_at IS NULL OR g.resolved_at > r.reset_at) {flt}
               GROUP BY p.user_id"""
     sql = sql.format(flt="AND p.user_id = ?" if user_id is not None else "")
     params = [kind] + ([user_id] if user_id is not None else [])
