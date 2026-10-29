@@ -85,7 +85,7 @@ def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
                f"Taxes de looters: {fmt(c.looter_tax_total)}\n\n")
     summary.description = (
         f"**Total:** {fmt(s.total)}\n"
-        f"**Bolsitas:** {fmt(s.bolsitas)}\n"
+        f"**Bolsitas:** {fmt(s.bolsitas)} (se suman al total a splitear)\n"
         f"**Reparación:** {fmt(s.repair)}\n"
         f"**Tax de venta:** {pct(s.tax_sale)} ({fmt(c.sale_tax)})\n"
         f"**Tax de guild:** {pct(s.tax_guild)} ({fmt(c.guild_tax)})\n"
@@ -94,7 +94,9 @@ def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
         f"**Cantidad de personas:** {c.people}\n"
         f"**Total por persona:** {fmt(c.per_person)}")
     if c.leftover:
-        summary.set_footer(text=f"Sobran {fmt(c.leftover)} que no se reparten (no alcanzan para una unidad más por persona).")
+        pass
+    note = "💡 Para agregar gente a la lista: !agregarlista @Ana @Beto @Caro"
+    summary.set_footer(text=(f"Sobran {fmt(c.leftover)} que no se reparten (no alcanzan para una unidad más por persona).\n" if c.leftover else "") + note)
     out.append(summary)
     return out
 
@@ -521,6 +523,27 @@ class SplitsCog(commands.Cog):
         self.bot.add_view(SplitEditingPanelView(self))
         self.bot.add_view(SplitClosedPanelView(self))
         self.bot.add_view(SplitRequestView(self))
+        self._closed_panels_done = False
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Los paneles de splits cerrados antes de existir el botón «Editar» se actualizan una vez para que lo tengan."""
+        if self._closed_panels_done:
+            return
+        self._closed_panels_done = True
+        try:
+            rows = await self.run(sdb.list_closed)
+        except Exception as exc:
+            return print(f"⚠️ Splits: no pude listar los paneles cerrados: {exc!r}")
+        for split_id, channel_id, message_id in rows:
+            try:
+                ch = await self._get_channel(channel_id)
+                msg = await ch.fetch_message(message_id) if ch is not None else None
+                if msg is not None and not getattr(msg, "components", None):
+                    await msg.edit(view=SplitClosedPanelView(self), allowed_mentions=NO_MENTIONS)
+                    await asyncio.sleep(1)
+            except Exception as exc:
+                print(f"⚠️ Split #{split_id}: no pude agregar el botón Editar al panel: {exc!r}")
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
