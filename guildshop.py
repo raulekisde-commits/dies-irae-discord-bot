@@ -110,17 +110,42 @@ class SoldTicketView(discord.ui.View):
         await self.cog.on_delete_pressed(interaction)
 
 
+PAYMENT_LABEL = {"wuju": "🪙 Wuju Coins", "silver": "💰 Silver"}
+
+
+class PaymentChoiceView(discord.ui.View):
+    """Primer paso (privado): ¿con qué querés pagar? Después se pide la lista de compra."""
+
+    def __init__(self, cog: "GuildShopCog", owner_id: int):
+        super().__init__(timeout=180.0)
+        self.cog, self.owner_id = cog, owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Este mensaje no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Wuju Coins", style=discord.ButtonStyle.success, emoji="🪙")
+    async def wuju(self, interaction: discord.Interaction, button):
+        await self.cog.on_payment_chosen(interaction, "wuju")
+
+    @discord.ui.button(label="Silver", style=discord.ButtonStyle.primary, emoji="💰")
+    async def silver(self, interaction: discord.Interaction, button):
+        await self.cog.on_payment_chosen(interaction, "silver")
+
+
 class BuyModal(discord.ui.Modal, title="Comprar en el shop de la guild"):
     items = discord.ui.TextInput(label="Lista de compra", style=discord.TextStyle.paragraph, required=True,
                                  max_length=gdb.MAX_ITEMS_LEN,
                                  placeholder="Todos los ítems que querés comprar, uno por línea (con cantidades)")
 
-    def __init__(self, cog: "GuildShopCog"):
+    def __init__(self, cog: "GuildShopCog", payment: str = "wuju"):
         super().__init__()
-        self.cog = cog
+        self.cog, self.payment = cog, payment
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.on_buy_submitted(interaction, str(self.items.value))
+        await self.cog.on_buy_submitted(interaction, str(self.items.value), self.payment)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -227,7 +252,7 @@ class GuildShopCog(commands.Cog):
             "Comprá ítems directamente a la guild.\n\n"
             "**🏷️ Todos los ítems tienen un 10% de descuento.**\n\n"
             "**Cómo funciona**\n"
-            "1. Tocá **Comprar** y escribí la lista de todo lo que querés (con cantidades).\n"
+            "1. Tocá **Comprar**, elegí si pagás con **Wuju Coins** o **Silver** y escribí la lista de todo lo que querés (con cantidades).\n"
             "2. Se abre un ticket privado y se avisa a los **Seller**.\n"
             "3. Un Seller te confirma el precio final y se cobra en **Wuju Coins** o en **silver**.")
         return emb
@@ -317,9 +342,14 @@ class GuildShopCog(commands.Cog):
         existing = await self.run(gdb.open_ticket_of, interaction.guild.id, interaction.user.id)
         if existing is not None:
             return await _reply(interaction, f"ℹ️ Ya tenés un ticket abierto: <#{existing.channel_id}>. Cerralo o esperá a que lo atiendan antes de abrir otro.")
-        await interaction.response.send_modal(BuyModal(self))
+        await interaction.response.send_message(
+            "¿Cómo querés pagar? Elegí **Wuju Coins** o **Silver**. Después te pido la lista de compra.",
+            view=PaymentChoiceView(self, interaction.user.id), ephemeral=True)
 
-    async def on_buy_submitted(self, interaction: discord.Interaction, items: str):
+    async def on_payment_chosen(self, interaction: discord.Interaction, payment: str):
+        await interaction.response.send_modal(BuyModal(self, payment))
+
+    async def on_buy_submitted(self, interaction: discord.Interaction, items: str, payment: str = "wuju"):
         guild = interaction.guild
         if guild is None or not isinstance(interaction.user, discord.Member):
             return await _reply(interaction, "❌ Solo disponible en el servidor.")
@@ -350,7 +380,7 @@ class GuildShopCog(commands.Cog):
         except (discord.Forbidden, discord.HTTPException) as exc:
             return await interaction.followup.send(f"❌ No pude crear el ticket (revisá mis permisos de **Gestionar canales**): {exc}", ephemeral=True)
         try:
-            ticket_id = await self.run(gdb.create_ticket, guild.id, channel.id, interaction.user.id, items)
+            ticket_id = await self.run(gdb.create_ticket, guild.id, channel.id, interaction.user.id, items, payment)
         except Exception:
             traceback.print_exc()
             await self._try_delete(channel)
@@ -358,6 +388,7 @@ class GuildShopCog(commands.Cog):
         emb = discord.Embed(title=f"🛒 Ticket de compra #{ticket_id}", color=0x2ECC71)
         emb.add_field(name="Comprador", value=interaction.user.mention, inline=False)
         emb.add_field(name="Lista de compra", value=items[:1000], inline=False)
+        emb.add_field(name="Quiere pagar con", value=PAYMENT_LABEL.get(payment, payment), inline=True)
         emb.add_field(name="Descuento", value="Los ítems tienen **10% de descuento**.", inline=False)
         emb.set_footer(text="Solo los Seller pueden usar los botones.")
         ping = f"<@&{SELLER_ROLE_ID}> {interaction.user.mention}"

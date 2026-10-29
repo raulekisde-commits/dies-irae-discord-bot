@@ -19,6 +19,7 @@ from decimal import Decimal
 from economy import setup_economy
 from bets import setup_bets
 from guildshop import setup_guildshop
+from games import setup_games
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -265,6 +266,7 @@ class MyBot(commands.Bot):
             await setup_economy(self, DB_PATH, GUILD_ID, MIEMBRO_ROLE_ID, STAFF_ROLE_ID)
             await setup_bets(self, DB_PATH, GUILD_ID)
             await setup_guildshop(self, DB_PATH, GUILD_ID)
+            await setup_games(self, DB_PATH, GUILD_ID)
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
             print("❌ Error cargando Wuju Coins:", e)
@@ -2240,6 +2242,44 @@ async def panel_foco(ctx: commands.Context):
     )
     embed.set_footer(text="Smogg Foco Donor System")
     await ctx.send(embed=embed, view=FocoPanelView())
+
+
+async def _publish_admin_panel(interaction: discord.Interaction, embed: discord.Embed, view: discord.ui.View):
+    """Versión slash de !panel / !panel_foco: solo administradores; el panel se publica en el canal actual."""
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+        return await respond_ephemeral(interaction, "❌ Este comando es solo para administradores.")
+    channel = interaction.channel
+    if channel is None or not hasattr(channel, "send"):
+        return await respond_ephemeral(interaction, "❌ No puedo publicar en este canal.")
+    try:
+        await channel.send(embed=embed, view=view)
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        return await respond_ephemeral(interaction, f"❌ No pude publicar el panel: {exc}")
+    await respond_ephemeral(interaction, "✅ Panel publicado.")
+
+
+@bot.tree.command(name="panel", description="(Admin) Publica el panel de reclutamiento en este canal", guild=GUILD_OBJ)
+@app_commands.default_permissions(administrator=True)
+async def panel_slash(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="⚔️ Smogg Reclutamiento",
+        description="Presioná el botón para abrir tu **postulación oficial**.",
+        color=discord.Color.orange()
+    )
+    embed.set_footer(text="Albion Online Recruitment System")
+    await _publish_admin_panel(interaction, embed, PanelView())
+
+
+@bot.tree.command(name="panel_foco", description="(Admin) Publica el panel de Foco Donor en este canal", guild=GUILD_OBJ)
+@app_commands.default_permissions(administrator=True)
+async def panel_foco_slash(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Foco Donor",
+        description="Presioná el botón para donar foco a la guild.",
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text="Smogg Foco Donor System")
+    await _publish_admin_panel(interaction, embed, FocoPanelView())
 
 
 # ============================================================
@@ -5696,8 +5736,11 @@ HELP_SECTIONS = [
         ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
-        ("!apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
+        ("/apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
         ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
+        ("/dados cantidad · !dados cantidad", "Habilitado con /perms-canal y /perms-comando", "Partida de dados de 5 minutos: panel con botón Anotarse. Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000 por entrada; no hay baja."),
+        ("/coinflip cantidad · !coinflip cantidad", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos: lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que /dados)."),
+        ("/apostartodo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
         ("/guild-shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
         ("/canal logs guildshop [canal]", "Council", "Define el canal donde se registra cada transacción del Guild Shop."),
         ("/set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),

@@ -19,9 +19,10 @@ ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 # Comandos de administración de saldo: funcionan en cualquier canal (solo se exige el rol/permiso).
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
 # Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
-EXTRA_PERMISSION_COMMANDS = ("apuesta", "verhistorial", "set-balance")
+GAME_COMMANDS = ("dados", "coinflip")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
+EXTRA_PERMISSION_COMMANDS = ("apuesta", "verhistorial", "set-balance") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
-CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS)   # bal, top
+CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + GAME_COMMANDS   # bal, top, dados, coinflip
 
 
 # ============================================================
@@ -90,6 +91,12 @@ MOVEMENT_LABELS = {
     "balance_set": "Saldo ajustado",
     "balance_reset": "Saldo restablecido",
     "guildshop_purchase": "Compra en Guild Shop",
+    "dice_stake": "Entrada a dados",
+    "dice_win": "Premio de dados",
+    "dice_refund": "Devolución de dados",
+    "coinflip_stake": "Apuesta de coinflip",
+    "coinflip_win": "Premio de coinflip",
+    "coinflip_refund": "Devolución de coinflip",
 }
 
 

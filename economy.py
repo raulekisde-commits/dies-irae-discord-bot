@@ -17,6 +17,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import economy_db as eco
+from slashctx import SlashContext
 
 NO_MENTIONS = discord.AllowedMentions.none()
 EMBED_DESC_BUDGET = 3600          # margen bajo el límite de 4096 caracteres de la descripción
@@ -592,6 +593,42 @@ class EconomyCog(commands.Cog):
         await self._apply_and_report(ctx, kind="remove", user_ids=[member.id], amount=amount, role_id=None, reason=reason)
 
     # ============================================================
+    # Versiones slash de los comandos con "!" (misma lógica, mismos permisos y canales)
+    # ============================================================
+    @app_commands.command(name="bal", description="Mirá tu balance de Wuju Coins (o el de otra persona)")
+    @app_commands.describe(usuario="Persona (opcional)")
+    @app_commands.guild_only()
+    async def bal_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        await self.bal.callback(self, SlashContext(interaction), objetivo=usuario.mention if usuario else "")
+
+    @app_commands.command(name="top", description="Top 10 de Wuju Coins")
+    @app_commands.guild_only()
+    async def top_slash(self, interaction: discord.Interaction):
+        await self.top.callback(self, SlashContext(interaction))
+
+    @app_commands.command(name="addmoney", description="Agrega Wuju Coins a una persona")
+    @app_commands.describe(usuario="Persona que recibe", cantidad="Cantidad (ej: 150.000)", motivo="Motivo (opcional)")
+    @app_commands.guild_only()
+    async def addmoney_slash(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
+        await self.addmoney.callback(self, SlashContext(interaction), args=f"{usuario.mention} {cantidad} {motivo or ''}".strip())
+
+    @app_commands.command(name="addmoney-role", description="Agrega Wuju Coins a CADA miembro de un rol")
+    @app_commands.describe(rol="Rol", cantidad="Cantidad para cada miembro", motivo="Motivo (opcional)")
+    @app_commands.guild_only()
+    async def addmoney_role_slash(self, interaction: discord.Interaction, rol: discord.Role, cantidad: str, motivo: Optional[str] = None):
+        await self.addmoney_role.callback(self, SlashContext(interaction), args=f"{rol.mention} {cantidad} {motivo or ''}".strip())
+
+    @app_commands.command(name="remove-money", description="Retira Wuju Coins a una persona o a un rol")
+    @app_commands.describe(cantidad="Cantidad a retirar", usuario="Persona (o usá rol)", rol="Rol (o usá usuario)", motivo="Motivo (opcional)")
+    @app_commands.guild_only()
+    async def remove_money_slash(self, interaction: discord.Interaction, cantidad: str, usuario: Optional[discord.Member] = None,
+                                 rol: Optional[discord.Role] = None, motivo: Optional[str] = None):
+        if (usuario is None) == (rol is None):
+            return await self._ephemeral(interaction, "❌ Indicá una persona **o** un rol (uno solo de los dos).")
+        target = usuario.mention if usuario is not None else rol.mention
+        await self.remove_money.callback(self, SlashContext(interaction), args=f"{target} {cantidad} {motivo or ''}".strip())
+
+    # ============================================================
     # Comandos slash de administración
     # ============================================================
     @app_commands.command(name="config-moneda", description="(Admin) Configura el emoji de Wuju Coins")
@@ -649,6 +686,12 @@ class EconomyCog(commands.Cog):
                 done += 1
         await interaction.followup.send(f"✅ Registros publicados: {done}/{len(pending)}.", ephemeral=True)
 
+    @staticmethod
+    def _cmd_label(command: str) -> str:
+        if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
+            return f"`/{command}` y `!{command}`"
+        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta") else f"`!{command}`"
+
     @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando económico en ESTE canal")
     @app_commands.describe(comando="Comando que querés habilitar en este canal")
     @app_commands.choices(comando=[app_commands.Choice(name=c, value=c) for c in eco.CHANNEL_COMMANDS])
@@ -658,7 +701,7 @@ class EconomyCog(commands.Cog):
         if not await self._require_admin(interaction):
             return
         await self._db(eco.set_command_channel, comando.value, interaction.channel_id)
-        await self._ephemeral(interaction, f"✅ `!{comando.value}` ahora solo funciona en <#{interaction.channel_id}>.")
+        await self._ephemeral(interaction, f"✅ {self._cmd_label(comando.value)} ahora solo funciona en <#{interaction.channel_id}>.")
 
     @app_commands.command(name="perms-comando", description="(Admin) Otorga o revoca a un rol el uso de un comando económico")
     @app_commands.describe(rol="Rol", comando="Comando económico", accion="Otorgar (por defecto) o revocar")
@@ -675,12 +718,12 @@ class EconomyCog(commands.Cog):
         revoke = accion is not None and accion.value == "revocar"
         if revoke:
             changed = await self._db(eco.revoke_command_role, comando.value, rol.id)
-            msg = (f"✅ {rol.mention} ya no puede usar `!{comando.value}`." if changed
-                   else f"ℹ️ {rol.mention} no tenía permiso para `!{comando.value}`.")
+            msg = (f"✅ {rol.mention} ya no puede usar {self._cmd_label(comando.value)}." if changed
+                   else f"ℹ️ {rol.mention} no tenía permiso para {self._cmd_label(comando.value)}.")
         else:
             changed = await self._db(eco.grant_command_role, comando.value, rol.id)
-            msg = (f"✅ {rol.mention} ahora puede usar `!{comando.value}`." if changed
-                   else f"ℹ️ {rol.mention} ya tenía permiso para `!{comando.value}`.")
+            msg = (f"✅ {rol.mention} ahora puede usar {self._cmd_label(comando.value)}." if changed
+                   else f"ℹ️ {rol.mention} ya tenía permiso para {self._cmd_label(comando.value)}.")
         await self._ephemeral(interaction, msg)
 
     @app_commands.command(name="perms-ver", description="(Admin) Muestra roles y canales configurados de los comandos económicos")
@@ -704,7 +747,12 @@ class EconomyCog(commands.Cog):
         for extra in eco.EXTRA_PERMISSION_COMMANDS:
             roles = set(await self._db(eco.get_command_roles, extra))
             roles_txt = ", ".join(f"<@&{r}>" for r in sorted(roles)) or "solo administradores" + (" y Staff" if extra in ("verhistorial", "eco-stats") else "")
-            lines.append(f"**{'/' + extra}** — canal: cualquier canal — roles: {roles_txt}")
+            if extra in eco.GAME_COMMANDS:
+                chan = await self._db(eco.get_command_channel, extra)
+                chan_txt = f"<#{chan}>" if chan else "⚠️ sin canal (deshabilitado)"
+            else:
+                chan_txt = "cualquier canal"
+            lines.append(f"**{'/' + extra}** — canal: {chan_txt} — roles: {roles_txt}")
         lines.append(f"\n**Registro:** {f'<#{log_raw}>' if log_raw else '⚠️ sin configurar'}")
         icon = self.icon()
         lines.append(f"**Icono:** {icon if icon else f'{eco.CURRENCY_NAME} (sin emoji)'}")
