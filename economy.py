@@ -714,14 +714,21 @@ class EconomyCog(commands.Cog):
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money") else f"`!{command}`"
 
-    @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando económico en ESTE canal")
-    @app_commands.describe(comando="Comando que querés habilitar en este canal")
+    @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando en ESTE canal; si ya estaba habilitado acá, lo deshabilita")
+    @app_commands.describe(comando="Comando a habilitar en este canal (si ya está acá, se deshabilita)")
     @app_commands.choices(comando=[app_commands.Choice(name=c, value=c) for c in eco.CHANNEL_COMMANDS])
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def perms_canal(self, interaction: discord.Interaction, comando: app_commands.Choice[str]):
         if not await self._require_admin(interaction):
             return
+        current = await self._db(eco.get_command_channel, comando.value)
+        if current == interaction.channel_id:
+            await self._db(eco.clear_command_channel, comando.value)
+            return await self._ephemeral(
+                interaction,
+                f"🚫 {self._cmd_label(comando.value)} quedó **deshabilitado** (ya no funciona en <#{interaction.channel_id}> ni en ningún otro canal). "
+                f"Volvé a usar `/perms-canal` en el canal que quieras para habilitarlo de nuevo.")
         await self._db(eco.set_command_channel, comando.value, interaction.channel_id)
         await self._ephemeral(interaction, f"✅ {self._cmd_label(comando.value)} ahora solo funciona en <#{interaction.channel_id}>.")
 

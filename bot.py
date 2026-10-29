@@ -22,6 +22,13 @@ from guildshop import setup_guildshop
 from games import setup_games
 from rankings import setup_rankings
 try:
+    from splits import setup_splits
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_splits(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar splits.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from deposits import setup_deposits
 except Exception:
     import traceback as _tb
@@ -337,6 +344,7 @@ class MyBot(commands.Bot):
             await _safe_setup("casino", setup_casino, self, DB_PATH, GUILD_ID)
             await _safe_setup("duels", setup_duels, self, DB_PATH, GUILD_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
+            await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
@@ -5812,6 +5820,8 @@ HELP_SECTIONS = [
         ("!dados cantidad", "Habilitado con /perms-canal y /perms-comando", "Partida de dados de 5 minutos. El panel se publica en el canal definido con `/canal dados`; botón Anotarse (con confirmación). Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000; no hay baja."),
         ("/canal dados canal", "Council / Admin", "Define el canal donde se publican los paneles de `!dados`."),
         ("/panel apuestas", "Admin / rol autorizado", "Publica los paneles de apuestas: Top apostado, Top ganado (ganado − perdido, puede dar negativo), Total perdido, Top winrate de dados y de coinflip y la lista negra del casino."),
+        ("/transparencia titulo [tab] [city] [rol] [total] [reparacion] [looters]", "Council / Admin", "Crea un split: panel con botón Cerrar split + hilo con la lista de personas y el cálculo (taxes, total por persona). Al cerrar (solo Council) se acredita a cada persona su parte y a cada looter su tax."),
+        ("/editar [id]", "Council / Admin / creador", "Edita un split abierto (usalo dentro de su hilo): datos, montos y taxes, looters (agregar/editar/quitar) y personas o roles. El hilo se actualiza al instante."),
         ("/panel cambiomoneda [canal]", "Council / Admin", "Publica dos paneles con tickets: vender Wuju Coins por silver (el Council acepta y retira el balance) y comprar Wuju Coins (depósito + foto; el Council los agrega con doble confirmación)."),
         ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /dados, /coinflip y /1v1."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
