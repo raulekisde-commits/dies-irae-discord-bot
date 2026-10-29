@@ -49,8 +49,20 @@ CREATE TABLE IF NOT EXISTS splits (
     status           TEXT NOT NULL DEFAULT 'open',    -- open | closing | closed | cancelled
     created_at       TEXT NOT NULL,
     closed_at        TEXT,
-    closed_by        INTEGER
+    closed_by        INTEGER,
+    source_cta_id    INTEGER                           -- CTA de la que salió este split (NULL = creado a mano)
 );
+CREATE TABLE IF NOT EXISTS split_requests (            -- anotados después del cierre de la CTA: el organizador decide
+    split_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    slot_no    INTEGER,
+    status     TEXT NOT NULL DEFAULT 'pending',        -- pending | accepted | rejected
+    message_id INTEGER,
+    created_at TEXT NOT NULL,
+    decided_by INTEGER,
+    PRIMARY KEY (split_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_split_requests_msg ON split_requests(message_id);
 CREATE TABLE IF NOT EXISTS split_people (
     split_id INTEGER NOT NULL,
     user_id  INTEGER NOT NULL,
@@ -103,6 +115,7 @@ class Split:
     data_message_id: Optional[int]
     creator_id: int
     status: str
+    source_cta_id: Optional[int] = None
     people: List[int] = field(default_factory=list)
     looters: List[Looter] = field(default_factory=list)
 
@@ -192,12 +205,16 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(splits)")}
+        if "source_cta_id" not in cols:                      # base creada antes de esta columna
+            conn.execute("ALTER TABLE splits ADD COLUMN source_cta_id INTEGER")
+            conn.commit()
     finally:
         conn.close()
 
 
 _COLS = ("id, guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, channel_id, message_id, "
-         "thread_id, list_message_id, data_message_id, creator_id, status")
+         "thread_id, list_message_id, data_message_id, creator_id, status, source_cta_id")
 
 
 def _load(conn: sqlite3.Connection, split_id: int) -> Optional[Split]:
@@ -232,6 +249,10 @@ def find_by_thread(db_path: str, thread_id: int) -> Optional[Split]:
     return _find(db_path, "thread_id", thread_id)
 
 
+def find_by_cta(db_path: str, cta_id: int) -> Optional[Split]:
+    return _find(db_path, "source_cta_id", cta_id)
+
+
 def find_by_message(db_path: str, message_id: int) -> Optional[Split]:
     return _find(db_path, "message_id", message_id)
 
@@ -252,7 +273,7 @@ def _require_open(conn, split_id: int) -> None:
 # ---------- alta y edición ----------
 def create_split(db_path: str, *, guild_id: int, creator_id: int, title: str, tab: Optional[str] = None, city: Optional[str] = None,
                  role_id: Optional[int] = None, total: int = 0, repair: int = 0,
-                 people: Iterable[int] = (), looters: Iterable[int] = ()) -> int:
+                 people: Iterable[int] = (), looters: Iterable[int] = (), source_cta_id: Optional[int] = None) -> int:
     title = _clean(title, MAX_TITLE, "Título", required=True)
     tab, city = _clean(tab, MAX_TEXT, "Tab"), _clean(city, MAX_TEXT, "City")
     people_l = list(dict.fromkeys(int(p) for p in people))
@@ -268,9 +289,9 @@ def create_split(db_path: str, *, guild_id: int, creator_id: int, title: str, ta
     try:
         with write_tx(conn):
             cur = conn.execute(
-                "INSERT INTO splits(guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, creator_id, status, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'open', ?)",
-                (guild_id, title, tab, city, role_id, total, repair, DEFAULT_TAX_SALE, DEFAULT_TAX_GUILD, DEFAULT_TAX_LOOTER, creator_id, utcnow_iso()))
+                "INSERT INTO splits(guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, creator_id, status, created_at, source_cta_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?)",
+                (guild_id, title, tab, city, role_id, total, repair, DEFAULT_TAX_SALE, DEFAULT_TAX_GUILD, DEFAULT_TAX_LOOTER, creator_id, utcnow_iso(), source_cta_id))
             sid = int(cur.lastrowid)
             for i, uid in enumerate(people_l, 1):
                 conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (sid, uid, i))
@@ -426,6 +447,116 @@ def remove_looters(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
             for uid in dict.fromkeys(int(u) for u in user_ids):
                 n += conn.execute("DELETE FROM split_looters WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount
         return n
+    finally:
+        conn.close()
+
+
+# ---------- cancelar ----------
+def cancel_split(db_path: str, split_id: int, actor_id: int) -> str:
+    """Cierra el split SIN pagar nada. Devuelve 'cancelled' | 'closed' (ya estaba cerrado) | 'cancelled_before' | 'closing' | 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT status FROM splits WHERE id=?", (split_id,)).fetchone()
+            if r is None:
+                return "missing"
+            if r["status"] == "closed":
+                return "closed"
+            if r["status"] == "cancelled":
+                return "cancelled_before"
+            if r["status"] == "closing":
+                return "closing"                      # ya empezó a pagar: no se puede cancelar a mitad
+            conn.execute("UPDATE splits SET status='cancelled', closed_at=?, closed_by=? WHERE id=? AND status='open'",
+                         (utcnow_iso(), actor_id, split_id))
+            conn.execute("UPDATE split_requests SET status='rejected', decided_by=? WHERE split_id=? AND status='pending'", (actor_id, split_id))
+            return "cancelled"
+    finally:
+        conn.close()
+
+
+# ---------- solicitudes tardías ----------
+@dataclass
+class Request:
+    split_id: int
+    user_id: int
+    slot_no: Optional[int]
+    status: str
+    message_id: Optional[int]
+
+
+def _req(r) -> Optional[Request]:
+    return Request(int(r["split_id"]), int(r["user_id"]), r["slot_no"], r["status"], r["message_id"]) if r else None
+
+
+def add_request(db_path: str, split_id: int, user_id: int, slot_no: Optional[int]) -> Tuple[str, int]:
+    """Registra a alguien que se anotó después del cierre. Devuelve (estado, cantidad_total_de_solicitudes):
+    'new' · 'listed' (ya está en la lista) · 'pending' / 'accepted' / 'rejected' (ya había pedido antes) · 'closed' (el split ya cerró)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            st = conn.execute("SELECT status FROM splits WHERE id=?", (split_id,)).fetchone()
+            if st is None or st["status"] != "open":
+                return "closed", 0
+            if conn.execute("SELECT 1 FROM split_people WHERE split_id=? AND user_id=?", (split_id, user_id)).fetchone():
+                return "listed", 0
+            old = conn.execute("SELECT status FROM split_requests WHERE split_id=? AND user_id=?", (split_id, user_id)).fetchone()
+            if old is not None:
+                return old["status"], 0
+            conn.execute("INSERT INTO split_requests(split_id, user_id, slot_no, status, created_at) VALUES (?,?,?, 'pending', ?)",
+                         (split_id, user_id, slot_no, utcnow_iso()))
+            n = conn.execute("SELECT COUNT(*) AS n FROM split_requests WHERE split_id=?", (split_id,)).fetchone()["n"]
+            return "new", int(n)
+    finally:
+        conn.close()
+
+
+def set_request_message(db_path: str, split_id: int, user_id: int, message_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE split_requests SET message_id=? WHERE split_id=? AND user_id=?", (message_id, split_id, user_id))
+    finally:
+        conn.close()
+
+
+def get_request_by_message(db_path: str, message_id: int) -> Optional[Request]:
+    conn = connect(db_path)
+    try:
+        return _req(conn.execute("SELECT * FROM split_requests WHERE message_id=?", (message_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def decide_request(db_path: str, split_id: int, user_id: int, accept: bool, actor_id: int) -> str:
+    """Acepta (la persona entra a la lista) o rechaza. Devuelve 'accepted' | 'rejected' | 'decided' (ya estaba decidida) | 'closed' | 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT status FROM split_requests WHERE split_id=? AND user_id=?", (split_id, user_id)).fetchone()
+            if r is None:
+                return "missing"
+            if r["status"] != "pending":
+                return "decided"
+            st = conn.execute("SELECT status FROM splits WHERE id=?", (split_id,)).fetchone()
+            if st is None or st["status"] != "open":
+                return "closed"
+            if accept:
+                if not conn.execute("SELECT 1 FROM split_people WHERE split_id=? AND user_id=?", (split_id, user_id)).fetchone():
+                    n = conn.execute("SELECT COUNT(*) AS n FROM split_people WHERE split_id=?", (split_id,)).fetchone()["n"]
+                    if n >= MAX_PEOPLE:
+                        raise SplitError(f"La lista ya tiene el máximo de {MAX_PEOPLE} personas.")
+                    conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (split_id, user_id, _next_pos(conn, "split_people", split_id)))
+            conn.execute("UPDATE split_requests SET status=?, decided_by=? WHERE split_id=? AND user_id=?",
+                         ("accepted" if accept else "rejected", actor_id, split_id, user_id))
+            return "accepted" if accept else "rejected"
+    finally:
+        conn.close()
+
+
+def pending_requests(db_path: str, split_id: int) -> List[int]:
+    conn = connect(db_path)
+    try:
+        return [int(r["user_id"]) for r in conn.execute("SELECT user_id FROM split_requests WHERE split_id=? AND status='pending' ORDER BY created_at", (split_id,))]
     finally:
         conn.close()
 
