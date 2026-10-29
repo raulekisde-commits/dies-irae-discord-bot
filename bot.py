@@ -2806,6 +2806,48 @@ async def rolalbion(
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
+async def albion_participantes_para_split(guild: discord.Guild, texto: str, guild_name: str) -> dict:
+    """Misma búsqueda que /rolalbion (AlbionBB + coincidencia exacta de nombre/apodo), pero solo devuelve el resultado.
+    Lo usa el botón «Agregar killboard» del panel de edición de /transparencia."""
+    battle_ids = extraer_ids(texto)
+    if not battle_ids:
+        return {"error": "No encontré ningún ID de batalla en ese link."}
+    if len(battle_ids) > 50:
+        return {"error": "Podés consultar como máximo 50 batallas por vez."}
+    jugadores = await obtener_jugadores_albion(battle_ids)
+    clave = normalizar_nombre(guild_name)
+    nombres = list(dict.fromkeys(d["name"] for d in jugadores.values() if normalizar_nombre(d["guild"]) == clave))
+    if not nombres:
+        return {"error": f"No encontré participantes de **{guild_name}** en las {len(battle_ids)} batalla(s) consultadas."}
+    try:
+        await guild.chunk(cache=True)
+    except Exception:
+        pass
+    indice: dict[str, dict[int, discord.Member]] = {}
+    for member in guild.members:
+        if member.bot:
+            continue
+        indice.setdefault(normalizar_nombre(member.name), {})[member.id] = member
+        if member.nick:
+            indice.setdefault(normalizar_nombre(member.nick), {})[member.id] = member
+    found, not_found, ambiguous = [], [], []
+    for nombre in nombres:
+        cands = list(indice.get(normalizar_nombre(nombre), {}).values())
+        if not cands:
+            not_found.append(nombre)
+        elif len(cands) == 1:
+            found.append((nombre, cands[0]))
+        else:
+            ambiguous.append((nombre, cands))
+    return {"battles": len(battle_ids), "players": nombres, "found": found, "not_found": not_found, "ambiguous": ambiguous}
+
+
+try:
+    import splits as _splits_mod
+    _splits_mod.set_albion_lookup(albion_participantes_para_split)
+except Exception as _exc:                         # si splits.py no está, el resto del bot sigue funcionando
+    print(f"⚠️ No pude conectar AlbionBB con los splits: {_exc!r}")
+
 # ============================================================
 # TAB SELL / CALCULAR SPLIT
 # ============================================================

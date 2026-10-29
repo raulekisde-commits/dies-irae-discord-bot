@@ -19,6 +19,13 @@ NO_MENTIONS = discord.AllowedMentions.none()
 GOLD, GREY, GREEN = 0xF1C40F, 0x95A5A6, 0x2ECC71
 MENTION_RE = re.compile(r"<@!?(\d+)>")
 EDIT_TIMEOUT = 900.0
+ALBION_GUILD_DEFAULT = "Smogg"
+ALBION_LOOKUP = None          # lo registra bot.py: async (guild, texto, nombre_guild) -> dict con battles/players/found/not_found/ambiguous
+
+
+def set_albion_lookup(fn) -> None:
+    global ALBION_LOOKUP
+    ALBION_LOOKUP = fn
 
 
 async def _say(interaction: discord.Interaction, text: str, **kw):
@@ -309,6 +316,7 @@ class EditView(_OwnedView):
         self.add_button("Agregar personas", self._add_people, style=discord.ButtonStyle.success, emoji="👥", row=2)
         self.add_button("Quitar personas", self._rm_people, style=discord.ButtonStyle.danger, emoji="🧹", row=2)
         self.add_button("Agregar rol", self._add_role, emoji="🎭", row=2)
+        self.add_button("Agregar killboard", self._killboard, emoji="⚔️", row=2)
 
     async def _split(self, interaction) -> Optional[sdb.Split]:
         s = await self.cog.run(sdb.get_split, self.split_id)
@@ -326,6 +334,10 @@ class EditView(_OwnedView):
         s = await self._split(interaction)
         if s:
             await interaction.response.send_modal(AmountsModal(self.cog, s))
+
+    async def _killboard(self, interaction):
+        if await self._split(interaction):
+            await interaction.response.send_modal(KillboardModal(self.cog, self.split_id))
 
     async def _bolsitas(self, interaction):
         s = await self._split(interaction)
@@ -472,6 +484,24 @@ class AmountsModal(discord.ui.Modal):
     async def on_error(self, interaction, error):
         traceback.print_exception(type(error), error, error.__traceback__)
         await _say(interaction, "❌ No pude guardar los cambios.")
+
+
+class KillboardModal(discord.ui.Modal):
+    def __init__(self, cog, split_id: int):
+        super().__init__(title="Agregar desde el killboard")
+        self.cog, self.split_id = cog, split_id
+        self.link_in = discord.ui.TextInput(label="Link o IDs de AlbionBB", style=discord.TextStyle.paragraph, max_length=1500,
+                                            placeholder="https://albionbb.com/battles/123456789 (podés poner varias batallas)", required=True)
+        self.guild_in = discord.ui.TextInput(label="Guild de Albion", default=ALBION_GUILD_DEFAULT, max_length=60, required=True)
+        self.add_item(self.link_in)
+        self.add_item(self.guild_in)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.apply_killboard(interaction, self.split_id, str(self.link_in.value), str(self.guild_in.value))
+
+    async def on_error(self, interaction, error):
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await _say(interaction, "❌ No pude leer el killboard.")
 
 
 class BolsitasModal(discord.ui.Modal):
@@ -887,6 +917,44 @@ class SplitsCog(commands.Cog):
         except sdb.SplitError as exc:
             return await _say(interaction, f"❌ {exc}")
         await self._done(interaction, split_id, "✅ Bolsitas actualizadas.")
+
+    async def apply_killboard(self, interaction, split_id, text, guild_name):
+        """Lista a la gente de la guild que participó en las batallas (igual que /rolalbion) y la suma a la lista del split."""
+        s = await self._guard(interaction, split_id)
+        if not s:
+            return
+        if ALBION_LOOKUP is None:
+            return await _say(interaction, "❌ La búsqueda en AlbionBB no está disponible en este momento.")
+        guild_name = (guild_name or "").strip() or ALBION_GUILD_DEFAULT
+        await interaction.response.defer(ephemeral=True)
+        try:
+            res = await asyncio.wait_for(ALBION_LOOKUP(interaction.guild, text, guild_name), timeout=90)
+        except asyncio.TimeoutError:
+            return await _say(interaction, "❌ AlbionBB tardó demasiado en responder. Probá de nuevo en un rato.")
+        except Exception:
+            traceback.print_exc()
+            return await _say(interaction, "❌ No pude obtener los participantes de AlbionBB. Revisá el link y que AlbionBB esté disponible.")
+        if res.get("error"):
+            return await _say(interaction, f"❌ {res['error']}")
+        found = res["found"]
+        added = 0
+        if found:
+            try:
+                added = await self.run(sdb.add_people, split_id, [m.id for _n, m in found])
+            except sdb.SplitError as exc:
+                return await _say(interaction, f"❌ {exc}")
+            await self.sync_split(split_id)
+        lines = [f"⚔️ **Killboard** · guild `{guild_name}` · {res['battles']} batalla(s) · {len(res['players'])} jugador(es) de la guild",
+                 f"✅ Agregados a la lista: **{added}**" + (f" ({len(found) - added} ya estaban)" if len(found) - added else "")]
+        if res["not_found"]:
+            lines.append(f"❓ Sin cuenta de Discord que coincida ({len(res['not_found'])}): " + ", ".join(f"`{n}`" for n in res["not_found"]))
+            lines.append("   Agregalos a mano con `!agregarlista` o el botón **Agregar personas**.")
+        if res["ambiguous"]:
+            lines.append(f"⚠️ Ambiguos, no se agregaron ({len(res['ambiguous'])}): " +
+                         "; ".join(f"`{n}` → " + ", ".join(m.display_name for m in ms) for n, ms in res["ambiguous"]))
+        text_out = "\n".join(lines)
+        for i in range(0, len(text_out), 1900):
+            await _say(interaction, text_out[i:i + 1900])
 
     async def apply_looter(self, interaction, split_id, user_id, looted, repair, tax):
         if not await self._guard(interaction, split_id):
