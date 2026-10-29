@@ -20,6 +20,7 @@ from economy import setup_economy
 from bets import setup_bets
 from guildshop import setup_guildshop
 from games import setup_games
+from rankings import setup_rankings
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -267,6 +268,7 @@ class MyBot(commands.Bot):
             await setup_bets(self, DB_PATH, GUILD_ID)
             await setup_guildshop(self, DB_PATH, GUILD_ID)
             await setup_games(self, DB_PATH, GUILD_ID)
+            await setup_rankings(self, DB_PATH, GUILD_ID)
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
             print("❌ Error cargando Wuju Coins:", e)
@@ -5738,8 +5740,10 @@ HELP_SECTIONS = [
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
         ("/apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
         ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
-        ("/dados cantidad · !dados cantidad", "Habilitado con /perms-canal y /perms-comando", "Partida de dados de 5 minutos: panel con botón Anotarse. Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000 por entrada; no hay baja."),
-        ("/coinflip cantidad · !coinflip cantidad", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos: lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que /dados)."),
+        ("!dados cantidad", "Habilitado con /perms-canal y /perms-comando", "Partida de dados de 5 minutos. El panel se publica en el canal definido con `/canal dados`; botón Anotarse (con confirmación). Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000; no hay baja."),
+        ("/canal dados canal", "Council / Admin", "Define el canal donde se publican los paneles de `!dados`."),
+        ("/apuestas panel", "Admin / rol autorizado", "Publica tres paneles (top 10 de los que más ganaron, perdieron y apostaron) con botón Siguiente para ver la lista completa de a 10."),
+        ("!coinflip cantidad", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos: lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
         ("/apostartodo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
         ("/guild-shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
         ("/canal logs guildshop [canal]", "Council", "Define el canal donde se registra cada transacción del Guild Shop."),

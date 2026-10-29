@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import economy_db as eco
+import games_db
 import guildshop_db as gdb
 
 SELLER_ROLE_ID = 1562621875597615225
@@ -314,6 +315,23 @@ class GuildShopCog(commands.Cog):
 
     canal = app_commands.Group(name="canal", description="Configuración de canales", guild_only=True)
     canal_logs = app_commands.Group(name="logs", description="Canales de registro", parent=canal)
+
+    # /canal dados vive acá porque el grupo "/canal" es único en el bot (Discord no permite repetirlo en otro módulo)
+    @canal.command(name="dados", description="(Council) Canal donde se publican los paneles de !dados")
+    @app_commands.describe(canal="Canal donde aparecerán los paneles de dados")
+    async def canal_dados(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        try:
+            if interaction.guild is None or not can_manage(interaction.user):
+                return await _reply(interaction, "❌ Solo el rol **Council**, el propietario o los administradores pueden usar este comando.")
+            try:
+                await canal.send("✅ Canal de **dados** configurado: los paneles de `!dados` se publicarán acá.", allowed_mentions=NO_MENTIONS)
+            except (discord.Forbidden, discord.HTTPException):
+                return await _reply(interaction, f"❌ No tengo permiso para escribir en {canal.mention}. No cambié nada.")
+            await self.run(games_db.set_panel_channel_id, "dice", canal.id)
+            await _reply(interaction, f"✅ Los paneles de `!dados` ahora se publican en {canal.mention}.")
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude guardar el canal.")
 
     @canal_logs.command(name="guildshop", description="(Council) Canal donde se registra cada transacción del Guild Shop")
     @app_commands.describe(canal="Canal de registro (por defecto, este canal)")

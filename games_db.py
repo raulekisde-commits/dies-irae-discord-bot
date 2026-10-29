@@ -67,6 +67,20 @@ def init_schema(db_path: str) -> None:
         conn.close()
 
 
+def panel_channel_key(kind: str) -> str:
+    return f"{kind}_panel_channel_id"
+
+
+def get_panel_channel_id(db_path: str, kind: str) -> Optional[int]:
+    """Canal donde se publican los paneles de ese juego (se define con /canal dados)."""
+    v = eco.get_setting(db_path, panel_channel_key(kind))
+    return int(v) if v and v.isdigit() else None
+
+
+def set_panel_channel_id(db_path: str, kind: str, channel_id: int) -> None:
+    eco.set_setting(db_path, panel_channel_key(kind), str(int(channel_id)))
+
+
 def validate_stake(amount: int) -> int:
     if amount < 1:
         raise GameError("La cantidad tiene que ser mayor a 0.")
