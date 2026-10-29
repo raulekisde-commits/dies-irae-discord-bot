@@ -93,6 +93,9 @@ MOVEMENT_LABELS = {
     "guildshop_purchase": "Compra en Guild Shop",
     "transfer_out": "Transferencia enviada",
     "transfer_in": "Transferencia recibida",
+    "duel_stake": "Apuesta de duelo 1v1",
+    "duel_win": "Premio de duelo 1v1",
+    "duel_refund": "Devolución de duelo 1v1",
     "dice_stake": "Entrada a dados",
     "dice_win": "Premio de dados",
     "dice_refund": "Devolución de dados",
@@ -434,6 +437,7 @@ def apply_operation(
     request_key: str,
     role_id: Optional[int] = None,
     reason: Optional[str] = None,
+    require_funds: bool = False,
     _test_hook: Optional[Callable[[int, int], None]] = None,
 ) -> OperationResult:
     """Suma o resta `amount` a CADA usuario de `user_ids`, todo en UNA transacción.
@@ -441,7 +445,8 @@ def apply_operation(
     - Si algo falla a la mitad se revierte todo (no quedan balances parciales).
     - `request_key` es único: repetir la misma solicitud (reintento, doble evento) devuelve la operación
       ya aplicada con created=False en lugar de aplicarla otra vez.
-    - Los balances pueden quedar negativos.
+    - Los balances pueden quedar negativos (salvo con require_funds=True: si alguien no alcanza se lanza
+      InsufficientFunds y no se mueve nada).
     """
     if kind not in ("add", "remove"):
         raise ValueError("kind inválido")
@@ -484,6 +489,8 @@ def apply_operation(
                 )
                 before = int(conn.execute("SELECT balance FROM eco_accounts WHERE user_id = ?", (uid,)).fetchone()["balance"])
                 after = before + sign * amount
+                if require_funds and sign < 0 and after < 0:
+                    raise InsufficientFunds(before)
                 if abs(after) > MAX_BALANCE_ABS:
                     raise OverflowError("El balance resultante excede el límite permitido.")
                 conn.execute("UPDATE eco_accounts SET balance = ?, updated_at = ? WHERE user_id = ?", (after, now, uid))

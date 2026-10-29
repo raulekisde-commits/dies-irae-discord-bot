@@ -7,7 +7,7 @@ responden en privado; el resultado de un comando exitoso es público, igual que 
 from types import SimpleNamespace
 from typing import Any
 
-PRIVATE_PREFIXES = ("❌", "Uso:", "ℹ️")
+PRIVATE_PREFIXES = ("❌", "Uso:", "ℹ️", "🔒", "🚫")
 
 
 class SlashContext:

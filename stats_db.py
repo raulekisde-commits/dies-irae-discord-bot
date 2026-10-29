@@ -1,6 +1,6 @@
 """Contadores de apuestas por persona (sin tablas nuevas: se calculan desde el historial de movimientos).
 
-Cuentan SOLO juegos terminados con resultado (apuestas resueltas, dados y coinflip finalizados). Lo cancelado o devuelto
+Cuentan SOLO juegos terminados con resultado (apuestas resueltas, dados, coinflip y duelos 1v1 finalizados). Lo cancelado o devuelto
 no cuenta, y lo que todavía está en juego tampoco.
 - apostado: suma de todas las entradas/apuestas puestas.
 - ganado:   ganancia NETA de los juegos en que salió ganando (premio − lo que puso).
@@ -13,11 +13,12 @@ import sqlite3
 
 import bets_db as bdb
 import economy_db as eco
+import duels_db as ddl
 import games_db as gdb
 from dbutil import connect
 
-STAKE_TYPES = ("bet_stake", "dice_stake", "coinflip_stake")
-RESULT_TYPES = STAKE_TYPES + ("bet_payout", "dice_win", "coinflip_win")
+STAKE_TYPES = ("bet_stake", "dice_stake", "coinflip_stake", "duel_stake")
+RESULT_TYPES = STAKE_TYPES + ("bet_payout", "dice_win", "coinflip_win", "duel_win")
 
 
 @dataclass
@@ -36,6 +37,7 @@ class GamblerStats:
 def init_schema(db_path: str) -> None:
     bdb.init_schema(db_path)
     gdb.init_schema(db_path)
+    ddl.init_schema(db_path)
 
 
 _SQL = """
@@ -51,8 +53,9 @@ SELECT user_id,
           FROM eco_movements m
           LEFT JOIN bets  b ON m.related_id = 'bet:'  || b.id
           LEFT JOIN games g ON m.related_id = 'game:' || g.id
+          LEFT JOIN duels d ON m.related_id = 'duel:' || d.id
          WHERE m.kind IN ({results})
-           AND (b.status = 'resolved' OR g.status = 'done')
+           AND (b.status = 'resolved' OR g.status = 'done' OR d.status = 'done')
            {user_filter}
          GROUP BY m.user_id, m.related_id
        )
@@ -105,4 +108,65 @@ def top_by(db_path: str, field: str) -> List[GamblerStats]:
     else:
         rows = [s for s in all_stats(db_path) if getattr(s, field) > 0]
     rows.sort(key=lambda s: (-getattr(s, field), s.user_id))
+    return rows
+
+
+# ============================================================
+# Winrate en dados y coinflip (solo partidas terminadas con ganador; las devueltas por falta de rival no cuentan)
+# ============================================================
+MIN_GAMES_FOR_TOP = 5            # para entrar a un top de winrate (evita que 1 de 1 = 100 %)
+
+
+@dataclass
+class WinRate:
+    user_id: int
+    kind: str
+    played: int = 0
+    wins: int = 0
+
+    @property
+    def rate(self) -> float:
+        return self.wins / self.played if self.played else 0.0
+
+    @property
+    def percent(self) -> str:
+        return f"{self.rate * 100:.1f}".replace(".0", "") + "%" if self.played else "—"
+
+
+def _winrates(db_path: str, kind: str, user_id: Optional[int]) -> List[WinRate]:
+    sql = """SELECT p.user_id AS u, COUNT(*) AS played, SUM(CASE WHEN g.winner_id = p.user_id THEN 1 ELSE 0 END) AS wins
+               FROM game_players p JOIN games g ON g.id = p.game_id
+              WHERE g.kind = ? AND g.status = 'done' AND g.winner_id IS NOT NULL {flt}
+              GROUP BY p.user_id"""
+    sql = sql.format(flt="AND p.user_id = ?" if user_id is not None else "")
+    params = [kind] + ([user_id] if user_id is not None else [])
+
+    def once():
+        conn = connect(db_path)
+        try:
+            return [WinRate(int(r["u"]), kind, int(r["played"]), int(r["wins"] or 0)) for r in conn.execute(sql, params)]
+        finally:
+            conn.close()
+
+    try:
+        return once()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        init_schema(db_path)
+        return once()
+
+
+def get_winrate(db_path: str, kind: str, user_id: int) -> WinRate:
+    """kind: 'dice' | 'coinflip'."""
+    rows = _winrates(db_path, kind, user_id)
+    return rows[0] if rows else WinRate(user_id, kind)
+
+
+def top_winrate(db_path: str, kind: str, min_games: int = MIN_GAMES_FOR_TOP) -> List[WinRate]:
+    """Ranking completo por winrate (desempata por más partidas ganadas y luego por id)."""
+    if kind not in ("dice", "coinflip"):
+        raise ValueError("juego inválido")
+    rows = [w for w in _winrates(db_path, kind, None) if w.played >= min_games]
+    rows.sort(key=lambda w: (-w.rate, -w.played, w.user_id))
     return rows

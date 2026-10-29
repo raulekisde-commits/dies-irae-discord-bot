@@ -15,9 +15,12 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import economy_db as eco
+import casino_db as cdb
 import games_db as gdb
+import stats_db
 from slashctx import SlashContext
 
+ERROR_VISIBLE_SECONDS = 8
 NO_MENTIONS = discord.AllowedMentions.none()
 DICE_FACES = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
 MAX_LISTED = 40
@@ -187,12 +190,29 @@ class GamesCog(commands.Cog):
         return emb
 
     # ---------- comandos: crear ----------
+    @staticmethod
+    async def _private_error(ctx, text: str):
+        """Error que solo ve quien usó el comando. Con `/` es un mensaje efímero; con `!` Discord no permite mensajes
+        privados, así que se borra el comando y la respuesta a los pocos segundos para no ensuciar el canal."""
+        if hasattr(ctx, "interaction"):
+            return await ctx.reply(text)
+        try:
+            await ctx.reply(text, mention_author=False, allowed_mentions=NO_MENTIONS, delete_after=ERROR_VISIBLE_SECONDS)
+        finally:
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+
     async def _create(self, ctx, kind: str, amount_text: str):
         command = gdb.COMMAND_OF[kind]
         if ctx.guild is None or getattr(ctx.author, "bot", False):
             return
         if not await self._authorize_create(ctx, command):
             return
+        blocked = await self.run(cdb.block_reason, ctx.guild.id, ctx.author.id)
+        if blocked:
+            return await self._private_error(ctx, blocked)
         if not (amount_text or "").strip():
             return await ctx.reply(f"Uso: `!{command} [cantidad]` (máximo {eco.format_amount(gdb.MAX_STAKE)}).",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
@@ -217,8 +237,8 @@ class GamesCog(commands.Cog):
                 g = created.game
                 where = f" en <#{g.channel_id}>" if g and g.channel_id else ""
                 what = "unos dados" if kind == "dice" else "un coinflip"
-                return await ctx.reply(f"❌ Ya hay {what} en curso{where} (termina <t:{int(g.ends_at)}:R>). Esperá a que termine para crear otro.",
-                                       mention_author=False, allowed_mentions=NO_MENTIONS)
+                return await self._private_error(
+                    ctx, f"❌ Ya hay {what} en curso{where} (termina <t:{int(g.ends_at)}:R>). Esperá a que termine para crear otro.")
             return await ctx.reply(f"❌ No tenés saldo suficiente. Tu saldo: {self.money(created.balance)}.",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         game = created.game
@@ -245,6 +265,44 @@ class GamesCog(commands.Cog):
     @guard
     async def coinflip(self, ctx: commands.Context, *, cantidad: str = ""):
         await self._create(ctx, "coinflip", cantidad)
+
+    @commands.command(name="winrate")
+    @guard
+    async def winrate(self, ctx: commands.Context, *, objetivo: str = ""):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        target = ctx.author
+        if objetivo.strip():
+            mentioned = [m for m in getattr(ctx.message, "mentions", []) if not getattr(m, "bot", False)]
+            if mentioned:
+                target = mentioned[0]
+            else:
+                eco_cog = self.bot.get_cog("EconomyCog")
+                found, error = (await eco_cog._resolve_member_flexible(ctx.guild, objetivo)) if eco_cog else (None, "No encuentro a esa persona.")
+                if found is None:
+                    return await ctx.reply(f"❌ {error}", mention_author=False, allowed_mentions=NO_MENTIONS)
+                target = found
+        dice = await self.run(stats_db.get_winrate, "dice", target.id)
+        coin = await self.run(stats_db.get_winrate, "coinflip", target.id)
+        emb = discord.Embed(title=f"📊 Winrate de {getattr(target, 'display_name', target.id)}", color=GREEN)
+        emb.description = f"<@{target.id}>"
+        for icon, name, w in (("🎲", "Dados", dice), ("🪙", "Coinflip", coin)):
+            emb.add_field(name=f"{icon} {name}", value=f"**{w.percent}**\n{w.wins} ganadas de {w.played} partidas", inline=True)
+        emb.set_footer(text="Solo cuentan partidas terminadas con rival (las devueltas no suman).")
+        try:
+            emb.set_thumbnail(url=target.display_avatar.url)
+        except Exception:
+            pass
+        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="winrate", description="Mirá el winrate en dados y coinflip de una persona (por defecto, el tuyo)")
+    @app_commands.describe(usuario="Persona a consultar")
+    @app_commands.guild_only()
+    async def winrate_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        ctx = SlashContext(interaction)
+        if usuario is not None:
+            ctx.message.mentions = [usuario]
+        await self.winrate.callback(self, ctx, objetivo=usuario.mention if usuario else "")
 
     @app_commands.command(name="dados", description="Crea una partida de dados (5 minutos). Gana el número más alto y se lleva el pozo")
     @app_commands.describe(cantidad=f"Lo que ponés para entrar (máximo {eco.format_amount(gdb.MAX_STAKE)})")
@@ -294,6 +352,9 @@ class GamesCog(commands.Cog):
                 return await self._say(interaction, "❌ No encuentro ese juego.")
             if getattr(interaction.user, "bot", False) or interaction.guild is None:
                 return
+            blocked = await self.run(cdb.block_reason, interaction.guild.id, interaction.user.id)
+            if blocked:
+                return await self._say(interaction, blocked)
             res = await self.run(gdb.join_game, game.id, interaction.user.id)
             problem = self._join_failure(res.status, res.game or game, res.balance)
             if problem:

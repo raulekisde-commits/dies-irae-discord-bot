@@ -1,7 +1,7 @@
-"""Pasar silver a Wuju Coins — tickets de depósito (lógica y persistencia, sin Discord).
+"""Cambio de moneda: tickets para comprar Wuju Coins (con silver) y para venderlos (por silver).
 
-El ticket solo registra QUIÉN pidió pasar CUÁNTO silver y si sigue abierto; no mueve Wuju Coins:
-un Council revisa la captura del depósito y acredita aparte (por ejemplo con /addmoney).
+Los tickets solo registran quién, de qué tipo y (si es compra) cuántos Wuju Coins pidió. El movimiento de Wuju Coins lo hace
+el Council con un botón y se aplica con `economy_db.apply_operation`, que es idempotente por `request_key`.
 """
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -9,24 +9,32 @@ from typing import Optional, Tuple
 import economy_db as eco
 from dbutil import connect, utcnow_iso, write_tx
 
+KINDS = ("buy", "sell")           # buy = el usuario compra Wuju Coins · sell = el usuario vende sus Wuju Coins por silver
+
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS dep_tickets (
+CREATE TABLE IF NOT EXISTS cm_tickets (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id   INTEGER NOT NULL,
     channel_id INTEGER NOT NULL UNIQUE,
     user_id    INTEGER NOT NULL,
-    silver     INTEGER NOT NULL,
+    kind       TEXT NOT NULL,                     -- buy | sell
+    amount     INTEGER NOT NULL DEFAULT 0,        -- buy: Wuju Coins pedidos · sell: no se usa
     status     TEXT NOT NULL DEFAULT 'open',      -- open | closed
+    processed  INTEGER NOT NULL DEFAULT 0,        -- 1 = ya se agregaron/retiraron los Wuju Coins
+    processed_amount INTEGER,
+    processed_by INTEGER,
     created_at TEXT NOT NULL,
     closed_at  TEXT,
     closed_by  INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_dep_tickets_user ON dep_tickets(guild_id, user_id, status);
+CREATE INDEX IF NOT EXISTS idx_cm_tickets_user ON cm_tickets(guild_id, user_id, kind, status);
 
-CREATE TABLE IF NOT EXISTS dep_panels (
-    guild_id   INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS cm_panels (
+    guild_id   INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
     channel_id INTEGER NOT NULL,
-    message_id INTEGER NOT NULL
+    message_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, kind)
 );
 """
 
@@ -36,19 +44,23 @@ class DepositError(ValueError):
 
 
 @dataclass
-class DepositTicket:
+class Ticket:
     id: int
     guild_id: int
     channel_id: int
     user_id: int
-    silver: int
+    kind: str
+    amount: int
     status: str
+    processed: bool
+    processed_amount: Optional[int]
 
 
-def _row(r) -> Optional[DepositTicket]:
+def _row(r) -> Optional[Ticket]:
     if r is None:
         return None
-    return DepositTicket(int(r["id"]), int(r["guild_id"]), int(r["channel_id"]), int(r["user_id"]), int(r["silver"]), r["status"])
+    return Ticket(int(r["id"]), int(r["guild_id"]), int(r["channel_id"]), int(r["user_id"]), r["kind"], int(r["amount"]), r["status"],
+                  bool(r["processed"]), int(r["processed_amount"]) if r["processed_amount"] is not None else None)
 
 
 def init_schema(db_path: str) -> None:
@@ -59,7 +71,7 @@ def init_schema(db_path: str) -> None:
         conn.close()
 
 
-def parse_silver(text: str) -> int:
+def parse_amount(text: str) -> int:
     """Cantidad entera positiva (acepta 1.500.000 o 1,500,000)."""
     try:
         return eco.parse_amount(text)
@@ -67,33 +79,52 @@ def parse_silver(text: str) -> int:
         raise DepositError(str(exc))
 
 
-def create_ticket(db_path: str, guild_id: int, channel_id: int, user_id: int, silver: int) -> int:
-    if silver <= 0:
+def create_ticket(db_path: str, guild_id: int, channel_id: int, user_id: int, kind: str, amount: int = 0) -> int:
+    if kind not in KINDS:
+        raise DepositError("Tipo de ticket inválido.")
+    if kind == "buy" and amount <= 0:
         raise DepositError("La cantidad tiene que ser mayor a 0.")
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            cur = conn.execute("INSERT INTO dep_tickets(guild_id, channel_id, user_id, silver, status, created_at) VALUES (?,?,?,?, 'open', ?)",
-                               (guild_id, channel_id, user_id, silver, utcnow_iso()))
+            cur = conn.execute("INSERT INTO cm_tickets(guild_id, channel_id, user_id, kind, amount, status, created_at) VALUES (?,?,?,?,?, 'open', ?)",
+                               (guild_id, channel_id, user_id, kind, amount, utcnow_iso()))
             return int(cur.lastrowid)
     finally:
         conn.close()
 
 
-def get_by_channel(db_path: str, channel_id: int) -> Optional[DepositTicket]:
+def get_ticket(db_path: str, ticket_id: int) -> Optional[Ticket]:
     conn = connect(db_path)
     try:
-        return _row(conn.execute("SELECT * FROM dep_tickets WHERE channel_id = ?", (channel_id,)).fetchone())
+        return _row(conn.execute("SELECT * FROM cm_tickets WHERE id = ?", (ticket_id,)).fetchone())
     finally:
         conn.close()
 
 
-def open_ticket_of(db_path: str, guild_id: int, user_id: int) -> Optional[DepositTicket]:
+def get_by_channel(db_path: str, channel_id: int) -> Optional[Ticket]:
+    conn = connect(db_path)
+    try:
+        return _row(conn.execute("SELECT * FROM cm_tickets WHERE channel_id = ?", (channel_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def open_ticket_of(db_path: str, guild_id: int, user_id: int, kind: str) -> Optional[Ticket]:
     conn = connect(db_path)
     try:
         return _row(conn.execute(
-            "SELECT * FROM dep_tickets WHERE guild_id = ? AND user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1",
-            (guild_id, user_id)).fetchone())
+            "SELECT * FROM cm_tickets WHERE guild_id = ? AND user_id = ? AND kind = ? AND status = 'open' ORDER BY id DESC LIMIT 1",
+            (guild_id, user_id, kind)).fetchone())
+    finally:
+        conn.close()
+
+
+def mark_processed(db_path: str, ticket_id: int, amount: int, actor_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE cm_tickets SET processed = 1, processed_amount = ?, processed_by = ? WHERE id = ?", (amount, actor_id, ticket_id))
     finally:
         conn.close()
 
@@ -103,7 +134,7 @@ def close_ticket(db_path: str, ticket_id: int, actor_id: int) -> bool:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            cur = conn.execute("UPDATE dep_tickets SET status = 'closed', closed_at = ?, closed_by = ? WHERE id = ? AND status = 'open'",
+            cur = conn.execute("UPDATE cm_tickets SET status = 'closed', closed_at = ?, closed_by = ? WHERE id = ? AND status = 'open'",
                                (utcnow_iso(), actor_id, ticket_id))
             return cur.rowcount == 1
     finally:
@@ -111,28 +142,28 @@ def close_ticket(db_path: str, ticket_id: int, actor_id: int) -> bool:
 
 
 def discard_ticket(db_path: str, ticket_id: int) -> None:
-    """Deshace un ticket cuyo canal no se pudo armar."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("DELETE FROM dep_tickets WHERE id = ? AND status = 'open'", (ticket_id,))
+            conn.execute("DELETE FROM cm_tickets WHERE id = ?", (ticket_id,))
     finally:
         conn.close()
 
 
-def get_panel(db_path: str, guild_id: int) -> Optional[Tuple[int, int]]:
+def get_panel(db_path: str, guild_id: int, kind: str) -> Optional[Tuple[int, int]]:
     conn = connect(db_path)
     try:
-        r = conn.execute("SELECT channel_id, message_id FROM dep_panels WHERE guild_id = ?", (guild_id,)).fetchone()
+        r = conn.execute("SELECT channel_id, message_id FROM cm_panels WHERE guild_id = ? AND kind = ?", (guild_id, kind)).fetchone()
         return (int(r["channel_id"]), int(r["message_id"])) if r else None
     finally:
         conn.close()
 
 
-def set_panel(db_path: str, guild_id: int, channel_id: int, message_id: int) -> None:
+def set_panel(db_path: str, guild_id: int, kind: str, channel_id: int, message_id: int) -> None:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("INSERT OR REPLACE INTO dep_panels(guild_id, channel_id, message_id) VALUES (?,?,?)", (guild_id, channel_id, message_id))
+            conn.execute("INSERT OR REPLACE INTO cm_panels(guild_id, kind, channel_id, message_id) VALUES (?,?,?,?)",
+                         (guild_id, kind, channel_id, message_id))
     finally:
         conn.close()
