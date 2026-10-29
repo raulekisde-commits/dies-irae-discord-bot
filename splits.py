@@ -141,6 +141,10 @@ class SplitPanelView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button):
         await self.cog.on_cancel_pressed(interaction)
 
+    @discord.ui.button(label="Editar", style=discord.ButtonStyle.primary, custom_id="split:edit", emoji="✏️")
+    async def edit(self, interaction: discord.Interaction, button):
+        await self.cog.on_edit_pressed(interaction)
+
 
 class SplitEditingPanelView(discord.ui.View):
     """Botones del panel mientras un split ya pagado está en edición."""
@@ -156,6 +160,22 @@ class SplitEditingPanelView(discord.ui.View):
     @discord.ui.button(label="Cancelar edición", style=discord.ButtonStyle.secondary, custom_id="split:cancel_edit", emoji="↩️")
     async def cancel(self, interaction: discord.Interaction, button):
         await self.cog.on_cancel_edit_pressed(interaction)
+
+    @discord.ui.button(label="Editar", style=discord.ButtonStyle.primary, custom_id="split:edit", emoji="✏️")
+    async def edit(self, interaction: discord.Interaction, button):
+        await self.cog.on_edit_pressed(interaction)
+
+
+class SplitClosedPanelView(discord.ui.View):
+    """Panel de un split ya cerrado: solo permite pedir una edición (reajuste)."""
+
+    def __init__(self, cog: "SplitsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Editar", style=discord.ButtonStyle.primary, custom_id="split:edit", emoji="✏️")
+    async def edit(self, interaction: discord.Interaction, button):
+        await self.cog.on_edit_pressed(interaction)
 
 
 class ReopenView(discord.ui.View):
@@ -258,7 +278,7 @@ class _OwnedView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
-            await _say(interaction, "❌ Este panel de edición no es tuyo. Usá `/editar`.")
+            await _say(interaction, "❌ Este panel de edición no es tuyo. Tocá **Editar** en el panel del split.")
             return False
         return True
 
@@ -499,6 +519,7 @@ class SplitsCog(commands.Cog):
         await self.run(sdb.init_schema)
         self.bot.add_view(SplitPanelView(self))
         self.bot.add_view(SplitEditingPanelView(self))
+        self.bot.add_view(SplitClosedPanelView(self))
         self.bot.add_view(SplitRequestView(self))
 
     async def run(self, fn, *args, **kwargs):
@@ -545,7 +566,8 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.get_split, split_id)
         if s is None:
             return
-        view = (SplitEditingPanelView(self) if s.is_editing else SplitPanelView(self)) if s.is_open else None
+        view = ((SplitEditingPanelView(self) if s.is_editing else SplitPanelView(self)) if s.is_open
+                else SplitClosedPanelView(self) if s.status == "closed" else None)
         try:
             ch = await self._get_channel(s.channel_id)
             if ch is not None and s.message_id:
@@ -618,7 +640,7 @@ class SplitsCog(commands.Cog):
         what = "los montos, los scouts y las personas" if ava else "los datos de cada looter, los montos y las personas"
         await interaction.followup.send(
             f"✅ Split **{split.title}** creado: {getattr(msg, 'jump_url', '')}\n"
-            f"Con `/editar` (dentro del hilo) cargás {what}.", ephemeral=True)
+            f"Con el botón **Editar** del panel cargás {what}.", ephemeral=True)
 
     @app_commands.command(name="transparencia", description="Crea un split: panel + hilo con la lista de personas y el cálculo")
     @app_commands.describe(
@@ -766,8 +788,18 @@ class SplitsCog(commands.Cog):
     @app_commands.guild_only()
     async def editar(self, interaction: discord.Interaction, id: Optional[int] = None):
         s = await self._target(interaction, id)
+        if s is not None:
+            await self._open_edit(interaction, s)
+
+    async def on_edit_pressed(self, interaction: discord.Interaction):
+        """Botón «Editar» del panel del split."""
+        msg = getattr(interaction, "message", None)
+        s = await self.run(sdb.find_by_message, msg.id) if msg is not None else None
         if s is None:
-            return
+            return await _say(interaction, "❌ No encuentro el split de este panel.")
+        await self._open_edit(interaction, s)
+
+    async def _open_edit(self, interaction: discord.Interaction, s: sdb.Split):
         if not (can_manage(interaction.user) or interaction.user.id == s.creator_id):
             return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede editarlo.")
         if s.status == "closed":
@@ -897,7 +929,7 @@ class SplitsCog(commands.Cog):
             return await _say(interaction, "ℹ️ Este split ya está cerrado.")
         c = sdb.compute(s)
         if not s.people:
-            return await _say(interaction, "❌ El split no tiene personas en la lista. Agregalas con `/editar`.")
+            return await _say(interaction, "❌ El split no tiene personas en la lista. Agregalas con el botón **Editar** del panel.")
         if s.is_editing:
             old = await self.run(sdb.get_payouts, s.id, s.pay_round)
             return await _say(interaction,
@@ -953,7 +985,7 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.get_split, split_id)
         await self.sync_split(split_id)
         await interaction.response.edit_message(
-            content=f"✏️ **Split {s.title}** reabierto. Usá `/editar` para cambiar lo que quieras; los cambios se ven en el hilo pero "
+            content=f"✏️ **Split {s.title}** reabierto. Tocá **Editar** en el panel para cambiar lo que quieras; los cambios se ven en el hilo pero "
                     f"**no mueven plata** hasta que toques **Confirmar edición** en el panel.", view=None)
         th = await self._get_channel(s.thread_id)
         if th is not None and res == "reopened":
