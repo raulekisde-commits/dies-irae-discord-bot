@@ -21,6 +21,34 @@ from bets import setup_bets
 from guildshop import setup_guildshop
 from games import setup_games
 from rankings import setup_rankings
+try:
+    from deposits import setup_deposits
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_deposits(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar deposits.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
+    from casino import setup_casino
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_casino(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar casino.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
+    from duels import setup_duels
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_duels(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar duels.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
+    from panels import setup_panels
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_panels(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar panels.py (¿falta subirlo al repo?):\n' + _imp_err)
 
 # ================== TOKEN (env o /root/discordbot/.env) ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -259,16 +287,57 @@ intents.guilds = True
 
 GUILD_OBJ = discord.Object(id=GUILD_ID)
 
+async def _report_startup_errors(bot):
+    """Cuando el bot está listo, te manda por DM (al dueño de la app) los errores de arranque."""
+    try:
+        await bot.wait_until_ready()
+        if not STARTUP_ERRORS:
+            return
+        owner = (await bot.application_info()).owner
+        txt = "⚠️ **Errores al arrancar el bot:**\n" + "\n".join(f"**{n}**\n```{e[-900:]}```" for n, e in STARTUP_ERRORS)
+        for i in range(0, len(txt), 1900):
+            await owner.send(txt[i:i + 1900])
+    except Exception as e:
+        print("No pude enviar el reporte de errores:", e)
+
+
+
+STARTUP_ERRORS = []
+
+
+async def _safe_setup(name, fn, *args):
+    """Corre un setup_*; si falla, NO frena a los demás: guarda el error en startup_errors.log y en STARTUP_ERRORS."""
+    import traceback as _tb
+    try:
+        await fn(*args)
+        print(f"✅ setup {name} OK")
+    except Exception:
+        err = _tb.format_exc()
+        STARTUP_ERRORS.append((name, err))
+        print(f"❌ setup {name} FALLÓ:\n{err}")
+        try:
+            with open("startup_errors.log", "a", encoding="utf-8") as _f:
+                _f.write(f"[{datetime.now(timezone.utc).isoformat()}] setup {name}\n{err}\n")
+        except Exception:
+            pass
+
+
+
 class MyBot(commands.Bot):
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
         # Wuju Coins: se carga ANTES del sync para que sus comandos slash se registren
         try:
-            await setup_economy(self, DB_PATH, GUILD_ID, MIEMBRO_ROLE_ID, STAFF_ROLE_ID)
-            await setup_bets(self, DB_PATH, GUILD_ID)
-            await setup_guildshop(self, DB_PATH, GUILD_ID)
-            await setup_games(self, DB_PATH, GUILD_ID)
-            await setup_rankings(self, DB_PATH, GUILD_ID)
+            await _safe_setup("economy", setup_economy, self, DB_PATH, GUILD_ID, MIEMBRO_ROLE_ID, STAFF_ROLE_ID)
+            await _safe_setup("bets", setup_bets, self, DB_PATH, GUILD_ID)
+            await _safe_setup("guildshop", setup_guildshop, self, DB_PATH, GUILD_ID)
+            await _safe_setup("games", setup_games, self, DB_PATH, GUILD_ID)
+            await _safe_setup("rankings", setup_rankings, self, DB_PATH, GUILD_ID)
+            await _safe_setup("deposits", setup_deposits, self, DB_PATH, GUILD_ID)
+            await _safe_setup("casino", setup_casino, self, DB_PATH, GUILD_ID)
+            await _safe_setup("duels", setup_duels, self, DB_PATH, GUILD_ID)
+            await _safe_setup("panels", setup_panels, self, GUILD_ID)
+            self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
             print("❌ Error cargando Wuju Coins:", e)
@@ -2260,7 +2329,7 @@ async def _publish_admin_panel(interaction: discord.Interaction, embed: discord.
     await respond_ephemeral(interaction, "✅ Panel publicado.")
 
 
-@bot.tree.command(name="panel", description="(Admin) Publica el panel de reclutamiento en este canal", guild=GUILD_OBJ)
+@bot.tree.command(name="panel-reclutamiento", description="(Admin) Publica el panel de reclutamiento en este canal", guild=GUILD_OBJ)
 @app_commands.default_permissions(administrator=True)
 async def panel_slash(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -5742,7 +5811,11 @@ HELP_SECTIONS = [
         ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
         ("!dados cantidad", "Habilitado con /perms-canal y /perms-comando", "Partida de dados de 5 minutos. El panel se publica en el canal definido con `/canal dados`; botón Anotarse (con confirmación). Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000; no hay baja."),
         ("/canal dados canal", "Council / Admin", "Define el canal donde se publican los paneles de `!dados`."),
-        ("/apuestas panel", "Admin / rol autorizado", "Publica tres paneles (top 10 de los que más ganaron, perdieron y apostaron) con botón Siguiente para ver la lista completa de a 10."),
+        ("/panel apuestas", "Admin / rol autorizado", "Publica los paneles de apuestas: Top apostado, Top ganado (ganado − perdido, puede dar negativo), Total perdido, Top winrate de dados y de coinflip y la lista negra del casino."),
+        ("/panel cambiomoneda [canal]", "Council / Admin", "Publica dos paneles con tickets: vender Wuju Coins por silver (el Council acepta y retira el balance) y comprar Wuju Coins (depósito + foto; el Council los agrega con doble confirmación)."),
+        ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /dados, /coinflip y /1v1."),
+        ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
+        ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz: la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado."),
         ("!coinflip cantidad", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos: lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
         ("/apostartodo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
         ("/guild-shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
