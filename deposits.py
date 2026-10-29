@@ -44,6 +44,37 @@ class SellPanelView(discord.ui.View):
         await self.cog.on_sell_open(interaction)
 
 
+class ConfirmSellView(discord.ui.View):
+    """Antes de abrir el ticket de cobro: «¿seguro que querés retirar?». Solo lo puede pulsar quien tocó el botón."""
+
+    def __init__(self, cog: "DepositsCog", owner_id: int):
+        super().__init__(timeout=120.0)
+        self.cog, self.owner_id, self.used = cog, owner_id, False
+        yes = discord.ui.Button(label="Sí, quiero retirar", style=discord.ButtonStyle.success, emoji="💰")
+        no = discord.ui.Button(label="No, sigo apostando", style=discord.ButtonStyle.secondary, emoji="🎲")
+        yes.callback, no.callback = self._yes, self._no
+        self.add_item(yes)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _reply(interaction, "❌ Este mensaje no es tuyo.")
+            return False
+        return True
+
+    async def _yes(self, interaction: discord.Interaction):
+        if self.used:
+            return await _reply(interaction, "ℹ️ Ya fue procesado.")
+        self.used = True
+        self.stop()
+        await self.cog.confirm_sell_open(interaction)
+
+    async def _no(self, interaction: discord.Interaction):
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="👍 Dale, seguí jugando. No se abrió ningún ticket.", view=None)
+
+
 class BuyPanelView(discord.ui.View):
     def __init__(self, cog: "DepositsCog"):
         super().__init__(timeout=None)
@@ -253,10 +284,39 @@ class DepositsCog(commands.Cog):
         existing = await self.run(ddb.open_ticket_of, interaction.guild.id, interaction.user.id, "sell")
         if existing is not None:
             return await _reply(interaction, f"ℹ️ Ya tenés un ticket de venta abierto: <#{existing.channel_id}>.")
+        wait = await self.run(ddb.sell_cooldown_remaining, interaction.guild.id, interaction.user.id)
+        if wait > 0:
+            return await _reply(interaction, self._cooldown_text(wait))
         balance = await self.run(eco.get_balance, interaction.user.id)
         if balance <= 0:
             return await _reply(interaction, f"❌ No tenés Wuju Coins para vender. Tu balance: {self.money(balance)}.")
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.send_message(
+            f"💰 **¿Seguro que querés retirar?**\n"
+            f"Tu balance: **{self.money(balance)}**.\n"
+            f"¿No querés seguir apostando? Seguro lo duplicás apostando 😉\n\n"
+            f"⏳ Si abrís el ticket, no vas a poder abrir otro por **8 horas**.",
+            view=ConfirmSellView(self, interaction.user.id), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    @staticmethod
+    def _cooldown_text(seconds: int) -> str:
+        h, m = divmod((seconds + 59) // 60, 60)
+        left = f"{h} h {m} min" if h else f"{m} min"
+        return f"⏳ Ya abriste un ticket de cobro hace poco. Podés volver a abrir uno en **{left}**."
+
+    async def confirm_sell_open(self, interaction: discord.Interaction):
+        """El usuario confirmó que quiere retirar: se vuelven a comprobar las condiciones (pasó tiempo) y recién ahí se abre el ticket."""
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return await _reply(interaction, "❌ Solo disponible en el servidor.")
+        existing = await self.run(ddb.open_ticket_of, interaction.guild.id, interaction.user.id, "sell")
+        if existing is not None:
+            return await interaction.response.edit_message(content=f"ℹ️ Ya tenés un ticket de venta abierto: <#{existing.channel_id}>.", view=None)
+        wait = await self.run(ddb.sell_cooldown_remaining, interaction.guild.id, interaction.user.id)
+        if wait > 0:
+            return await interaction.response.edit_message(content=self._cooldown_text(wait), view=None)
+        balance = await self.run(eco.get_balance, interaction.user.id)
+        if balance <= 0:
+            return await interaction.response.edit_message(content=f"❌ No tenés Wuju Coins para vender. Tu balance: {self.money(balance)}.", view=None)
+        await interaction.response.edit_message(content="⏳ Abriendo tu ticket…", view=None)
         await self._create_ticket(interaction, "sell", 0)
 
     async def on_buy_open(self, interaction: discord.Interaction):
