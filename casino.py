@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import casino_db as cdb
+import economy_db as eco
 from guildshop import can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -58,6 +59,27 @@ class CasinoCog(commands.Cog):
             else:
                 await _reply(interaction, f"🔒 {interaction.user.mention} **cerró** el casino: dados, coinflip y 1v1 quedan bloqueados "
                                           "(las partidas ya en curso terminan normalmente).", ephemeral=False)
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude completar el comando.")
+
+    @app_commands.command(name="limite", description="(Council) Pone la apuesta máxima de dados, coinflip o 1v1 (0 = sin límite propio)")
+    @app_commands.describe(juego="Juego", cantidad="Apuesta máxima, por ejemplo 1.000.000 (0 para quitar el límite)")
+    @app_commands.choices(juego=[app_commands.Choice(name=n, value=n) for n in eco.GAME_COMMANDS])
+    @app_commands.guild_only()
+    async def limite(self, interaction: discord.Interaction, juego: app_commands.Choice[str], cantidad: str):
+        try:
+            if interaction.guild is None or not can_manage(interaction.user):
+                return await _reply(interaction, "❌ Solo el rol **Council** (o administradores) puede usar este comando.")
+            if (cantidad or "").strip() in ("0", "quitar"):
+                await self.run(eco.set_bet_limit, juego.value, None)
+                return await _reply(interaction, f"✅ Se quitó el límite de **{juego.value}** (quedan los topes generales).", ephemeral=False)
+            try:
+                amount = eco.parse_amount(cantidad)
+            except eco.AmountError as exc:
+                return await _reply(interaction, f"❌ {exc}")
+            await self.run(eco.set_bet_limit, juego.value, amount)
+            await _reply(interaction, f"✅ Apuesta máxima de **{juego.value}**: {eco.format_amount(amount)}.", ephemeral=False)
         except Exception:
             traceback.print_exc()
             await _reply(interaction, "❌ No pude completar el comando.")

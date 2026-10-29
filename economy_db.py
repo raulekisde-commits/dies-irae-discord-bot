@@ -704,6 +704,28 @@ def get_setting(db_path: str, key: str) -> Optional[str]:
         conn.close()
 
 
+def get_bet_limit(db_path: str, game: str) -> Optional[int]:
+    """Apuesta máxima configurada con /limite para dados, coinflip o 1v1 (None = sin límite propio)."""
+    raw = get_setting(db_path, f"bet_limit:{game}")
+    try:
+        v = int(raw) if raw else 0
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def set_bet_limit(db_path: str, game: str, amount: Optional[int]) -> None:
+    set_setting(db_path, f"bet_limit:{game}", None if not amount else str(int(amount)))
+
+
+def check_bet_limit(db_path: str, game: str, amount: int) -> Optional[str]:
+    """Texto de error si la apuesta supera el límite del juego, o None."""
+    limit = get_bet_limit(db_path, game)
+    if limit is not None and amount > limit:
+        return f"La apuesta máxima en {game} es {format_amount(limit)}."
+    return None
+
+
 def set_setting(db_path: str, key: str, value: Optional[str]) -> None:
     conn = connect(db_path)
     try:

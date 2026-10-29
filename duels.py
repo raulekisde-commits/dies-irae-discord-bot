@@ -118,6 +118,9 @@ class DuelsCog(commands.Cog):
                 amount = eco.parse_amount(cantidad)
             except eco.AmountError as exc:
                 return await _say(interaction, f"❌ {exc}")
+            over = await self.run(eco.check_bet_limit, "1v1", amount)
+            if over:
+                return await _say(interaction, f"❌ {over}")
             res = await self.run(ddb.create_duel, guild_id=interaction.guild.id, channel_id=interaction.channel.id,
                                  challenger_id=me.id, challenged_id=usuario.id, stake=amount)
             if res.code == "funds":
