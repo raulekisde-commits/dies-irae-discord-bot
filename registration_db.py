@@ -188,6 +188,14 @@ def get_registrations(db_path: str, discord_id: int) -> List[Registration]:
         conn.close()
 
 
+def all_registrations(db_path: str) -> List[Registration]:
+    conn = connect(db_path)
+    try:
+        return [_reg(r) for r in conn.execute("SELECT * FROM albion_links ORDER BY id")]
+    finally:
+        conn.close()
+
+
 def get_registration(db_path: str, discord_id: int) -> Optional[Registration]:
     regs = get_registrations(db_path, discord_id)
     return regs[0] if regs else None

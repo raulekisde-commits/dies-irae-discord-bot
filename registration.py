@@ -40,7 +40,7 @@ ROSTER_MAX_AGE_SECONDS = 3 * 3600       # si la lista es más vieja que esto (la
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular",
-                   "registro_canal", "registro_obligatorio"}
+                   "registro_canal", "registro_obligatorio", "listarregistros"}
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -141,9 +141,10 @@ class YesNoView(discord.ui.View):
 # ============================================================
 class RegistrationCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "", default_log_channel: int = 0,
-                 albion_guild_id: str = ""):
+                 albion_guild_id: str = "", member_role_id: int = 0):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self.albion_guild_id = (albion_guild_id or "").strip()
+        self.member_role_id = int(member_role_id or 0)
         self.roster: Dict[str, Character] = {}      # nombre (casefold) → personaje, de la última lista bajada
         self.roster_at = 0.0                        # time.monotonic() de la última lista buena
         self.required_guild = (required_guild or "").strip()
@@ -527,6 +528,58 @@ class RegistrationCog(commands.Cog):
             f"(la persona no lo aceptó).{note}\n{nick_msg}", ephemeral=True, allowed_mentions=NO_MENTIONS)
         await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**")
 
+    @staticmethod
+    def _chunks(lines: List[str], limit: int = 1800) -> List[str]:
+        out, cur = [], ""
+        for ln in lines:
+            if len(cur) + len(ln) + 1 > limit and cur:
+                out.append(cur)
+                cur = ""
+            cur += ln + "\n"
+        if cur:
+            out.append(cur)
+        return out
+
+    @app_commands.command(name="listarregistros", description="(Staff) Cuántos están registrados y quién falta: guild sin Discord y Discord sin Albion")
+    @app_commands.guild_only()
+    async def listarregistros(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        if not self.albion_guild_id:
+            return await _say(interaction, "❌ No tengo configurada la guild de Albion (ALBION_GUILD_ID), así que no puedo comparar la lista.")
+        if not self.roster_fresh():
+            await self.refresh_roster()
+        if not self.roster:
+            return await _say(interaction, "❌ No pude bajar la lista de miembros de la guild desde la API de Albion. Probá de nuevo en unos minutos.")
+        links = await self.run(rdb.all_registrations)
+        linked_names = {r.char_name.casefold() for r in links}
+        linked_ids = {r.char_id for r in links if r.char_id}
+        linked_discord = {r.discord_id for r in links}
+        guild = interaction.guild
+        role = guild.get_role(self.member_role_id) if self.member_role_id else None
+        discord_pool = [m for m in (role.members if role is not None else guild.members) if not getattr(m, "bot", False)]
+        in_guild_linked = sum(1 for c in self.roster.values() if c.name.casefold() in linked_names or c.char_id in linked_ids)
+        guild_unlinked = sorted((c.name for c in self.roster.values() if c.name.casefold() not in linked_names and c.char_id not in linked_ids),
+                                key=str.casefold)
+        discord_unlinked = sorted((m for m in discord_pool if m.id not in linked_discord), key=lambda m: m.display_name.casefold())
+        who = f"con el rol **{role.name}**" if role is not None else "del servidor"
+        e = discord.Embed(title="📋 Registros Discord ↔ Albion", color=GOLD)
+        e.add_field(name="Registrados", value=f"**{len(links)}** cuentas vinculadas", inline=True)
+        e.add_field(name=f"Guild {self.required_guild or ''}".strip(),
+                    value=f"{len(self.roster)} miembros · {in_guild_linked} vinculados · **{len(guild_unlinked)}** sin Discord", inline=False)
+        e.add_field(name="Discord", value=f"{len(discord_pool)} miembros {who} · **{len(discord_unlinked)}** sin personaje vinculado", inline=False)
+        e.set_footer(text="La lista de la guild se actualiza cada 30 min.")
+        await interaction.followup.send(embed=e, ephemeral=True)
+        sections = [("🎮 En la guild pero SIN Discord vinculado", [f"• {discord.utils.escape_markdown(n)}" for n in guild_unlinked]),
+                    ("💬 En Discord pero SIN personaje de Albion", [f"• <@{m.id}> ({discord.utils.escape_markdown(m.display_name)})" for m in discord_unlinked])]
+        for title, lines in sections:
+            if not lines:
+                await interaction.followup.send(f"**{title}**\n✅ Ninguno.", ephemeral=True)
+                continue
+            for n, chunk in enumerate(self._chunks(lines)):
+                await interaction.followup.send(f"**{title}**{' (cont.)' if n else ''}\n{chunk}", ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     @app_commands.command(name="registro_canal", description="(Admin) Canal donde el bot avisa los registros y desvinculaciones")
     @app_commands.describe(canal="Canal de texto")
     @app_commands.guild_only()
@@ -663,10 +716,10 @@ def install_gate(bot: commands.Bot, db_path: str) -> RegistrationGate:
 
 
 async def setup_registration(bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "",
-                             default_log_channel: int = 0, albion_guild_id: str = "") -> RegistrationCog:
+                             default_log_channel: int = 0, albion_guild_id: str = "", member_role_id: int = 0) -> RegistrationCog:
     cog = RegistrationCog(bot, db_path, guild_id, required_guild=required_guild,
                           default_log_channel=int(os.getenv("REGISTRO_CANAL_ID", "0") or default_log_channel or 0),
-                          albion_guild_id=albion_guild_id)
+                          albion_guild_id=albion_guild_id, member_role_id=member_role_id)
     await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
     install_gate(bot, db_path)
     return cog
