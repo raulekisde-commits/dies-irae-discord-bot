@@ -1,8 +1,8 @@
 """Paneles de ludópatas: /panel apuestas (capa de Discord).
 
-Seis paneles públicos (/panel apuestas): «Top apostado», «Top ganado» (ganado − perdido: puede dar negativo), «Total
-perdido» (número exacto de todo lo perdido apostando), los winrate de dados y de coinflip y la lista negra del casino. Los tops tienen un botón
-«Siguiente ▶» que abre, solo para quien lo toca, la lista completa de a 10 personas por página.
+Cuatro paneles públicos: «Top apostado», «Top ganado» (ganado − perdido, solo los que están en positivo), «Top perdido» (ganado − perdido,
+solo los que están en negativo) y la lista negra del casino. Los tops tienen un botón «Siguiente ▶» que abre, solo para quien lo toca,
+la lista completa de a 10 personas por página. Solo aparece gente que sigue en el servidor.
 Los paneles se refrescan solos cada minuto; los datos salen de stats_db (calculados del historial, no duplicados).
 """
 import asyncio
@@ -26,12 +26,11 @@ BLACKLIST_MAX = 40
 
 INFO = {
     "wagered": ("🎰 Top apostado", "Total apostado", 0xF1C40F),
-    "net": ("🏆 Top ganado", "Ganado − perdido", 0x2ECC71),
-    "wr_dice": ("🎲 Top winrate — Dados", "Winrate en dados", 0x3498DB),
-    "wr_coinflip": ("🪙 Top winrate — Coinflip", "Winrate en coinflip", 0x9B59B6),
+    "net": ("🏆 Top ganado", "Ganado − perdido (solo en positivo)", 0x2ECC71),
+    "loss": ("📉 Top perdido", "Ganado − perdido (solo en negativo)", 0xE74C3C),
 }
-WINRATE_KINDS = {"wr_dice": "dice", "wr_coinflip": "coinflip"}
-LEGACY_NOTE = "ℹ️ Este panel es de una versión anterior y ya no se actualiza. Pedí que se publiquen los nuevos con `/apuestas panel`."
+LEGACY_BUTTON_KINDS = ("won", "lost", "wr_dice", "wr_coinflip")          # paneles viejos con botón: se explica que ya no se usan
+LEGACY_NOTE = "ℹ️ Este panel es de una versión anterior y ya no se actualiza. Pedí que se publiquen los nuevos con `/panel apuestas`."
 
 
 class RankPanelView(discord.ui.View):
@@ -56,7 +55,7 @@ class RankingsCog(commands.Cog):
     async def cog_load(self):
         await self.run(rdb.init_schema)
         await self.run(stats_db.init_schema)
-        for kind in tuple(INFO) + rdb.LEGACY_KINDS:                      # solo los paneles con botón «Siguiente»
+        for kind in tuple(INFO) + LEGACY_BUTTON_KINDS:                    # solo los paneles con botón «Siguiente»
             self.bot.add_view(RankPanelView(self, kind))
         if not self.refresher.is_running():
             self.refresher.start()
@@ -87,16 +86,21 @@ class RankingsCog(commands.Cog):
         except Exception:
             return None
 
+    def present(self, user_ids: List[int]) -> List[int]:
+        """Se queda solo con quienes siguen en el servidor (si el bot todavía no tiene la lista de miembros, no filtra)."""
+        guild = self.bot.get_guild(self.guild_id)
+        if guild is None or not getattr(guild, "chunked", True):
+            return list(user_ids)
+        return [u for u in user_ids if guild.get_member(u) is not None]
+
     async def rows_of(self, kind: str) -> List[Tuple[int, int]]:
-        if kind in WINRATE_KINDS:                       # el "valor" es un WinRate; value_text lo muestra
-            return [(w.user_id, w) for w in await self.run(stats_db.top_winrate, WINRATE_KINDS[kind])]
-        stats = await self.run(stats_db.top_by, kind)
-        return [(st.user_id, st.net if kind == "net" else getattr(st, kind)) for st in stats]
+        field = {"net": "gain", "loss": "loss"}.get(kind, kind)
+        stats = await self.run(stats_db.top_by, field)
+        keep = set(self.present([st.user_id for st in stats]))
+        return [(st.user_id, st.net if kind in ("net", "loss") else getattr(st, kind)) for st in stats if st.user_id in keep]
 
     # ---------- embeds ----------
     def value_text(self, kind: str, value) -> str:
-        if kind in WINRATE_KINDS:
-            return f"{value.percent} ({value.wins}/{value.played})"
         return self.money(value, signed=True) if kind == "net" and value > 0 else self.money(value)
 
     def page_embed(self, kind: str, rows: List[Tuple[int, int]], page: int) -> discord.Embed:
@@ -111,23 +115,11 @@ class RankingsCog(commands.Cog):
             emb.description = "\n".join(
                 f"{medals.get(pos, f'`{pos:>2}.`')} <@{uid}> — **{self.value_text(kind, value)}**"
                 for pos, (uid, value) in enumerate(chunk, start=page * PAGE_SIZE + 1))
-        extra = f" · mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas" if kind in WINRATE_KINDS else " (apuestas, dados y coinflip)"
-        emb.set_footer(text=f"{label}{extra} · Página {page + 1}/{pages}")
-        return emb
-
-    async def lost_total_embed(self) -> discord.Embed:
-        stats = await self.run(stats_db.all_stats)
-        total = sum(st.lost for st in stats)
-        emb = discord.Embed(title="📉 Total perdido apostando", color=0xE74C3C)
-        emb.description = f"# {self.money(total)}"
-        losers = sum(1 for st in stats if st.lost > 0)
-        emb.add_field(name="Personas que perdieron", value=str(losers), inline=True)
-        emb.add_field(name="Total apostado", value=self.money(sum(st.wagered for st in stats)), inline=True)
-        emb.set_footer(text="Suma exacta de lo perdido (apuestas, dados, coinflip y 1v1), sin redondear")
+        emb.set_footer(text=f"{label} (apuestas, dados, coinflip y 1v1) · Página {page + 1}/{pages}")
         return emb
 
     async def blacklist_embed(self) -> discord.Embed:
-        ids = await self.run(cdb.list_banned, self.guild_id)
+        ids = self.present(await self.run(cdb.list_banned, self.guild_id))
         emb = discord.Embed(title="🚫 Lista negra del casino", color=0x2C2F33)
         if not ids:
             emb.description = "_Nadie está bloqueado._"
@@ -140,8 +132,6 @@ class RankingsCog(commands.Cog):
         return emb
 
     async def panel_embed(self, kind: str) -> discord.Embed:
-        if kind == "lost_total":
-            return await self.lost_total_embed()
         if kind == "blacklist":
             return await self.blacklist_embed()
         return self.page_embed(kind, await self.rows_of(kind), 0)
@@ -232,8 +222,29 @@ class RankingsCog(commands.Cog):
     async def _before_refresher(self):
         await self.bot.wait_until_ready()
 
+    async def remove_obsolete_panels(self) -> int:
+        """Borra solos los paneles de versiones anteriores (Total perdido, winrate, etc.) para que queden solo los vigentes."""
+        removed = 0
+        for legacy in rdb.LEGACY_KINDS:
+            old = await self.run(rdb.get_panel, self.guild_id, legacy)
+            if not old:
+                continue
+            try:
+                och = await self._get_channel(old[0])
+                if och is not None:
+                    await (await och.fetch_message(old[1])).delete()
+            except discord.NotFound:
+                pass
+            except Exception as exc:
+                print(f"⚠️ No pude borrar el panel viejo '{legacy}': {exc!r}")
+                continue
+            await self.run(rdb.clear_panel, self.guild_id, legacy)
+            removed += 1
+        return removed
+
     async def refresh_all(self) -> int:
         done = 0
+        await self.remove_obsolete_panels()
         for kind in rdb.KINDS:
             found = await self.run(rdb.get_panel, self.guild_id, kind)
             if not found:

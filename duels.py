@@ -98,9 +98,15 @@ class DuelsCog(commands.Cog):
             if interaction.guild is None or not isinstance(me, discord.Member):
                 return await _say(interaction, "❌ Solo disponible en el servidor.")
             eco_cog = self.economy
-            allowed = eco_cog is None or (eco_cog.member_role_id in {r.id for r in me.roles}) or await eco_cog.has_command_permission(me, "1v1")
-            if not allowed:
-                return await _say(interaction, "❌ No tenés permiso para usar este comando.")
+            if eco_cog is not None:
+                from economy import is_admin_member
+                channel_id = await self.run(eco.get_command_channel, "1v1")
+                roles = set(await self.run(eco.get_command_roles, "1v1"))
+                roles.add(eco_cog.member_role_id)               # los miembros pueden usarlo (como hasta ahora); el canal se elige con /perms-canal
+                result = eco.authorize(command="1v1", is_admin=is_admin_member(me), member_role_ids={r.id for r in me.roles},
+                                       allowed_role_ids=roles, channel_id=interaction.channel_id, configured_channel_id=channel_id)
+                if not result.ok:
+                    return await _say(interaction, f"❌ {result.reason}")
             if usuario.bot:
                 return await _say(interaction, "❌ No podés retar a un bot.")
             if usuario.id == me.id:
@@ -143,7 +149,7 @@ class DuelsCog(commands.Cog):
             if d is None:
                 return await _say(interaction, "❌ No encuentro ese duelo.")
             if d.is_open:
-                blocked = await self.run(cdb.block_reason, d.guild_id, d.challenger_id, d.challenged_id)
+                blocked = await self.run(cdb.block_reason, d.guild_id, d.challenger_id, d.challenged_id, check_open=False)   # con el casino cerrado se puede aceptar un duelo ya creado
                 if blocked and interaction.user.id == d.challenged_id:
                     return await _say(interaction, blocked)
             res = await self.run(ddb.accept_duel, d.id, interaction.user.id)

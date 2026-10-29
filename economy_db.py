@@ -19,10 +19,10 @@ ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 # Comandos de administración de saldo: funcionan en cualquier canal (solo se exige el rol/permiso).
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
 # Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
-GAME_COMMANDS = ("dados", "coinflip")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
+GAME_COMMANDS = ("dados", "coinflip", "1v1")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
 EXTRA_PERMISSION_COMMANDS = ("apuesta", "apuestas", "verhistorial", "set-balance", "eco-stats", "give-money") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
-CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + GAME_COMMANDS   # bal, top, dados, coinflip
+CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + GAME_COMMANDS   # bal, top, dados, coinflip, 1v1
 
 
 # ============================================================
@@ -70,8 +70,10 @@ def parse_amount(text: str) -> int:
 
 
 def format_amount(n: int) -> str:
-    """150000 -> '150.000' | -150000 -> '-150.000' (siempre puntos, nunca comas)."""
-    return f"{int(n):,}".replace(",", ".")
+    """150000 -> '150,000' | -150000 -> '-150,000' (los miles se separan con comas en lo que se muestra).
+
+    Al escribir una cantidad se siguen aceptando `150000`, `150,000` y `150.000` (ver parse_amount)."""
+    return f"{int(n):,}"
 
 
 # ============================================================
@@ -114,7 +116,7 @@ def reason_from_tokens(tokens: List[str], default: str) -> str:
     rest = tokens[2] if len(tokens) > 2 else ""
     first = rest.split(None, 1)[0] if rest.strip() else ""
     if first and _NUMBERISH_RE.match(first):
-        raise AmountError("La cantidad es ambigua: no uses espacios dentro del número (ej: `12345` o `12.345`). "
+        raise AmountError("La cantidad es ambigua: no uses espacios dentro del número (ej: `12345` o `12,345`). "
                           "Si querés un motivo que empiece con un número, escribí primero una palabra.")
     return clean_reason(rest, default)
 

@@ -4,13 +4,13 @@ from typing import Optional, Tuple
 
 from dbutil import connect, write_tx
 
-KINDS = ("wagered", "net", "lost_total", "wr_dice", "wr_coinflip", "blacklist")                 # Top apostado · Top ganado (ganado − perdido, puede ser negativo)
-LEGACY_KINDS = ("won", "lost")             # paneles de la versión anterior (se reemplazan al publicar de nuevo)
+KINDS = ("wagered", "net", "loss", "blacklist")          # Top apostado · Top ganado (solo positivos) · Top perdido (solo negativos) · lista negra
+LEGACY_KINDS = ("won", "lost", "lost_total", "wr_dice", "wr_coinflip")     # paneles de versiones anteriores: se borran solos
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rank_panels (
     guild_id   INTEGER NOT NULL,
-    kind       TEXT NOT NULL,                    -- wagered | net (y los viejos won | lost)
+    kind       TEXT NOT NULL,                    -- wagered | net | loss | blacklist (y los viejos)
     channel_id INTEGER NOT NULL,
     message_id INTEGER NOT NULL,
     PRIMARY KEY (guild_id, kind)
