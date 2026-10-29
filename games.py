@@ -11,11 +11,12 @@ import traceback
 from typing import Callable, Dict, List, Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 import economy_db as eco
 import games_db as gdb
-from bets import ConfirmView
+from slashctx import SlashContext
 
 NO_MENTIONS = discord.AllowedMentions.none()
 DICE_FACES = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
@@ -230,7 +231,9 @@ class GamesCog(commands.Cog):
             return await ctx.reply("❌ No pude publicar el panel (¿permisos del bot en ese canal?). Se te devolvió la entrada.",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         await self.run(gdb.set_message, game.id, msg.id)
-        if panel_channel.id != ctx.channel.id:
+        if hasattr(ctx, "interaction"):                     # con "/" hay que responder la interacción (en privado)
+            await ctx.reply(f"✅ Listo: el panel está en {panel_channel.mention}.", ephemeral=True)
+        elif panel_channel.id != ctx.channel.id:
             await ctx.reply(f"✅ Dados creados: el panel está en {panel_channel.mention}.", mention_author=False, allowed_mentions=NO_MENTIONS)
 
     @commands.command(name="dados")
@@ -242,6 +245,18 @@ class GamesCog(commands.Cog):
     @guard
     async def coinflip(self, ctx: commands.Context, *, cantidad: str = ""):
         await self._create(ctx, "coinflip", cantidad)
+
+    @app_commands.command(name="dados", description="Crea una partida de dados (5 minutos). Gana el número más alto y se lleva el pozo")
+    @app_commands.describe(cantidad=f"Lo que ponés para entrar (máximo {eco.format_amount(gdb.MAX_STAKE)})")
+    @app_commands.guild_only()
+    async def dados_slash(self, interaction: discord.Interaction, cantidad: str):
+        await self.dados.callback(self, SlashContext(interaction), cantidad=cantidad)
+
+    @app_commands.command(name="coinflip", description="Desafía a alguien a cara o cruz (dura 5 minutos). El que sale se queda con todo")
+    @app_commands.describe(cantidad=f"Lo que apostás (máximo {eco.format_amount(gdb.MAX_STAKE)})")
+    @app_commands.guild_only()
+    async def coinflip_slash(self, interaction: discord.Interaction, cantidad: str):
+        await self.coinflip.callback(self, SlashContext(interaction), cantidad=cantidad)
 
     # ---------- botones: anotarse / aceptar ----------
     @staticmethod
@@ -271,7 +286,7 @@ class GamesCog(commands.Cog):
         return None
 
     async def on_join(self, interaction: discord.Interaction):
-        """Paso 1: se muestran las condiciones y se pide confirmación. No se cobra nada todavía."""
+        """Un solo toque: cobra la entrada y anota (o acepta el coinflip) en una sola transacción."""
         try:
             msg = getattr(interaction, "message", None)
             game = await self.run(gdb.find_by_message, msg.id) if msg is not None else None
@@ -279,62 +294,19 @@ class GamesCog(commands.Cog):
                 return await self._say(interaction, "❌ No encuentro ese juego.")
             if getattr(interaction.user, "bot", False) or interaction.guild is None:
                 return
-            user_id = interaction.user.id
-            status = "ok"
-            if not game.is_open or time.time() >= game.ends_at:
-                status = "closed"
-            elif user_id in game.players:
-                status = "own" if (game.kind == "coinflip" and user_id == game.creator_id) else "already"
-            elif game.kind == "coinflip" and len(game.players) >= 2:
-                status = "full"
-            balance = await self.run(eco.get_balance, user_id)
-            if status == "ok" and balance < game.stake:
-                status = "funds"
-            problem = self._join_failure(status, game, balance)
+            res = await self.run(gdb.join_game, game.id, interaction.user.id)
+            problem = self._join_failure(res.status, res.game or game, res.balance)
             if problem:
                 return await self._say(interaction, problem)
-
-            game_id, kind = game.id, game.kind
-
-            async def go(inter):
-                await self._do_join(inter, game_id)
-
-            if kind == "dice":
-                text = (f"¿Confirmás anotarte en los **dados** pagando **{self.money(game.stake)}**?\n"
-                        f"Tu saldo: {self.money(balance)} → {self.money(balance - game.stake)}.\n"
-                        "⚠️ Se cobra ahora y **no te podés dar de baja**.")
-                label = "Sí, anotarme"
-            else:
-                text = (f"¿Confirmás aceptar el coinflip de <@{game.creator_id}> poniendo **{self.money(game.stake)}**?\n"
-                        f"Tu saldo: {self.money(balance)} → {self.money(balance - game.stake)}.\n"
-                        "⚠️ La moneda se tira al instante: el que sale se lleva **{pool}**.".replace("{pool}", self.money(game.stake * 2)))
-                label = "Sí, aceptar"
-            await interaction.response.send_message(text, view=ConfirmView(user_id, go, label), ephemeral=True, allowed_mentions=NO_MENTIONS)
-        except Exception:
-            traceback.print_exc()
-            await self._say(interaction, "❌ Ocurrió un error. Revisá tu saldo con `!bal` antes de reintentar.")
-
-    async def _do_join(self, inter: discord.Interaction, game_id: int):
-        """Paso 2 (ya confirmado): cobra y anota en una sola transacción."""
-        async def reply(text: str):
-            await inter.response.edit_message(content=text, view=None)
-        try:
-            res = await self.run(gdb.join_game, game_id, inter.user.id)
-            problem = self._join_failure(res.status, res.game, res.balance)
-            if problem:
-                return await reply(problem)
             g = res.game
             if res.resolved is not None:                                     # coinflip: se resuelve al aceptar
-                await reply(f"✅ Aceptaste el desafío y pusiste {self.money(g.stake)}. ¡Se tira la moneda!")
+                await self._say(interaction, f"✅ Aceptaste el desafío y pusiste {self.money(g.stake)}. ¡Se tira la moneda!")
                 return await self.announce(res.resolved)
-            await reply(f"✅ Te anotaste pagando {self.money(g.stake)}. Tu saldo: {self.money(res.balance)}. No te podés dar de baja.")
+            await self._say(interaction, f"✅ Te anotaste pagando {self.money(g.stake)}. Tu saldo: {self.money(res.balance)}. No te podés dar de baja.")
             await self.refresh_panel(g)
         except Exception:
             traceback.print_exc()
-            try:
-                await reply("❌ Ocurrió un error. Revisá tu saldo con `!bal` antes de reintentar.")
-            except Exception:
-                pass
+            await self._say(interaction, "❌ Ocurrió un error. Revisá tu saldo con `!bal` antes de reintentar.")
 
     # ---------- paneles y anuncios ----------
     async def _get_channel(self, channel_id: Optional[int]):

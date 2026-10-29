@@ -17,11 +17,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import economy_db as eco
-from paging import PagedView, chunk
 from slashctx import SlashContext
+from paging import PagedView, chunk
 import stats_db
 
-TOP_PAGE_SIZE = 10
 NO_MENTIONS = discord.AllowedMentions.none()
 EMBED_DESC_BUDGET = 3600          # margen bajo el límite de 4096 caracteres de la descripción
 _MENTION_USER_RE = re.compile(r"^<@!?(\d{15,25})>$")
@@ -446,24 +445,29 @@ class EconomyCog(commands.Cog):
         await self._ensure_members(ctx.guild)
         balances = await self._db(eco.get_all_balances)
         eligible = [m.id for m in ctx.guild.members if not m.bot]
-        ranking = eco.rank_top(balances, eligible, limit=max(len(eligible), 1))
-
+        ranking = eco.rank_top(balances, eligible, limit=len(eligible) or 1)
+        page_size = 10
+        groups = chunk(ranking, page_size)
+        pages = len(groups)
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-        groups = chunk(ranking, TOP_PAGE_SIZE)
-        pages: List[discord.Embed] = []
-        for n, group in enumerate(groups, 1):
-            emb = discord.Embed(title=f"🏆 Top — {eco.CURRENCY_NAME}", color=discord.Color.gold())
-            if not group:
+
+        def build(page: int) -> discord.Embed:
+            rows = groups[page]
+            title = f"🏆 Top 10 — {eco.CURRENCY_NAME}" if page == 0 else f"🏆 Puestos {rows[0][0]}–{rows[-1][0]} — {eco.CURRENCY_NAME}"
+            emb = discord.Embed(title=title, color=discord.Color.gold())
+            if not rows:
                 emb.description = "Todavía no hay usuarios para mostrar."
             else:
                 emb.description = "\n".join(
-                    f"{medals.get(pos, f'`{pos}.`')} <@{uid}> — **{self.money(bal)}**" for pos, uid, bal in group)
-            emb.set_footer(text=f"{eco.CURRENCY_NAME} · Página {n}/{len(groups)}" if len(groups) > 1 else eco.CURRENCY_NAME)
-            pages.append(emb)
-        if len(pages) == 1:
-            return await ctx.send(embed=pages[0], allowed_mentions=NO_MENTIONS)
-        view = PagedView(pages, owner_id=ctx.author.id)
-        view.message = await ctx.send(embed=pages[0], view=view, allowed_mentions=NO_MENTIONS)
+                    f"{medals.get(pos, f'`{pos}.`')} <@{uid}> — **{self.money(bal)}**" for pos, uid, bal in rows)
+            emb.set_footer(text=f"{eco.CURRENCY_NAME} · Página {page + 1}/{pages}" if pages > 1 else eco.CURRENCY_NAME)
+            return emb
+
+        if pages > 1:
+            view = PagedView([build(i) for i in range(pages)], owner_id=ctx.author.id)
+            await ctx.send(embed=build(0), view=view, allowed_mentions=NO_MENTIONS)
+        else:
+            await ctx.send(embed=build(0), allowed_mentions=NO_MENTIONS)
 
     # ---------------- addmoney / remove-money ----------------
     async def _parse_amount_or_reply(self, ctx: commands.Context, text: str) -> Optional[int]:
@@ -701,11 +705,9 @@ class EconomyCog(commands.Cog):
 
     @staticmethod
     def _cmd_label(command: str) -> str:
-        if command in eco.GAME_COMMANDS:
-            return f"`!{command}`"
-        if command in eco.ECON_COMMANDS:
+        if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
-        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta") else f"`!{command}`"
+        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money") else f"`!{command}`"
 
     @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando económico en ESTE canal")
     @app_commands.describe(comando="Comando que querés habilitar en este canal")
@@ -767,7 +769,7 @@ class EconomyCog(commands.Cog):
                 chan_txt = f"<#{chan}>" if chan else "⚠️ sin canal (deshabilitado)"
             else:
                 chan_txt = "cualquier canal"
-            lines.append(f"**{('!' if extra in eco.GAME_COMMANDS else '/') + extra}** — canal: {chan_txt} — roles: {roles_txt}")
+            lines.append(f"**{'/' + extra}** — canal: {chan_txt} — roles: {roles_txt}")
         lines.append(f"\n**Registro:** {f'<#{log_raw}>' if log_raw else '⚠️ sin configurar'}")
         icon = self.icon()
         lines.append(f"**Icono:** {icon if icon else f'{eco.CURRENCY_NAME} (sin emoji)'}")
@@ -897,75 +899,6 @@ class EconomyCog(commands.Cog):
         return applied, unchanged, repeated, failed
 
     # ============================================================
-    # Salida del servidor y /set-balance
-    # ============================================================
-    @commands.Cog.listener()
-    async def on_member_remove(self, member: discord.Member):
-        """Si alguien abandona (o lo sacan) del servidor, su balance se restablece a 0."""
-        try:
-            if getattr(member, "bot", False):
-                return
-            if self.guild_id is not None and getattr(member.guild, "id", None) != self.guild_id:
-                return
-            actor = self.bot.user.id if getattr(self.bot, "user", None) else 0
-            status, before, after = await self._db(
-                eco.set_balance, user_id=member.id, target=0, actor_id=actor,
-                request_key=f"leave:{member.id}:{uuid.uuid4().hex}", reason=eco.LEAVE_REASON)
-            if status == "applied":
-                print(f"ℹ️ {member} ({member.id}) salió del servidor: balance {before} → 0")
-                await self._post_audit_note(f"🚪 <@{member.id}> salió del servidor: su balance se restableció "
-                                            f"({self.plain(before)} → 0).")
-        except Exception:
-            traceback.print_exc()
-
-    async def _post_audit_note(self, text: str):
-        """Aviso breve en el canal de registro (si está configurado). Nunca rompe la operación principal."""
-        try:
-            channel = await self._get_log_channel()
-            if channel is not None:
-                await channel.send(text, allowed_mentions=NO_MENTIONS)
-        except Exception as exc:
-            print(f"⚠️ No pude publicar el aviso en el registro económico: {exc!r}")
-
-    @app_commands.command(name="set-balance", description="(Admin) Deja el balance de una persona EXACTAMENTE en el número indicado")
-    @app_commands.describe(usuario="Persona (también sirve si ya salió del servidor)", cantidad="Nuevo balance (ej: 150.000; admite 0 y negativos)",
-                           motivo="Motivo del ajuste (opcional)")
-    @app_commands.guild_only()
-    async def set_balance(self, interaction: discord.Interaction, usuario: discord.User, cantidad: str, motivo: Optional[str] = None):
-        try:
-            member = interaction.user
-            if interaction.guild is None or not isinstance(member, discord.Member) \
-                    or not await self.has_command_permission(member, "set-balance"):
-                return await self._ephemeral(interaction, "❌ Solo el propietario, los administradores o un rol autorizado pueden usar este comando.")
-            if getattr(usuario, "bot", False):
-                return await self._ephemeral(interaction, "❌ No se puede operar sobre bots.")
-            try:
-                target = eco.parse_balance_value(cantidad)
-            except eco.AmountError as exc:
-                return await self._ephemeral(interaction, f"❌ {exc}")
-            reason = eco.clean_reason(motivo, eco.SET_BALANCE_DEFAULT_REASON)
-            try:
-                status, before, after = await self._db(
-                    eco.set_balance, user_id=usuario.id, target=target, actor_id=member.id,
-                    request_key=f"set:{interaction.id}", reason=reason)
-            except OverflowError:
-                return await self._ephemeral(interaction, "❌ El número supera el límite permitido. No se modificó nada.")
-            if status == "unchanged":
-                return await self._ephemeral(interaction, f"ℹ️ {usuario.mention} ya tenía exactamente {self.money(after)}. No se cambió nada.")
-            if status == "repeated":
-                return await self._ephemeral(interaction, "ℹ️ Esta solicitud ya había sido procesada; no se repitió.")
-            await interaction.response.send_message(
-                f"✅ Balance de {usuario.mention} ajustado: {self.money(before)} → **{self.money(after)}**\nMotivo: {reason}",
-                ephemeral=True, allowed_mentions=NO_MENTIONS) if not interaction.response.is_done() else await interaction.followup.send(
-                f"✅ Balance de {usuario.mention} ajustado: {self.money(before)} → **{self.money(after)}**\nMotivo: {reason}",
-                ephemeral=True, allowed_mentions=NO_MENTIONS)
-            await self._post_audit_note(f"🧾 {member.mention} ajustó el balance de <@{usuario.id}>: "
-                                        f"{self.plain(before)} → **{self.plain(after)}** · {reason}")
-        except Exception:
-            traceback.print_exc()
-            await self._ephemeral(interaction, "❌ No se pudo completar el ajuste. No se modificó ningún balance.")
-
-    # ============================================================
     # Salida del servidor, /set-balance, /historico-bal, /eco-stats
     # ============================================================
     async def _audit_note(self, embed: discord.Embed):
@@ -976,6 +909,59 @@ class EconomyCog(commands.Cog):
                 await channel.send(embed=embed, allowed_mentions=NO_MENTIONS)
         except Exception as exc:
             print(f"⚠️ No pude publicar el aviso en el registro económico: {exc!r}")
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        """Cuando alguien sale (o lo echan/banean) su balance vuelve a 0. Queda anotado en su historial."""
+        try:
+            if getattr(member, "bot", False):
+                return
+            if self.guild_id and getattr(getattr(member, "guild", None), "id", self.guild_id) != self.guild_id:
+                return
+            actor = self.bot.user.id if getattr(self.bot, "user", None) else 0
+            status, before, _ = await self._db(
+                eco.set_balance, user_id=member.id, target=0, actor_id=actor,
+                request_key=f"leave:{member.id}:{uuid.uuid4().hex}", reason="Salió del servidor", mov_type="balance_reset")
+            if status == "applied":
+                emb = discord.Embed(title="🚪 Balance restablecido por salida del servidor", color=discord.Color.orange())
+                emb.add_field(name="Usuario", value=f"<@{member.id}> (`{member.id}`)", inline=True)
+                emb.add_field(name="Balance anterior", value=self.money(before), inline=True)
+                await self._audit_note(emb)
+        except Exception:
+            traceback.print_exc()
+
+    @app_commands.command(name="set-balance", description="(Admin) Deja el balance de una persona EXACTAMENTE en el número indicado")
+    @app_commands.describe(usuario="Persona", cantidad="Nuevo balance (admite 0 y negativos, ej: 5.000)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def set_balance_cmd(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not await self.has_command_permission(member, "set-balance"):
+                return await self._ephemeral(interaction, "❌ Este comando es solo para el propietario del servidor o administradores.")
+            if usuario.bot:
+                return await self._ephemeral(interaction, "❌ No se puede operar sobre bots.")
+            try:
+                target = eco.parse_balance_value(cantidad)
+            except eco.AmountError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            try:
+                status, before, after = await self._db(
+                    eco.set_balance, user_id=usuario.id, target=target, actor_id=member.id,
+                    request_key=f"setbal:{interaction.id}", reason=f"Balance fijado por {member.display_name}")
+            except OverflowError:
+                return await self._ephemeral(interaction, "❌ El número supera el límite permitido.")
+            if status == "unchanged":
+                return await self._ephemeral(interaction, f"ℹ️ {usuario.mention} ya tenía exactamente {self.money(before)}. No se cambió nada.")
+            await self._ephemeral(interaction, f"✅ Balance de {usuario.mention} fijado en **{self.money(after)}** (antes: {self.money(before)}).")
+            emb = discord.Embed(title="🧾 Balance fijado", color=discord.Color.blurple())
+            emb.add_field(name="Ejecutado por", value=member.mention, inline=True)
+            emb.add_field(name="Usuario", value=usuario.mention, inline=True)
+            emb.add_field(name="Antes → Ahora", value=f"{self.money(before)} → **{self.money(after)}**", inline=False)
+            await self._audit_note(emb)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No se pudo completar la operación. No se modificó el balance.")
 
     historico_bal = app_commands.Group(name="historico-bal", description="Balance histórico de Wuju Coins", guild_only=True)
 
@@ -1010,15 +996,63 @@ class EconomyCog(commands.Cog):
                 return await self._ephemeral(interaction, "❌ Este comando es solo para el staff.")
             st = await self._db(eco.get_stats)
             emb = discord.Embed(title=f"📊 {eco.CURRENCY_NAME} — estadísticas", color=discord.Color.gold())
-            emb.add_field(name="Total cargado (suma de todos los balances)", value=f"**{self.money(st.total_net)}**", inline=False)
-            emb.add_field(name="Balances positivos", value=f"{self.money(st.total_positive)} · {st.with_positive} persona(s)", inline=True)
-            emb.add_field(name="Balances negativos", value=self.money(st.total_negative), inline=True)
+            emb.add_field(name="Total cargado (suma de todos los balances)", value=f"**{self.money(st.total)}**", inline=False)
+            emb.add_field(name="Balances positivos", value=f"{self.money(st.positive)} · {st.holders_positive} persona(s)", inline=True)
+            emb.add_field(name="Balances negativos", value=self.money(st.negative), inline=True)
             emb.add_field(name="Balance histórico total (depositado)", value=self.money(st.lifetime_total), inline=False)
             emb.set_footer(text=f"{st.accounts} cuenta(s) registradas")
             await interaction.response.send_message(embed=emb, ephemeral=True, allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No pude obtener las estadísticas.")
+
+    # ============================================================
+    # /give-money: pasar Wuju Coins propios a otra persona
+    # ============================================================
+    @app_commands.command(name="give-money", description="Dale Wuju Coins de tu balance a otra persona")
+    @app_commands.describe(usuario="Quién los recibe", cantidad="Cantidad (ej: 5.000)", motivo="Motivo (opcional)")
+    @app_commands.guild_only()
+    async def give_money(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not isinstance(member, discord.Member):
+                return await self._ephemeral(interaction, "❌ Solo disponible en el servidor.")
+            allowed = (self.member_role_id in {r.id for r in member.roles}) or await self.has_command_permission(member, "give-money", staff_ok=True)
+            if not allowed:
+                return await self._ephemeral(interaction, "❌ No tenés permiso para usar este comando.")
+            if usuario.bot:
+                return await self._ephemeral(interaction, "❌ No se puede dar Wuju Coins a un bot.")
+            if usuario.id == member.id:
+                return await self._ephemeral(interaction, "❌ No te podés dar Wuju Coins a vos mismo.")
+            try:
+                amount = eco.parse_amount(cantidad)
+            except eco.AmountError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            reason = eco.clean_reason(motivo, eco.GIVE_DEFAULT_REASON)
+            try:
+                status, after_from, after_to = await self._db(
+                    eco.transfer, from_id=member.id, to_id=usuario.id, amount=amount,
+                    request_key=f"give:{interaction.id}", reason=reason)
+            except eco.InsufficientFunds:
+                balance = await self._db(eco.get_balance, member.id)
+                return await self._ephemeral(interaction, f"❌ No tenés saldo suficiente. Tu saldo: {self.money(balance)}.")
+            except OverflowError:
+                return await self._ephemeral(interaction, "❌ El balance de esa persona superaría el límite permitido. No se movió nada.")
+            if status == "repeated":
+                return await self._ephemeral(interaction, "ℹ️ Esta solicitud ya había sido procesada; no se repitió.")
+            text = f"💸 {member.mention} le dio **{self.money(amount)}** a {usuario.mention}."
+            if reason != eco.GIVE_DEFAULT_REASON:
+                text += f"\nMotivo: {reason}"
+            await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions(users=[usuario]))
+            emb = discord.Embed(title="💸 Transferencia entre usuarios", color=discord.Color.blurple())
+            emb.add_field(name="De", value=f"{member.mention} → saldo {self.money(after_from)}", inline=True)
+            emb.add_field(name="Para", value=f"{usuario.mention} → saldo {self.money(after_to)}", inline=True)
+            emb.add_field(name="Cantidad", value=self.money(amount), inline=True)
+            emb.add_field(name="Motivo", value=reason, inline=False)
+            await self._audit_note(emb)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No se pudo completar la transferencia. No se movió nada.")
 
     # ============================================================
     # Historial de movimientos

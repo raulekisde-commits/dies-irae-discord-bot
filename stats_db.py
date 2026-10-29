@@ -91,9 +91,18 @@ def all_stats(db_path: str) -> List[GamblerStats]:
 
 
 def top_by(db_path: str, field: str) -> List[GamblerStats]:
-    """Ranking completo (mayor a menor) por 'won', 'lost' o 'wagered'. Quien tiene 0 no aparece."""
-    if field not in ("won", "lost", "wagered"):
+    """Ranking completo (mayor a menor).
+
+    - 'wagered': lo apostado (quien tiene 0 no aparece).
+    - 'net':     ganado − perdido; puede ser negativo. Aparece quien jugó al menos una partida terminada
+                 (los negativos van al final).
+    - 'won' / 'lost': solo quienes tienen algo en ese campo.
+    """
+    if field not in ("won", "lost", "wagered", "net"):
         raise ValueError("campo inválido")
-    rows = [s for s in all_stats(db_path) if getattr(s, field) > 0]
+    if field == "net":
+        rows = [s for s in all_stats(db_path) if s.games > 0]
+    else:
+        rows = [s for s in all_stats(db_path) if getattr(s, field) > 0]
     rows.sort(key=lambda s: (-getattr(s, field), s.user_id))
     return rows
