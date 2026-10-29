@@ -5701,6 +5701,9 @@ HELP_SECTIONS = [
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
         ("!apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
         ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
+        ("/set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),
+        ("/eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),
+        ("/historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
         ("/verhistorial [usuario]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. El staff puede ver los de otra persona (solo lo ves vos)."),
         ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
@@ -6238,5 +6241,6 @@ async def on_message(message: discord.Message):
     }
 # ---------- RUN ----------
 bot.run(TOKEN)
+
 
 
