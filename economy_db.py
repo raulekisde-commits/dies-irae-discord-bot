@@ -89,6 +89,7 @@ MOVEMENT_LABELS = {
     "bet_refund": "Devolución de apuesta",
     "balance_set": "Saldo ajustado",
     "balance_reset": "Saldo restablecido",
+    "guildshop_purchase": "Compra en Guild Shop",
 }
 
 
