@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 from dbutil import connect, write_tx
 
-KINDS = ("wagered", "net")                 # Top apostado · Top ganado (ganado − perdido, puede ser negativo)
+KINDS = ("wagered", "net", "lost_total", "wr_dice", "wr_coinflip", "blacklist")                 # Top apostado · Top ganado (ganado − perdido, puede ser negativo)
 LEGACY_KINDS = ("won", "lost")             # paneles de la versión anterior (se reemplazan al publicar de nuevo)
 
 SCHEMA = """

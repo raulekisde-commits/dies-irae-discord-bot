@@ -1,7 +1,7 @@
-"""Paneles de ludópatas: /apuestas panel (capa de Discord).
+"""Paneles de ludópatas: /panel apuestas (capa de Discord).
 
-Dos paneles públicos con el top 10: «Top apostado» (total apostado) y «Top ganado» (ganado − perdido: puede dar
-negativo). Cada uno tiene un botón
+Seis paneles públicos (/panel apuestas): «Top apostado», «Top ganado» (ganado − perdido: puede dar negativo), «Total
+perdido» (número exacto de todo lo perdido apostando), los winrate de dados y de coinflip y la lista negra del casino. Los tops tienen un botón
 «Siguiente ▶» que abre, solo para quien lo toca, la lista completa de a 10 personas por página.
 Los paneles se refrescan solos cada minuto; los datos salen de stats_db (calculados del historial, no duplicados).
 """
@@ -13,6 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import casino_db as cdb
 import economy_db as eco
 import rankings_db as rdb
 import stats_db
@@ -21,11 +22,15 @@ from paging import PagedView, chunk
 NO_MENTIONS = discord.AllowedMentions.none()
 PAGE_SIZE = 10
 COMMAND_PERMISSION = "apuestas"
+BLACKLIST_MAX = 40
 
 INFO = {
     "wagered": ("🎰 Top apostado", "Total apostado", 0xF1C40F),
     "net": ("🏆 Top ganado", "Ganado − perdido", 0x2ECC71),
+    "wr_dice": ("🎲 Top winrate — Dados", "Winrate en dados", 0x3498DB),
+    "wr_coinflip": ("🪙 Top winrate — Coinflip", "Winrate en coinflip", 0x9B59B6),
 }
+WINRATE_KINDS = {"wr_dice": "dice", "wr_coinflip": "coinflip"}
 LEGACY_NOTE = "ℹ️ Este panel es de una versión anterior y ya no se actualiza. Pedí que se publiquen los nuevos con `/apuestas panel`."
 
 
@@ -47,13 +52,11 @@ class RankingsCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
 
-    apuestas = app_commands.Group(name="apuestas", description="Ranking de apuestas", guild_only=True)
-
     # ---------- infraestructura ----------
     async def cog_load(self):
         await self.run(rdb.init_schema)
         await self.run(stats_db.init_schema)
-        for kind in rdb.KINDS + rdb.LEGACY_KINDS:
+        for kind in tuple(INFO) + rdb.LEGACY_KINDS:                      # solo los paneles con botón «Siguiente»
             self.bot.add_view(RankPanelView(self, kind))
         if not self.refresher.is_running():
             self.refresher.start()
@@ -85,11 +88,15 @@ class RankingsCog(commands.Cog):
             return None
 
     async def rows_of(self, kind: str) -> List[Tuple[int, int]]:
+        if kind in WINRATE_KINDS:                       # el "valor" es un WinRate; value_text lo muestra
+            return [(w.user_id, w) for w in await self.run(stats_db.top_winrate, WINRATE_KINDS[kind])]
         stats = await self.run(stats_db.top_by, kind)
         return [(st.user_id, st.net if kind == "net" else getattr(st, kind)) for st in stats]
 
     # ---------- embeds ----------
-    def value_text(self, kind: str, value: int) -> str:
+    def value_text(self, kind: str, value) -> str:
+        if kind in WINRATE_KINDS:
+            return f"{value.percent} ({value.wins}/{value.played})"
         return self.money(value, signed=True) if kind == "net" and value > 0 else self.money(value)
 
     def page_embed(self, kind: str, rows: List[Tuple[int, int]], page: int) -> discord.Embed:
@@ -104,12 +111,43 @@ class RankingsCog(commands.Cog):
             emb.description = "\n".join(
                 f"{medals.get(pos, f'`{pos:>2}.`')} <@{uid}> — **{self.value_text(kind, value)}**"
                 for pos, (uid, value) in enumerate(chunk, start=page * PAGE_SIZE + 1))
-        emb.set_footer(text=f"{label} (apuestas, dados y coinflip) · Página {page + 1}/{pages}")
+        extra = f" · mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas" if kind in WINRATE_KINDS else " (apuestas, dados y coinflip)"
+        emb.set_footer(text=f"{label}{extra} · Página {page + 1}/{pages}")
         return emb
 
-    # ---------- /apuestas panel ----------
-    @apuestas.command(name="panel", description="Publica los paneles Top apostado y Top ganado en este canal")
-    async def panel(self, interaction: discord.Interaction):
+    async def lost_total_embed(self) -> discord.Embed:
+        stats = await self.run(stats_db.all_stats)
+        total = sum(st.lost for st in stats)
+        emb = discord.Embed(title="📉 Total perdido apostando", color=0xE74C3C)
+        emb.description = f"# {self.money(total)}"
+        losers = sum(1 for st in stats if st.lost > 0)
+        emb.add_field(name="Personas que perdieron", value=str(losers), inline=True)
+        emb.add_field(name="Total apostado", value=self.money(sum(st.wagered for st in stats)), inline=True)
+        emb.set_footer(text="Suma exacta de lo perdido (apuestas, dados, coinflip y 1v1), sin redondear")
+        return emb
+
+    async def blacklist_embed(self) -> discord.Embed:
+        ids = await self.run(cdb.list_banned, self.guild_id)
+        emb = discord.Embed(title="🚫 Lista negra del casino", color=0x2C2F33)
+        if not ids:
+            emb.description = "_Nadie está bloqueado._"
+        else:
+            shown = ids[:BLACKLIST_MAX]
+            emb.description = "\n".join(f"`{i}.` <@{uid}>" for i, uid in enumerate(shown, 1))
+            if len(ids) > len(shown):
+                emb.description += f"\n… y {len(ids) - len(shown)} más"
+        emb.set_footer(text=f"{len(ids)} persona(s) bloqueada(s) · Council: /casinoban")
+        return emb
+
+    async def panel_embed(self, kind: str) -> discord.Embed:
+        if kind == "lost_total":
+            return await self.lost_total_embed()
+        if kind == "blacklist":
+            return await self.blacklist_embed()
+        return self.page_embed(kind, await self.rows_of(kind), 0)
+
+    # ---------- /panel apuestas ----------
+    async def publish_panels(self, interaction: discord.Interaction):
         try:
             eco_cog = self.economy
             if interaction.guild is None or eco_cog is None or not await eco_cog.has_command_permission(interaction.user, COMMAND_PERMISSION):
@@ -121,9 +159,8 @@ class RankingsCog(commands.Cog):
             posted = []
             try:
                 for kind in rdb.KINDS:
-                    rows = await self.rows_of(kind)
-                    posted.append((kind, await channel.send(embed=self.page_embed(kind, rows, 0), view=RankPanelView(self, kind),
-                                                            allowed_mentions=NO_MENTIONS)))
+                    kwargs = {"view": RankPanelView(self, kind)} if kind in INFO else {}
+                    posted.append((kind, await channel.send(embed=await self.panel_embed(kind), allowed_mentions=NO_MENTIONS, **kwargs)))
             except Exception as exc:
                 traceback.print_exc()
                 for _, m in posted:                                  # no dejar paneles a medias
@@ -206,8 +243,7 @@ class RankingsCog(commands.Cog):
                 if ch is None:
                     continue
                 msg = await ch.fetch_message(found[1])
-                rows = await self.rows_of(kind)
-                await msg.edit(embed=self.page_embed(kind, rows, 0), allowed_mentions=NO_MENTIONS)
+                await msg.edit(embed=await self.panel_embed(kind), allowed_mentions=NO_MENTIONS)
                 done += 1
             except Exception as exc:
                 print(f"⚠️ Ranking '{kind}': no pude actualizar el panel: {exc!r}")

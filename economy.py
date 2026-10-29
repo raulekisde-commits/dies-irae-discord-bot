@@ -403,21 +403,8 @@ class EconomyCog(commands.Cog):
     # ============================================================
     # Comandos de prefijo
     # ============================================================
-    @commands.command(name="bal")
-    @guard
-    async def bal(self, ctx: commands.Context, *, objetivo: str = ""):
-        if ctx.guild is None:
-            return
-        if not await self._authorize(ctx, "bal"):
-            return
-
-        if objetivo.strip():
-            target, error = await self._resolve_member_flexible(ctx.guild, objetivo)
-            if target is None:
-                return await ctx.reply(f"❌ {error}", mention_author=False, allowed_mentions=NO_MENTIONS)
-        else:
-            target = ctx.author
-
+    async def bal_embed(self, target) -> discord.Embed:
+        """El mismo panel de `!bal` (se reutiliza en los tickets de cambio de moneda)."""
         balance = await self._db(eco.get_balance, target.id)
         lifetime = await self._db(eco.get_lifetime_deposits, target.id)
         color = discord.Color.green() if balance > 0 else (discord.Color.red() if balance < 0 else discord.Color.light_grey())
@@ -433,6 +420,24 @@ class EconomyCog(commands.Cog):
         except Exception:
             pass
         emb.set_footer(text=eco.CURRENCY_NAME)
+        return emb
+
+    @commands.command(name="bal")
+    @guard
+    async def bal(self, ctx: commands.Context, *, objetivo: str = ""):
+        if ctx.guild is None:
+            return
+        if not await self._authorize(ctx, "bal"):
+            return
+
+        if objetivo.strip():
+            target, error = await self._resolve_member_flexible(ctx.guild, objetivo)
+            if target is None:
+                return await ctx.reply(f"❌ {error}", mention_author=False, allowed_mentions=NO_MENTIONS)
+        else:
+            target = ctx.author
+
+        emb = await self.bal_embed(target)
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)   # público, sin respuestas efímeras
 
     @commands.command(name="top")
