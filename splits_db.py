@@ -12,6 +12,7 @@ Cálculo (todo en enteros de silver, redondeando siempre hacia abajo):
 Al cerrar: cada persona listada recibe `por persona` y cada looter recibe además su tax looter.
 """
 import math
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -53,7 +54,16 @@ CREATE TABLE IF NOT EXISTS splits (
     source_cta_id    INTEGER,                          -- CTA de la que salió este split (NULL = creado a mano)
     kind             TEXT NOT NULL DEFAULT 'normal',   -- normal | ava (scouts con pago fijo, sin looters)
     bolsitas         INTEGER NOT NULL DEFAULT 0,       -- se suma al total
-    scout_pay        INTEGER NOT NULL DEFAULT 0        -- pago fijo por scout (solo kind=ava)
+    scout_pay        INTEGER NOT NULL DEFAULT 0,       -- pago fijo por scout (solo kind=ava)
+    pay_round        INTEGER NOT NULL DEFAULT 0,       -- cuántas veces se pagó (0 = nunca; >=1 y abierto = en edición)
+    edit_snapshot    TEXT                              -- copia de los datos al reabrir, para poder cancelar la edición
+);
+CREATE TABLE IF NOT EXISTS split_payouts (             -- lo que se le acreditó a cada persona en cada pago
+    split_id INTEGER NOT NULL,
+    round    INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    amount   INTEGER NOT NULL,
+    PRIMARY KEY (split_id, round, user_id)
 );
 CREATE TABLE IF NOT EXISTS split_scouts (
     split_id INTEGER NOT NULL,
@@ -128,6 +138,8 @@ class Split:
     kind: str = "normal"
     bolsitas: int = 0
     scout_pay: int = 0
+    pay_round: int = 0
+    edit_snapshot: Optional[str] = None
     scouts: List[int] = field(default_factory=list)
     people: List[int] = field(default_factory=list)
     looters: List[Looter] = field(default_factory=list)
@@ -135,6 +147,11 @@ class Split:
     @property
     def is_ava(self) -> bool:
         return self.kind == "ava"
+
+    @property
+    def is_editing(self) -> bool:
+        """Split ya pagado que se reabrió para corregirlo: el pago anterior sigue vigente hasta confirmar."""
+        return self.status == "open" and self.pay_round > 0
 
     @property
     def is_open(self) -> bool:
@@ -230,7 +247,8 @@ def init_schema(db_path: str) -> None:
             conn.execute("ALTER TABLE splits ADD COLUMN source_cta_id INTEGER")
             conn.commit()
         for col, ddl in (("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("bolsitas", "INTEGER NOT NULL DEFAULT 0"),
-                         ("scout_pay", "INTEGER NOT NULL DEFAULT 0")):
+                         ("scout_pay", "INTEGER NOT NULL DEFAULT 0"),
+                         ("pay_round", "INTEGER NOT NULL DEFAULT 0"), ("edit_snapshot", "TEXT")):
             if col not in {r[1] for r in conn.execute("PRAGMA table_info(splits)")}:
                 conn.execute(f"ALTER TABLE splits ADD COLUMN {col} {ddl}")
                 conn.commit()
@@ -239,7 +257,7 @@ def init_schema(db_path: str) -> None:
 
 
 _COLS = ("id, guild_id, title, tab, city, role_id, total, repair, tax_sale, tax_guild, tax_looter, channel_id, message_id, "
-         "thread_id, list_message_id, data_message_id, creator_id, status, source_cta_id, kind, bolsitas, scout_pay")
+         "thread_id, list_message_id, data_message_id, creator_id, status, source_cta_id, kind, bolsitas, scout_pay, pay_round, edit_snapshot")
 
 
 def _load(conn: sqlite3.Connection, split_id: int) -> Optional[Split]:
@@ -533,6 +551,8 @@ def cancel_split(db_path: str, split_id: int, actor_id: int) -> str:
                 return "cancelled_before"
             if r["status"] == "closing":
                 return "closing"                      # ya empezó a pagar: no se puede cancelar a mitad
+            if conn.execute("SELECT pay_round FROM splits WHERE id=?", (split_id,)).fetchone()["pay_round"] > 0:
+                return "closed"                       # ya se pagó: para deshacerlo está «cancelar edición»/reajuste
             conn.execute("UPDATE splits SET status='cancelled', closed_at=?, closed_by=? WHERE id=? AND status='open'",
                          (utcnow_iso(), actor_id, split_id))
             conn.execute("UPDATE split_requests SET status='rejected', decided_by=? WHERE split_id=? AND status='pending'", (actor_id, split_id))
@@ -652,35 +672,61 @@ def begin_close(db_path: str, split_id: int, actor_id: int) -> Tuple[str, Option
         conn.close()
 
 
-def finish_close(db_path: str, split_id: int) -> None:
+def finish_close(db_path: str, split_id: int, paid: Optional[Dict[int, int]] = None) -> None:
+    """Marca el split como cerrado y guarda lo pagado en esta vuelta (para poder reajustarlo después)."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("UPDATE splits SET status='closed', closed_at=? WHERE id=? AND status='closing'", (utcnow_iso(), split_id))
+            n = conn.execute("UPDATE splits SET status='closed', closed_at=?, pay_round=pay_round+1, edit_snapshot=NULL "
+                             "WHERE id=? AND status='closing'", (utcnow_iso(), split_id)).rowcount
+            if n and paid is not None:
+                rnd = int(conn.execute("SELECT pay_round FROM splits WHERE id=?", (split_id,)).fetchone()["pay_round"])
+                for uid, amount in paid.items():
+                    conn.execute("INSERT OR REPLACE INTO split_payouts(split_id, round, user_id, amount) VALUES (?,?,?,?)",
+                                 (split_id, rnd, uid, amount))
     finally:
         conn.close()
 
 
-def share_key(split_id: int) -> str:
-    return f"split:{split_id}:share"
+def _rk(split_id: int, rnd: int) -> str:
+    return f"split:{split_id}" if rnd <= 1 else f"split:{split_id}:r{rnd}"       # la 1.ª vuelta conserva las claves de siempre
 
 
-def tax_key(split_id: int, user_id: int) -> str:
-    return f"split:{split_id}:tax:{user_id}"
+def share_key(split_id: int, rnd: int = 1) -> str:
+    return f"{_rk(split_id, rnd)}:share"
 
 
-def scout_key(split_id: int, user_id: int) -> str:
-    return f"split:{split_id}:scout:{user_id}"
+def tax_key(split_id: int, user_id: int, rnd: int = 1) -> str:
+    return f"{_rk(split_id, rnd)}:tax:{user_id}"
+
+
+def scout_key(split_id: int, user_id: int, rnd: int = 1) -> str:
+    return f"{_rk(split_id, rnd)}:scout:{user_id}"
+
+
+def undo_key(split_id: int, user_id: int, rnd: int) -> str:
+    return f"{_rk(split_id, rnd)}:undo:{user_id}"
 
 
 def pay_out(db_path: str, s: Split, actor_id: int) -> Tuple[Calc, Dict[int, int], List[str]]:
-    """Acredita los pagos (idempotente por request_key). Devuelve (cálculo, {usuario: total acreditado}, [op_id nuevos])."""
+    """Acredita los pagos (idempotente por request_key). Devuelve (cálculo, {usuario: total acreditado}, [op_id nuevos]).
+    Si el split ya se había pagado (reajuste), primero le resta a cada persona lo que recibió en el pago anterior."""
     calc = compute(s)
+    rnd = s.pay_round + 1
     paid: Dict[int, int] = {}
     ops: List[str] = []
+    if s.pay_round > 0:
+        for uid, amount in get_payouts(db_path, s.id, s.pay_round).items():
+            if amount > 0:
+                res = eco.apply_operation(db_path, kind="remove", actor_id=actor_id, user_ids=[uid], amount=amount,
+                                          request_key=undo_key(s.id, uid, rnd),
+                                          reason=f"Split {s.title} (#{s.id}): reajuste, se resta lo pagado antes")
+                if res.created:
+                    ops.append(res.op_id)
     if calc.per_person > 0 and s.people:
         res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=s.people, amount=calc.per_person,
-                                  request_key=share_key(s.id), reason=f"Split {s.title} (#{s.id}): parte por persona")
+                                  request_key=share_key(s.id, rnd),
+                                  reason=f"Split {s.title} (#{s.id}): " + ("parte por persona (reajuste)" if rnd > 1 else "parte por persona"))
         if res.created:
             ops.append(res.op_id)
         for u in s.people:
@@ -688,15 +734,94 @@ def pay_out(db_path: str, s: Split, actor_id: int) -> Tuple[Calc, Dict[int, int]
     if s.is_ava and s.scout_pay > 0:
         for uid in s.scouts:
             res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=[uid], amount=s.scout_pay,
-                                      request_key=scout_key(s.id, uid), reason=f"Split {s.title} (#{s.id}): pago de scout")
+                                      request_key=scout_key(s.id, uid, rnd), reason=f"Split {s.title} (#{s.id}): pago de scout")
             if res.created:
                 ops.append(res.op_id)
             paid[uid] = paid.get(uid, 0) + s.scout_pay
     for uid, tax in calc.looter_taxes.items():
         if tax > 0:
             res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=[uid], amount=tax,
-                                      request_key=tax_key(s.id, uid), reason=f"Split {s.title} (#{s.id}): tax looter")
+                                      request_key=tax_key(s.id, uid, rnd), reason=f"Split {s.title} (#{s.id}): tax looter")
             if res.created:
                 ops.append(res.op_id)
             paid[uid] = paid.get(uid, 0) + tax
     return calc, paid, ops
+
+
+# ---------- reajuste: reabrir un split ya pagado ----------
+def get_payouts(db_path: str, split_id: int, rnd: int) -> Dict[int, int]:
+    conn = connect(db_path)
+    try:
+        return {int(r["user_id"]): int(r["amount"]) for r in
+                conn.execute("SELECT user_id, amount FROM split_payouts WHERE split_id=? AND round=? ORDER BY user_id", (split_id, rnd))}
+    finally:
+        conn.close()
+
+
+def _snapshot(s: Split) -> str:
+    return json.dumps(dict(
+        title=s.title, tab=s.tab, city=s.city, role_id=s.role_id, total=s.total, repair=s.repair, tax_sale=s.tax_sale,
+        tax_guild=s.tax_guild, tax_looter=s.tax_looter, bolsitas=s.bolsitas, scout_pay=s.scout_pay,
+        people=s.people, scouts=s.scouts, looters=[[l.user_id, l.looted, l.repair, l.tax_pct] for l in s.looters]))
+
+
+def reopen(db_path: str, split_id: int, actor_id: int) -> str:
+    """Reabre un split cerrado para editarlo. Devuelve 'reopened' | 'already' (ya estaba en edición) | 'not_closed' | 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            s = _load(conn, split_id)
+            if s is None:
+                return "missing"
+            if s.is_editing:
+                return "already"
+            if s.status != "closed":
+                return "not_closed"
+            if s.pay_round == 0:                       # split cerrado antes de que se guardaran los pagos: se reconstruyen (los datos no cambiaron desde el cierre)
+                calc = compute(s)
+                paid: Dict[int, int] = {}
+                for u in s.people:
+                    paid[u] = paid.get(u, 0) + calc.per_person
+                if s.is_ava:
+                    for u in s.scouts:
+                        paid[u] = paid.get(u, 0) + s.scout_pay
+                for u, tax in calc.looter_taxes.items():
+                    paid[u] = paid.get(u, 0) + tax
+                for u, amount in paid.items():
+                    if amount > 0:
+                        conn.execute("INSERT OR REPLACE INTO split_payouts(split_id, round, user_id, amount) VALUES (?,?,?,?)", (split_id, 1, u, amount))
+                s.pay_round = 1
+            conn.execute("UPDATE splits SET status='open', pay_round=?, edit_snapshot=?, closed_at=NULL WHERE id=? AND status='closed'",
+                         (s.pay_round, _snapshot(s), split_id))
+            return "reopened"
+    finally:
+        conn.close()
+
+
+def cancel_edit(db_path: str, split_id: int) -> str:
+    """Descarta los cambios hechos desde que se reabrió y lo deja cerrado como estaba. 'restored' | 'not_editing' | 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            s = _load(conn, split_id)
+            if s is None:
+                return "missing"
+            if not s.is_editing or not s.edit_snapshot:
+                return "not_editing"
+            d = json.loads(s.edit_snapshot)
+            conn.execute("UPDATE splits SET title=?, tab=?, city=?, role_id=?, total=?, repair=?, tax_sale=?, tax_guild=?, tax_looter=?, "
+                         "bolsitas=?, scout_pay=?, status='closed', edit_snapshot=NULL, closed_at=? WHERE id=?",
+                         (d["title"], d["tab"], d["city"], d["role_id"], d["total"], d["repair"], d["tax_sale"], d["tax_guild"],
+                          d["tax_looter"], d["bolsitas"], d["scout_pay"], utcnow_iso(), split_id))
+            for table in ("split_people", "split_scouts", "split_looters"):
+                conn.execute(f"DELETE FROM {table} WHERE split_id=?", (split_id,))
+            for i, u in enumerate(d["people"], 1):
+                conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (split_id, u, i))
+            for i, u in enumerate(d["scouts"], 1):
+                conn.execute("INSERT INTO split_scouts(split_id, user_id, pos) VALUES (?,?,?)", (split_id, u, i))
+            for i, (u, looted, repair, tax) in enumerate(d["looters"], 1):
+                conn.execute("INSERT INTO split_looters(split_id, user_id, looted, repair, tax_pct, pos) VALUES (?,?,?,?,?,?)",
+                             (split_id, u, looted, repair, tax, i))
+            return "restored"
+    finally:
+        conn.close()
