@@ -113,6 +113,47 @@ def clean_reason(text: Optional[str], default: str) -> str:
 
 
 # ============================================================
+# Importación de saldos desde una lista "apodo + cantidad"
+# ============================================================
+IMPORT_REASON = "Importación inicial de saldos"
+MAX_IMPORT_LINES = 500
+
+
+def parse_import_text(text: str):
+    """Lee líneas `apodo;cantidad`, `apodo,cantidad`, `apodo<TAB>cantidad` o `apodo cantidad`.
+
+    Devuelve (entradas, errores): entradas = [(linea, apodo, cantidad)], errores = [(linea, texto, mensaje)].
+    """
+    entries, errors = [], []
+    lines = [(n, raw.strip()) for n, raw in enumerate((text or "").splitlines(), start=1)]
+    lines = [(n, raw) for n, raw in lines if raw and not raw.startswith("#")]
+    if len(lines) > MAX_IMPORT_LINES:
+        raise AmountError(f"La lista tiene demasiadas líneas (máximo {MAX_IMPORT_LINES}). Dividila en partes.")
+    for n, raw in lines:
+        name = amount_text = None
+        if ";" in raw or "\t" in raw:
+            sep = ";" if ";" in raw else "\t"
+            name, _, amount_text = raw.rpartition(sep)
+        elif "," in raw:
+            head, _, tail = raw.rpartition(",")
+            if re.fullmatch(r"\d{3}", tail.strip()) and head.rstrip()[-1:].isdigit():
+                name, _, amount_text = raw.rpartition(" ")       # "apodo 1,500": la coma es separador de miles
+            else:
+                name, amount_text = head, tail
+        else:
+            name, _, amount_text = raw.rpartition(" ")
+        name, amount_text = (name or "").strip(), (amount_text or "").strip()
+        if not name:
+            errors.append((n, raw, "Falta el apodo o la cantidad."))
+            continue
+        try:
+            entries.append((n, name, parse_amount(amount_text)))
+        except AmountError as exc:
+            errors.append((n, raw, str(exc)))
+    return entries, errors
+
+
+# ============================================================
 # Esquema (migración segura: solo CREATE ... IF NOT EXISTS)
 # ============================================================
 SCHEMA = """
