@@ -10,6 +10,7 @@ from discord.ext import commands
 
 import economy_db as eco
 import splits_db as sdb
+from names import resolve_names
 from deposits import is_council
 from guildshop import can_manage
 
@@ -40,9 +41,14 @@ def pct(x: float) -> str:
 # ============================================================
 # Mensajes
 # ============================================================
-def people_embed(s: sdb.Split) -> discord.Embed:
+def _nm(names, uid: int) -> str:
+    """Nombre para mostrar dentro de un embed (las menciones <@id> ahí se ven como número si el cliente no conoce a la persona)."""
+    return (names or {}).get(uid) or f"<@{uid}>"
+
+
+def people_embed(s: sdb.Split, names=None) -> discord.Embed:
     looters = {l.user_id for l in s.looters}
-    lines = [f"{'🪙' if u in looters else '•'} <@{u}>" for u in s.people]
+    lines = [f"{'🪙' if u in looters else '•'} {_nm(names, u)}" for u in s.people]
     emb = discord.Embed(title=f"👥 Personas del split ({len(s.people)})", color=GOLD)
     emb.description = "\n".join(lines)[:4000] if lines else "*Todavía no hay nadie en la lista.*"
     if looters:
@@ -50,14 +56,14 @@ def people_embed(s: sdb.Split) -> discord.Embed:
     return emb
 
 
-def data_embeds(s: sdb.Split) -> List[discord.Embed]:
+def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
     c = sdb.compute(s)
     out: List[discord.Embed] = []
     if s.looters:
         blocks = []
         for l in s.looters:
             blocks.append(
-                f"**Looter:** <@{l.user_id}>\n"
+                f"**Looter:** {_nm(names, l.user_id)}\n"
                 f"Total looteado: {fmt(l.looted)}\n"
                 f"Reparación looter: {fmt(l.repair)}\n"
                 f"Tax Looter ({pct(s.looter_pct(l))}): {fmt(c.looter_taxes[l.user_id])}")
@@ -86,7 +92,7 @@ def data_embeds(s: sdb.Split) -> List[discord.Embed]:
 STATUS_TEXT = {"open": "🟢 Abierto", "closing": "🟡 Cerrando…", "closed": "🔒 Cerrado", "cancelled": "🚫 Cancelado"}
 
 
-def panel_embed(s: sdb.Split) -> discord.Embed:
+def panel_embed(s: sdb.Split, names=None) -> discord.Embed:
     c = sdb.compute(s)
     emb = discord.Embed(title=f"Split {s.title}", color=GOLD if s.is_open else GREY)
     extra = []
@@ -102,7 +108,7 @@ def panel_embed(s: sdb.Split) -> discord.Embed:
         f"**Total a splitear:** {fmt(c.to_split)}",
         f"**Total por persona:** {fmt(c.per_person)}",
         f"Estado: {STATUS_TEXT.get(s.status, s.status)}",
-        f"Creado por <@{s.creator_id}> · ID #{s.id}",
+        f"Creado por {_nm(names, s.creator_id)} · ID #{s.id}",
     ]
     emb.description = "\n".join(lines)
     return emb
@@ -423,6 +429,10 @@ class SplitsCog(commands.Cog):
         e = self.economy
         return e.money(amount) if e is not None else f"{eco.format_amount(amount)} {eco.CURRENCY_NAME}"
 
+    async def names_of(self, s: sdb.Split) -> dict:
+        ids = list(s.people) + [l.user_id for l in s.looters] + [s.creator_id]
+        return await resolve_names(self.bot.get_guild(self.guild_id), ids)
+
     def _lock(self, split_id: int) -> asyncio.Lock:
         return self._locks.setdefault(split_id, asyncio.Lock())
 
@@ -457,13 +467,14 @@ class SplitsCog(commands.Cog):
             ch = await self._get_channel(s.channel_id)
             if ch is not None and s.message_id:
                 msg = await ch.fetch_message(s.message_id)
-                await msg.edit(embed=panel_embed(s), view=view, allowed_mentions=NO_MENTIONS)
+                await msg.edit(embed=panel_embed(s, await self.names_of(s)), view=view, allowed_mentions=NO_MENTIONS)
         except Exception as exc:
             print(f"⚠️ Split #{split_id}: no pude actualizar el panel: {exc!r}")
         th = await self._get_channel(s.thread_id)
         if th is None:
             return
-        for col, builder in (("list_message_id", lambda: [people_embed(s)]), ("data_message_id", lambda: data_embeds(s))):
+        names = await self.names_of(s)
+        for col, builder in (("list_message_id", lambda: [people_embed(s, names)]), ("data_message_id", lambda: data_embeds(s, names))):
             mid = getattr(s, col)
             try:
                 if mid:
@@ -538,7 +549,7 @@ class SplitsCog(commands.Cog):
             return None, None, f"❌ {exc}"
         s = await self.run(sdb.get_split, sid)
         try:
-            msg = await channel.send(embed=panel_embed(s), view=SplitPanelView(self), allowed_mentions=NO_MENTIONS)
+            msg = await channel.send(embed=panel_embed(s, await self.names_of(s)), view=SplitPanelView(self), allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self.run(sdb.abort_unpublished, sid)
@@ -549,8 +560,9 @@ class SplitsCog(commands.Cog):
                 thread = await msg.create_thread(name=f"Split {s.title}"[:100], auto_archive_duration=10080)
             except discord.HTTPException:
                 thread = await msg.create_thread(name=f"Split {s.title}"[:100], auto_archive_duration=1440)
-            lst = await thread.send(embeds=[people_embed(s)], allowed_mentions=NO_MENTIONS)
-            dat = await thread.send(embeds=data_embeds(s), allowed_mentions=NO_MENTIONS)
+            names = await self.names_of(s)
+            lst = await thread.send(embeds=[people_embed(s, names)], allowed_mentions=NO_MENTIONS)
+            dat = await thread.send(embeds=data_embeds(s, names), allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             try:
