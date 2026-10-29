@@ -348,7 +348,8 @@ async def _safe_setup(name, fn, *args):
 
 async def _setup_registration(bot, db_path, guild_id):
     """Registro Discord ↔ Albion. Se exige que el personaje esté en la guild configurada (ALBION_GUILD_NAME)."""
-    await setup_registration(bot, db_path, guild_id, required_guild=os.getenv("REGISTRO_GUILD", ALBION_GUILD_NAME))
+    await setup_registration(bot, db_path, guild_id, required_guild=os.getenv("REGISTRO_GUILD", ALBION_GUILD_NAME),
+                              albion_guild_id=("" if os.getenv("REGISTRO_GUILD") else ALBION_GUILD_ID))
 
 
 class MyBot(commands.Bot):
