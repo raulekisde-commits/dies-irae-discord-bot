@@ -99,7 +99,7 @@ def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
     return out
 
 
-STATUS_TEXT = {"open": "🟢 Abierto", "closing": "🟡 Cerrando…", "closed": "🔒 Cerrado", "cancelled": "🚫 Cancelado"}
+STATUS_TEXT = {"open": "🟢 Abierto", "editing": "🟠 En edición: el pago anterior sigue vigente hasta confirmar", "closing": "🟡 Cerrando…", "closed": "🔒 Cerrado", "cancelled": "🚫 Cancelado"}
 
 
 def panel_embed(s: sdb.Split, names=None) -> discord.Embed:
@@ -118,7 +118,7 @@ def panel_embed(s: sdb.Split, names=None) -> discord.Embed:
          else f"**Personas:** {c.people} · **Looters:** {len(s.looters)}"),
         f"**Total a splitear:** {fmt(c.to_split)}",
         f"**Total por persona:** {fmt(c.per_person)}",
-        f"Estado: {STATUS_TEXT.get(s.status, s.status)}",
+        f"Estado: {STATUS_TEXT.get('editing' if s.is_editing else s.status, s.status)}",
         f"Creado por {_nm(names, s.creator_id)} · ID #{s.id}",
     ]
     emb.description = "\n".join(lines)
@@ -140,6 +140,41 @@ class SplitPanelView(discord.ui.View):
     @discord.ui.button(label="Cancelar split", style=discord.ButtonStyle.secondary, custom_id="split:cancel", emoji="🚫")
     async def cancel(self, interaction: discord.Interaction, button):
         await self.cog.on_cancel_pressed(interaction)
+
+
+class SplitEditingPanelView(discord.ui.View):
+    """Botones del panel mientras un split ya pagado está en edición."""
+
+    def __init__(self, cog: "SplitsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Confirmar edición", style=discord.ButtonStyle.danger, custom_id="split:confirm_edit", emoji="♻️")
+    async def confirm(self, interaction: discord.Interaction, button):
+        await self.cog.on_close_pressed(interaction)
+
+    @discord.ui.button(label="Cancelar edición", style=discord.ButtonStyle.secondary, custom_id="split:cancel_edit", emoji="↩️")
+    async def cancel(self, interaction: discord.Interaction, button):
+        await self.cog.on_cancel_edit_pressed(interaction)
+
+
+class ReopenView(discord.ui.View):
+    def __init__(self, cog: "SplitsCog", split_id: int, owner_id: int):
+        super().__init__(timeout=120.0)
+        self.cog, self.split_id, self.owner_id = cog, split_id, owner_id
+        ok = discord.ui.Button(label="Reabrir para editar", style=discord.ButtonStyle.primary, emoji="✏️")
+        ok.callback = self._ok
+        self.add_item(ok)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Este mensaje no es tuyo.")
+            return False
+        return True
+
+    async def _ok(self, interaction: discord.Interaction):
+        self.stop()
+        await self.cog.reopen_split(interaction, self.split_id)
 
 
 class SplitRequestView(discord.ui.View):
@@ -188,10 +223,10 @@ class ConfirmCancelView(discord.ui.View):
 
 
 class ConfirmCloseView(discord.ui.View):
-    def __init__(self, cog: "SplitsCog", split_id: int, owner_id: int):
+    def __init__(self, cog: "SplitsCog", split_id: int, owner_id: int, label: str = "Sí, cerrar y pagar"):
         super().__init__(timeout=120.0)
         self.cog, self.split_id, self.owner_id, self.used = cog, split_id, owner_id, False
-        ok = discord.ui.Button(label="Sí, cerrar y pagar", style=discord.ButtonStyle.danger)
+        ok = discord.ui.Button(label=label, style=discord.ButtonStyle.danger)
         no = discord.ui.Button(label="Cancelar", style=discord.ButtonStyle.secondary)
         ok.callback, no.callback = self._ok, self._no
         self.add_item(ok)
@@ -463,6 +498,7 @@ class SplitsCog(commands.Cog):
     async def cog_load(self):
         await self.run(sdb.init_schema)
         self.bot.add_view(SplitPanelView(self))
+        self.bot.add_view(SplitEditingPanelView(self))
         self.bot.add_view(SplitRequestView(self))
 
     async def run(self, fn, *args, **kwargs):
@@ -509,7 +545,7 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.get_split, split_id)
         if s is None:
             return
-        view = SplitPanelView(self) if s.is_open else None
+        view = (SplitEditingPanelView(self) if s.is_editing else SplitPanelView(self)) if s.is_open else None
         try:
             ch = await self._get_channel(s.channel_id)
             if ch is not None and s.message_id:
@@ -734,8 +770,17 @@ class SplitsCog(commands.Cog):
             return
         if not (can_manage(interaction.user) or interaction.user.id == s.creator_id):
             return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede editarlo.")
+        if s.status == "closed":
+            if not is_council(interaction.user):
+                return await _say(interaction, "🔒 Solo el Council puede reabrir un split ya pagado para editarlo.")
+            return await _say(interaction,
+                              f"**Split {s.title}** (#{s.id}) ya está cerrado y pagado.\n"
+                              f"Si lo reabrís podés cambiar lo que quieras; al **confirmar la edición** se resta a cada persona lo que "
+                              f"cobró antes y se reparte de nuevo con los datos nuevos (quien ya retiró esa plata puede quedar en negativo). "
+                              f"Hasta confirmar no se mueve nada, y podés cancelar la edición.",
+                              view=ReopenView(self, s.id, interaction.user.id))
         if not s.is_open:
-            return await _say(interaction, "❌ Ese split ya está cerrado: no se puede editar.")
+            return await _say(interaction, "❌ Ese split está cancelado o cerrándose: no se puede editar.")
         await _say(interaction, f"✏️ Editando **Split {s.title}** (#{s.id}). Los cambios se reflejan al instante en el hilo.",
                    view=EditView(self, s.id, interaction.user.id, ava=s.is_ava))
 
@@ -853,6 +898,16 @@ class SplitsCog(commands.Cog):
         c = sdb.compute(s)
         if not s.people:
             return await _say(interaction, "❌ El split no tiene personas en la lista. Agregalas con `/editar`.")
+        if s.is_editing:
+            old = await self.run(sdb.get_payouts, s.id, s.pay_round)
+            return await _say(interaction,
+                              f"¿Confirmar la edición de **Split {s.title}**?\n"
+                              f"• Se **resta** lo pagado antes a {len(old)} persona(s) ({self.money(sum(old.values()))} en total). "
+                              f"Si alguien ya retiró esa plata, su balance puede quedar en negativo.\n"
+                              f"• Se **vuelve a repartir** con los datos nuevos: {c.people} persona(s) × {self.money(c.per_person)} "
+                              f"(+ taxes de looters {self.money(c.looter_tax_total)}, scouts {self.money(c.scouts_total)}).\n"
+                              f"Esto **mueve Wuju Coins**.",
+                              view=ConfirmCloseView(self, s.id, interaction.user.id, label="Sí, confirmar edición"))
         await _say(interaction,
                    f"¿Cerrar **Split {s.title}** y pagar?\n"
                    f"• {c.people} persona(s) × {self.money(c.per_person)}\n"
@@ -870,18 +925,88 @@ class SplitsCog(commands.Cog):
                 return await interaction.followup.send("❌ No encuentro ese split.", ephemeral=True)
             if state == "closed":
                 return await interaction.followup.send("ℹ️ Ese split ya estaba cerrado.", ephemeral=True)
+            old_pay = await self.run(sdb.get_payouts, split_id, s.pay_round) if s.pay_round > 0 else {}
             try:
                 calc, paid, ops = await asyncio.to_thread(sdb.pay_out, self.db_path, s, interaction.user.id)
             except Exception:
                 traceback.print_exc()
                 return await interaction.followup.send(
                     "❌ Falló el pago. No se perdió nada: volvé a tocar **Cerrar split** y se reintenta sin duplicar pagos.", ephemeral=True)
-            await self.run(sdb.finish_close, split_id)
+            await self.run(sdb.finish_close, split_id, paid)
         await self._publish_log(ops)
         s = await self.run(sdb.get_split, split_id)
         await self.sync_split(split_id)
+        if old_pay:
+            await self._post_adjustment(s, old_pay, paid, interaction.user.id)
+            return await interaction.followup.send("✅ Edición confirmada: se restó lo anterior y se repartió de nuevo.", ephemeral=True)
         await self._post_result(s, calc, paid, interaction.user.id)
         await interaction.followup.send("✅ Split cerrado y pagado. La lista quedó en el hilo.", ephemeral=True)
+
+    # ---------- reajuste: reabrir un split pagado ----------
+    async def reopen_split(self, interaction: discord.Interaction, split_id: int):
+        if not is_council(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council puede reabrir un split ya pagado.")
+        async with self._lock(split_id):
+            res = await self.run(sdb.reopen, split_id, interaction.user.id)
+        if res == "missing" or res == "not_closed":
+            return await interaction.response.edit_message(content="❌ Ese split no se puede reabrir (¿cancelado o ya en edición?).", view=None)
+        s = await self.run(sdb.get_split, split_id)
+        await self.sync_split(split_id)
+        await interaction.response.edit_message(
+            content=f"✏️ **Split {s.title}** reabierto. Usá `/editar` para cambiar lo que quieras; los cambios se ven en el hilo pero "
+                    f"**no mueven plata** hasta que toques **Confirmar edición** en el panel.", view=None)
+        th = await self._get_channel(s.thread_id)
+        if th is not None and res == "reopened":
+            try:
+                await th.send(f"✏️ **Split {s.title}** reabierto para edición por <@{interaction.user.id}>. "
+                              f"Lo pagado antes sigue vigente hasta que se confirme la edición.", allowed_mentions=NO_MENTIONS)
+            except Exception as exc:
+                print(f"⚠️ Split #{split_id}: no pude avisar la reapertura: {exc!r}")
+
+    async def on_cancel_edit_pressed(self, interaction: discord.Interaction):
+        msg = getattr(interaction, "message", None)
+        s = await self.run(sdb.find_by_message, msg.id) if msg is not None else None
+        if s is None or not s.is_editing:
+            return await _say(interaction, "ℹ️ Este split no está en edición.")
+        if not is_council(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council puede cancelar la edición.")
+        async with self._lock(s.id):
+            res = await self.run(sdb.cancel_edit, s.id)
+        if res != "restored":
+            return await _say(interaction, "ℹ️ Este split no está en edición.")
+        await self.sync_split(s.id)
+        await _say(interaction, "↩️ Edición cancelada: el split volvió a como estaba y no se movió plata.")
+        th = await self._get_channel(s.thread_id)
+        if th is not None:
+            try:
+                await th.send(f"↩️ Edición de **Split {s.title}** cancelada por <@{interaction.user.id}>. Quedó como estaba.", allowed_mentions=NO_MENTIONS)
+            except Exception as exc:
+                print(f"⚠️ Split #{s.id}: no pude avisar la cancelación de la edición: {exc!r}")
+
+    async def _post_adjustment(self, s: sdb.Split, old: Dict[int, int], new: Dict[int, int], actor_id: int):
+        th = await self._get_channel(s.thread_id)
+        if th is None:
+            return
+        head = (f"♻️ **Split {s.title} reajustado** por <@{actor_id}>\n"
+                f"Se restó lo pagado antes y se repartió de nuevo con los datos editados.\n**Detalle por persona:**")
+        lines = []
+        for u in dict.fromkeys(list(old) + list(new)):
+            o, n = old.get(u, 0), new.get(u, 0)
+            diff = n - o
+            lines.append(f"• <@{u}> → −{self.money(o)} +{self.money(n)} (neto {'+' if diff >= 0 else '−'}{self.money(abs(diff))})")
+        chunks, cur = [], head
+        for ln in lines:
+            if len(cur) + len(ln) + 1 > 1900:
+                chunks.append(cur)
+                cur = ""
+            cur += ("\n" if cur else "") + ln
+        chunks.append(cur)
+        for ch in chunks:
+            try:
+                await th.send(ch, allowed_mentions=NO_MENTIONS)
+            except Exception as exc:
+                print(f"⚠️ Split #{s.id}: no pude escribir el reajuste en el hilo: {exc!r}")
+                break
 
     # ---------- cancelar el split (sin pagar nada) ----------
     async def on_cancel_pressed(self, interaction: discord.Interaction):
