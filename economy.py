@@ -5,6 +5,7 @@ se valida el contexto y se arman los Embeds.
 """
 import asyncio
 import functools
+import io
 import re
 import traceback
 from datetime import datetime, timezone
@@ -712,7 +713,7 @@ class EconomyCog(commands.Cog):
                 return await self._ephemeral(interaction, f"❌ {exc}")
             await self._ensure_members(interaction.guild)
 
-            matched, unmatched, seen = [], [], {}
+            matched, not_found, ambiguous, seen = [], [], [], {}
             for line, name, amount in entries:
                 users = self._match_nickname(interaction.guild, name)
                 if len(users) == 1:
@@ -723,31 +724,58 @@ class EconomyCog(commands.Cog):
                     seen[uid] = line
                     matched.append((users[0], amount))
                 elif not users:
-                    unmatched.append(f"línea {line}: **{name}** — no encontré a nadie con ese nombre de Discord")
+                    not_found.append((line, name, amount))
                 else:
-                    unmatched.append(f"línea {line}: **{name}** — hay {len(users)} personas con ese nombre")
-            problems = unmatched + [f"línea {n}: `{t[:40]}` — {m}" for n, t, m in errors]
+                    ambiguous.append((line, name, amount, len(users)))
+
+            report = None
+            if not_found or ambiguous or errors:
+                parts = [f"# Personas NO encontradas: {len(not_found)}. Corregí los nombres y volvé a importar este mismo archivo",
+                         "# (las líneas que empiezan con # se ignoran)."]
+                parts += [f"{name};{amount}" for _, name, amount in not_found] or ["# (ninguna)"]
+                if ambiguous:
+                    parts += ["", "# --- Nombres con más de una coincidencia (usá el nombre de usuario exacto) ---"]
+                    parts += [f"# línea {l}: {n};{a} — {c} personas" for l, n, a, c in ambiguous]
+                if errors:
+                    parts += ["", "# --- Otras líneas con problemas ---"]
+                    parts += [f"# línea {l}: {t[:60]} — {m}" for l, t, m in errors]
+                report = "\n".join(parts) + "\n"
+
+            def attach():
+                return discord.File(io.BytesIO(report.encode("utf-8")), filename="no_encontrados.txt") if report else None
+
+            def problems_summary() -> str:
+                lines = []
+                if not_found:
+                    shown = ", ".join(f"**{n}**" for _, n, _ in not_found[:10])
+                    lines.append(f"🔎 **{len(not_found)} no encontrado(s):** {shown}" + (" …" if len(not_found) > 10 else ""))
+                if ambiguous:
+                    lines.append(f"👥 {len(ambiguous)} con más de una coincidencia")
+                if errors:
+                    lines.append(f"⚠️ {len(errors)} línea(s) con formato inválido o repetidas")
+                lines.append("📎 La lista completa va en el archivo adjunto `no_encontrados.txt`.")
+                return "\n".join(lines)
 
             if not matched:
                 body = "❌ No pude vincular a nadie. No se modificó ningún balance."
-                if problems:
-                    body += "\n" + "\n".join(problems[:15])
-                return await self._ephemeral(interaction, body[:1900])
+                if report:
+                    body += "\n" + problems_summary()
+                kwargs = {"file": attach()} if report else {}
+                return await interaction.followup.send(body[:1900], ephemeral=True, allowed_mentions=NO_MENTIONS, **kwargs)
 
             current = await self._db(eco.get_all_balances)
             changing = sum(1 for m, a in matched if current.get(m.id, 0) != a)
-            preview = [f"{m.mention}: {self.plain(current.get(m.id, 0))} → **{self.plain(a)}**" for m, a in matched[:15]]
-            if len(matched) > 15:
-                preview.append(f"… y {len(matched) - 15} más")
+            preview = [f"{m.mention}: {self.plain(current.get(m.id, 0))} → **{self.plain(a)}**" for m, a in matched[:10]]
+            if len(matched) > 10:
+                preview.append(f"… y {len(matched) - 10} más")
             body = (f"**Vista previa** — el saldo de **{len(matched)}** persona(s) quedará **exactamente** en el valor del archivo "
                     f"({changing} cambian, {len(matched) - changing} ya estaban igual).\n" + "\n".join(preview))
-            if problems:
-                body += f"\n\n⚠️ **{len(problems)} línea(s) NO se cargarán:**\n" + "\n".join(problems[:12])
-                if len(problems) > 12:
-                    body += f"\n… y {len(problems) - 12} más"
+            if report:
+                body += "\n\n" + problems_summary() + "\nEsas líneas NO se cargarán."
             body += "\n\nSi está bien, tocá **Confirmar**. Es seguro repetirlo con el mismo archivo: el saldo queda igual."
             view = ImportConfirmView(self, interaction.user.id, matched, interaction.id)
-            await interaction.followup.send(body[:1950], view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
+            kwargs = {"file": attach()} if report else {}
+            await interaction.followup.send(body[:1950], view=view, ephemeral=True, allowed_mentions=NO_MENTIONS, **kwargs)
         except Exception:
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No pude procesar el archivo.")
