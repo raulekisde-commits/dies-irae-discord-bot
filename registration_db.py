@@ -500,3 +500,4 @@ def set_flag(db_path: str, key: str, value: Optional[str]) -> None:
 
 REQUIRED_KEY = "registro:obligatorio"
 REVIEW_CHANNEL_KEY = "registro:canal"
+ROSTER_KEY = "registro:roster"

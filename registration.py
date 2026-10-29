@@ -37,7 +37,8 @@ GAMEINFO_BASES = [
 HTTP_TIMEOUT = 20
 RECRUIT_PENDING_DAYS = 14                # si no entra a la guild en este tiempo, se cancela la espera
 ROSTER_REFRESH_MINUTES = 30            # cada cuánto se vuelve a bajar la lista de miembros de la guild
-ROSTER_MAX_AGE_SECONDS = 3 * 3600       # si la lista es más vieja que esto (la API falló varias veces), se consulta la API en vivo
+ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h aunque la API falle; recién después se vuelve a consultar en vivo
+ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular",
@@ -77,7 +78,7 @@ class Character:
 
 @dataclass
 class Lookup:
-    kind: str                                  # ok | none | wrong_guild | ambiguous | error
+    kind: str                                  # ok | none | wrong_guild | not_in_roster | ambiguous | error
     character: Optional[Character] = None
     options: List[Character] = field(default_factory=list)
     detail: str = ""
@@ -148,7 +149,8 @@ class RegistrationCog(commands.Cog):
         self.member_role_id = int(member_role_id or 0)
         self.public_role_id = int(public_role_id or 0)
         self.roster: Dict[str, Character] = {}      # nombre (casefold) → personaje, de la última lista bajada
-        self.roster_at = 0.0                        # time.monotonic() de la última lista buena
+        self.roster_at = 0.0                        # time.time() de la última lista buena
+        self.roster_miss_at = 0.0
         self.required_guild = (required_guild or "").strip()
         self.default_log_channel = int(default_log_channel or 0)
         self.fetch_json = self._fetch_json          # los tests lo reemplazan: nunca tocan la red
@@ -156,6 +158,7 @@ class RegistrationCog(commands.Cog):
     # ---------- infraestructura ----------
     async def cog_load(self):
         await self.run(rdb.init_schema)
+        await self._load_saved_roster()
         self.bot.add_view(TargetView(self))
         if not self.sweeper.is_running():
             self.sweeper.start()
@@ -170,13 +173,37 @@ class RegistrationCog(commands.Cog):
         self.recruit_loop.cancel()
 
     # ---------- lista de miembros de la guild (se baja cada tanto, no en cada registro) ----------
+    async def _load_saved_roster(self):
+        """Recupera la última lista guardada, para no depender de la API al reiniciar el bot."""
+        import json
+        try:
+            raw = await self.run(rdb.get_flag, rdb.ROSTER_KEY)
+            data = json.loads(raw) if raw else None
+            if data and data.get("guild") == self.albion_guild_id:
+                members = [Character(*m) for m in data["members"]]
+                if members:
+                    self.roster = {c.name.casefold(): c for c in members}
+                    self.roster_at = float(data["at"])
+        except Exception:
+            traceback.print_exc()
+
+    async def _save_roster(self):
+        import json
+        try:
+            payload = {"guild": self.albion_guild_id, "at": self.roster_at,
+                       "members": [[c.char_id, c.name, c.region, c.guild, c.alliance, c.kill_fame, c.death_fame] for c in self.roster.values()]}
+            await self.run(rdb.set_flag, rdb.ROSTER_KEY, json.dumps(payload, separators=(",", ":")))
+        except Exception:
+            traceback.print_exc()
+
     async def refresh_roster(self) -> bool:
         """Baja la lista de miembros de la guild y la guarda en memoria. Si falla, conserva la anterior."""
         import time
         if not self.albion_guild_id:
             return False
         errors = []
-        for region, base in GAMEINFO_BASES:
+        bases = sorted(GAMEINFO_BASES, key=lambda rb: rb[0] != getattr(self, "_roster_region", None))   # primero el servidor que ya funcionó
+        for region, base in bases:
             try:
                 data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/guilds/{self.albion_guild_id}/members"), HTTP_TIMEOUT + 5)
             except Exception as exc:
@@ -190,14 +217,16 @@ class RegistrationCog(commands.Cog):
                 if not c.guild:
                     c.guild = self.required_guild
             self.roster = {c.name.casefold(): c for c in members}
-            self.roster_at = time.monotonic()
+            self.roster_at = time.time()
+            self._roster_region = region
+            await self._save_roster()
             return True
         print(f"⚠️ Registro: no pude actualizar la lista de la guild: {' | '.join(errors)[:300]}")
         return False
 
     def roster_fresh(self) -> bool:
         import time
-        return bool(self.roster) and (time.monotonic() - self.roster_at) < ROSTER_MAX_AGE_SECONDS
+        return bool(self.roster) and (time.time() - self.roster_at) < ROSTER_MAX_AGE_SECONDS
 
     @tasks.loop(minutes=ROSTER_REFRESH_MINUTES)
     async def roster_loop(self):
@@ -259,7 +288,7 @@ class RegistrationCog(commands.Cog):
             print(f"⚠️ Registro: no pude escribir en el canal de registros: {exc!r}")
 
     # ---------- consulta de personaje ----------
-    async def lookup_character(self, name: str, any_guild: bool = False) -> Lookup:
+    async def lookup_character(self, name: str, any_guild: bool = False, live: bool = False) -> Lookup:
         name = _clean_name(name)
         if not (2 <= len(name) <= 30) or not re.fullmatch(r"[\w .'\-]+", name, re.UNICODE):
             return Lookup("none", detail="Nombre de personaje inválido.")
@@ -268,7 +297,16 @@ class RegistrationCog(commands.Cog):
             hit = self.roster.get(name.casefold())
             if hit is not None:
                 return Lookup("ok", character=hit)
-            # no figura en la lista: puede ser alguien que entró hace poco o que no es de la guild → una consulta en vivo para decidir
+            if not any_guild and not live:
+                # No figura: puede haber entrado hace poco. Se baja la lista de nuevo (UNA consulta, como máximo cada 5 min) y se decide con ella.
+                import time
+                if time.time() - self.roster_miss_at >= ROSTER_MISS_REFRESH_SECONDS:
+                    self.roster_miss_at = time.time()
+                    await self.refresh_roster()
+                    hit = self.roster.get(name.casefold())
+                    if hit is not None:
+                        return Lookup("ok", character=hit)
+                return Lookup("not_in_roster", detail=self.required_guild)
 
         async def one(region, base):
             data = await self.fetch_json(f"{base}/api/gameinfo/search", {"q": name})
@@ -338,6 +376,10 @@ class RegistrationCog(commands.Cog):
         if look.kind == "none":
             return await _say(interaction, f"❌ No encontré ningún personaje llamado **{discord.utils.escape_markdown(_clean_name(usuario_de_albion))}**. "
                                            "Escribilo exactamente como aparece en el juego.")
+        if look.kind == "not_in_roster":
+            return await _say(interaction, f"❌ No encuentro **{discord.utils.escape_markdown(_clean_name(usuario_de_albion))}** entre los miembros de la guild **{look.detail}**. "
+                                           "Revisá que esté escrito exactamente como en el juego y que ya hayas entrado a la guild. "
+                                           "Si entraste hace poco, probá de nuevo en unos minutos (la lista se actualiza sola).")
         if look.kind == "wrong_guild":
             return await _say(interaction, f"❌ Ese personaje existe pero no figura en la guild **{look.detail}**, así que no se puede registrar acá. "
                                            "Si acabás de entrar a la guild, esperá unos minutos a que la API se actualice.")
@@ -515,7 +557,7 @@ class RegistrationCog(commands.Cog):
         if usuario.bot:
             return await _say(interaction, "❌ No se puede vincular a un bot.")
         await interaction.response.defer(ephemeral=True)
-        look = await self.lookup_character(personaje)
+        look = await self.lookup_character(personaje, live=True)
         char = look.character if look.kind in ("ok", "wrong_guild") else None
         note = ""
         if look.kind == "ambiguous":
