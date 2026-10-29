@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS splits (
     closed_by        INTEGER,
     source_cta_id    INTEGER,                          -- CTA de la que salió este split (NULL = creado a mano)
     kind             TEXT NOT NULL DEFAULT 'normal',   -- normal | ava (scouts con pago fijo, sin looters)
-    bolsitas         INTEGER NOT NULL DEFAULT 0,       -- se suma al total
+    bolsitas         INTEGER NOT NULL DEFAULT 0,       -- se suma al total a splitear (sin pagar taxes)
     scout_pay        INTEGER NOT NULL DEFAULT 0,       -- pago fijo por scout (solo kind=ava)
     pay_round        INTEGER NOT NULL DEFAULT 0,       -- cuántas veces se pagó (0 = nunca; >=1 y abierto = en edición)
     edit_snapshot    TEXT                              -- copia de los datos al reabrir, para poder cancelar la edición
@@ -189,13 +189,13 @@ def compute(s: Split) -> Calc:
     looters = [] if s.is_ava else s.looters                  # en el split ava no hay looters
     looted_total = sum(l.looted for l in looters)
     repair_total = s.repair + sum(l.repair for l in looters)
-    gross = s.total + s.bolsitas + looted_total
+    gross = s.total + looted_total                          # las bolsitas NO suman acá: no pagan taxes
     net = max(gross - repair_total, 0)
     sale = _floor(Decimal(net) * Decimal(str(s.tax_sale)) / 100)
     guild = _floor(Decimal(net) * Decimal(str(s.tax_guild)) / 100)
     lt = {l.user_id: _floor(Decimal(max(l.looted - l.repair, 0)) * Decimal(str(s.looter_pct(l))) / 100) for l in looters}
     scouts_total = s.scout_pay * len(s.scouts) if s.is_ava else 0
-    to_split = max(net - sale - guild - sum(lt.values()) - scouts_total, 0)
+    to_split = max(net - sale - guild - sum(lt.values()) - scouts_total, 0) + s.bolsitas      # las bolsitas se suman al total a splitear
     n = len(s.people)
     per = to_split // n if n else 0
     return Calc(looted_total, repair_total, gross, net, sale, guild, lt, to_split, n, per, to_split - per * n, scouts_total)
@@ -749,6 +749,17 @@ def pay_out(db_path: str, s: Split, actor_id: int) -> Tuple[Calc, Dict[int, int]
 
 
 # ---------- reajuste: reabrir un split ya pagado ----------
+def list_closed(db_path: str, limit: int = 60) -> List[Tuple[int, int, int]]:
+    """(split_id, channel_id, message_id) de los últimos splits cerrados que tienen panel."""
+    conn = connect(db_path)
+    try:
+        return [(int(r["id"]), int(r["channel_id"]), int(r["message_id"])) for r in conn.execute(
+            "SELECT id, channel_id, message_id FROM splits WHERE status='closed' AND channel_id IS NOT NULL AND message_id IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?", (limit,))]
+    finally:
+        conn.close()
+
+
 def get_payouts(db_path: str, split_id: int, rnd: int) -> Dict[int, int]:
     conn = connect(db_path)
     try:
