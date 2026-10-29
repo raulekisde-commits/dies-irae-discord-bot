@@ -38,7 +38,7 @@ class SellPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Vender Wuju Coins", style=discord.ButtonStyle.primary, custom_id="cm:sell_open", emoji="💸")
+    @discord.ui.button(label="Cobrar balance", style=discord.ButtonStyle.primary, custom_id="cm:sell_open", emoji="💰")
     async def open(self, interaction: discord.Interaction, button):
         await self.cog.on_sell_open(interaction)
 
@@ -187,11 +187,11 @@ class DepositsCog(commands.Cog):
     # ---------- paneles ----------
     @staticmethod
     def sell_panel_embed() -> discord.Embed:
-        emb = discord.Embed(title="💸 Cambiar Wuju Coins por silver", color=ORANGE)
+        emb = discord.Embed(title="💰 Cobrar balance", color=ORANGE)
         emb.description = (
-            "¿Querés cambiar tus **Wuju Coins** por silver?\n\n"
-            "1. Tocá **Vender Wuju Coins**: se abre un ticket privado y se avisa al **Council**.\n"
-            "2. En el ticket aparece tu balance. Un Council acepta, confirma el monto (por defecto, todo tu balance) y te retira los Wuju Coins.\n"
+            "¿Querés cobrar tu balance de **Wuju Coins** en silver?\n\n"
+            "1. Tocá **Cobrar balance**: se abre un ticket privado y se avisa al **Council**.\n"
+            "2. En el ticket aparece tu balance. Un Council acepta, confirma el monto (por defecto, todo tu balance) y te lo retira.\n"
             "3. Te entregan el silver correspondiente.")
         return emb
 

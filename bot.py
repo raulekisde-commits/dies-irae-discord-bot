@@ -3280,6 +3280,13 @@ def cta_db_init():
         db_ensure_column(conn, "cta_compositions", "legacy_first", "INTEGER NOT NULL DEFAULT 0")
         # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
+        # Composiciones «track»: al cerrar la inscripción generan un split (/transparencia) en vez de crear un rol.
+        db_ensure_column(conn, "cta_compositions", "track", "INTEGER NOT NULL DEFAULT 0")
+        db_ensure_column(conn, "cta_runs", "track", "INTEGER NOT NULL DEFAULT 0")
+        db_ensure_column(conn, "cta_runs", "tab", "TEXT")
+        db_ensure_column(conn, "cta_runs", "city", "TEXT")
+        # Split de la CTA track: NULL = pendiente, -1 = en proceso, 0 = no se pudo crear, otro = no usado (el split guarda source_cta_id).
+        db_ensure_column(conn, "cta_runs", "split_state", "INTEGER")
         # El ⚔️ era el emoji automático: ya no se agrega, así que se limpia de las posiciones existentes.
         conn.execute("UPDATE cta_slots SET emoji='' WHERE emoji='⚔️' OR emoji='⚔'")
         # Las restricciones por rol ahora son siempre «alcanza con tener el rol»: se unifica lo guardado.
@@ -3915,12 +3922,61 @@ async def cta_close_run(run_id: int, reason="timeout"):
                               allowed_mentions=CTA_NO_PINGS)
         except Exception:
             pass
-    task = asyncio.create_task(cta_assign_signup_role(run_id))
+    if run.get("track"):
+        # CTA con track: nunca se crea el rol (role_id=0 también evita que el reintento al reiniciar lo cree); se genera el split.
+        db_execute("UPDATE cta_runs SET role_id=0 WHERE id=? AND role_id IS NULL", (run_id,))
+        task = asyncio.create_task(cta_create_track_split(run_id))
+    else:
+        task = asyncio.create_task(cta_assign_signup_role(run_id))
     cta_role_tasks.add(task)
     task.add_done_callback(cta_role_tasks.discard)
 
 
 cta_role_tasks: set = set()
+
+
+async def cta_create_track_split(run_id: int):
+    """Al cerrar una CTA con track: crea el split con la gente anotada (misma lógica que /transparencia).
+
+    Se reclama de forma atómica (split_state -1) para que nunca se cree dos veces; el split además guarda
+    source_cta_id, así que aunque se reintente no se duplica."""
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        cur = conn.execute("UPDATE cta_runs SET split_state=-1 WHERE id=? AND status='closed' AND track=1 AND split_state IS NULL", (run_id,))
+        claimed = cur.rowcount
+        conn.commit()
+    if not claimed:
+        return
+    run = cta_run_get(run_id)
+    thread = await cta_get_thread(run)
+
+    async def say(text: str):
+        if thread is not None:
+            try:
+                await thread.send(text, allowed_mentions=CTA_NO_PINGS)
+            except Exception:
+                pass
+
+    cog = bot.get_cog("SplitsCog")
+    if cog is None:
+        db_execute("UPDATE cta_runs SET split_state=NULL WHERE id=?", (run_id,))     # se reintenta al reconectar
+        return
+    user_ids = [int(r["user_id"]) for r in db_fetchall("SELECT user_id FROM cta_signups WHERE cta_id=? ORDER BY signed_at", (run_id,))]
+    title = f"CTA {run['composition_name']} #{run_id}"
+    try:
+        split, msg, error = await cog.create_from_cta(cta_id=run_id, title=title, tab=run.get("tab"), city=run.get("city"),
+                                                      user_ids=user_ids, creator_id=int(run["created_by"]))
+    except Exception as exc:
+        print(f"CTA #{run_id}: error generando el split: {exc!r}")
+        split, msg, error = None, None, "❌ Falló la creación del split."
+    if split is None:
+        db_execute("UPDATE cta_runs SET split_state=0 WHERE id=?", (run_id,))
+        await say(f"⚠️ No pude generar el split de esta CTA. {error or ''} Podés crearlo a mano con `/transparencia`.".strip())
+        return
+    db_execute("UPDATE cta_runs SET split_state=?  WHERE id=?", (int(split.id), run_id))
+    cta_audit(int(run["guild_id"]), int(run["created_by"]), "cta_split_created", run_id, f"split={split.id}; anotados={len(user_ids)}")
+    link = getattr(msg, "jump_url", None) if msg is not None else None
+    await say(f"📊 Generé el split de esta CTA con **{len(user_ids)}** anotado(s)" + (f": {link}" if link else ".") +
+              " No se creó ningún rol. Si te anotás ahora, el organizador decide si te suma al split.")
 
 
 def cta_role_name(run: dict) -> str:
@@ -4066,6 +4122,24 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         return True
     action, number = command
     if run["status"] != "open":
+        if run.get("track") and action == "join" and not mentions and run["status"] == "closed":
+            # CTA con track: quien se anota tarde queda como solicitud en el hilo del split (el organizador decide).
+            cog = bot.get_cog("SplitsCog")
+            state = None
+            if cog is not None:
+                try:
+                    state = await cog.register_late_request(cta_id=int(run["id"]), user_id=message.author.id, slot_no=number)
+                except Exception as exc:
+                    print(f"CTA #{run['id']}: no pude registrar al anotado tardío: {exc!r}")
+            texts = {
+                "new": "🔒 Las inscripciones ya cerraron. Le avisé al organizador en el hilo del split: él decide si te suma.",
+                "pending": "⏳ Ya avisé que querés sumarte; esperá la decisión del organizador.",
+                "listed": "✅ Ya estás en la lista del split.",
+                "accepted": "✅ Ya te sumaron al split.",
+                "rejected": "🔒 El organizador ya decidió no sumarte a este split.",
+            }
+            await cta_reply_short(message, texts.get(state, "🔒 Las inscripciones de esta CTA ya están cerradas."), 12)
+            return True
         await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
         return True
     run_id = int(run["id"])
@@ -4751,10 +4825,10 @@ class CTACompositionGroup(app_commands.Group):
 
     @app_commands.command(name="listar", description="Listar composiciones guardadas")
     async def listar(self, interaction: discord.Interaction):
-        rows = db_fetchall("""SELECT c.name, COUNT(s.id) AS n, COUNT(DISTINCT s.party_no) AS p
+        rows = db_fetchall("""SELECT c.name, c.track, COUNT(s.id) AS n, COUNT(DISTINCT s.party_no) AS p
                               FROM cta_compositions c LEFT JOIN cta_slots s ON s.composition_id=c.id
                               WHERE c.guild_id=? GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (interaction.guild_id,))
-        lines = [f"• **{r['name']}** · {r['p']} parties · {r['n']} posiciones" for r in rows]
+        lines = [f"• **{r['name']}** · {r['p']} parties · {r['n']} posiciones" + (" · 📊 track" if r["track"] else "") for r in rows]
         await interaction.response.send_message("**Composiciones guardadas**\n" + ("\n".join(lines) if lines else "Todavía no hay composiciones."), ephemeral=True)
 
     @app_commands.command(name="ver", description="Ver una composición guardada")
@@ -4857,6 +4931,25 @@ class CTACompositionGroup(app_commands.Group):
             msg = f"✅ **{comp['name']}**: sin prioridad Legacy."
         await interaction.response.send_message(msg + cta_active_notice(comp["id"]), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
+    @app_commands.command(name="track", description="Activar o desactivar el track: al cerrar la inscripción se genera un split con los anotados")
+    @app_commands.describe(nombre="Nombre de la composición",
+                           activar="true = cada /cta con esta composición pide Tab y City y, al cerrar, crea el split (sin crear rol); false = sin track")
+    async def track(self, interaction: discord.Interaction, nombre: str, activar: bool):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        db_execute("UPDATE cta_compositions SET track=?, updated_at=? WHERE id=?", (int(activar), cta_now_iso(), comp["id"]))
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_track", details=f"{comp['name']}: {'activado' if activar else 'desactivado'}")
+        if activar:
+            msg = (f"✅ **{comp['name']}** ahora tiene **track**: en cada `/cta` hay que indicar **Tab** y **City**, y al cerrar la inscripción "
+                   "se genera el split (como `/transparencia`) con la gente anotada. En esas CTA no se crea ningún rol. "
+                   "Quien se anote después del cierre aparece en el hilo del split para que vos decidas si lo sumás.")
+        else:
+            msg = f"✅ **{comp['name']}**: sin track. Las CTA nuevas vuelven a crear el rol al cerrar."
+        await interaction.response.send_message(msg + cta_active_notice(comp["id"]), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     @app_commands.command(name="builds", description="Poner o quitar el link de builds de una composición")
     @app_commands.describe(nombre="Nombre de la composición", link="Link a la web de builds (https://...). Vacío o «quitar» = sacar el link")
     async def builds(self, interaction: discord.Interaction, nombre: str, link: Optional[str] = None):
@@ -4920,8 +5013,11 @@ async def cta_name_autocomplete(interaction: discord.Interaction, current: str):
 
 @bot.tree.command(name="cta", description="Publicar una CTA usando una composición guardada", guild=GUILD_OBJ)
 @app_commands.describe(nombre="Nombre de la composición",
-                       tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)")
-async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None):
+                       tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)",
+                       tab="Tab (obligatorio si la composición tiene track)",
+                       city="City (obligatorio si la composición tiene track)")
+async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None,
+                      tab: Optional[str] = None, city: Optional[str] = None):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
     member = interaction.user
@@ -4943,12 +5039,21 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
         return await interaction.response.send_message("Esta composición no tiene posiciones. Agregalas con `/compo editar`.", ephemeral=True)
     if len(comp["slots"]) > CTA_MAX_SLOTS:
         return await interaction.response.send_message(f"Una CTA no puede tener más de {CTA_MAX_SLOTS} posiciones.", ephemeral=True)
+    tab_v = " ".join((tab or "").split()) or None
+    city_v = " ".join((city or "").split()) or None
+    if len(tab_v or "") > 60 or len(city_v or "") > 60:
+        return await interaction.response.send_message("❌ Tab y City pueden tener hasta 60 caracteres.", ephemeral=True)
+    track_v = int(bool(comp.get("track")))
+    if track_v and not (tab_v and city_v):
+        return await interaction.response.send_message(
+            f"❌ La composición **{comp['name']}** tiene track: tenés que indicar **tab** y **city**. "
+            f"Ej: `/cta nombre:{comp['name']} tab:Tab 3 city:Caerleon`", ephemeral=True)
     now = datetime.now(timezone.utc)
     close_at = now + timedelta(minutes=minutes)
     snapshot = cta_snapshot_from_comp(comp)
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status) VALUES (?,?,?,?,?,?,?,?, 'open')",
-                           (interaction.guild_id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), interaction.channel_id, interaction.user.id, now.isoformat(), close_at.isoformat()))
+        cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status,track,tab,city) VALUES (?,?,?,?,?,?,?,?, 'open',?,?,?)",
+                           (interaction.guild_id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), interaction.channel_id, interaction.user.id, now.isoformat(), close_at.isoformat(), track_v, tab_v, city_v))
         run_id = cur.lastrowid
         conn.commit()
     run = cta_run_get(run_id)
@@ -5786,7 +5891,7 @@ async def topdeaths_slash(interaction: discord.Interaction):
 # (sección, [(comando, quién puede usarlo, explicación breve)])
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
-        ("/cta nombre [tiempo]", "Staff, Reclutador, Content creator", "Publica una CTA con una composición guardada. Dura 40 min por defecto (mínimo 10). La gente se anota escribiendo su número en el hilo."),
+        ("/cta nombre [tiempo] [tab] [city]", "Staff, Reclutador, Content creator", "Publica una CTA con una composición guardada. Dura 40 min por defecto (mínimo 10). La gente se anota escribiendo su número en el hilo. Si la composición tiene track, tab y city son obligatorios."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta_cerrar cta_id", "Staff, Reclutador", "Cierra una CTA antes de tiempo."),
         ("/cta_asignar · /cta_liberar", "Staff, Reclutador", "Pone o saca a un jugador de una posición."),
@@ -5795,6 +5900,7 @@ HELP_SECTIONS = [
         ("/compo duplicar · renombrar · eliminar", "Staff", "Copiar, renombrar o borrar una composición."),
         ("/compo rol_party nombre party rol", "Staff", "Rol general de una party: sin ese rol nadie se anota en ella (además de los roles propios de cada posición)."),
         ("/compo legacy nombre activar", "Staff", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
+        ("/compo track nombre activar", "Staff", "true/false: con track, cada /cta con esa composición pide Tab y City y, al cerrar la inscripción, genera el split (como /transparencia) con la gente anotada, sin crear rol. Los que se anotan tarde quedan en el hilo del split para que decidas si los sumás."),
         ("/compo builds nombre link", "Staff", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
@@ -5988,6 +6094,13 @@ async def on_ready():
                     await cta_assign_signup_role(int(r["id"]))
                 except Exception as exc:
                     print(f"CTA #{r['id']}: no se pudo asignar el rol pendiente: {exc}")
+            # CTA track cerradas hace menos de un día cuyo split quedó pendiente o cortado por un reinicio.
+            db_execute("UPDATE cta_runs SET split_state=NULL WHERE status='closed' AND track=1 AND split_state=-1 AND closed_at>?", (limit,))
+            for r in db_fetchall("SELECT id FROM cta_runs WHERE status='closed' AND track=1 AND split_state IS NULL AND closed_at>?", (limit,)):
+                try:
+                    await cta_create_track_split(int(r["id"]))
+                except Exception as exc:
+                    print(f"CTA #{r['id']}: no se pudo generar el split pendiente: {exc!r}")
             for r in db_fetchall("SELECT id FROM cta_runs WHERE status='open'"):
                 try:
                     await cta_ensure_thread_and_board(int(r["id"]))

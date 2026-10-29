@@ -120,6 +120,55 @@ class SplitPanelView(discord.ui.View):
     async def close(self, interaction: discord.Interaction, button):
         await self.cog.on_close_pressed(interaction)
 
+    @discord.ui.button(label="Cancelar split", style=discord.ButtonStyle.secondary, custom_id="split:cancel", emoji="🚫")
+    async def cancel(self, interaction: discord.Interaction, button):
+        await self.cog.on_cancel_pressed(interaction)
+
+
+class SplitRequestView(discord.ui.View):
+    """Botones de cada persona que se anotó después del cierre de la CTA: el organizador decide si entra al split."""
+
+    def __init__(self, cog: "SplitsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Agregar al split", style=discord.ButtonStyle.success, custom_id="split:req_add", emoji="✅")
+    async def add(self, interaction: discord.Interaction, button):
+        await self.cog.on_request_decision(interaction, True)
+
+    @discord.ui.button(label="Descartar", style=discord.ButtonStyle.secondary, custom_id="split:req_no", emoji="✖️")
+    async def no(self, interaction: discord.Interaction, button):
+        await self.cog.on_request_decision(interaction, False)
+
+
+class ConfirmCancelView(discord.ui.View):
+    def __init__(self, cog: "SplitsCog", split_id: int, owner_id: int):
+        super().__init__(timeout=120.0)
+        self.cog, self.split_id, self.owner_id, self.used = cog, split_id, owner_id, False
+        ok = discord.ui.Button(label="Sí, cancelar split", style=discord.ButtonStyle.danger)
+        no = discord.ui.Button(label="Volver", style=discord.ButtonStyle.secondary)
+        ok.callback, no.callback = self._ok, self._no
+        self.add_item(ok)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Este mensaje no es tuyo.")
+            return False
+        return True
+
+    async def _ok(self, interaction: discord.Interaction):
+        if self.used:
+            return await _say(interaction, "ℹ️ Ya fue procesado.")
+        self.used = True
+        self.stop()
+        await self.cog.cancel_split(interaction, self.split_id)
+
+    async def _no(self, interaction: discord.Interaction):
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="Listo, el split sigue abierto.", view=None)
+
 
 class ConfirmCloseView(discord.ui.View):
     def __init__(self, cog: "SplitsCog", split_id: int, owner_id: int):
@@ -361,6 +410,7 @@ class SplitsCog(commands.Cog):
     async def cog_load(self):
         await self.run(sdb.init_schema)
         self.bot.add_view(SplitPanelView(self))
+        self.bot.add_view(SplitRequestView(self))
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -465,22 +515,34 @@ class SplitsCog(commands.Cog):
         people: List[int] = []
         if rol is not None:
             people = [m.id for m in getattr(rol, "members", []) if not getattr(m, "bot", False)]
+        await interaction.response.defer(ephemeral=True)
+        split, msg, error = await self._publish(
+            creator_id=interaction.user.id, title=titulo, tab=tab, city=city, role_id=rol.id if rol else None,
+            total=total_v, repair=repair_v, people=people, looters=looter_ids)
+        if error:
+            return await interaction.followup.send(error, ephemeral=True)
+        await interaction.followup.send(
+            f"✅ Split **{split.title}** creado: {getattr(msg, 'jump_url', '')}\n"
+            f"Con `/editar` (dentro del hilo) cargás los datos de cada looter, los montos y las personas.", ephemeral=True)
+
+    async def _publish(self, *, creator_id: int, title: str, tab=None, city=None, role_id=None, total: int = 0, repair: int = 0,
+                       people=(), looters=(), source_cta_id: Optional[int] = None):
+        """Crea el split, publica el panel en el canal de splits y arma el hilo. Devuelve (split, mensaje, error)."""
         channel = await self._get_channel(self.channel_id)
         if channel is None:
-            return await _say(interaction, f"❌ No encuentro el canal de splits (<#{self.channel_id}>). Revisá que el bot lo vea.")
-        await interaction.response.defer(ephemeral=True)
+            return None, None, f"❌ No encuentro el canal de splits (<#{self.channel_id}>). Revisá que el bot lo vea."
         try:
-            sid = await self.run(sdb.create_split, guild_id=self.guild_id, creator_id=interaction.user.id, title=titulo, tab=tab, city=city,
-                                 role_id=rol.id if rol else None, total=total_v, repair=repair_v, people=people, looters=looter_ids)
+            sid = await self.run(sdb.create_split, guild_id=self.guild_id, creator_id=creator_id, title=title, tab=tab, city=city,
+                                 role_id=role_id, total=total, repair=repair, people=people, looters=looters, source_cta_id=source_cta_id)
         except sdb.SplitError as exc:
-            return await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return None, None, f"❌ {exc}"
         s = await self.run(sdb.get_split, sid)
         try:
             msg = await channel.send(embed=panel_embed(s), view=SplitPanelView(self), allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self.run(sdb.abort_unpublished, sid)
-            return await interaction.followup.send("❌ No pude publicar el panel (revisá los permisos del bot en el canal de splits).", ephemeral=True)
+            return None, None, "❌ No pude publicar el panel (revisá los permisos del bot en el canal de splits)."
         await self.run(sdb.set_location, sid, channel_id=channel.id, message_id=msg.id)
         try:
             try:
@@ -496,11 +558,69 @@ class SplitsCog(commands.Cog):
             except Exception:
                 pass
             await self.run(sdb.abort_unpublished, sid)
-            return await interaction.followup.send("❌ No pude crear el hilo (revisá el permiso *Crear hilos públicos* del bot). No se creó el split.", ephemeral=True)
+            return None, None, "❌ No pude crear el hilo (revisá el permiso *Crear hilos públicos* del bot). No se creó el split."
         await self.run(sdb.set_location, sid, thread_id=thread.id, list_message_id=lst.id, data_message_id=dat.id)
-        await interaction.followup.send(
-            f"✅ Split **{s.title}** creado: {getattr(msg, 'jump_url', '')}\n"
-            f"Con `/editar` (dentro del hilo) cargás los datos de cada looter, los montos y las personas.", ephemeral=True)
+        return await self.run(sdb.get_split, sid), msg, None
+
+    # ---------- split generado desde una CTA con track ----------
+    async def create_from_cta(self, *, cta_id: int, title: str, tab: Optional[str], city: Optional[str],
+                              user_ids: List[int], creator_id: int):
+        """Al cerrar una CTA con track: arma el split con los anotados (sin crear ningún rol).
+        Devuelve (split, mensaje, error); si ya existía uno para esa CTA, lo devuelve sin crear otro."""
+        async with self._lock(-cta_id):
+            old = await self.run(sdb.find_by_cta, cta_id)
+            if old is not None:
+                return old, None, None
+            return await self._publish(creator_id=creator_id, title=title, tab=tab, city=city,
+                                       people=[u for u in dict.fromkeys(user_ids)][:sdb.MAX_PEOPLE], source_cta_id=cta_id)
+
+    async def register_late_request(self, *, cta_id: int, user_id: int, slot_no: Optional[int]) -> Optional[str]:
+        """Alguien se anotó en la CTA ya cerrada: queda una solicitud en el hilo del split para que el organizador decida.
+        Devuelve None si esa CTA no tiene split; si no, el estado: new · listed · pending · accepted · rejected · closed."""
+        s = await self.run(sdb.find_by_cta, cta_id)
+        if s is None:
+            return None
+        state, count = await self.run(sdb.add_request, s.id, user_id, slot_no)
+        if state != "new":
+            return state
+        th = await self._get_channel(s.thread_id)
+        if th is None:
+            return state
+        try:
+            if count == 1:
+                await th.send("🕐 **Anotados después del cierre de la CTA.** Decidí con los botones si cada persona se suma al split.",
+                              allowed_mentions=NO_MENTIONS)
+            pos = f" (quería la posición {slot_no})" if slot_no else ""
+            m = await th.send(f"🙋 <@{user_id}> se anotó después del cierre{pos}.", view=SplitRequestView(self), allowed_mentions=NO_MENTIONS)
+            await self.run(sdb.set_request_message, s.id, user_id, m.id)
+        except Exception as exc:
+            print(f"⚠️ Split #{s.id}: no pude publicar la solicitud de {user_id}: {exc!r}")
+        return state
+
+    async def on_request_decision(self, interaction: discord.Interaction, accept: bool):
+        msg = getattr(interaction, "message", None)
+        req = await self.run(sdb.get_request_by_message, msg.id) if msg is not None else None
+        if req is None:
+            return await _say(interaction, "❌ No encuentro esta solicitud.")
+        s = await self.run(sdb.get_split, req.split_id)
+        if s is None or not (can_manage(interaction.user) or interaction.user.id == s.creator_id):
+            return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede decidir.")
+        try:
+            res = await self.run(sdb.decide_request, req.split_id, req.user_id, accept, interaction.user.id)
+        except sdb.SplitError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        if res == "closed":
+            return await _say(interaction, "❌ El split ya está cerrado.")
+        if res in ("decided", "missing"):
+            return await _say(interaction, "ℹ️ Esa solicitud ya estaba decidida.")
+        verdict = "✅ Agregado al split" if res == "accepted" else "✖️ Descartado"
+        try:
+            await interaction.response.edit_message(content=f"{verdict} por <@{interaction.user.id}>: <@{req.user_id}>", view=None,
+                                                    allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+        if res == "accepted":
+            await self.sync_split(req.split_id)
 
     # ---------- /editar ----------
     async def _target(self, interaction, split_id: Optional[int]) -> Optional[sdb.Split]:
@@ -650,6 +770,88 @@ class SplitsCog(commands.Cog):
         await self.sync_split(split_id)
         await self._post_result(s, calc, paid, interaction.user.id)
         await interaction.followup.send("✅ Split cerrado y pagado. La lista quedó en el hilo.", ephemeral=True)
+
+    # ---------- cancelar el split (sin pagar nada) ----------
+    async def on_cancel_pressed(self, interaction: discord.Interaction):
+        msg = getattr(interaction, "message", None)
+        s = await self.run(sdb.find_by_message, msg.id) if msg is not None else None
+        if s is None:
+            return await _say(interaction, "❌ No encuentro el split de este panel.")
+        if not (is_council(interaction.user) or can_manage(interaction.user) or interaction.user.id == s.creator_id):
+            return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede cancelarlo.")
+        if s.status in ("closed", "cancelled"):
+            return await _say(interaction, "ℹ️ Este split ya está cerrado.")
+        await _say(interaction,
+                   f"¿Cancelar **Split {s.title}**? Se cierra **sin pagar nada** y no se puede reabrir.",
+                   view=ConfirmCancelView(self, s.id, interaction.user.id))
+
+    async def cancel_split(self, interaction: discord.Interaction, split_id: int):
+        s = await self.run(sdb.get_split, split_id)
+        if s is None or not (is_council(interaction.user) or can_manage(interaction.user) or interaction.user.id == s.creator_id):
+            return await _say(interaction, "🔒 No tenés permiso para cancelar este split.")
+        async with self._lock(split_id):
+            res = await self.run(sdb.cancel_split, split_id, interaction.user.id)
+        if res == "closing":
+            return await interaction.response.edit_message(content="❌ Este split ya empezó a pagarse: no se puede cancelar.", view=None)
+        if res in ("closed", "cancelled_before", "missing"):
+            return await interaction.response.edit_message(content="ℹ️ Este split ya estaba cerrado.", view=None)
+        await interaction.response.edit_message(content="🚫 Split cancelado. No se pagó nada.", view=None)
+        await self.sync_split(split_id)
+        th = await self._get_channel(s.thread_id)
+        if th is not None:
+            try:
+                await th.send(f"🚫 **Split {s.title} cancelado** por <@{interaction.user.id}>. No se acreditó nada a nadie.", allowed_mentions=NO_MENTIONS)
+            except Exception as exc:
+                print(f"⚠️ Split #{split_id}: no pude avisar la cancelación en el hilo: {exc!r}")
+
+    # ---------- !agregarlista ----------
+    async def _add_to_list(self, actor, channel_id: Optional[int], explicit_id: Optional[int], members) -> str:
+        """Lógica común de !agregarlista y /agregarlista. Devuelve el texto de respuesta."""
+        if explicit_id is not None:
+            s = await self.run(sdb.get_split, explicit_id)
+        else:
+            s = await self.run(sdb.find_by_thread, channel_id or 0)
+        if s is None:
+            return "❌ Usalo dentro del hilo de un split (o poné el número del split antes de las menciones: `!agregarlista 3 @Ana @Beto`)."
+        if not (can_manage(actor) or actor.id == s.creator_id):
+            return "🔒 Solo el Council, un administrador o quien creó el split puede agregar gente."
+        if not s.is_open:
+            return "❌ Ese split ya está cerrado: no se puede modificar."
+        ids = [m.id for m in members if not getattr(m, "bot", False)]
+        if not ids:
+            return "❌ Mencioná a las personas que querés agregar. Ej: `!agregarlista @Ana @Beto @Caro`"
+        try:
+            n = await self.run(sdb.add_people, s.id, ids)
+        except sdb.SplitError as exc:
+            return f"❌ {exc}"
+        await self.sync_split(s.id)
+        if n == 0:
+            return "ℹ️ Todas esas personas ya estaban en la lista."
+        ya = len(set(ids)) - n
+        return f"✅ Agregué {n} persona(s) a la lista de **Split {s.title}**." + (f" ({ya} ya estaba(n).)" if ya else "")
+
+    @commands.command(name="agregarlista")
+    async def agregarlista(self, ctx: commands.Context, *, texto: str = ""):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        first = (texto or "").split()[:1]
+        explicit = int(first[0]) if first and first[0].isdigit() else None
+        members = [m for m in getattr(ctx.message, "mentions", [])]
+        reply = await self._add_to_list(ctx.author, getattr(ctx.channel, "id", None), explicit, members)
+        await ctx.reply(reply, mention_author=False, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="agregarlista", description="Agrega gente a la lista de un split (usalo dentro de su hilo)")
+    @app_commands.describe(personas="Mencioná a todas las personas que quieras, por ejemplo @Ana @Beto",
+                           id="Número del split (no hace falta dentro de su hilo)")
+    @app_commands.guild_only()
+    async def agregarlista_slash(self, interaction: discord.Interaction, personas: str, id: Optional[int] = None):
+        members = []
+        for m in MENTION_RE.finditer(personas or ""):
+            member = interaction.guild.get_member(int(m.group(1))) if interaction.guild else None
+            if member is not None and member not in members:
+                members.append(member)
+        text = await self._add_to_list(interaction.user, interaction.channel.id if interaction.channel else None, id, members)
+        await _say(interaction, text) if text[:1] in "❌🔒ℹ" else await interaction.response.send_message(text, allowed_mentions=NO_MENTIONS)
 
     async def _post_result(self, s: sdb.Split, calc: sdb.Calc, paid: Dict[int, int], actor_id: int):
         th = await self._get_channel(s.thread_id)
