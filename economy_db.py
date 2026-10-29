@@ -771,6 +771,16 @@ def set_command_channel(db_path: str, command: str, channel_id: int) -> None:
         conn.close()
 
 
+def clear_command_channel(db_path: str, command: str) -> bool:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            cur = conn.execute("DELETE FROM eco_command_channels WHERE command = ?", (command,))
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_command_channel(db_path: str, command: str) -> Optional[int]:
     conn = connect(db_path)
     try:

@@ -199,6 +199,10 @@ class BetPanelView(discord.ui.View):
     async def detail(self, interaction, button):
         await self.cog.show_detail(interaction)
 
+    @discord.ui.button(label="Cancelar apuesta", style=discord.ButtonStyle.danger, custom_id="bet:cancel", emoji="🚫")
+    async def cancel(self, interaction, button):
+        await self.cog.cancel_from_panel(interaction)
+
 
 # ============================================================
 # Cog
@@ -539,6 +543,18 @@ class BetsCog(commands.Cog):
         bet = await self._target_bet(interaction, id)
         if bet is None:
             return
+        await self._ask_cancel(interaction, bet)
+
+    @safe
+    async def cancel_from_panel(self, interaction):
+        """Botón 🚫 del panel de la apuesta: solo quien la creó (o un administrador)."""
+        msg = getattr(interaction, "message", None)
+        bet = await self.run(bdb.find_by_message, msg.id) if msg is not None else None
+        if bet is None:
+            return await self.reply(interaction, "❌ No encuentro la apuesta de este panel.")
+        await self._ask_cancel(interaction, bet)
+
+    async def _ask_cancel(self, interaction, bet: bdb.Bet):
         if interaction.user.id != bet.creator_id and not self.is_admin(interaction.user):
             return await self.reply(interaction, "❌ Solo quien creó la apuesta (o un administrador) puede cancelarla.")
         if bet.is_final:
