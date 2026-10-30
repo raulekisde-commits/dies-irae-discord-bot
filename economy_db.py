@@ -127,6 +127,9 @@ MOVEMENT_LABELS = {
     "coinflip_refund": "Devolución de coinflip",
     "raffle_ticket": "Ticket de rifa",
     "raffle_refund": "Devolución de rifa",
+    "roulette_bet": "Apuesta de ruleta",
+    "roulette_win": "Premio de ruleta",
+    "roulette_refund": "Devolución de ruleta",
 }
 
 
@@ -548,7 +551,7 @@ class InsufficientFunds(Exception):
 # ------------------------------------------------------------
 FROZEN_TEXT = ("🧊 Tu balance está **congelado** mientras tengas abierto un ticket de **Cobrar balance**: no podés apostar ni mover "
                "tu balance hasta que se cierre el ticket.")
-FROZEN_BLOCKED_TYPES = frozenset({"bet_stake", "duel_stake", "dice_stake", "coinflip_stake", "raffle_ticket", "transfer_out", "guildshop_purchase"})
+FROZEN_BLOCKED_TYPES = frozenset({"bet_stake", "duel_stake", "dice_stake", "coinflip_stake", "raffle_ticket", "roulette_bet", "transfer_out", "guildshop_purchase"})
 
 
 class BalanceFrozen(Exception):
