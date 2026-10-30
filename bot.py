@@ -74,6 +74,13 @@ except Exception:
     async def setup_raffles(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar raffles.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from diagnostico import setup_diagnostico
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_diagnostico(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar diagnostico.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from panels import setup_panels
 except Exception:
     import traceback as _tb
@@ -379,6 +386,7 @@ class MyBot(commands.Bot):
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
             await _safe_setup("registration", _setup_registration, self, DB_PATH, GUILD_ID)
+            await _safe_setup("diagnostico", setup_diagnostico, self, DB_PATH, GUILD_ID)
             self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
