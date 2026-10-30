@@ -372,6 +372,9 @@ class BetsCog(commands.Cog):
     async def apostar(self, ctx: commands.Context, *, args: str = ""):
         if ctx.guild is None or getattr(ctx.author, "bot", False):
             return
+        roulette = self.bot.get_cog("RouletteCog")
+        if roulette is not None and await roulette.handle_bet_command(ctx, args):
+            return
         bet = await self.run(bdb.find_by_thread, ctx.channel.id)
         if bet is None:
             return await ctx.reply("❌ `!apostar` solo se puede usar dentro del hilo de una apuesta abierta.",
@@ -487,6 +490,11 @@ class BetsCog(commands.Cog):
         await self.thread_say(bet, "🔒 La apuesta se cerró: ya no se aceptan más apuestas.")
 
     async def option_autocomplete(self, interaction, current: str):
+        roulette = self.bot.get_cog("RouletteCog")
+        if roulette is not None:
+            choices = await roulette.autocomplete_options(interaction, current)
+            if choices is not None:
+                return choices
         bet = await self.run(bdb.find_by_thread, interaction.channel.id if interaction.channel else 0)
         if bet is None:
             return []
