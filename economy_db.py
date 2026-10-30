@@ -541,6 +541,37 @@ class InsufficientFunds(Exception):
     pass
 
 
+# ------------------------------------------------------------
+# Congelamiento del balance: con un ticket de «Cobrar balance» abierto, la persona no puede gastar su balance
+# (apostar, anotarse a juegos, comprar tickets de rifa, dar coins, comprar en la Guild Shop). Lo que ya estaba en juego sigue su curso y
+# los premios/devoluciones se acreditan igual; el retiro que hace el Council en el ticket tampoco se bloquea.
+# ------------------------------------------------------------
+FROZEN_TEXT = ("🧊 Tu balance está **congelado** mientras tengas abierto un ticket de **Cobrar balance**: no podés apostar ni mover "
+               "tu balance hasta que se cierre el ticket.")
+FROZEN_BLOCKED_TYPES = frozenset({"bet_stake", "duel_stake", "dice_stake", "coinflip_stake", "raffle_ticket", "transfer_out", "guildshop_purchase"})
+
+
+class BalanceFrozen(Exception):
+    """Se intentó gastar un balance congelado (red de seguridad: las pantallas avisan antes con un mensaje claro)."""
+
+
+def _frozen_conn(conn, user_id: int) -> bool:
+    try:
+        return conn.execute("SELECT 1 FROM cm_tickets WHERE user_id = ? AND kind = 'sell' AND status = 'open' LIMIT 1", (user_id,)).fetchone() is not None
+    except sqlite3.OperationalError as exc:              # todavía no existe la tabla de tickets: nadie está congelado
+        if "no such table" in str(exc):
+            return False
+        raise
+
+
+def is_frozen(db_path: str, user_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        return _frozen_conn(conn, user_id)
+    finally:
+        conn.close()
+
+
 def tx_new_operation(conn: sqlite3.Connection, *, kind: str, actor_id: int, request_key: str,
                      total_amount: int, target_count: int, reason: str, related_id: str) -> str:
     """Crea la operación que agrupa varios movimientos. No genera registro de auditoría público."""
@@ -559,6 +590,8 @@ def tx_new_operation(conn: sqlite3.Connection, *, kind: str, actor_id: int, requ
 def tx_move(conn: sqlite3.Connection, *, op_id: str, user_id: int, delta: int, mov_type: str, reason: str,
             actor_id: int, related_id: str, require_funds: bool = False) -> Tuple[int, int]:
     """Aplica un movimiento a un balance dentro de la transacción en curso. Devuelve (antes, después)."""
+    if delta < 0 and mov_type in FROZEN_BLOCKED_TYPES and _frozen_conn(conn, user_id):
+        raise BalanceFrozen(user_id)
     now = utcnow_iso()
     conn.execute("INSERT OR IGNORE INTO eco_accounts(user_id, balance, created_at, updated_at) VALUES (?,0,?,?)",
                  (user_id, now, now))
