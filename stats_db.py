@@ -208,3 +208,68 @@ def top_winrate(db_path: str, kind: str, min_games: int = MIN_GAMES_FOR_TOP) -> 
     rows = [w for w in _winrates(db_path, kind, None) if w.played >= min_games]
     rows.sort(key=lambda w: (-w.rate, -w.played, w.user_id))
     return rows
+
+
+def top_winrate_combined(db_path: str, min_games: int = MIN_GAMES_FOR_TOP) -> List[WinRate]:
+    """Winrate general (dados + coinflip juntos)."""
+    acc = {}
+    for kind in ("dice", "coinflip"):
+        for w in _winrates(db_path, kind, None):
+            cur = acc.setdefault(w.user_id, WinRate(w.user_id, "all"))
+            cur.played += w.played
+            cur.wins += w.wins
+    rows = [w for w in acc.values() if w.played >= min_games]
+    rows.sort(key=lambda w: (-w.rate, -w.played, w.user_id))
+    return rows
+
+
+# ============================================================
+# Total apostado en todo el servidor
+# ============================================================
+_REFUNDS = {"bet_stake": "bet_refund", "dice_stake": "dice_refund", "coinflip_stake": "coinflip_refund", "duel_stake": "duel_refund"}
+
+
+@dataclass
+class ServerWagered:
+    by_kind: dict            # tipo de juego → (monto, cantidad de entradas)
+    players: int = 0
+
+    @property
+    def total(self) -> int:
+        return sum(a for a, _n in self.by_kind.values())
+
+    @property
+    def entries(self) -> int:
+        return sum(n for _a, n in self.by_kind.values())
+
+
+def server_wagered(db_path: str) -> ServerWagered:
+    """TODO lo que se puso en juego desde siempre (apuestas, dados, coinflip y duelos), también lo que sigue en juego, descontando lo
+    que se devolvió (juegos cancelados o sin rival). No depende de los reinicios individuales de estadísticas."""
+    kinds = tuple(_REFUNDS) + tuple(_REFUNDS.values())
+    sql = f"""SELECT kind, SUM(delta) AS total, COUNT(*) AS n, COUNT(DISTINCT user_id) AS u
+                FROM eco_movements WHERE kind IN ({",".join("?" * len(kinds))}) GROUP BY kind"""
+
+    def once():
+        conn = connect(db_path)
+        try:
+            rows = {r["kind"]: r for r in conn.execute(sql, kinds)}
+            users = conn.execute(
+                f"SELECT COUNT(DISTINCT user_id) FROM eco_movements WHERE kind IN ({','.join('?' * len(_REFUNDS))})", tuple(_REFUNDS)).fetchone()[0]
+            return rows, int(users or 0)
+        finally:
+            conn.close()
+
+    try:
+        rows, users = once()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        init_schema(db_path)
+        rows, users = once()
+    out = {}
+    for stake, refund in _REFUNDS.items():
+        st, rf = rows.get(stake), rows.get(refund)
+        amount = -(int(st["total"]) if st else 0) - (int(rf["total"]) if rf else 0)
+        out[stake] = (max(amount, 0), int(st["n"]) if st else 0)
+    return ServerWagered(out, users)

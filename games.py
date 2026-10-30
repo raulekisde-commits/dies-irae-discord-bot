@@ -307,6 +307,57 @@ class GamesCog(commands.Cog):
             ctx.message.mentions = [usuario]
         await self.winrate.callback(self, ctx, objetivo=usuario.mention if usuario else "")
 
+    # ---------- top de winrate y total apostado (públicos, para todos) ----------
+    TOP_WINRATE_SHOWN = 15
+
+    def _winrate_lines(self, rows) -> str:
+        if not rows:
+            return f"Todavía nadie llegó a {stats_db.MIN_GAMES_FOR_TOP} partidas."
+        lines = [f"`{i}.` <@{w.user_id}> — **{w.percent}** ({w.wins}/{w.played})" for i, w in enumerate(rows[:self.TOP_WINRATE_SHOWN], 1)]
+        if len(rows) > self.TOP_WINRATE_SHOWN:
+            lines.append(f"… y {len(rows) - self.TOP_WINRATE_SHOWN} más")
+        return "\n".join(lines)
+
+    @commands.command(name="topwinrate")
+    @guard
+    async def topwinrate(self, ctx: commands.Context):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        dice = await self.run(stats_db.top_winrate, "dice")
+        coin = await self.run(stats_db.top_winrate, "coinflip")
+        both = await self.run(stats_db.top_winrate_combined)
+        emb = discord.Embed(title="🏆 Top winrate", color=GREEN)
+        emb.add_field(name="🌐 General (dados + coinflip)", value=self._winrate_lines(both), inline=False)
+        emb.add_field(name="🎲 Dados", value=self._winrate_lines(dice), inline=False)
+        emb.add_field(name="🪙 Coinflip", value=self._winrate_lines(coin), inline=False)
+        emb.set_footer(text=f"Mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas terminadas con rival para entrar al top.")
+        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="topwinrate", description="Ranking de winrate en dados y coinflip de todo el servidor")
+    @app_commands.guild_only()
+    async def topwinrate_slash(self, interaction: discord.Interaction):
+        await self.topwinrate.callback(self, SlashContext(interaction))
+
+    @commands.command(name="totalapostado")
+    @guard
+    async def totalapostado(self, ctx: commands.Context):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        data = await self.run(stats_db.server_wagered)
+        names = {"bet_stake": "🎯 Apuestas", "dice_stake": "🎲 Dados", "coinflip_stake": "🪙 Coinflip", "duel_stake": "⚔️ Duelos 1v1"}
+        emb = discord.Embed(title="💰 Total apostado en el servidor", color=GREEN)
+        emb.description = f"**{self.money(data.total)}**\n{data.entries:,} entradas · {data.players:,} personas distintas"
+        for kind, label in names.items():
+            amount, n = data.by_kind.get(kind, (0, 0))
+            emb.add_field(name=label, value=f"{self.money(amount)}\n{n:,} entradas", inline=True)
+        emb.set_footer(text="Suma todo lo puesto en juego desde siempre (incluye lo que sigue en juego); se descuenta lo devuelto.")
+        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="totalapostado", description="Todo lo que se apostó en el servidor (apuestas, dados, coinflip y duelos)")
+    @app_commands.guild_only()
+    async def totalapostado_slash(self, interaction: discord.Interaction):
+        await self.totalapostado.callback(self, SlashContext(interaction))
+
     @app_commands.command(name="dados", description="Crea una partida de dados (5 minutos). Gana el número más alto y se lleva el pozo")
     @app_commands.describe(cantidad=f"Lo que ponés para entrar (máximo {eco.format_amount(gdb.MAX_STAKE)})")
     @app_commands.guild_only()
