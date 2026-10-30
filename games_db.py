@@ -20,6 +20,7 @@ from dbutil import connect, utcnow_iso, write_tx
 MAX_STAKE = 5_000_000
 DURATION_SECONDS = 300            # 5 minutos
 KINDS = ("dice", "coinflip")
+SIDES = ("cara", "cruz")
 COMMAND_OF = {"dice": "dados", "coinflip": "coinflip"}
 MOV = {"dice": ("dice_stake", "dice_win", "dice_refund"), "coinflip": ("coinflip_stake", "coinflip_win", "coinflip_refund")}
 MAX_TIE_ROUNDS = 50               # tope de seguridad (la probabilidad de llegar es astronómicamente baja)
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS games (
     resolved_at TEXT,
     winner_id   INTEGER,
     payout      INTEGER NOT NULL DEFAULT 0,
-    outcome     TEXT
+    outcome     TEXT,
+    creator_side TEXT                           -- coinflip: lado que eligió quien lo crea (cara | cruz); NULL = cara
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_games_live ON games(guild_id, kind) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS idx_games_message ON games(message_id);
@@ -63,6 +65,8 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        if "creator_side" not in {r["name"] for r in conn.execute("PRAGMA table_info(games)")}:       # bases creadas antes de esta opción
+            conn.execute("ALTER TABLE games ADD COLUMN creator_side TEXT")
     finally:
         conn.close()
 
@@ -107,6 +111,11 @@ class Game:
     payout: int
     outcome: Optional[dict]
     players: List[int] = field(default_factory=list)
+    creator_side: str = "cara"                                           # coinflip: lado del creador; el que acepta toma el otro
+
+    @property
+    def other_side(self) -> str:
+        return "cruz" if self.creator_side == "cara" else "cara"
 
     @property
     def pool(self) -> int:
@@ -130,7 +139,8 @@ def _build(conn: sqlite3.Connection, r) -> Optional[Game]:
     return Game(int(r["id"]), r["kind"], int(r["guild_id"]), int(r["channel_id"]),
                 int(r["message_id"]) if r["message_id"] is not None else None, int(r["creator_id"]), int(r["stake"]),
                 r["status"], float(r["ends_at"]), int(r["winner_id"]) if r["winner_id"] is not None else None,
-                int(r["payout"]), json.loads(r["outcome"]) if r["outcome"] else None, players)
+                int(r["payout"]), json.loads(r["outcome"]) if r["outcome"] else None, players,
+                r["creator_side"] if "creator_side" in r.keys() and r["creator_side"] in SIDES else "cara")
 
 
 def get_game(db_path: str, game_id: int) -> Optional[Game]:
@@ -205,9 +215,11 @@ class CreateResult:
 
 
 def create_game(db_path: str, *, kind: str, guild_id: int, channel_id: int, creator_id: int, stake: int,
-                now: Optional[float] = None) -> CreateResult:
+                now: Optional[float] = None, side: Optional[str] = None) -> CreateResult:
     if kind not in KINDS:
         raise ValueError("tipo inválido")
+    if side is not None and (kind != "coinflip" or side not in SIDES):
+        raise GameError("El lado tiene que ser `cara` o `cruz` (y solo vale en el coinflip).")
     validate_stake(stake)
     now = time.time() if now is None else now
     conn = connect(db_path)
@@ -219,8 +231,8 @@ def create_game(db_path: str, *, kind: str, guild_id: int, channel_id: int, crea
                 if live is not None:
                     return CreateResult(False, "live", live)
                 cur = conn.execute(
-                    "INSERT INTO games(kind, guild_id, channel_id, creator_id, stake, status, created_at, ends_at) "
-                    "VALUES (?,?,?,?,?, 'open', ?, ?)", (kind, guild_id, channel_id, creator_id, stake, utcnow_iso(), now + DURATION_SECONDS))
+                    "INSERT INTO games(kind, guild_id, channel_id, creator_id, stake, status, created_at, ends_at, creator_side) "
+                    "VALUES (?,?,?,?,?, 'open', ?, ?, ?)", (kind, guild_id, channel_id, creator_id, stake, utcnow_iso(), now + DURATION_SECONDS, side))
                 gid = int(cur.lastrowid)
                 _debit(conn, gid, kind, creator_id, stake, LABEL[kind])
                 conn.execute("INSERT INTO game_players(game_id, user_id, joined_at) VALUES (?,?,?)", (gid, creator_id, utcnow_iso()))
@@ -332,8 +344,8 @@ def _resolve(conn, g: Game, rng: random.Random) -> ResolveResult:
         winner, rounds, note = _roll_dice(g.players, rng)
         outcome = {"rounds": [[[u, r] for u, r in rnd] for rnd in rounds], "note": note}
     else:
-        side = "cara" if rng.randint(0, 1) == 0 else "cruz"                  # el creador es "cara"; quien acepta, "cruz"
-        winner = g.players[0] if side == "cara" else g.players[1]
+        side = "cara" if rng.randint(0, 1) == 0 else "cruz"                  # la moneda es 50/50 sea cual sea el lado elegido
+        winner = g.players[0] if side == g.creator_side else g.players[1]   # el creador juega con su lado (por defecto cara)
         outcome = {"side": side}
     _credit(conn, g.id, g.kind, [winner], pool, 1, LABEL[g.kind])
     conn.execute("UPDATE games SET status = 'done', resolved_at = ?, winner_id = ?, payout = ?, outcome = ? WHERE id = ?",
