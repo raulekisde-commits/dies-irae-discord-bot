@@ -20,7 +20,7 @@ ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
 # Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
 GAME_COMMANDS = ("dados", "coinflip", "1v1")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
-EXTRA_PERMISSION_COMMANDS = ("apuesta", "apuestas", "verhistorial", "set-balance", "eco-stats", "give-money") + GAME_COMMANDS
+EXTRA_PERMISSION_COMMANDS = ("apuesta", "apuestas", "verhistorial", "set-balance", "eco-stats", "give-money", "ruleta", "ruleta-editar", "ruleta-stats") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
 CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + GAME_COMMANDS   # bal, top, dados, coinflip, 1v1
 

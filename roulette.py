@@ -76,8 +76,18 @@ class RouletteCog(commands.Cog):
         e = self.bot.get_cog("EconomyCog")
         return e.money(amount) if e is not None else f"{eco.format_amount(amount)} {eco.CURRENCY_NAME}"
 
-    def _is_admin(self, user) -> bool:
-        return can_manage(user)
+    async def _allowed(self, user, command: str) -> bool:
+        """Council/propietario/administrador, o un rol otorgado con /perms-comando para ese comando."""
+        if can_manage(user):
+            return True
+        eco_cog = self.bot.get_cog("EconomyCog")
+        if eco_cog is None:
+            return False
+        try:
+            return await eco_cog.has_command_permission(user, command)
+        except Exception:
+            traceback.print_exc()
+            return False
 
     # ---------- panel ----------
     async def panel_embed(self, panel: rdb.Panel) -> discord.Embed:
@@ -145,8 +155,8 @@ class RouletteCog(commands.Cog):
     @app_commands.command(name="ruleta", description="Abre la ruleta del casino (solo staff; hay una única ruleta en todo el servidor)")
     @app_commands.guild_only()
     async def ruleta(self, interaction: discord.Interaction):
-        if not self._is_admin(interaction.user):
-            return await _say(interaction, "🔒 Solo administradores o el Council pueden abrir la ruleta.")
+        if not await self._allowed(interaction.user, "ruleta"):
+            return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/perms-comando` pueden abrir la ruleta.")
         ch = interaction.channel
         if ch is None or isinstance(ch, discord.Thread):
             return await _say(interaction, "❌ Usá `/ruleta` en un canal de texto (no dentro de un hilo).")
@@ -181,8 +191,8 @@ class RouletteCog(commands.Cog):
                             pago_paridad: Optional[app_commands.Range[int, 1, 1000]] = None, pago_falta_pasa: Optional[app_commands.Range[int, 1, 1000]] = None,
                             pago_docena: Optional[app_commands.Range[int, 1, 1000]] = None, pago_columna: Optional[app_commands.Range[int, 1, 1000]] = None,
                             pago_numero: Optional[app_commands.Range[int, 1, 1000]] = None):
-        if not self._is_admin(interaction.user):
-            return await _say(interaction, "🔒 Solo administradores o el Council pueden editar la ruleta.")
+        if not await self._allowed(interaction.user, "ruleta-editar"):
+            return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/perms-comando` pueden editar la ruleta.")
         try:
             def amt(t):
                 return None if t is None else eco.parse_amount_short(t)
@@ -214,8 +224,8 @@ class RouletteCog(commands.Cog):
     @app_commands.command(name="ruleta-stats", description="Estadísticas de la ruleta (solo staff)")
     @app_commands.guild_only()
     async def ruleta_stats(self, interaction: discord.Interaction):
-        if not self._is_admin(interaction.user):
-            return await _say(interaction, "🔒 Solo administradores o el Council pueden ver las estadísticas.")
+        if not await self._allowed(interaction.user, "ruleta-stats"):
+            return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/perms-comando` pueden ver las estadísticas.")
         s = await self.run(rdb.stats)
         c = s["config"]
         e = discord.Embed(title="📊 Estadísticas de la ruleta", color=GOLD)
@@ -312,7 +322,7 @@ class RouletteCog(commands.Cog):
         await _say(interaction, f"🎟️ **Tus apuestas (ronda #{rnd.id})** — total {self.money(sum(b.amount for b in bets))}\n" + "\n".join(lines))
 
     async def on_spin(self, interaction: discord.Interaction):
-        if not self._is_admin(interaction.user):
+        if not await self._allowed(interaction.user, "ruleta"):
             return await _say(interaction, "🔒 Solo el staff puede girar la ruleta.")
         panel = await self._panel_of(interaction)
         rnd = await self.run(rdb.current_round, panel.id) if panel and panel.status == "open" else None
@@ -326,8 +336,8 @@ class RouletteCog(commands.Cog):
         await _say(interaction, "✅ Ruleta girada.")
 
     async def on_close(self, interaction: discord.Interaction):
-        if not self._is_admin(interaction.user):
-            return await _say(interaction, "🔒 Solo administradores o el Council pueden cerrar la ruleta.")
+        if not await self._allowed(interaction.user, "ruleta"):
+            return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/perms-comando` pueden cerrar la ruleta.")
         panel = await self._panel_of(interaction)
         if panel is None:
             return await _say(interaction, "❌ No encontré esta ruleta.")
