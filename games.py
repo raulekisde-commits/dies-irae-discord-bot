@@ -151,8 +151,8 @@ class GamesCog(commands.Cog):
         else:
             emb = discord.Embed(title=f"🪙 Coinflip — apuesta de {eco.format_amount(game.stake)}", color=GOLD)
             emb.description = (
-                f"<@{game.creator_id}> apostó **{self.money(game.stake)}** (**cara**). "
-                f"Quien acepte pone lo mismo (**cruz**), se tira la moneda y **el que sale se queda con todo**.\n"
+                f"<@{game.creator_id}> apostó **{self.money(game.stake)}** (**{game.creator_side}**). "
+                f"Quien acepte pone lo mismo (**{game.other_side}**), se tira la moneda y **el que sale se queda con todo**.\n"
                 "Solo puede aceptar **una** persona.")
             emb.add_field(name="💰 Pozo si aceptan", value=self.money(game.stake * 2), inline=True)
             emb.add_field(name="⏳ Vence", value=f"<t:{ends}:R> (<t:{ends}:T>)", inline=True)
@@ -184,7 +184,7 @@ class GamesCog(commands.Cog):
                 lines.append(f"_{res.note}_")
         else:
             loser = g.players[1] if res.winner_id == g.players[0] else g.players[0]
-            lines.append(f"<@{g.players[0]}> (cara) vs <@{g.players[1]}> (cruz)\nLa moneda cayó en **{res.coin_side}**.")
+            lines.append(f"<@{g.players[0]}> ({g.creator_side}) vs <@{g.players[1]}> ({g.other_side})\nLa moneda cayó en **{res.coin_side}**.")
         lines.append(f"\n🏆 **<@{res.winner_id}>** se lleva **{self.money(res.pool)}**.")
         emb.description = "\n\n".join(lines)[:4000]
         emb.set_footer(text=f"Juego #{g.id}")
@@ -205,8 +205,14 @@ class GamesCog(commands.Cog):
             except Exception:
                 pass
 
-    async def _create(self, ctx, kind: str, amount_text: str):
+    async def _create(self, ctx, kind: str, amount_text: str, side: Optional[str] = None):
         command = gdb.COMMAND_OF[kind]
+        if kind == "coinflip" and side is None and (amount_text or "").strip():      # !coinflip 5k cruz  /  !coinflip cruz 5k
+            words = amount_text.split()
+            picked = [w for w in words if w.lower() in gdb.SIDES]
+            if len(picked) == 1 and len(words) == 2:
+                side = picked[0].lower()
+                amount_text = next(w for w in words if w.lower() not in gdb.SIDES)
         if ctx.guild is None or getattr(ctx.author, "bot", False):
             return
         if not await self._authorize_create(ctx, command):
@@ -215,7 +221,7 @@ class GamesCog(commands.Cog):
         if blocked:
             return await self._private_error(ctx, blocked)
         if not (amount_text or "").strip():
-            return await ctx.reply(f"Uso: `!{command} [cantidad]` (máximo {eco.format_amount(gdb.MAX_STAKE)}).",
+            return await ctx.reply(f"Uso: `!{command} [cantidad]{' [cara|cruz]' if kind == 'coinflip' else ''}` (máximo {eco.format_amount(gdb.MAX_STAKE)}).",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         try:
             amount = gdb.validate_stake(eco.parse_amount_short(amount_text.strip()))
@@ -235,7 +241,7 @@ class GamesCog(commands.Cog):
                 return await ctx.reply("❌ No encuentro el canal configurado para los dados. Un administrador debe volver a usar `/canal dados`.",
                                        mention_author=False, allowed_mentions=NO_MENTIONS)
         created = await self.run(gdb.create_game, kind=kind, guild_id=ctx.guild.id, channel_id=panel_channel.id,
-                                 creator_id=ctx.author.id, stake=amount)
+                                 creator_id=ctx.author.id, stake=amount, side=side)
         if not created.ok:
             if created.code == "live":
                 g = created.game
@@ -366,10 +372,13 @@ class GamesCog(commands.Cog):
         await self.dados.callback(self, SlashContext(interaction), cantidad=cantidad)
 
     @app_commands.command(name="coinflip", description="Desafía a alguien a cara o cruz (dura 5 minutos). El que sale se queda con todo")
-    @app_commands.describe(cantidad=f"Lo que apostás (máximo {eco.format_amount(gdb.MAX_STAKE)})")
+    @app_commands.describe(cantidad=f"Lo que apostás (máximo {eco.format_amount(gdb.MAX_STAKE)})",
+                           lado="Lado que elegís (opcional; si no, cara). Quien acepte toma el otro")
+    @app_commands.choices(lado=[app_commands.Choice(name="Cara", value="cara"), app_commands.Choice(name="Cruz", value="cruz")])
     @app_commands.guild_only()
-    async def coinflip_slash(self, interaction: discord.Interaction, cantidad: str):
-        await self.coinflip.callback(self, SlashContext(interaction), cantidad=cantidad)
+    async def coinflip_slash(self, interaction: discord.Interaction, cantidad: str, lado: Optional[app_commands.Choice[str]] = None):
+        side = lado.value if hasattr(lado, "value") else lado
+        await self._create(SlashContext(interaction), "coinflip", cantidad, side)
 
     # ---------- botones: anotarse / aceptar ----------
     @staticmethod
