@@ -64,7 +64,7 @@ class CasinoCog(commands.Cog):
             await _reply(interaction, "❌ No pude completar el comando.")
 
     @app_commands.command(name="limite", description="(Council) Pone la apuesta máxima de dados, coinflip o 1v1 (0 = sin límite propio)")
-    @app_commands.describe(juego="Juego", cantidad="Apuesta máxima, por ejemplo 1.000.000 (0 para quitar el límite)")
+    @app_commands.describe(juego="Juego", cantidad="Apuesta máxima, por ejemplo 1.000.000 o 1m (0 para quitar el límite)")
     @app_commands.choices(juego=[app_commands.Choice(name=n, value=n) for n in eco.GAME_COMMANDS])
     @app_commands.guild_only()
     async def limite(self, interaction: discord.Interaction, juego: app_commands.Choice[str], cantidad: str):
@@ -75,7 +75,7 @@ class CasinoCog(commands.Cog):
                 await self.run(eco.set_bet_limit, juego.value, None)
                 return await _reply(interaction, f"✅ Se quitó el límite de **{juego.value}** (quedan los topes generales).", ephemeral=False)
             try:
-                amount = eco.parse_amount(cantidad)
+                amount = eco.parse_amount_short(cantidad)
             except eco.AmountError as exc:
                 return await _reply(interaction, f"❌ {exc}")
             await self.run(eco.set_bet_limit, juego.value, amount)

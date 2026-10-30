@@ -378,7 +378,7 @@ class BetsCog(commands.Cog):
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         try:
             option_text, amount_text = bdb.split_option_and_amount(args)
-            amount = eco.parse_amount(amount_text)
+            amount = eco.parse_amount_short(amount_text)
         except (bdb.BetError, eco.AmountError) as exc:
             msg = exc.message if isinstance(exc, bdb.BetError) else str(exc)
             return await ctx.reply(f"❌ {msg}", mention_author=False, allowed_mentions=NO_MENTIONS)

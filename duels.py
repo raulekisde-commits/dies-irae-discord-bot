@@ -116,7 +116,7 @@ class DuelsCog(commands.Cog):
             if blocked:
                 return await _say(interaction, blocked)
             try:
-                amount = eco.parse_amount(cantidad)
+                amount = eco.parse_amount_short(cantidad)
             except eco.AmountError as exc:
                 return await _say(interaction, f"❌ {exc}")
             over = await self.run(eco.check_bet_limit, "1v1", amount)

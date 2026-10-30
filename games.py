@@ -218,7 +218,7 @@ class GamesCog(commands.Cog):
             return await ctx.reply(f"Uso: `!{command} [cantidad]` (máximo {eco.format_amount(gdb.MAX_STAKE)}).",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         try:
-            amount = gdb.validate_stake(eco.parse_amount(amount_text.strip()))
+            amount = gdb.validate_stake(eco.parse_amount_short(amount_text.strip()))
         except (eco.AmountError, gdb.GameError) as exc:
             return await ctx.reply(f"❌ {exc}", mention_author=False, allowed_mentions=NO_MENTIONS)
         over = await self.run(eco.check_bet_limit, command, amount)

@@ -69,6 +69,27 @@ def parse_amount(text: str) -> int:
     return value
 
 
+_SHORT_RE = re.compile(r"^([0-9]+)(?:[.,]([0-9]{1,2}))?([kKmMbB])$")
+_SHORT_MULT = {"k": 10 ** 3, "m": 10 ** 6, "b": 10 ** 9}
+
+
+def parse_amount_short(text: str) -> int:
+    """Igual que parse_amount, pero además acepta abreviaturas SOLO al ingresar: `1k` = 1.000, `1m` = 1.000.000, `10m` = 10.000.000,
+    `2b` = 2.000.000.000 y hasta dos decimales (`1.5m` = 1.500.000). Lo que se muestra no cambia (format_amount)."""
+    s = (text or "").strip()
+    m = _SHORT_RE.match(s)
+    if m is None:
+        return parse_amount(s)
+    whole, dec, suffix = m.group(1), m.group(2), m.group(3).lower()
+    mult = _SHORT_MULT[suffix]
+    value = int(whole) * mult + (int(dec.ljust(2, "0")) * mult // 100 if dec else 0)
+    if value <= 0:
+        raise AmountError("La cantidad tiene que ser mayor a 0.")
+    if value > MAX_AMOUNT:
+        raise AmountError(f"La cantidad es demasiado grande (máximo {format_amount(MAX_AMOUNT)}).")
+    return value
+
+
 def format_amount(n: int) -> str:
     """150000 -> '150,000' | -150000 -> '-150,000' (los miles se separan con comas en lo que se muestra).
 
@@ -104,6 +125,8 @@ MOVEMENT_LABELS = {
     "coinflip_stake": "Apuesta de coinflip",
     "coinflip_win": "Premio de coinflip",
     "coinflip_refund": "Devolución de coinflip",
+    "raffle_ticket": "Ticket de rifa",
+    "raffle_refund": "Devolución de rifa",
 }
 
 
