@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 import casino_db as cdb
 import duels_db as ddb
 import economy_db as eco
+from memberguard import button_block_reason
 
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD, GREY, GREEN, RED = 0xF1C40F, 0x95A5A6, 0x2ECC71, 0xE74C3C
@@ -151,6 +152,10 @@ class DuelsCog(commands.Cog):
             d = await self._duel_of(interaction)
             if d is None:
                 return await _say(interaction, "❌ No encuentro ese duelo.")
+            if d.is_open and interaction.user.id == d.challenged_id:
+                denied = await button_block_reason(self.bot, interaction.user)
+                if denied:
+                    return await _say(interaction, denied)
             if d.is_open:
                 blocked = await self.run(cdb.block_reason, d.guild_id, d.challenger_id, d.challenged_id, check_open=False)   # con el casino cerrado se puede aceptar un duelo ya creado
                 if blocked and interaction.user.id == d.challenged_id:
