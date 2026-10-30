@@ -18,6 +18,7 @@ import economy_db as eco
 import casino_db as cdb
 import games_db as gdb
 import stats_db
+from memberguard import button_block_reason
 from slashctx import SlashContext
 
 ERROR_VISIBLE_SECONDS = 8
@@ -217,7 +218,7 @@ class GamesCog(commands.Cog):
             return await ctx.reply(f"Uso: `!{command} [cantidad]` (máximo {eco.format_amount(gdb.MAX_STAKE)}).",
                                    mention_author=False, allowed_mentions=NO_MENTIONS)
         try:
-            amount = gdb.validate_stake(eco.parse_amount(amount_text.strip()))
+            amount = gdb.validate_stake(eco.parse_amount_short(amount_text.strip()))
         except (eco.AmountError, gdb.GameError) as exc:
             return await ctx.reply(f"❌ {exc}", mention_author=False, allowed_mentions=NO_MENTIONS)
         over = await self.run(eco.check_bet_limit, command, amount)
@@ -406,6 +407,9 @@ class GamesCog(commands.Cog):
                 return await self._say(interaction, "❌ No encuentro ese juego.")
             if getattr(interaction.user, "bot", False) or interaction.guild is None:
                 return
+            denied = await button_block_reason(self.bot, interaction.user)
+            if denied:
+                return await self._say(interaction, denied)
             blocked = await self.run(cdb.block_reason, interaction.guild.id, interaction.user.id, check_open=False)   # anotarse sigue permitido con el casino cerrado
             if blocked:
                 return await self._say(interaction, blocked)
