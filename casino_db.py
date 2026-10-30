@@ -1,6 +1,7 @@
 """Casino: abierto/cerrado y lista de bloqueados (lógica y persistencia, sin Discord)."""
 from typing import List, Optional
 
+import economy_db as eco
 from dbutil import connect, utcnow_iso, write_tx
 
 SCHEMA = """
@@ -101,4 +102,7 @@ def block_reason(db_path: str, guild_id: int, *user_ids: int, check_open: bool =
     for uid in user_ids:
         if is_banned(db_path, guild_id, uid):
             return BANNED_TEXT if len(user_ids) == 1 else f"🚫 <@{uid}> está bloqueado del casino: no puede participar."
+    for uid in user_ids:
+        if eco.is_frozen(db_path, uid):
+            return eco.FROZEN_TEXT if len(user_ids) == 1 else f"🧊 <@{uid}> tiene el balance congelado (ticket de Cobrar balance abierto): no puede participar."
     return None

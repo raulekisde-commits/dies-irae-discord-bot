@@ -382,6 +382,8 @@ class BetsCog(commands.Cog):
         except (bdb.BetError, eco.AmountError) as exc:
             msg = exc.message if isinstance(exc, bdb.BetError) else str(exc)
             return await ctx.reply(f"❌ {msg}", mention_author=False, allowed_mentions=NO_MENTIONS)
+        if await self.run(eco.is_frozen, ctx.author.id):
+            return await ctx.reply(eco.FROZEN_TEXT, mention_author=False, allowed_mentions=NO_MENTIONS)
         result = await self.run(bdb.place_wager, bet.id, ctx.author.id, option_text, amount, thread_id=ctx.channel.id)
         if not result.ok:
             extra = f" Tu saldo: {self.money(result.balance)}." if result.code == "funds" and result.balance is not None else ""
@@ -412,6 +414,8 @@ class BetsCog(commands.Cog):
         if idx is None:
             listing = " · ".join(f"`{o}`" for o in bet.options)
             return await ctx.reply(f"❌ Esa opción no existe. Opciones: {listing}", mention_author=False, allowed_mentions=NO_MENTIONS)
+        if await self.run(eco.is_frozen, ctx.author.id):
+            return await ctx.reply(eco.FROZEN_TEXT, mention_author=False, allowed_mentions=NO_MENTIONS)
         balance = await self.run(eco.get_balance, ctx.author.id)
         if balance <= 0:
             return await ctx.reply("❌ No tenés saldo para apostar.", mention_author=False, allowed_mentions=NO_MENTIONS)

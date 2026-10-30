@@ -331,6 +331,9 @@ def confirm_sale(db_path: str, message_id: int, confirmer_id: int) -> SaleResult
             # el ROLLBACK ya devolvió la confirmación a la tabla: la descartamos aparte para que no quede colgada
             cancel_pending(db_path, message_id)
             return SaleResult("funds", pending=p, balance_before=int(exc.args[0]))
+        except eco.BalanceFrozen:
+            cancel_pending(db_path, message_id)
+            return SaleResult("frozen", pending=p)
     finally:
         conn.close()
 

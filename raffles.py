@@ -146,6 +146,8 @@ class RafflesCog(commands.Cog):
                 return await _say(interaction, "❌ No encuentro esa rifa.")
             if r.status != "open" or time.time() >= r.ends_at:
                 return await _say(interaction, "⌛ Esa rifa ya terminó.")
+            if await self.run(eco.is_frozen, interaction.user.id):
+                return await _say(interaction, eco.FROZEN_TEXT)
             balance = await self.run(eco.get_balance, interaction.user.id)              # chequeo previo (el definitivo es atómico, dentro de la compra)
             cost = r.price * qty
             if balance < cost:

@@ -1051,6 +1051,8 @@ class EconomyCog(commands.Cog):
             except eco.AmountError as exc:
                 return await self._ephemeral(interaction, f"❌ {exc}")
             reason = eco.clean_reason(motivo, eco.GIVE_DEFAULT_REASON)
+            if await self._db(eco.is_frozen, member.id):
+                return await self._ephemeral(interaction, eco.FROZEN_TEXT)
             try:
                 status, after_from, after_to = await self._db(
                     eco.transfer, from_id=member.id, to_id=usuario.id, amount=amount,
