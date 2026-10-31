@@ -17,13 +17,13 @@ MAX_BALANCE_ABS = 10 ** 18     # protección contra desbordar el entero de 64 bi
 
 ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 # Comandos de administración de saldo: funcionan en cualquier canal (solo se exige el rol/permiso).
-ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money")
+ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money", "top")
 # Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
 GAME_COMMANDS = ("dados", "coinflip", "1v1")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
 EXTRA_PERMISSION_COMMANDS = ("stats", "apuesta", "apuestas", "verhistorial", "set-balance", "eco-stats", "give-money", "ruleta", "ruleta-editar", "ruleta-stats") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
 # Por defecto funcionan en CUALQUIER canal; si un admin les fija uno con /perms-canal, pasan a funcionar solo ahí.
-DEFAULT_ANY_CHANNEL = ("top", "stats")
+DEFAULT_ANY_CHANNEL = ("stats",)
 CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + ("stats",) + GAME_COMMANDS   # bal, top, dados, coinflip, 1v1
 
 
