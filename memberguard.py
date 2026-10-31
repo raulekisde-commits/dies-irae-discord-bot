@@ -14,7 +14,9 @@ async def button_block_reason(bot, user) -> Optional[str]:
         return None
     eco_cog = bot.get_cog("EconomyCog")
     member_role_id = getattr(eco_cog, "member_role_id", None)
-    if member_role_id and member_role_id not in {r.id for r in getattr(user, "roles", [])}:
+    guest_role_id = getattr(eco_cog, "guest_role_id", None)
+    have = {r.id for r in getattr(user, "roles", [])}
+    if member_role_id and member_role_id not in have and not (guest_role_id and guest_role_id in have):      # los invitados también (el casino se les habilita con /perms-comando)
         return "🔒 Solo los miembros de la guild pueden jugar."
     gate = getattr(bot, "registration_gate", None)
     if gate is not None and not await gate.allowed(user, "coinflip"):

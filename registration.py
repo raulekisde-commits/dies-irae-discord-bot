@@ -475,7 +475,7 @@ class RegistrationCog(commands.Cog):
     def _regs_embed(self, regs: List[rdb.Registration], title: str) -> discord.Embed:
         e = discord.Embed(title=title, color=GOLD)
         for r in regs:
-            how = {"confirmed": "aceptado por la persona", "recruitment": "registrado al aceptar su postulación"}.get(r.method, "⚠️ vinculado por un administrador")
+            how = {"confirmed": "aceptado por la persona", "recruitment": "registrado al aceptar su postulación", "guest_invite": "registrado al ser invitado"}.get(r.method, "⚠️ vinculado por un administrador")
             e.add_field(name=discord.utils.escape_markdown(r.char_name),
                         value=f"{r.region or '—'} · guild {discord.utils.escape_markdown(r.guild_name or '—')}\n{how}\nRegistrado {r.registered_at[:10]}",
                         inline=False)

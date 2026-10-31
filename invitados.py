@@ -38,7 +38,8 @@ INFO_TEXTS = {
     "invitados": ("👥 Sistema de invitados",
                   "Permite que alguien de confianza entre a la comunidad sin ser miembro de la guild.\n\n"
                   "• Solo quienes tienen el rol **Legacy** pueden invitar con `/invitar usuario motivo`.\n"
-                  "• Al invitado se le saca el rol **Public** y recibe el rol **Invitado**.\n"
+                  "• Al invitar tenés que indicar el nombre exacto de su personaje de Albion: el bot lo busca, te muestra el personaje y vos confirmás que es tu amigo. Queda registrado igual que con `/registrar`.\n"
+                  "• Al invitado se le saca el rol **Public** y recibe el rol **Invitado**. Tiene acceso a la economía; el casino se le habilita aparte.\n"
                   "• Queda registrado quién lo invitó y por qué: los miembros pueden consultarlo con `/quien-invito usuario`.\n"
                   "• El staff ve la lista completa con `/invitados`.\n"
                   "• Quien invita responde por su invitado."),
@@ -113,6 +114,36 @@ def _unix(iso: str) -> int:
     return int((d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp())
 
 
+class ConfirmInviteView(discord.ui.View):
+    """Solo quien invita puede confirmar que el personaje es su amigo."""
+    def __init__(self, cog, inviter_id: int, target, reason: str, character):
+        super().__init__(timeout=300)
+        self.cog, self.inviter_id, self.target, self.reason, self.character, self.done = cog, inviter_id, target, reason, character, False
+        ok = discord.ui.Button(label="Sí, es mi amigo", style=discord.ButtonStyle.success, emoji="✅")
+        no = discord.ui.Button(label="No, cancelar", style=discord.ButtonStyle.secondary, emoji="✖️")
+        ok.callback, no.callback = self._ok, self._no
+        self.add_item(ok)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction) -> bool:
+        if interaction.user.id != self.inviter_id:
+            await interaction.response.send_message("🔒 Esta confirmación es de quien invita.", ephemeral=True)
+            return False
+        return True
+
+    async def _no(self, interaction):
+        self.done = True
+        await interaction.response.edit_message(content="✖️ Invitación cancelada. No se cambió nada.", embeds=[], view=None)
+
+    async def _ok(self, interaction):
+        if self.done:
+            return await interaction.response.send_message("Ya fue procesada.", ephemeral=True)
+        self.done = True
+        await interaction.response.edit_message(content="⏳ Procesando…", embeds=[], view=None)
+        text = await self.cog.finish_invite(interaction, interaction.user, self.target, self.reason, self.character)
+        await interaction.edit_original_response(content=text)
+
+
 class InvitadosCog(commands.Cog):
     def __init__(self, bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
@@ -124,14 +155,15 @@ class InvitadosCog(commands.Cog):
         finally:
             conn.close()
 
-    async def run(self, fn, *a):
-        return await asyncio.to_thread(fn, self.db_path, *a)
+    async def run(self, fn, *a, **kw):
+        return await asyncio.to_thread(lambda: fn(self.db_path, *a, **kw))
 
     # ---------- /invitar ----------
-    @app_commands.command(name="invitar", description="(Legacy) Invitar a alguien: pasa de Public a Invitado")
-    @app_commands.describe(usuario="La persona de Discord que invitás", quien_es="Quién es / por qué lo invitás")
+    @app_commands.command(name="invitar", description="(Legacy) Invitar a alguien: pasa de Public a Invitado y se registra con su personaje")
+    @app_commands.describe(usuario="La persona de Discord que invitás", quien_es="Quién es / por qué lo invitás",
+                           personaje_de_albion="Nombre exacto de su personaje en Albion (se registra igual que con /registrar)")
     @app_commands.guild_only()
-    async def invitar(self, interaction: discord.Interaction, usuario: discord.Member, quien_es: str):
+    async def invitar(self, interaction: discord.Interaction, usuario: discord.Member, quien_es: str, personaje_de_albion: str):
         me = interaction.user
         perms = getattr(me, "guild_permissions", None)
         if LEGACY_ROLE_ID not in _roles(me) and not (perms is not None and perms.administrator):
@@ -141,41 +173,82 @@ class InvitadosCog(commands.Cog):
             return await _say(interaction, "❌ Tenés que indicar quién es el invitado.")
         if len(reason) > REASON_MAX:
             return await _say(interaction, f"❌ Máximo {REASON_MAX} caracteres.")
+        err = self._check_target(interaction.guild, me, usuario)
+        if err:
+            return await _say(interaction, err)
+        reg_cog = self.bot.get_cog("RegistrationCog")
+        if reg_cog is None:
+            return await _say(interaction, "❌ El sistema de registro no está disponible ahora. Probá más tarde.")
+        await interaction.response.defer(ephemeral=True)
+        look = await reg_cog.lookup_character(personaje_de_albion, any_guild=True)
+        if look.kind == "error":
+            return await _say(interaction, "❌ No pude consultar la API de Albion ahora. Probá de nuevo en unos minutos.")
+        if look.kind == "none":
+            return await _say(interaction, f"❌ No encontré ningún personaje llamado **{discord.utils.escape_markdown(personaje_de_albion.strip())}**. Escribilo exactamente como aparece en el juego.")
+        if look.kind == "ambiguous":
+            return await _say(interaction, "❌ Hay varios personajes con ese nombre en distintos servidores de Albion. Pedile a un administrador que use `/admin_vincular`.")
+        if look.kind != "ok":
+            return await _say(interaction, "❌ No pude validar ese personaje.")
+        c = look.character
+        embed = reg_cog.character_embed(c, title="🎟️ ¿Es este tu amigo?")
+        embed.set_footer(text=f"Vas a invitar a {usuario.display_name} con este personaje. Confirmá solo si es la persona correcta.")
+        view = ConfirmInviteView(self, me.id, usuario, reason, c)
+        await interaction.followup.send(f"Confirmá que **{discord.utils.escape_markdown(c.name)}** es el personaje de {usuario.mention}:", embed=embed, view=view,
+                                        ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    def _check_target(self, guild, me, usuario) -> Optional[str]:
         if usuario.bot or usuario.id == me.id:
-            return await _say(interaction, "❌ No podés invitar a un bot ni a vos mismo.")
+            return "❌ No podés invitar a un bot ni a vos mismo."
         have = _roles(usuario)
         if MIEMBRO_ROLE_ID in have:
-            return await _say(interaction, "❌ Esa persona ya es miembro de la guild.")
-        guest_role = interaction.guild.get_role(GUEST_ROLE_ID)
-        if guest_role is None:
-            return await _say(interaction, "❌ No encuentro el rol Invitado en el servidor.")
+            return "❌ Esa persona ya es miembro de la guild."
         if GUEST_ROLE_ID in have:
-            g = await self.run(get_guest, interaction.guild.id, usuario.id)
-            by = f" (invitado por <@{g['invited_by']}>)" if g and g["active"] else ""
-            return await _say(interaction, f"❌ {usuario.mention} ya es invitado{by}.")
-        await interaction.response.defer(ephemeral=True)
+            return f"❌ {usuario.mention} ya es invitado."
+        if guild.get_role(GUEST_ROLE_ID) is None:
+            return "❌ No encuentro el rol Invitado en el servidor."
+        return None
+
+    async def finish_invite(self, interaction: discord.Interaction, inviter, usuario: discord.Member, reason: str, c) -> str:
+        """Tras confirmar: registra al invitado con ese personaje, le da el rol Invitado, le saca Public y guarda quién lo invitó."""
+        import registration_db as rdb
+        guild = interaction.guild
+        err = self._check_target(guild, inviter, usuario)
+        if err:
+            return err
+        reg_cog = self.bot.get_cog("RegistrationCog")
         try:
-            await usuario.add_roles(guest_role, reason=f"Invitado por {me} ({me.id}): {reason}")
+            await self.run(rdb.admin_link, usuario.id, c.name, inviter.id, char_id=c.char_id, region=c.region, guild_name=c.guild, method="guest_invite")
+        except rdb.RegError as exc:
+            return f"❌ {exc}"
+        guest_role = guild.get_role(GUEST_ROLE_ID)
+        try:
+            await usuario.add_roles(guest_role, reason=f"Invitado por {inviter} ({inviter.id}): {reason}")
         except discord.HTTPException as exc:
-            return await _say(interaction, f"❌ No pude darle el rol Invitado (revisá que mi rol esté por encima y tenga Gestionar roles): {exc}")
+            await self.run(rdb.unlink, usuario.id, inviter.id, c.name, "no se pudo dar el rol Invitado")
+            return f"❌ No pude darle el rol Invitado (revisá que mi rol esté por encima y tenga Gestionar roles): {exc}"
         warn = ""
-        public = interaction.guild.get_role(PUBLIC_ROLE_ID)
-        if public is not None and PUBLIC_ROLE_ID in have:
+        public = guild.get_role(PUBLIC_ROLE_ID)
+        if public is not None and PUBLIC_ROLE_ID in _roles(usuario):
             try:
-                await usuario.remove_roles(public, reason=f"Invitado por {me} ({me.id})")
+                await usuario.remove_roles(public, reason=f"Invitado por {inviter} ({inviter.id})")
             except discord.HTTPException:
-                warn = "\n⚠️ Quedó con el rol Invitado pero no pude sacarle Public; avisale al staff."
+                warn += "\n⚠️ Quedó con el rol Invitado pero no pude sacarle Public; avisale al staff."
         try:
-            ok = await self.run(add_guest, interaction.guild.id, usuario.id, me.id, reason)
+            await self.run(add_guest, guild.id, usuario.id, inviter.id, reason)
         except Exception:
             traceback.print_exc()
-            ok = False
-            warn += "\n⚠️ No pude guardar el registro; avisale al staff."
-        await _say(interaction, f"✅ {usuario.mention} ahora es invitado.{warn}")
+            warn += "\n⚠️ No pude guardar el registro de la invitación; avisale al staff."
         try:
-            await interaction.channel.send(f"🎟️ {me.mention} invitó a {usuario.mention}: *{reason}*", allowed_mentions=NO_MENTIONS)
+            nick = await reg_cog.apply_nickname(usuario, c.name)
+        except Exception:
+            nick = ""
+        if nick:
+            warn += f"\n{nick}"
+        try:
+            await interaction.channel.send(f"🎟️ {inviter.mention} invitó a {usuario.mention} (**{discord.utils.escape_markdown(c.name)}**): *{reason}*", allowed_mentions=NO_MENTIONS)
         except Exception:
             pass
+        return f"✅ {usuario.mention} ahora es invitado y quedó registrado como **{discord.utils.escape_markdown(c.name)}**.{warn}"
 
     # ---------- /quien-invito ----------
     @app_commands.command(name="quien-invito", description="Ver quién invitó a alguien y por qué")

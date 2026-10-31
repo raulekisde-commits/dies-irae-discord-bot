@@ -4,6 +4,7 @@ Toda la lógica de dinero vive en economy_db.py; acá solo se resuelven usuarios
 se valida el contexto y se arman los Embeds.
 """
 import asyncio
+import os
 import functools
 import io
 import re
@@ -156,7 +157,9 @@ class EconomyCog(commands.Cog):
         self.member_role_id = member_role_id
         self.staff_role_id = staff_role_id
         # roles que pueden usar el comando sin /perms-comando (además de los configurados y de los admins)
-        self.default_roles = {"bal": {member_role_id}, "top": {member_role_id}}
+        # Los invitados (rol Invitado) tienen acceso a la economía (bal, top, give); el casino se les da con /perms-comando.
+        self.guest_role_id = int(os.getenv("GUEST_ROLE_ID", "1565993695461777468"))
+        self.default_roles = {"bal": {member_role_id, self.guest_role_id}, "top": {member_role_id, self.guest_role_id}}
         self._emoji_raw: Optional[str] = None
         self._log_lock = asyncio.Lock()
         self._csv_last: dict = {}
@@ -1040,7 +1043,7 @@ class EconomyCog(commands.Cog):
             member = interaction.user
             if interaction.guild is None or not isinstance(member, discord.Member):
                 return await self._ephemeral(interaction, "❌ Solo disponible en el servidor.")
-            allowed = (self.member_role_id in {r.id for r in member.roles}) or await self.has_command_permission(member, "give-money", staff_ok=True)
+            allowed = bool({self.member_role_id, self.guest_role_id} & {r.id for r in member.roles}) or await self.has_command_permission(member, "give-money", staff_ok=True)
             if not allowed:
                 return await self._ephemeral(interaction, "❌ No tenés permiso para usar este comando.")
             if usuario.bot:
