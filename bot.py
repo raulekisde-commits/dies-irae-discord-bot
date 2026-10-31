@@ -5112,6 +5112,12 @@ class CTAConfirmDeleteCompositionView(discord.ui.View):
 
 
 compo_group = CTACompositionGroup()
+try:
+    from armas_roles import make_reglas_group
+    compo_group.add_command(make_reglas_group(DB_PATH, is_council_or_admin))
+except Exception:
+    import traceback as _tb
+    print("No se pudo cargar /compo reglas (armas_roles.py):\n" + _tb.format_exc())
 bot.tree.add_command(compo_group, guild=GUILD_OBJ)
 
 
@@ -5794,6 +5800,7 @@ HELP_SECTIONS = [
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
         ("/compo builds nombre link", "Council / Admin", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
+        ("/compo reglas listar|agregar|quitar|restablecer", "Council / Admin", "Qué rol de combate (tank, healer, dps...) es cada arma. Viene con una lista por defecto y se puede editar."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
         ("`21`", "Todos", "Te anota en la posición 21 (si escribís otro número libre, te cambia)."),
