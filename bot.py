@@ -4041,18 +4041,23 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
                         description=f"Composición: **{run['composition_name']}**\nCerrada por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>")
     emb.add_field(name="👥 Anotados", value=str(len(people)), inline=True)
     emb.add_field(name="🗡️ Killboard", value="⏳ Sin cargar", inline=True)
+    emb.add_field(name="📋 Conectados", value="⏳ Sin cargar", inline=True)
+    emb.add_field(name="🚫 Skippers", value="—", inline=True)
     emb.add_field(name="🎭 Posiciones", value=roles_text[:1000], inline=False)
     emb.add_field(name="🔗 CTA", value=f"[Hilo de la CTA]({cta_url})", inline=False)
     emb.set_footer(text=f"CTA #{run_id}")
     try:
-        msg = await ch.send(embed=emb, allowed_mentions=CTA_NO_PINGS)
+        import killboards as _kbm
+        kb_cog = bot.get_cog("KillboardCog")
+        panel_view = _kbm.StatsPanelView(kb_cog) if kb_cog is not None else None
+        msg = await ch.send(embed=emb, view=panel_view, allowed_mentions=CTA_NO_PINGS) if panel_view else await ch.send(embed=emb, allowed_mentions=CTA_NO_PINGS)
         thread = await msg.create_thread(name=f"Stats {title}"[:100], auto_archive_duration=10080)
     except Exception as exc:
         print(f"CTA #{run_id}: no pude crear el panel de stats: {exc!r}")
         return "⚠️ No pude crear el panel de stats (revisá los permisos del bot en ese canal)."
     db_execute("UPDATE cta_runs SET stats_channel_id=?, stats_message_id=?, stats_thread_id=? WHERE id=?", (ch.id, msg.id, thread.id, run_id))
     try:
-        await thread.send("📊 Acá se carga el killboard de esta CTA y se ven sus estadísticas. El Staff tiene una tarea pendiente para cargarlo.",
+        await thread.send("📊 Acá se cargan el killboard y la lista de conectados de esta CTA (botones del panel, o soltá acá el .txt de conectados). El Staff tiene dos tareas pendientes.",
                           allowed_mentions=CTA_NO_PINGS)
     except Exception:
         pass
@@ -4068,8 +4073,11 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
     cog = bot.get_cog("EncargosCog")
     if cog is not None:
         try:
-            await cog.create(text=f"Cargar el killboard de {title}", created_by=actor_id, source=f"cta:{run_id}:killboard",
-                             link=f"https://discord.com/channels/{run['guild_id']}/{thread.id}")
+            panel_link = f"https://discord.com/channels/{run['guild_id']}/{ch.id}/{msg.id}"
+            await cog.create(text=f"Cargar el killboard de {title} (botón del panel de stats)", created_by=actor_id, source=f"cta:{run_id}:killboard",
+                             link=panel_link)
+            await cog.create(text=f"Cargar la lista de conectados de {title} (bloc de notas en el hilo de stats)", created_by=actor_id,
+                             source=f"cta:{run_id}:conectados", link=panel_link)
         except Exception as exc:
             print(f"CTA #{run_id}: no pude crear la tarea del killboard: {exc!r}")
     return f"Panel de stats creado: {thread.mention}."
@@ -5702,9 +5710,9 @@ HELP_SECTIONS = [
         ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
     ]),
     ("📊 Estadísticas de la guild", [
-        ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, muertes en el primer engage, IP promedio/máxima/mínima, winrate y tareas del staff. Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
+        ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, skippers, muertes en el primer engage, IP promedio/máxima/mínima, winrate y tareas del staff. Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
         ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de muertes en el primer engage, roles más jugados e IP de un jugador (por defecto, vos)."),
-        ("/killboard cargar · borrar · probar", "Staff / Council (cargar también Caller en el hilo de stats de una CTA)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
+        ("/killboard cargar · conectados · borrar · probar", "Staff / Council (cargar también Caller en el hilo de stats de una CTA)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),

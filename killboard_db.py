@@ -35,6 +35,19 @@ CREATE TABLE IF NOT EXISTS kb_players (
     FOREIGN KEY (battle_id) REFERENCES kb_battles(battle_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_kb_players_name ON kb_players(name_norm);
+CREATE TABLE IF NOT EXISTS kb_online (          -- lista de conectados de una CTA (los que figuraban "Online")
+    cta_id    INTEGER NOT NULL,
+    name_norm TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    PRIMARY KEY (cta_id, name_norm)
+);
+CREATE TABLE IF NOT EXISTS kb_skips (            -- conectados que no estaban ni en el killboard ni anotados en la composición
+    cta_id    INTEGER NOT NULL,
+    name_norm TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    PRIMARY KEY (cta_id, name_norm)
+);
+CREATE INDEX IF NOT EXISTS idx_kb_skips_name ON kb_skips(name_norm);
 CREATE TABLE IF NOT EXISTS kb_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     battle_id TEXT NOT NULL,
@@ -259,11 +272,14 @@ TOP_KEYS = {
     "avg_ip": ("📈 Mejor IP promedio", "avg_ip", True, "IP"),
     "max_ip": ("⬆️ IP más alta registrada", "max_ip", True, "IP"),
     "min_ip": ("⬇️ IP más baja registrada", "min_ip", False, "IP"),
+    "skips": ("🚫 Top skippers", "skips", True, "CTAs skipeadas"),
 }
 
 
 def top(db_path: str, key: str, size: int = 10) -> List[Tuple[str, float, dict]]:
     title, field, desc, _unit = TOP_KEYS[key]
+    if key == "skips":
+        return skip_top(db_path, size)
     rows = []
     for d in all_player_stats(db_path).values():
         v = d[field]
@@ -289,5 +305,105 @@ def role_counts(db_path: str, discord_id: int, names_norm: Iterable[str]) -> Dic
                                     WHERE b.cta_id IS NOT NULL AND p.name_norm IN ({q}))
                                 GROUP BY pos.role_id""", [discord_id] + names).fetchall()
         return {int(r["role_id"]): int(r["n"]) for r in rows}
+    finally:
+        conn.close()
+
+
+# ---------- conectados y skippers ----------
+def parse_online_file(raw: bytes) -> Tuple[List[str], int]:
+    """Lee el bloc de notas del juego: "Character Name"<TAB>"Last Seen"<TAB>"Roles".
+    Devuelve (nombres que figuran como Online, total de filas de jugadores)."""
+    import csv, io
+    text = None
+    for enc in ("utf-8-sig", "utf-16", "cp1252"):
+        try:
+            text = raw.decode(enc)
+            break
+        except Exception:
+            continue
+    if text is None:
+        return [], 0
+    online, total = [], 0
+    for row in csv.reader(io.StringIO(text), delimiter="\t", quotechar='"'):
+        if len(row) < 2 or not row[0].strip():
+            continue
+        if row[0].strip().casefold() == "character name":
+            continue
+        total += 1
+        if row[1].strip().casefold() == "online":
+            online.append(row[0].strip())
+    return online, total
+
+
+def save_online(db_path: str, cta_id: int, names: Iterable[str]) -> int:
+    """Reemplaza la lista de conectados de la CTA (cargarla de nuevo corrige la anterior)."""
+    names = list(dict.fromkeys(n for n in names if n))
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("DELETE FROM kb_online WHERE cta_id=?", (cta_id,))
+            for n in names:
+                conn.execute("INSERT OR IGNORE INTO kb_online(cta_id, name_norm, name) VALUES (?,?,?)", (cta_id, norm(n), n))
+        return len(names)
+    finally:
+        conn.close()
+
+
+def online_of_cta(db_path: str, cta_id: int) -> Dict[str, str]:
+    conn = connect(db_path)
+    try:
+        return {r["name_norm"]: r["name"] for r in conn.execute("SELECT name_norm, name FROM kb_online WHERE cta_id=?", (cta_id,))}
+    finally:
+        conn.close()
+
+
+def recompute_skips(db_path: str, cta_id: int, in_compo_names: Iterable[str]) -> List[str]:
+    """Skippers de la CTA = conectados − killboard − anotados en la composición (por nombre de personaje).
+    Solo se calcula si hay lista de conectados Y al menos un killboard cargado; si no, no hay skippers."""
+    in_compo = {norm(n) for n in in_compo_names}
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("DELETE FROM kb_skips WHERE cta_id=?", (cta_id,))
+            online = {r["name_norm"]: r["name"] for r in conn.execute("SELECT name_norm, name FROM kb_online WHERE cta_id=?", (cta_id,))}
+            has_kb = conn.execute("SELECT 1 FROM kb_battles WHERE cta_id=?", (cta_id,)).fetchone() is not None
+            if not online or not has_kb:
+                return []
+            in_kb = {r["name_norm"] for r in conn.execute(
+                "SELECT p.name_norm FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id WHERE b.cta_id=?", (cta_id,))}
+            skips = {k: v for k, v in online.items() if k not in in_kb and k not in in_compo}
+            for k, v in skips.items():
+                conn.execute("INSERT INTO kb_skips(cta_id, name_norm, name) VALUES (?,?,?)", (cta_id, k, v))
+            return sorted(skips.values(), key=str.casefold)
+    finally:
+        conn.close()
+
+
+def skips_of_cta(db_path: str, cta_id: int) -> List[str]:
+    conn = connect(db_path)
+    try:
+        return [r["name"] for r in conn.execute("SELECT name FROM kb_skips WHERE cta_id=? ORDER BY name COLLATE NOCASE", (cta_id,))]
+    finally:
+        conn.close()
+
+
+def skip_count(db_path: str, names_norm: Iterable[str]) -> int:
+    names = list(names_norm)
+    if not names:
+        return 0
+    conn = connect(db_path)
+    try:
+        q = ",".join("?" * len(names))
+        return int(conn.execute(f"SELECT COUNT(DISTINCT cta_id) FROM kb_skips WHERE name_norm IN ({q})", names).fetchone()[0])
+    finally:
+        conn.close()
+
+
+def skip_top(db_path: str, size: int = 10) -> List[Tuple[str, float, dict]]:
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT name_norm, MAX(name) AS name, COUNT(DISTINCT cta_id) AS n FROM kb_skips GROUP BY name_norm "
+                            "ORDER BY n DESC, name COLLATE NOCASE LIMIT ?", (size,)).fetchall()
+        return [(r["name"], float(r["n"]), {}) for r in rows]
     finally:
         conn.close()

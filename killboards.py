@@ -142,6 +142,61 @@ class ConfirmDeleteView(discord.ui.View):
             await self.cog.refresh_stats_panel(int(row["cta_id"]))
 
 
+def cta_of_panel_message(db_path: str, message_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM cta_runs WHERE stats_message_id=?", (message_id,)).fetchone()
+        return dict(r) if r else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+class KillboardModal(discord.ui.Modal, title="Cargar killboard"):
+    links = discord.ui.TextInput(label="Links o IDs de AlbionBB", style=discord.TextStyle.paragraph,
+                                 placeholder="Pegá uno o varios links, separados por espacio o coma", max_length=1500)
+
+    def __init__(self, cog: "KillboardCog", cta_id: int):
+        super().__init__(timeout=600)
+        self.cog, self.cta_id = cog, cta_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_loader_in_cta(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden cargar killboards.")
+        await self.cog.do_load(interaction, self.cta_id, str(self.links.value))
+
+
+class StatsPanelView(discord.ui.View):
+    """Botones del panel de stats de cada CTA (persistentes: sobreviven a los reinicios)."""
+    def __init__(self, cog: "KillboardCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def _cta(self, interaction: discord.Interaction) -> Optional[dict]:
+        if not is_loader_in_cta(interaction.user):
+            await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden usar estos botones.")
+            return None
+        cta = await self.cog.run(cta_of_panel_message, interaction.message.id) if interaction.message else None
+        if cta is None:
+            await _say(interaction, "❌ No encuentro la CTA de este panel.")
+        return cta
+
+    @discord.ui.button(label="Cargar killboard", emoji="🗡️", style=discord.ButtonStyle.primary, custom_id="kbpanel:killboard")
+    async def load_kb(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cta = await self._cta(interaction)
+        if cta:
+            await interaction.response.send_modal(KillboardModal(self.cog, int(cta["id"])))
+
+    @discord.ui.button(label="Cargar conectados", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="kbpanel:online")
+    async def load_online(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cta = await self._cta(interaction)
+        if cta:
+            where = f"<#{cta['stats_thread_id']}>" if cta.get("stats_thread_id") else "el hilo de stats"
+            await _say(interaction, f"📋 Subí el bloc de notas con los conectados (.txt) en {where} y lo leo solo. "
+                                    "También podés usar `/killboard conectados` ahí adentro. Si lo subís de nuevo, reemplaza al anterior.")
+
+
 class KillboardCog(commands.Cog):
     killboard = app_commands.Group(name="killboard", description="Cargar y administrar killboards", guild_only=True)
 
@@ -151,6 +206,7 @@ class KillboardCog(commands.Cog):
 
     async def cog_load(self):
         await asyncio.to_thread(kb.init_schema, self.db_path)
+        self.bot.add_view(StatsPanelView(self))
 
     async def run(self, fn, *a):
         return await asyncio.to_thread(fn, self.db_path, *a)
@@ -195,13 +251,17 @@ class KillboardCog(commands.Cog):
                 return await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden cargar killboards.")
         elif not is_staff_or_council(me):
             return await _say(interaction, "🔒 Solo el Staff y el Council pueden cargar killboards sueltos. Para el de una CTA, usá el hilo de stats de esa CTA.")
+        await self.do_load(interaction, int(cta["id"]) if cta else None, enlaces, me)
+
+    async def do_load(self, interaction: discord.Interaction, cta_id: Optional[int], enlaces: str, me=None):
+        """Carga los killboards (comando /killboard cargar o botón del panel de stats). Los permisos se chequean antes."""
+        me = me or interaction.user
         ids = parse_ids(enlaces)
         if not ids:
             return await _say(interaction, "❌ No encontré ningún ID de batalla en lo que mandaste.")
         if len(ids) > MAX_BATTLES_PER_LOAD:
             return await _say(interaction, f"❌ Máximo {MAX_BATTLES_PER_LOAD} batallas por vez.")
         await interaction.response.defer(ephemeral=True)
-        cta_id = int(cta["id"]) if cta else None
         lines, loaded = [], 0
         for bid in ids:
             if await self.run(battle_exists, bid):
@@ -270,6 +330,81 @@ class KillboardCog(commands.Cog):
             parts.append("ℹ️ Sin Discord registrado (no se pudieron comparar): " + ", ".join(f"`{n}`" for n in unmapped[:40]))
         return "\n\n".join(parts)
 
+    async def recompute_skips(self, cta_id: int) -> List[str]:
+        """Skippers = conectados que no están en el killboard ni anotados en la composición (por los personajes registrados)."""
+        regs = await self.run(rdb.all_registrations)
+        signed = {int(p["user_id"]) for p in await self.run(cu.positions, cta_id)}
+        in_compo = [r.char_name for r in regs if int(r.discord_id) in signed]
+        return await self.run(kb.recompute_skips, cta_id, in_compo)
+
+    async def process_online(self, cta_id: int, raw: bytes, actor_id: int) -> str:
+        """Procesa el bloc de notas con los conectados. Devuelve el texto para responder."""
+        names, total = kb.parse_online_file(raw)
+        if not total:
+            return "❌ No pude leer el archivo. Tiene que ser el bloc de notas con las columnas \"Character Name\", \"Last Seen\" y \"Roles\"."
+        if not names:
+            return f"⚠️ El archivo tiene {total} jugadores pero ninguno figura como **Online**. No se guardó."
+        await self.run(kb.save_online, cta_id, names)
+        await self.refresh_stats_panel(cta_id)
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is not None:
+            try:
+                await enc.complete_by_source(f"cta:{cta_id}:conectados", actor_id)
+            except Exception:
+                traceback.print_exc()
+        text = f"✅ Lista de conectados cargada: **{len(names)}** online (de {total} en el archivo)."
+        skips = await self.run(kb.skips_of_cta, cta_id)
+        if not await self.run(kb.battles_of_cta, cta_id):
+            return text + "\nℹ️ Falta cargar el killboard para saber quiénes skipearon."
+        if skips:
+            regs = await self.run(rdb.all_registrations)
+            name2id = {kb.norm(r.char_name): int(r.discord_id) for r in regs}
+            shown = [f"• {n}" + (f" (<@{name2id[kb.norm(n)]}>)" if kb.norm(n) in name2id else "") for n in skips]
+            text += f"\n🚫 **Skippers** ({len(skips)}): estaban conectados y no aparecen en el killboard ni anotados\n" + "\n".join(shown)
+        else:
+            text += "\n🚫 Skippers: nadie. 🎉"
+        return text
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Un .txt/.csv con la lista de conectados soltado en un hilo de stats por Staff/Council/Caller se procesa solo."""
+        if message.author.bot or not message.attachments or message.guild is None:
+            return
+        files = [a for a in message.attachments if a.filename.lower().endswith((".txt", ".csv", ".tsv"))]
+        if not files or not is_loader_in_cta(message.author):
+            return
+        cta = await self.run(find_cta_by_stats_thread, message.channel.id)
+        if cta is None:
+            return
+        att = files[0]
+        if att.size > 1_000_000:
+            return
+        try:
+            raw = await att.read()
+            names, total = kb.parse_online_file(raw)
+            if not total:
+                return                          # no es la lista de conectados: se ignora
+            text = await self.process_online(int(cta["id"]), raw, message.author.id)
+            for chunk in _chunks(text):
+                await message.reply(chunk, mention_author=False, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+
+    @killboard.command(name="conectados", description="Cargar la lista de conectados (bloc de notas) de una CTA, en su hilo de stats")
+    @app_commands.describe(archivo="El .txt con Character Name / Last Seen / Roles")
+    async def conectados(self, interaction: discord.Interaction, archivo: discord.Attachment):
+        cta = await self.run(find_cta_by_stats_thread, interaction.channel.id) if interaction.channel else None
+        if cta is None:
+            return await _say(interaction, "❌ Usalo dentro del hilo de stats de una CTA.")
+        if not is_loader_in_cta(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden cargar la lista de conectados.")
+        if archivo.size > 1_000_000:
+            return await _say(interaction, "❌ El archivo es demasiado grande.")
+        await interaction.response.defer(ephemeral=True)
+        text = await self.process_online(int(cta["id"]), await archivo.read(), interaction.user.id)
+        for chunk in _chunks(text):
+            await _say(interaction, chunk)
+
     async def refresh_stats_panel(self, cta_id: int):
         """Actualiza el check «Killboard» del panel de stats de la CTA."""
         conn = connect(self.db_path)
@@ -277,10 +412,17 @@ class KillboardCog(commands.Cog):
             run = conn.execute("SELECT stats_channel_id, stats_message_id FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
         finally:
             conn.close()
+        skips = await self.recompute_skips(cta_id)              # siempre, aunque la CTA no tenga panel
         if not run or not run["stats_message_id"]:
             return
         n = len(await self.run(kb.battles_of_cta, cta_id))
         value = f"✅ Cargado ({n} batalla{'s' if n != 1 else ''})" if n else "⏳ Sin cargar"
+        online = await self.run(kb.online_of_cta, cta_id)
+        online_value = f"✅ {len(online)} conectados" if online else "⏳ Sin cargar"
+        if online and n:
+            skips_value = f"**{len(skips)}**"
+        else:
+            skips_value = "—"
         try:
             ch = self.bot.get_channel(run["stats_channel_id"]) or await self.bot.fetch_channel(run["stats_channel_id"])
             msg = await ch.fetch_message(run["stats_message_id"])
@@ -288,6 +430,10 @@ class KillboardCog(commands.Cog):
             for i, f in enumerate(emb.fields):
                 if f.name.startswith("🗡️"):
                     emb.set_field_at(i, name=f.name, value=value, inline=f.inline)
+                elif f.name.startswith("📋"):
+                    emb.set_field_at(i, name=f.name, value=online_value, inline=f.inline)
+                elif f.name.startswith("🚫"):
+                    emb.set_field_at(i, name=f.name, value=skips_value, inline=f.inline)
             await msg.edit(embed=emb, allowed_mentions=NO_MENTIONS)
         except Exception as exc:
             print(f"CTA #{cta_id}: no pude actualizar el panel de stats: {exc!r}")
@@ -355,10 +501,20 @@ class KillboardCog(commands.Cog):
         self._last_use[user_id] = now
         return False
 
+    async def _allowed(self, interaction, command: str) -> bool:
+        """Permisos por defecto (Miembro/Invitado, cualquier canal) editables con /perms-canal y /perms-comando."""
+        eco_cog = self.bot.get_cog("EconomyCog")
+        if eco_cog is not None:
+            return await eco_cog.slash_authorize(interaction, command)
+        if not is_member(interaction.user):
+            await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
+            return False
+        return True
+
     async def send_ranking(self, interaction: discord.Interaction, key: str):
         """Lo usa `/top tipo` para los rankings que salen de los killboards cargados."""
-        if not is_member(interaction.user):
-            return await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
+        if not await self._allowed(interaction, "top"):
+            return
         if self._cooldown(interaction.user.id):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
         await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
@@ -368,8 +524,8 @@ class KillboardCog(commands.Cog):
     @app_commands.describe(usuario="Jugador (por defecto, vos)")
     @app_commands.guild_only()
     async def stats(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
-        if not is_member(interaction.user):
-            return await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
+        if not await self._allowed(interaction, "stats"):
+            return
         target = usuario or interaction.user
         regs = await self.run(rdb.get_registrations, target.id)
         if not regs:
@@ -381,13 +537,18 @@ class KillboardCog(commands.Cog):
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
             pass
+        skips = await self.run(kb.skip_count, names)
         if not s["attendance"]:
             emb.description = f"{target.mention}\n\nTodavía no aparece en ningún killboard cargado."
+            if skips:
+                emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
         else:
             emb.description = target.mention
-            emb.add_field(name="⚔️ Kills", value=f"## {s['kills']:,}".replace(",", "."), inline=True)
-            emb.add_field(name="💀 Muertes", value=f"## {s['deaths']:,}".replace(",", "."), inline=True)
-            emb.add_field(name="💥 Muertes en el primer engage", value=f"## {s['first5_pct']:.0f}%\n{s['first5']} de {s['attendance']} peleas", inline=True)
+            emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="💀 Muertes", value=f"**{s['deaths']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="🛡️ Asistencia", value=f"**{s['attendance']:,}**".replace(",", ".") + " peleas", inline=True)
+            emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
+            emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
             counts = await self.run(kb.role_counts, target.id, names)
             total = sum(counts.values())
             if total:

@@ -160,7 +160,8 @@ class EconomyCog(commands.Cog):
         # roles que pueden usar el comando sin /perms-comando (además de los configurados y de los admins)
         # Los invitados (rol Invitado) tienen acceso a la economía (bal, top, give); el casino se les da con /perms-comando.
         self.guest_role_id = int(os.getenv("GUEST_ROLE_ID", "1565993695461777468"))
-        self.default_roles = {"bal": {member_role_id, self.guest_role_id}, "top": {member_role_id, self.guest_role_id}}
+        self.default_roles = {"bal": {member_role_id, self.guest_role_id}, "top": {member_role_id, self.guest_role_id},
+                              "stats": {member_role_id, self.guest_role_id}}
         self._emoji_raw: Optional[str] = None
         self._log_lock = asyncio.Lock()
         self._csv_last: dict = {}
@@ -266,6 +267,20 @@ class EconomyCog(commands.Cog):
         )
         if not result.ok:
             await ctx.reply(f"❌ {result.reason}", mention_author=False, allowed_mentions=NO_MENTIONS)
+        return result.ok
+
+    async def slash_authorize(self, interaction: discord.Interaction, command: str) -> bool:
+        """Misma regla que _authorize (roles por defecto + /perms-comando, canal de /perms-canal) pero para comandos slash."""
+        member = interaction.user
+        if interaction.guild is None or not isinstance(member, discord.Member):
+            await self._ephemeral(interaction, "❌ Este comando solo se usa dentro del servidor.")
+            return False
+        configured_channel = await self._db(eco.get_command_channel, command)
+        allowed = set(await self._db(eco.get_command_roles, command)) | self.default_roles.get(command, set())
+        result = eco.authorize(command=command, is_admin=is_admin_member(member), member_role_ids={r.id for r in member.roles},
+                               allowed_role_ids=allowed, channel_id=interaction.channel_id or 0, configured_channel_id=configured_channel)
+        if not result.ok:
+            await self._ephemeral(interaction, f"❌ {result.reason}")
         return result.ok
 
     async def _require_admin(self, interaction: discord.Interaction) -> bool:
@@ -645,6 +660,8 @@ class EconomyCog(commands.Cog):
         key = getattr(tipo, "value", tipo) or "wuju"
         if key == "wuju":
             return await self.top.callback(self, SlashContext(interaction))
+        if not await self.slash_authorize(interaction, "top"):
+            return
         if key in kb.TOP_KEYS:
             other = self.bot.get_cog("KillboardCog")
             if other is None:
@@ -748,7 +765,7 @@ class EconomyCog(commands.Cog):
             return "`/1v1`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
-        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money") else f"`!{command}`"
+        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
 
     @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando en ESTE canal; si ya estaba habilitado acá, lo deshabilita")
     @app_commands.describe(comando="Comando a habilitar en este canal (si ya está acá, se deshabilita)")
@@ -761,6 +778,8 @@ class EconomyCog(commands.Cog):
         current = await self._db(eco.get_command_channel, comando.value)
         if current == interaction.channel_id:
             await self._db(eco.clear_command_channel, comando.value)
+            if comando.value in eco.DEFAULT_ANY_CHANNEL:
+                return await self._ephemeral(interaction, f"✅ {self._cmd_label(comando.value)} vuelve a funcionar en **cualquier canal**.")
             return await self._ephemeral(
                 interaction,
                 f"🚫 {self._cmd_label(comando.value)} quedó **deshabilitado** (ya no funciona en <#{interaction.channel_id}> ni en ningún otro canal). "
@@ -812,7 +831,12 @@ class EconomyCog(commands.Cog):
         for extra in eco.EXTRA_PERMISSION_COMMANDS:
             roles = set(await self._db(eco.get_command_roles, extra))
             roles_txt = ", ".join(f"<@&{r}>" for r in sorted(roles)) or "solo administradores" + (" y Staff" if extra in ("verhistorial", "eco-stats") else "")
-            if extra in eco.GAME_COMMANDS:
+            if extra in eco.DEFAULT_ANY_CHANNEL:
+                chan = await self._db(eco.get_command_channel, extra)
+                chan_txt = f"<#{chan}>" if chan else "cualquier canal"
+                roles = roles | self.default_roles.get(extra, set())
+                roles_txt = ", ".join(f"<@&{r}>" for r in sorted(roles)) or "solo administradores"
+            elif extra in eco.GAME_COMMANDS:
                 chan = await self._db(eco.get_command_channel, extra)
                 chan_txt = f"<#{chan}>" if chan else "⚠️ sin canal (deshabilitado)"
             else:
