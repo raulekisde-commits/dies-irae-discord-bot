@@ -159,6 +159,7 @@ class EconomyCog(commands.Cog):
         self.default_roles = {"bal": {member_role_id}, "top": {member_role_id}}
         self._emoji_raw: Optional[str] = None
         self._log_lock = asyncio.Lock()
+        self._csv_last: dict = {}
 
     # ---------------- ciclo de vida ----------------
     async def cog_load(self):
@@ -1093,14 +1094,74 @@ class EconomyCog(commands.Cog):
         emb.set_footer(text=f"Últimos {len(rows)} movimientos · del más reciente al más antiguo")
         return emb
 
+    HISTORY_CSV_COOLDOWN = 60            # segundos entre pedidos de historial completo por persona
+    HISTORY_CSV_MAX_BYTES = 7_000_000    # por archivo (Discord admite ~10 MB); si no entra, se parte en varios
+
+    @staticmethod
+    def history_csv_files(rows: List["eco.HistoryRow"], base_name: str) -> List[Tuple[str, bytes]]:
+        """CSV(s) con el historial completo (más antiguo primero). Se arma en memoria; se parte si pasa el tamaño máximo."""
+        import csv
+        header = ["fecha_utc", "tipo", "monto", "saldo_despues", "motivo", "referencia"]
+        parts: List[Tuple[str, bytes]] = []
+        buf, writer, size = None, None, 0
+
+        def start():
+            nonlocal buf, writer, size
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(header)
+            size = buf.tell()
+
+        def flush():
+            if buf is not None:
+                parts.append(("", ("\ufeff" + buf.getvalue()).encode("utf-8")))     # BOM: Excel abre bien los acentos
+
+        start()
+        for r in reversed(rows):
+            if size > EconomyCog.HISTORY_CSV_MAX_BYTES:
+                flush()
+                start()
+            writer.writerow([r.created_at, r.label, r.delta, r.balance_after, (r.reason or "").replace("\n", " "), r.related_id or ""])
+            size = buf.tell()
+        flush()
+        total = len(parts)
+        return [(f"{base_name}.csv" if total == 1 else f"{base_name}_parte{i}.csv", data) for i, (_, data) in enumerate(parts, 1)]
+
+    async def send_full_history(self, interaction: discord.Interaction, target: discord.abc.User, own: bool):
+        now = asyncio.get_running_loop().time()
+        last = self._csv_last.get(interaction.user.id)
+        if last is not None and now - last < self.HISTORY_CSV_COOLDOWN:
+            return await self._ephemeral(interaction, f"⏳ Esperá {int(self.HISTORY_CSV_COOLDOWN - (now - last)) + 1} segundos antes de pedir otro historial completo.")
+        await interaction.response.defer(ephemeral=True)
+        rows = await self._db(eco.get_history, target.id, 10_000_000)
+        if not rows:
+            return await self._ephemeral(interaction, "ℹ️ Todavía no tenés movimientos de Wuju Coins." if own else f"ℹ️ {target.mention} todavía no tiene movimientos.")
+        self._csv_last[interaction.user.id] = now
+        files = await asyncio.to_thread(self.history_csv_files, rows, f"historial_{target.id}")
+        sent = 0
+        while sent < len(files):                   # máx. 10 archivos por mensaje
+            chunk_files = files[sent:sent + 10]
+            await interaction.followup.send(
+                f"📜 Historial completo de **{clean_name(getattr(target, 'display_name', str(target.id)))}**: {len(rows):,} movimientos (del más antiguo al más reciente).",
+                files=[discord.File(io.BytesIO(data), filename=name) for name, data in chunk_files],
+                ephemeral=True, allowed_mentions=NO_MENTIONS)
+            sent += len(chunk_files)
+
     @app_commands.command(name="verhistorial", description="Mirá tu historial de Wuju Coins (el staff puede ver el de otra persona)")
-    @app_commands.describe(usuario="(Solo staff) Persona cuyo historial querés consultar")
+    @app_commands.describe(usuario="(Solo staff) Persona cuyo historial querés consultar",
+                           completo="true: te envío TODO el historial como archivo CSV, solo visible para vos")
     @app_commands.guild_only()
-    async def verhistorial(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+    async def verhistorial(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None, completo: Optional[bool] = False):
         try:
             member = interaction.user
             if interaction.guild is None or not isinstance(member, discord.Member):
                 return await self._ephemeral(interaction, "❌ Usá este comando dentro del servidor.")
+
+            if completo:
+                target = usuario or member
+                if target.id != member.id and not await self.has_command_permission(member, "verhistorial", staff_ok=True):
+                    return await self._ephemeral(interaction, "❌ Solo el staff puede consultar el historial de otra persona.")
+                return await self.send_full_history(interaction, target, own=target.id == member.id)
 
             if usuario is not None and usuario.id != member.id:
                 if not await self.has_command_permission(member, "verhistorial", staff_ok=True):

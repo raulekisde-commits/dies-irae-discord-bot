@@ -74,6 +74,13 @@ except Exception:
     async def setup_raffles(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar raffles.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from encargos import setup_encargos
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_encargos(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar encargos.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from roulette import setup_roulette
 except Exception:
     import traceback as _tb
@@ -390,6 +397,7 @@ class MyBot(commands.Bot):
             await _safe_setup("duels", setup_duels, self, DB_PATH, GUILD_ID)
             await _safe_setup("raffles", setup_raffles, self, DB_PATH, GUILD_ID)
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
+            await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
@@ -6170,11 +6178,13 @@ HELP_SECTIONS = [
         ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /dados, /coinflip y /1v1."),
         ("/limite juego cantidad", "Council", "Pone la apuesta máxima de dados, coinflip o 1v1 (0 quita el límite). Se aplica a las partidas nuevas."),
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
+        ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
+        ("/encargar tarea [cuando]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff, con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
         ("/mi_registro  ·  /desvincular", "Miembros", "Ver tus personajes vinculados / quitar uno (con confirmación)."),
         ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
         ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
-        ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz: la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
+        ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz (si lo rechaza o lo deja vencer, el bot lo cargada públicamente): la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
         ("!coinflip cantidad [cara|cruz]", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos (podés elegir tu lado con `!coinflip 5k cruz` o `/coinflip cantidad lado`; si no, sos cara y quien acepta toma el otro): lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
         ("/apostartodo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
         ("/guild-shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
@@ -6182,7 +6192,7 @@ HELP_SECTIONS = [
         ("/set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),
         ("/eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),
         ("/historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
-        ("/verhistorial [usuario]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. El staff puede ver los de otra persona (solo lo ves vos)."),
+        ("/verhistorial [usuario] [completo]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. Con `completo:true` te llega TODO el historial como archivo CSV, solo visible para vos en el canal. El staff puede ver los de otra persona."),
         ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
     ("🎁 Sorteos y roles", [

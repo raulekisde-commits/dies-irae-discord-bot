@@ -42,7 +42,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular",
-                   "registro_canal", "registro_obligatorio", "listarregistros", "reclutas-pendientes"}
+                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes"}
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -696,18 +696,16 @@ class RegistrationCog(commands.Cog):
             out.append(cur)
         return out
 
-    @app_commands.command(name="listarregistros", description="(Staff) Cuántos están registrados y quién falta: guild sin Discord y Discord sin Albion")
-    @app_commands.guild_only()
-    async def listarregistros(self, interaction: discord.Interaction):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
-        await interaction.response.defer(ephemeral=True)
+    async def _registration_gaps(self, interaction: discord.Interaction):
+        """(cuentas vinculadas, plantel de la guild, sin Discord, miembros de Discord, sin personaje) o None si no se pudo calcular."""
         if not self.albion_guild_id:
-            return await _say(interaction, "❌ No tengo configurada la guild de Albion (ALBION_GUILD_ID), así que no puedo comparar la lista.")
+            await _say(interaction, "❌ No tengo configurada la guild de Albion (ALBION_GUILD_ID), así que no puedo comparar la lista.")
+            return None
         if not self.roster_fresh():
             await self.refresh_roster()
         if not self.roster:
-            return await _say(interaction, "❌ No pude bajar la lista de miembros de la guild desde la API de Albion. Probá de nuevo en unos minutos.")
+            await _say(interaction, "❌ No pude bajar la lista de miembros de la guild desde la API de Albion. Probá de nuevo en unos minutos.")
+            return None
         links = await self.run(rdb.all_registrations)
         linked_names = {r.char_name.casefold() for r in links}
         linked_ids = {r.char_id for r in links if r.char_id}
@@ -715,26 +713,54 @@ class RegistrationCog(commands.Cog):
         guild = interaction.guild
         role = guild.get_role(self.member_role_id) if self.member_role_id else None
         discord_pool = [m for m in (role.members if role is not None else guild.members) if not getattr(m, "bot", False)]
-        in_guild_linked = sum(1 for c in self.roster.values() if c.name.casefold() in linked_names or c.char_id in linked_ids)
         guild_unlinked = sorted((c.name for c in self.roster.values() if c.name.casefold() not in linked_names and c.char_id not in linked_ids),
                                 key=str.casefold)
         discord_unlinked = sorted((m for m in discord_pool if m.id not in linked_discord), key=lambda m: m.display_name.casefold())
+        return links, guild_unlinked, discord_pool, discord_unlinked, role
+
+    @app_commands.command(name="sin-albion", description="(Staff) Miembros de Discord que todavía no registraron su personaje de Albion")
+    @app_commands.describe(mencionar="true: etiqueta a todas las personas sin registrar en un mensaje público (por defecto false)")
+    @app_commands.guild_only()
+    async def sin_albion(self, interaction: discord.Interaction, mencionar: Optional[bool] = False):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=not mencionar)
+        res = await self._registration_gaps(interaction)
+        if res is None:
+            return
+        links, _guild_unlinked, discord_pool, discord_unlinked, role = res
         who = f"con el rol **{role.name}**" if role is not None else "del servidor"
-        e = discord.Embed(title="📋 Registros Discord ↔ Albion", color=GOLD)
-        e.add_field(name="Registrados", value=f"**{len(links)}** cuentas vinculadas", inline=True)
-        e.add_field(name=f"Guild {self.required_guild or ''}".strip(),
-                    value=f"{len(self.roster)} miembros · {in_guild_linked} vinculados · **{len(guild_unlinked)}** sin Discord", inline=False)
-        e.add_field(name="Discord", value=f"{len(discord_pool)} miembros {who} · **{len(discord_unlinked)}** sin personaje vinculado", inline=False)
-        e.set_footer(text="La lista de la guild se actualiza cada 30 min.")
-        await interaction.followup.send(embed=e, ephemeral=True)
-        sections = [("🎮 En la guild pero SIN Discord vinculado", [f"• {discord.utils.escape_markdown(n)}" for n in guild_unlinked]),
-                    ("💬 En Discord pero SIN personaje de Albion", [f"• <@{m.id}> ({discord.utils.escape_markdown(m.display_name)})" for m in discord_unlinked])]
-        for title, lines in sections:
-            if not lines:
-                await interaction.followup.send(f"**{title}**\n✅ Ninguno.", ephemeral=True)
-                continue
-            for n, chunk in enumerate(self._chunks(lines)):
-                await interaction.followup.send(f"**{title}**{' (cont.)' if n else ''}\n{chunk}", ephemeral=True, allowed_mentions=NO_MENTIONS)
+        head = f"💬 **{len(discord_unlinked)}** de {len(discord_pool)} miembros {who} no tienen personaje de Albion registrado ({len(links)} cuentas vinculadas)."
+        if not discord_unlinked:
+            return await interaction.followup.send("✅ Todos los miembros están registrados.", ephemeral=not mencionar, allowed_mentions=NO_MENTIONS)
+        if mencionar:
+            note = "Registrate con `/registrar usuario_de_albion:TuNick` para poder usar los comandos del bot."
+            chunks = self._chunks([f"<@{m.id}>" for m in discord_unlinked], limit=1500)
+            for n, chunk in enumerate(chunks):
+                text = (head + "\n" + note + "\n" if n == 0 else "") + chunk
+                await interaction.followup.send(text, ephemeral=False,
+                                                allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=m.id) for m in discord_unlinked], roles=False, everyone=False))
+            return
+        lines = [f"• <@{m.id}> ({discord.utils.escape_markdown(m.display_name)})" for m in discord_unlinked]
+        for n, chunk in enumerate(self._chunks(lines)):
+            await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="sin-discord", description="(Staff) Jugadores de la guild de Albion que todavía no tienen Discord vinculado")
+    @app_commands.guild_only()
+    async def sin_discord(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        res = await self._registration_gaps(interaction)
+        if res is None:
+            return
+        _links, guild_unlinked, *_ = res
+        head = f"🎮 **{len(guild_unlinked)}** de {len(self.roster)} jugadores de la guild {self.required_guild or ''} no tienen Discord vinculado.".replace("  ", " ")
+        if not guild_unlinked:
+            return await interaction.followup.send("✅ Todos los jugadores de la guild tienen Discord vinculado.", ephemeral=True)
+        lines = [f"• {discord.utils.escape_markdown(n)}" for n in guild_unlinked]
+        for n, chunk in enumerate(self._chunks(lines)):
+            await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="registro_canal", description="(Admin) Canal donde el bot avisa los registros y desvinculaciones")
     @app_commands.describe(canal="Canal de texto")

@@ -12,6 +12,29 @@ import duels_db as ddb
 import economy_db as eco
 from memberguard import button_block_reason
 
+import random
+
+# Cargadas cuando alguien rechaza un 1v1 o lo deja vencer. {d} = la persona retada, {c} = quien retó.
+DECLINE_TAUNTS = (
+    "🐔 {d} vio el duelo de {c} y salió corriendo. ¡Cobarde del día!",
+    "🏃‍♂️💨 {d} rechazó a {c}. Se escuchó el \"no, mejor no\" en todo el servidor.",
+    "🐓 Cococó... {d} le dijo que no a {c}. Que alguien le alcance un poco de maíz.",
+    "😨 {c} tiró el guante y {d} lo esquivó como en el ZvZ cuando suena el primer tiro. ¡Todos lo vieron!",
+    "🏳️ {d} levantó la bandera blanca antes de tirar la moneda. {c} gana por abandono.",
+    "🫣 {d} rechazó el duelo de {c}. Dicen que se le cayeron las monedas del susto.",
+    "🪙 La moneda ni llegó a girar: {d} le tuvo miedo a {c}. Lo recordaremos.",
+    "📢 ATENCIÓN: {d} rechazó un 1v1 contra {c}. Pueden pasar a burlarse con respeto.",
+    "🥶 A {d} se le congeló el dedo justo en el botón de aceptar contra {c}.",
+    "🦆 {d} hizo cuak y rechazó a {c}. Hoy la moneda se queda en el bolsillo.",
+)
+TIMEOUT_TAUNTS = (
+    "👀 {d} dejó en visto el duelo de {c}. El tiempo se acabó.",
+    "😴 {d} se quedó dormido y {c} se quedó con las ganas del 1v1.",
+    "🕳️ {c} esperó y esperó... {d} nunca respondió.",
+    "📵 {d} no contestó el desafío de {c}. ¿Sin señal o sin coraje?",
+    "⌛ El reloj ganó: {d} ni se asomó al duelo de {c}.",
+)
+
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD, GREY, GREEN, RED = 0xF1C40F, 0x95A5A6, 0x2ECC71, 0xE74C3C
 
@@ -38,6 +61,15 @@ class DuelView(discord.ui.View):
     @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger, custom_id="duel:decline", emoji="✖️")
     async def decline(self, interaction: discord.Interaction, button):
         await self.cog.on_decline(interaction)
+
+
+def taunt(pool, d) -> str:
+    """Frase de cargada al azar con las dos personas mencionadas."""
+    return random.choice(pool).format(d=f"<@{d.challenged_id}>", c=f"<@{d.challenger_id}>")
+
+
+def both_mentions(d) -> discord.AllowedMentions:
+    return discord.AllowedMentions(users=[discord.Object(id=d.challenged_id), discord.Object(id=d.challenger_id)], roles=False, everyone=False)
 
 
 class DuelsCog(commands.Cog):
@@ -200,8 +232,7 @@ class DuelsCog(commands.Cog):
             await interaction.response.edit_message(embed=self.closed_embed(res.duel, "rechazado", RED), view=None)
             ch = interaction.channel
             if ch is not None:
-                await ch.send(f"✖️ <@{d.challenged_id}> rechazó el duelo de <@{d.challenger_id}>. Se devolvió la apuesta.",
-                              allowed_mentions=NO_MENTIONS)
+                await ch.send(taunt(DECLINE_TAUNTS, d) + "\n_Se devolvió la apuesta._", allowed_mentions=both_mentions(d))
         except Exception:
             traceback.print_exc()
             await _say(interaction, "❌ Ocurrió un error.")
@@ -219,8 +250,7 @@ class DuelsCog(commands.Cog):
                 if ch is not None and d.message_id:
                     msg = await ch.fetch_message(d.message_id)
                     await msg.edit(embed=self.closed_embed(d, "sin respuesta", GREY), view=None)
-                    await ch.send(f"⏱️ <@{d.challenged_id}> no respondió el duelo de <@{d.challenger_id}>. Se devolvió la apuesta.",
-                                  allowed_mentions=NO_MENTIONS)
+                    await ch.send(taunt(TIMEOUT_TAUNTS, d) + "\n_Se devolvió la apuesta._", allowed_mentions=both_mentions(d))
             except Exception as exc:
                 print(f"ℹ️ Duelos: no pude cerrar el panel #{d.id}: {exc!r}")
         return done
