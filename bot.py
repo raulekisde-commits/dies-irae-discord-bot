@@ -95,6 +95,13 @@ except Exception:
     async def setup_invitados(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar invitados.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from ctavoice import setup_ctavoice
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_ctavoice(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar ctavoice.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from roulette import setup_roulette
 except Exception:
     import traceback as _tb
@@ -413,6 +420,7 @@ class MyBot(commands.Bot):
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
+            await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
@@ -3013,6 +3021,7 @@ import json
 import copy
 import contextlib
 import ctautil as cu
+import ctavoice as cv
 
 CTA_EMOJIS_DEFAULT = {
     "Golem": "🔨", "Heavy Mace": "🛡️", "Monarch": "🛡️", "GA": "🛡️",
@@ -3764,6 +3773,12 @@ async def cta_close_run(run_id: int, reason="timeout"):
         await asyncio.to_thread(cu.snapshot_positions, DB_PATH, run_id)       # historial: en qué posición quedó cada persona
     except Exception as exc:
         print(f"CTA #{run_id}: no pude guardar el historial de posiciones: {exc!r}")
+    voice = bot.get_cog("CTAVoiceCog")
+    if voice is not None:
+        try:
+            await voice.start(run_id)                                              # empieza el seguimiento del canal de voz
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude iniciar el seguimiento de voz: {exc!r}")
     try:
         await cta_refresh_board(run_id)
     except Exception as exc:
@@ -3970,6 +3985,9 @@ async def cta_finish_run(run_id: int, actor_id: int):
         return "Esta CTA ya estaba cerrada o cancelada.", False
     run = cta_run_get(run_id)
     cta_audit(int(run["guild_id"]), actor_id, "cta_finished", run_id, "")
+    voice = bot.get_cog("CTAVoiceCog")
+    if voice is not None:
+        await voice.stop_run(run_id)
     stats_note = await cta_create_stats_panel(run, actor_id)
     try:
         await cta_refresh_board(run_id)
@@ -4023,6 +4041,15 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
                           allowed_mentions=CTA_NO_PINGS)
     except Exception:
         pass
+    try:
+        not_voice, extra = await asyncio.to_thread(cv.compare_with_signups, DB_PATH, run_id)
+        for header, ids in (("📵 **Anotados que NO estuvieron en voz** (menos de 2 min)", not_voice),
+                            ("🎧 **Estuvieron en voz pero NO estaban anotados**", extra)):
+            lines = [f"• <@{u}>" for u in ids] or ["Nadie."]
+            for i, chunk in enumerate(chunk_lines(lines)):
+                await thread.send((header + f" ({len(ids)})\n" if i == 0 else "") + chunk, allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude publicar las listas de voz: {exc!r}")
     cog = bot.get_cog("EncargosCog")
     if cog is not None:
         try:
@@ -4042,6 +4069,9 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
     if res != "ok":
         return "Esta CTA ya estaba cerrada o cancelada."
     cta_audit(int(run["guild_id"]), actor_id, "cta_cancelled", run_id, "")
+    voice = bot.get_cog("CTAVoiceCog")
+    if voice is not None:
+        await voice.stop_run(run_id)
     import splits_db as _sdb
     title = cta_run_title(run)
     cog = bot.get_cog("SplitsCog")
