@@ -383,26 +383,35 @@ active_foco_tickets = {}   # user_id -> channel_id (ayuda rápida, pero además 
 
 def _clamp_command_texts(tree, guild=None) -> int:
     """Discord rechaza TODA la sincronización si un comando o parámetro tiene una descripción de más de 100 caracteres.
-    Antes de sincronizar se recortan, así un texto largo no deja al bot sin comandos nuevos. Devuelve cuántos recortó."""
+    Antes de sincronizar se recortan, así un texto largo no deja al bot sin comandos nuevos. Devuelve cuántos recortó.
+    Nunca lanza errores: si algo falla acá, el sync sigue igual."""
     fixed = 0
 
     def walk(cmd):
         nonlocal fixed
-        if len(getattr(cmd, "description", "") or "") > 100:
-            cmd.description = cmd.description[:99] + "…"
-            fixed += 1
-            print(f"⚠️ Descripción demasiado larga recortada en /{getattr(cmd, 'qualified_name', cmd.name)}")
-        for p in (getattr(cmd, "_params", None) or {}).values():
-            d = getattr(p, "description", "") or ""
+        name = getattr(cmd, "qualified_name", None) or getattr(cmd, "name", "?")
+        try:
+            d = str(getattr(cmd, "description", "") or "")             # puede ser un locale_str: str() devuelve el texto
             if len(d) > 100:
-                p.description = d[:99] + "…"
+                cmd.description = d[:99] + "…"
                 fixed += 1
-                print(f"⚠️ Descripción de parámetro recortada en /{getattr(cmd, 'qualified_name', cmd.name)} ({getattr(p, 'name', '?')})")
+                print(f"⚠️ Descripción demasiado larga recortada en /{name}")
+            for p in (getattr(cmd, "_params", None) or {}).values():
+                pd = str(getattr(p, "description", "") or "")
+                if len(pd) > 100:
+                    p.description = pd[:99] + "…"
+                    fixed += 1
+                    print(f"⚠️ Descripción de parámetro recortada en /{name} ({getattr(p, 'name', '?')})")
+        except Exception as exc:
+            print(f"⚠️ No pude revisar las descripciones de /{name}: {exc!r}")
         for sub in getattr(cmd, "commands", None) or []:
             walk(sub)
 
-    for c in tree.get_commands(guild=guild):
-        walk(c)
+    try:
+        for c in tree.get_commands(guild=guild):
+            walk(c)
+    except Exception as exc:
+        print(f"⚠️ No pude revisar las descripciones de los comandos: {exc!r}")
     return fixed
 
 
