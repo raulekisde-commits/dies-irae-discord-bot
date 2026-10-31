@@ -88,6 +88,13 @@ except Exception:
     async def setup_sorteos(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar sorteos.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from invitados import setup_invitados
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_invitados(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar invitados.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from roulette import setup_roulette
 except Exception:
     import traceback as _tb
@@ -405,6 +412,7 @@ class MyBot(commands.Bot):
             await _safe_setup("raffles", setup_raffles, self, DB_PATH, GUILD_ID)
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
+            await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
@@ -5576,6 +5584,10 @@ HELP_SECTIONS = [
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
         ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
         ("/encargar tarea [cuando]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff, con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
+        ("/invitar usuario quien_es", "Legacy", "Invita a alguien: le saca el rol Public, le da el rol Invitado y queda registrado quién lo invitó y por qué."),
+        ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
+        ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
+        ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (por ahora: invitados)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
         ("/desvincular", "Council / Admin", "Quita el personaje vinculado a tu propia cuenta (con confirmación). Los miembros piden al staff que use /admin_desvincular."),
         ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
