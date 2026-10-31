@@ -43,6 +43,25 @@ INFO_TEXTS = {
                   "• Queda registrado quién lo invitó y por qué: los miembros pueden consultarlo con `/quien-invito usuario`.\n"
                   "• El staff ve la lista completa con `/invitados`.\n"
                   "• Quien invita responde por su invitado."),
+    "warnings": ("⚠️ Sistema de warnings",
+                 "Registro interno de sanciones leves. Solo lo usan el **Staff** y el **Council**.\n\n"
+                 "• `/warning usuario razon` le pone un warning a alguien. Queda guardado quién lo puso, cuándo y por qué.\n"
+                 "• `/warnings usuario` lista los warnings de esa persona (fecha, quién lo puso y motivo). Es el único comando que se muestra en el canal.\n"
+                 "• `/warning-top` muestra quién acumula más warnings.\n"
+                 "• Todo lo demás lo ve solo quien ejecuta el comando."),
+    "casino": ("🎰 Sistema de casino",
+               "Juegos para apostar **Wuju Coins**, la moneda del servidor (`/bal` para ver tu saldo, `/top` para el ranking).\n\n"
+               "• **Dados** (`/dados`): partida abierta de 5 minutos; se anota quien quiere y gana el número más alto, que se lleva el pozo.\n"
+               "• **Coinflip** (`/coinflip`): desafío de cara o cruz; lo acepta una persona y el ganador se queda con todo.\n"
+               "• **1v1** (`/1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
+               "• **Apuestas** (`/apostar`, `/apostartodo`): se apuesta a una de las opciones de una apuesta abierta por el staff; el pozo se reparte entre quienes acertaron.\n"
+               "• **Ruleta**: la abre el staff y es una sola para todo el servidor.\n"
+               "• Estadísticas: `/winrate`, `/topwinrate` y `/totalapostado`.\n\n"
+               "**Reglas**\n"
+               "• Las apuestas se descuentan al instante y no hay devolución si perdés.\n"
+               "• El Council puede cerrar el casino, poner límites de apuesta o bloquear a alguien (`/casinoban`).\n"
+               "• Cada juego se habilita en un canal y para ciertos roles con `/perms-canal` y `/perms-comando`. Los invitados no tienen acceso al casino salvo que se les habilite.\n"
+               "• Jugá con responsabilidad: es solo moneda del servidor."),
 }
 
 
@@ -289,7 +308,8 @@ class InvitadosCog(commands.Cog):
     # ---------- /info ----------
     @app_commands.command(name="info", description="Explica cómo funciona un sistema del servidor")
     @app_commands.describe(tema="Qué sistema querés conocer")
-    @app_commands.choices(tema=[app_commands.Choice(name="invitados", value="invitados")])
+    @app_commands.choices(tema=[app_commands.Choice(name="invitados", value="invitados"), app_commands.Choice(name="warnings", value="warnings"),
+                                app_commands.Choice(name="casino", value="casino")])
     async def info(self, interaction: discord.Interaction, tema: app_commands.Choice[str]):
         value = getattr(tema, "value", tema)
         title, text = INFO_TEXTS[value]
