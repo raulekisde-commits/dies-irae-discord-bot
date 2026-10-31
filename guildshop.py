@@ -100,7 +100,7 @@ class ConfirmSaleView(discord.ui.View):
 
 
 class SoldTicketView(discord.ui.View):
-    """Después de una venta: un único botón para borrar el canal cuando ya entregaron los ítems."""
+    """Ya no se usa en ventas nuevas (el canal se cierra solo al confirmar); queda registrado para que funcionen los botones de tickets viejos."""
 
     def __init__(self, cog: "GuildShopCog"):
         super().__init__(timeout=None)
@@ -546,9 +546,9 @@ class GuildShopCog(commands.Cog):
         done.add_field(name="Descuento", value=gdb.format_pct(p.discount_bp), inline=True)
         if p.currency == "wuju":
             done.add_field(name="Balance del comprador", value=f"{self.wuju(result.balance_before)} → {self.wuju(result.balance_after)}", inline=False)
-        done.set_footer(text="Cuando entreguen los ítems, un Seller puede cerrar el canal.")
+        done.set_footer(text="Venta confirmada: este canal se cierra automáticamente.")
         try:
-            await interaction.channel.send(embed=done, view=SoldTicketView(self), allowed_mentions=NO_MENTIONS)
+            await interaction.channel.send(embed=done, allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
         await self._disable_ticket_buttons(interaction.channel)
@@ -565,6 +565,7 @@ class GuildShopCog(commands.Cog):
         log.add_field(name="Lista de compra", value=t.items[:1000], inline=False)
         await self.log(interaction.guild, log)
         await self.refresh_top_panel(interaction.guild)
+        await self._delete_later(interaction.channel)             # una vez confirmada la venta se cierra solo (sin otro botón)
 
     async def on_cancel_pressed(self, interaction: discord.Interaction):
         if interaction.guild is None or not can_sell(interaction.user):
