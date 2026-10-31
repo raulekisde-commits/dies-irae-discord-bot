@@ -3,7 +3,7 @@
 # (id del juego sin tier, nombre en inglés, nombre en español, rol)
 DEFAULT_WEAPONS = [
     ('MAIN_1HCROSSBOW', 'Light Crossbow', 'Ballesta ligera', 'dps'),
-    ('2H_ARCANE_RINGPAIR_AVALON', 'Evensong', 'Sonido equilibrado', ''),
+    ('2H_ARCANE_RINGPAIR_AVALON', 'Evensong', 'Sonido equilibrado', 'supp'),
     ('MAIN_ARCANESTAFF', 'Arcane Staff', 'Bastón arcano', 'supp'),
     ('MAIN_ARCANESTAFF_UNDEAD', 'Witchwork Staff', 'Bastón de brujería', 'clump maker'),
     ('2H_ARCANESTAFF_CRYSTAL', 'Astral Staff', 'Bastón astral', 'dps'),

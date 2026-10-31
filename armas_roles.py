@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS weapon_roles (
     PRIMARY KEY (guild_id, weapon_id)
 );
 CREATE TABLE IF NOT EXISTS weapon_roles_seeded (guild_id INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS combat_role_discord (
+    guild_id INTEGER NOT NULL,
+    label    TEXT NOT NULL,
+    role_id  INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, label)
+);
 """
 _TIER_RE = re.compile(r"^T\d_")
 
@@ -51,6 +57,48 @@ def _seed(conn, guild_id: int) -> None:
         conn.execute("INSERT OR IGNORE INTO weapon_roles_seeded(guild_id) VALUES (?)", (guild_id,))
         conn.executemany("INSERT OR IGNORE INTO weapon_roles(guild_id,weapon_id,name_en,name_es,role,is_custom,updated_at) VALUES (?,?,?,?,?,0,?)",
                          [(guild_id, wid, en, es, role, now) for wid, en, es, role in DEFAULT_WEAPONS])
+
+
+def seed_discord_roles(db_path: str, guild_id: int, defaults: dict) -> None:
+    """Carga {rol de combate: id de rol de Discord} por defecto solo para los que el servidor todavía no configuró."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.executemany("INSERT OR IGNORE INTO combat_role_discord(guild_id,label,role_id) VALUES (?,?,?)",
+                             [(guild_id, clean_role(k), int(v)) for k, v in defaults.items() if v])
+    finally:
+        conn.close()
+
+
+def discord_role_for(db_path: str, guild_id: int, label: str) -> Optional[int]:
+    """Id del rol de Discord que corresponde a un rol de combate (None si no hay)."""
+    conn = connect(db_path)
+    try:
+        row = conn.execute("SELECT role_id FROM combat_role_discord WHERE guild_id=? AND label=?", (guild_id, clean_role(label))).fetchone()
+        return int(row["role_id"]) if row else None
+    finally:
+        conn.close()
+
+
+def discord_roles_map(db_path: str, guild_id: int) -> dict:
+    conn = connect(db_path)
+    try:
+        return {r["label"]: int(r["role_id"]) for r in conn.execute("SELECT label, role_id FROM combat_role_discord WHERE guild_id=?", (guild_id,))}
+    finally:
+        conn.close()
+
+
+def set_discord_role(db_path: str, guild_id: int, label: str, role_id: Optional[int]) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if role_id:
+                conn.execute("INSERT INTO combat_role_discord(guild_id,label,role_id) VALUES (?,?,?) ON CONFLICT(guild_id,label) DO UPDATE SET role_id=excluded.role_id",
+                             (guild_id, clean_role(label), int(role_id)))
+            else:
+                conn.execute("DELETE FROM combat_role_discord WHERE guild_id=? AND label=?", (guild_id, clean_role(label)))
+    finally:
+        conn.close()
 
 
 def list_rules(db_path: str, guild_id: int) -> List[dict]:
@@ -111,7 +159,7 @@ def reset_defaults(db_path: str, guild_id: int) -> int:
         conn.close()
 
 
-def summary_lines(rules: List[dict], only_role: str = "") -> List[str]:
+def summary_lines(rules: List[dict], only_role: str = "", discord_map: Optional[dict] = None) -> List[str]:
     groups = {}
     for r in rules:
         groups.setdefault(r["role"] or "", []).append(r["name_es"] if r["name_es"] else r["name_en"])
@@ -121,7 +169,9 @@ def summary_lines(rules: List[dict], only_role: str = "") -> List[str]:
         if only and role != only:
             continue
         names = ", ".join(sorted(groups[role], key=str.lower))
-        lines.append(f"**{role or 'sin regla'}** ({len(groups[role])}): {names}")
+        dr = (discord_map or {}).get(role)
+        tag = f" → <@&{dr}>" if dr else ""
+        lines.append(f"**{role or 'sin regla'}**{tag} ({len(groups[role])}): {names}")
     return lines
 
 
@@ -142,9 +192,11 @@ def _chunks(lines: List[str], limit: int = 1900) -> List[str]:
     return out
 
 
-def make_reglas_group(db_path: str, is_allowed) -> app_commands.Group:
+def make_reglas_group(db_path: str, is_allowed, default_discord_roles: Optional[dict] = None, guild_id: Optional[int] = None) -> app_commands.Group:
     """Subgrupo /compo reglas. is_allowed(member) -> bool decide quién puede usarlo (Council / administradores)."""
     init_schema(db_path)
+    if default_discord_roles and guild_id:
+        seed_discord_roles(db_path, guild_id, default_discord_roles)
     group = app_commands.Group(name="reglas", description="Qué rol de combate es cada arma (tank, healer, dps...)")
 
     async def deny(interaction):
@@ -173,7 +225,7 @@ def make_reglas_group(db_path: str, is_allowed) -> app_commands.Group:
     async def listar(interaction: discord.Interaction, rol: Optional[str] = None):
         if not is_allowed(interaction.user):
             return await deny(interaction)
-        lines = summary_lines(list_rules(db_path, interaction.guild_id), rol or "")
+        lines = summary_lines(list_rules(db_path, interaction.guild_id), rol or "", discord_roles_map(db_path, interaction.guild_id))
         if not lines:
             return await interaction.response.send_message("No hay armas con ese rol.", ephemeral=True)
         parts = _chunks(lines)
@@ -209,6 +261,19 @@ def make_reglas_group(db_path: str, is_allowed) -> app_commands.Group:
             return await interaction.response.send_message("No encontré esa arma. Usá el autocompletado para elegirla.", ephemeral=True)
         set_role(db_path, interaction.guild_id, w["weapon_id"], "")
         await interaction.response.send_message(f"✅ **{w['name_es']}** quedó sin regla.", ephemeral=True)
+
+    @group.command(name="discord", description="Elegir qué rol de Discord corresponde a un rol de combate (tank, healer...)")
+    @app_commands.describe(rol_combate="Rol de combate (tank, healer, dps, supp...)", rol_discord="Rol de Discord; si lo dejás vacío se quita el vínculo")
+    @app_commands.autocomplete(rol_combate=role_ac)
+    async def discord_cmd(interaction: discord.Interaction, rol_combate: str, rol_discord: Optional[discord.Role] = None):
+        if not is_allowed(interaction.user):
+            return await deny(interaction)
+        label = clean_role(rol_combate)
+        if not label:
+            return await interaction.response.send_message("Escribí el rol de combate (por ejemplo `tank`).", ephemeral=True)
+        set_discord_role(db_path, interaction.guild_id, label, rol_discord.id if rol_discord else None)
+        msg = f"✅ **{label}** → {rol_discord.mention}" if rol_discord else f"✅ **{label}** quedó sin rol de Discord."
+        await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @group.command(name="restablecer", description="Volver a la lista de armas y roles por defecto (borra tus cambios)")
     @app_commands.describe(confirmar="Poné true para confirmar: se pierden todos los cambios que hiciste")
