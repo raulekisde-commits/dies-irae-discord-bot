@@ -5242,6 +5242,54 @@ async def cta_activas(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
+def _sched_line(r: dict) -> str:
+    at = int(datetime.fromisoformat(r["publish_at"]).timestamp())
+    title = f" · «{r['title']}»" if r.get("title") else ""
+    return f"**#{r['id']}** · {r['composition_name']}{title} · <t:{at}:f> (<t:{at}:R>) · {r['minutes']} min · por <@{r['created_by']}>"
+
+
+@bot.tree.command(name="cta_programadas", description="Lista las CTA programadas que todavía no se publicaron", guild=GUILD_OBJ)
+async def cta_programadas(interaction: discord.Interaction):
+    if not is_cta_manager(interaction.user):
+        return await interaction.response.send_message("No tenés permisos para ver las CTA programadas (solo Staff, Caller y Council).", ephemeral=True)
+    rows = await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)
+    if not rows:
+        return await interaction.response.send_message("No hay CTA programadas.", ephemeral=True)
+    text = "⏰ **CTA programadas** (se cancelan con `/cta_cancelar_programada`)\n" + "\n".join(_sched_line(r) for r in rows)
+    await interaction.response.send_message(text[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+async def cta_scheduled_autocomplete(interaction: discord.Interaction, current: str):
+    rows = await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)
+    out = []
+    for r in rows:
+        at = datetime.fromisoformat(r["publish_at"]).astimezone(timezone.utc).strftime("%d/%m %H:%M UTC")
+        label = f"#{r['id']} · {r['composition_name']} · {at}"[:100]
+        if not current or current.strip().lstrip("#") in str(r["id"]) or current.casefold() in label.casefold():
+            out.append(app_commands.Choice(name=label, value=int(r["id"])))
+    return out[:25]
+
+
+@bot.tree.command(name="cta_cancelar_programada", description="Cancela una CTA programada antes de que se publique", guild=GUILD_OBJ)
+@app_commands.describe(programada="La CTA programada a cancelar (elegila de la lista o escribí su número)")
+@app_commands.autocomplete(programada=cta_scheduled_autocomplete)
+async def cta_cancelar_programada(interaction: discord.Interaction, programada: int):
+    if not is_cta_manager(interaction.user):
+        return await interaction.response.send_message("No tenés permisos para cancelar CTA programadas (solo Staff, Caller y Council).", ephemeral=True)
+    rows = {int(r["id"]): r for r in await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)}
+    row = rows.get(int(programada))
+    if row is None or not await asyncio.to_thread(cu.cancel_scheduled, DB_PATH, int(programada), interaction.guild_id):
+        return await interaction.response.send_message("❌ No encontré una CTA programada pendiente con ese número (quizás ya se publicó o ya se canceló). Mirá `/cta_programadas`.", ephemeral=True)
+    cta_audit(interaction.guild_id, interaction.user.id, "cta_scheduled_cancelled", None, f"id={programada} comp={row['composition_name']} at={row['publish_at']} by={row['created_by']}")
+    await interaction.response.send_message(f"🗑️ Cancelé la CTA programada **#{programada}**:\n{_sched_line(row)}", ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
+    try:
+        guild = interaction.guild
+        await send_log(guild, f"🗑️ {interaction.user.mention} canceló la CTA programada **{row['composition_name']}** (#{programada}) que estaba para <t:{int(datetime.fromisoformat(row['publish_at']).timestamp())}:f>.")
+    except Exception:
+        pass
+
+
 @bot.tree.command(name="cta_cerrar", description="Cerrar la inscripción de una CTA antes de tiempo", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta_activas)")
 async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
@@ -5721,6 +5769,8 @@ HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo de transparencia y se crea la tarea del combatlog."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
+        ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
+        ("/cta_cancelar_programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
         ("/cta_cerrar cta_id", "Staff, Caller, Council", "Cierra una CTA antes de tiempo."),
         ("/cta_asignar · /cta_liberar", "Staff, Caller, Council", "Pone o saca a un jugador de una posición."),
         ("/cta_historial", "Todos", "Últimas CTA cerradas."),
