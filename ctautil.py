@@ -1,5 +1,6 @@
 """Piezas puras (sin Discord) del sistema de CTA: título por hora redonda, rol único por posición y envíos programados."""
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple
 
@@ -156,5 +157,139 @@ def cancel_scheduled(db_path: str, sched_id: int, guild_id: int) -> bool:
         with write_tx(conn):
             return conn.execute("UPDATE cta_scheduled SET status='cancelled' WHERE id=? AND guild_id=? AND status='pending'",
                                 (sched_id, guild_id)).rowcount > 0
+    finally:
+        conn.close()
+
+
+# ---------- historial de posiciones y estado final de la CTA ----------
+POSITIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cta_positions (
+    cta_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    slot_key TEXT,
+    role_id INTEGER,
+    role_name TEXT,
+    late INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (cta_id, user_id)
+);
+"""
+
+
+def init_positions(db_path: str) -> None:
+    conn = connect(db_path)
+    try:
+        conn.executescript(POSITIONS_SCHEMA)
+    finally:
+        conn.close()
+
+
+def number_slots(slots):
+    """Numeración global de las posiciones (igual que en el hilo de la CTA): ordenadas por party y lugar, desde 1."""
+    ordered = sorted(slots, key=lambda s: (int(s["party_no"]), int(s["position_no"])))
+    return list(enumerate(ordered, start=1))
+
+
+def slot_key(slot) -> str:
+    return f"{int(slot['party_no'])}:{int(slot['position_no'])}"
+
+
+def _row_position(slot) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    if slot is None:
+        return None, None, None
+    return slot_key(slot), required_role(slot.get("role_ids")), slot.get("role_name")
+
+
+def snapshot_positions(db_path: str, cta_id: int) -> int:
+    """Al terminar la inscripción: guarda en qué posición (y con qué rol de juego) quedó cada persona. Se hace una sola vez."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            run = conn.execute("SELECT snapshot_json FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None:
+                return 0
+            slots = {slot_key(s): s for s in json.loads(run["snapshot_json"])["slots"]}
+            n = 0
+            for r in conn.execute("SELECT user_id, slot_key FROM cta_signups WHERE cta_id=?", (cta_id,)).fetchall():
+                key, rid, name = _row_position(slots.get(r["slot_key"]))
+                n += conn.execute("INSERT OR IGNORE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,0)",
+                                  (cta_id, r["user_id"], key or r["slot_key"], rid, name)).rowcount
+            return n
+    finally:
+        conn.close()
+
+
+def add_late_position(db_path: str, cta_id: int, user_id: int, slot_no: Optional[int]) -> bool:
+    """Un anotado tarde fue aceptado: entra al historial con la posición que pidió. False si la CTA ya no admite cambios."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            run = conn.execute("SELECT snapshot_json, final_state FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None or run["final_state"] is not None:
+                return False
+            slot = None
+            if slot_no is not None:
+                slot = next((s for n, s in number_slots(json.loads(run["snapshot_json"])["slots"]) if n == slot_no), None)
+            key, rid, name = _row_position(slot)
+            conn.execute("INSERT OR REPLACE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,1)",
+                         (cta_id, user_id, key, rid, name))
+            return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
+
+
+def positions(db_path: str, cta_id: int) -> List[dict]:
+    conn = connect(db_path)
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM cta_positions WHERE cta_id=? ORDER BY slot_key", (cta_id,))]
+    finally:
+        conn.close()
+
+
+def final_state(db_path: str, cta_id: Optional[int]) -> Optional[str]:
+    if cta_id is None:
+        return None
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT final_state FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+        return r["final_state"] if r else None
+    except sqlite3.OperationalError:          # base sin el sistema de CTA (tests, instalaciones viejas)
+        return None
+    finally:
+        conn.close()
+
+
+def thread_id_of(db_path: str, cta_id: int) -> Optional[int]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT thread_id FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+        return int(r["thread_id"]) if r and r["thread_id"] else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def begin_final(db_path: str, cta_id: int, state: str, actor_id: int) -> str:
+    """Pasa la CTA a 'finished' o 'cancelled' una sola vez. 'ok' | 'already' (ya finalizada/cancelada) | 'missing'.
+    Cancelar vale en cualquier momento antes de finalizar; finalizar exige que la inscripción ya haya terminado."""
+    assert state in ("finished", "cancelled")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT status, final_state FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if r is None:
+                return "missing"
+            if r["final_state"] is not None:
+                return "already"
+            if state == "finished":
+                if r["status"] != "closed":
+                    return "not_closed"
+                conn.execute("UPDATE cta_runs SET final_state='finished', final_by=?, final_at=? WHERE id=?", (actor_id, utcnow_iso(), cta_id))
+            else:
+                conn.execute("UPDATE cta_runs SET final_state='cancelled', status='cancelled', final_by=?, final_at=? WHERE id=?",
+                             (actor_id, utcnow_iso(), cta_id))
+            return "ok"
     finally:
         conn.close()
