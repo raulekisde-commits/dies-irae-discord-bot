@@ -84,7 +84,7 @@ class CasinoCog(commands.Cog):
             traceback.print_exc()
             await _reply(interaction, "❌ No pude completar el comando.")
 
-    @app_commands.command(name="auditoria-casino", description="(Council) Busca indicios de trampa: suerte anómala, parejas que juegan entre sí y transferencias raras")
+    @app_commands.command(name="auditoria-casino", description="(Council) Busca indicios de trampa: suerte anómala, parejas que juegan entre sí, transferencias raras")
     @app_commands.describe(dias="Cuántos días hacia atrás revisar (por defecto 30; 0 = todo el historial)")
     @app_commands.guild_only()
     async def auditoria_casino(self, interaction: discord.Interaction, dias: Optional[app_commands.Range[int, 0, 3650]] = 30):
