@@ -522,9 +522,14 @@ class DepositsCog(commands.Cog):
         after = op.movements[0].after
         await interaction.response.send_message(
             f"✅ Se retiraron **{self.money(amount)}** de <@{ticket.user_id}> (ticket #{ticket.id}). Balance nuevo: {self.money(after)}.\n"
-            f"Ahora entregale el silver correspondiente y cerrá el ticket.", allowed_mentions=NO_MENTIONS)
+            f"Entregale el silver correspondiente. Confirmado el retiro, este canal se cierra solo en unos segundos.", allowed_mentions=NO_MENTIONS)
         await self._disable_action(ticket_message, SellTicketView(self, processed=True))
         await self._publish_log(op.op_id)
+        # Una vez confirmado el retiro el ticket se cierra solo (sin otro botón); el balance se descongela al cerrarse.
+        await self.run(ddb.close_ticket, ticket.id, interaction.user.id)
+        if self.close_delay:
+            await asyncio.sleep(self.close_delay)
+        await self._try_delete(interaction.channel)
 
     # ---------- compra: Agregar → confirmar → agregar ----------
     async def on_buy_add(self, interaction: discord.Interaction):
