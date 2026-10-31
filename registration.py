@@ -489,9 +489,11 @@ class RegistrationCog(commands.Cog):
             return await _say(interaction, "ℹ️ Todavía no estás registrado. Usá `/registrar usuario_de_albion:TuPersonaje`.")
         await interaction.response.send_message(embed=self._regs_embed(regs, "🔗 Tu registro"), ephemeral=True)
 
-    @app_commands.command(name="desvincular", description="Quitá el personaje de Albion vinculado a tu cuenta")
+    @app_commands.command(name="desvincular", description="(Council) Quitá el personaje de Albion vinculado a tu cuenta")
     @app_commands.guild_only()
     async def desvincular(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden desvincular. Pedile al staff que lo haga con `/admin_desvincular`.")
         reg = await self.run(rdb.get_registration, interaction.user.id)
         if reg is None:
             return await _say(interaction, "ℹ️ No tenés ningún registro para quitar.")

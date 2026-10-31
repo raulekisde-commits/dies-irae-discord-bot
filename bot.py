@@ -81,6 +81,13 @@ except Exception:
     async def setup_encargos(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar encargos.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from sorteos import setup_sorteos
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_sorteos(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar sorteos.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from roulette import setup_roulette
 except Exception:
     import traceback as _tb
@@ -398,6 +405,7 @@ class MyBot(commands.Bot):
             await _safe_setup("raffles", setup_raffles, self, DB_PATH, GUILD_ID)
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
+            await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
@@ -433,97 +441,6 @@ class TimerItem:
     db_id: Optional[int] = None
 
 timers: List[TimerItem] = []
-
-# ================== SORTEOS ==================
-GIVEAWAY_MAX_WINNERS = 25
-# Qué hacer si hay menos participantes válidos que ganadores pedidos:
-#   False -> no se sortea nada y se avisa (no se inventan ni se completan ganadores).
-#   True  -> se sortea entre todos los participantes válidos y se aclara que fueron menos.
-GIVEAWAY_ALLOW_PARTIAL = False
-
-
-@dataclass
-class GiveawayItem:
-    prize: str
-    end_at: datetime
-    channel_id: int
-    message_id: int
-    creator_id: int
-    entrants: set[int] = field(default_factory=set)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    winners_count: int = 1
-    finished: bool = False
-
-giveaways: dict[int, GiveawayItem] = {}
-giveaways_panel_tasks: dict = {}      # message_id -> tarea que actualiza el contador del panel
-giveaways_panel_dirty: set = set()
-GIVEAWAY_PANEL_REFRESH_SECONDS = 5  # message_id -> GiveawayItem
-
-
-_GIVEAWAY_UPSERT_SQL = """INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(message_id) DO UPDATE SET prize=excluded.prize, end_at=excluded.end_at,
-             channel_id=excluded.channel_id, creator_id=excluded.creator_id, guild_id=excluded.guild_id,
-             winners_count=excluded.winners_count"""
-
-
-def _giveaway_row_values(g: GiveawayItem, guild_id: int):
-    return (g.message_id, g.prize, g.end_at.astimezone(timezone.utc).isoformat(),
-            g.channel_id, g.creator_id, guild_id, int(g.winners_count))
-
-
-def save_giveaway(g: GiveawayItem, guild_id: int = GUILD_ID):
-    db_execute(_GIVEAWAY_UPSERT_SQL, _giveaway_row_values(g, guild_id))
-
-
-def save_giveaway_entrant(message_id: int, user_id: int, g: Optional[GiveawayItem] = None,
-                          guild_id: int = GUILD_ID):
-    """Guarda un participante.
-
-    Si se pasa `g`, la fila del sorteo se asegura en la misma transacción antes de insertar al
-    participante. Así nunca falla por falta de la fila padre (FOREIGN KEY) cuando el sorteo
-    existe en memoria, y la base se autorrepara."""
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        if g is not None:
-            conn.execute(_GIVEAWAY_UPSERT_SQL, _giveaway_row_values(g, guild_id))
-        conn.execute("INSERT OR IGNORE INTO giveaway_entrants(message_id, user_id) VALUES (?, ?)",
-                     (message_id, user_id))
-        conn.commit()
-
-
-def remove_giveaway(message_id: int):
-    giveaways.pop(message_id, None)
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("DELETE FROM giveaway_entrants WHERE message_id = ?", (message_id,))
-        conn.execute("DELETE FROM giveaways WHERE message_id = ?", (message_id,))
-        conn.commit()
-
-
-def record_giveaway_result(g: GiveawayItem, guild_id: int, valid_count: int,
-                           winners: list[int], outcome: str):
-    """Guarda el resultado para poder verificarlo después (quién ganó y entre cuántos)."""
-    db_execute(
-        """INSERT INTO giveaway_history(message_id, guild_id, channel_id, prize, winners_requested,
-                                         entrants_count, valid_count, winners_json, outcome, finished_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (g.message_id, guild_id, g.channel_id, g.prize, int(g.winners_count), len(g.entrants),
-         int(valid_count), json.dumps([str(w) for w in winners]), outcome,
-         datetime.now(timezone.utc).isoformat()),
-    )
-
-
-def pick_giveaway_winners(eligible, count: int, rng=None) -> list[int]:
-    """Elige `count` ganadores distintos, exclusivamente entre `eligible`.
-
-    Devuelve [] si no hay suficientes participantes (nunca completa con usuarios inventados)."""
-    unique = list(dict.fromkeys(int(u) for u in eligible))
-    if count < 1 or len(unique) < count:
-        return []
-    rng = rng or random.SystemRandom()
-    return rng.sample(unique, count)
-
 
 def save_timer(t: TimerItem):
     values = (t.material, t.tier, t.map_name, t.end_at.astimezone(timezone.utc).isoformat(),
@@ -573,25 +490,6 @@ def save_split_log_mapping(panel_message_id: int, log_message_id: int):
 
 def restore_persistent_state(guild: discord.Guild):
     """Restaura sorteos, participantes, timers y referencias locales desde SQLite."""
-    giveaways.clear()
-    for row in db_fetchall("SELECT * FROM giveaways"):
-        try:
-            end_at = datetime.fromisoformat(row["end_at"])
-            if end_at.tzinfo is None:
-                end_at = end_at.replace(tzinfo=timezone.utc)
-            g = GiveawayItem(
-                prize=row["prize"], end_at=end_at.astimezone(timezone.utc),
-                channel_id=int(row["channel_id"]), message_id=int(row["message_id"]),
-                creator_id=int(row["creator_id"]),
-                winners_count=max(1, int(row["winners_count"] or 1)),
-            )
-            g.entrants = {int(r["user_id"]) for r in db_fetchall(
-                "SELECT user_id FROM giveaway_entrants WHERE message_id = ?", (g.message_id,)
-            )}
-            giveaways[g.message_id] = g
-        except Exception as exc:
-            print(f"⚠️ No pude restaurar el sorteo {row['message_id']}: {exc}")
-
     timers.clear()
     for row in db_fetchall("SELECT * FROM timers ORDER BY end_at"):
         try:
@@ -633,194 +531,27 @@ def restore_persistent_state(guild: discord.Guild):
                 active_foco_tickets[int(uid)] = channel.id
 
 
-def start_giveaway_task(guild_id: int, g: GiveawayItem):
-    tasks_by_id = getattr(bot, "_giveaway_tasks", None)
-    if tasks_by_id is None:
-        tasks_by_id = {}
-        bot._giveaway_tasks = tasks_by_id
-    current = tasks_by_id.get(g.message_id)
-    if current is not None and not current.done():
-        return
-    tasks_by_id[g.message_id] = asyncio.create_task(run_giveaway_flow(guild_id, g))
-
 def is_staff_member(member: discord.Member) -> bool:
     staff_role = member.guild.get_role(STAFF_ROLE_ID)
     return (staff_role is not None) and (staff_role in member.roles)
 
-def build_giveaway_embed(g: GiveawayItem, winners: Optional[list[int]] = None,
-                         finished: bool = False, note: Optional[str] = None) -> discord.Embed:
-    end_unix = int(g.end_at.timestamp())
-    emb = discord.Embed(
-        title="🕳️ Sorteo del topo" if not finished else "🕳️ Sorteo finalizado",
-        description="Tocá el botón para anotarte." if not finished else "Este sorteo ya terminó.",
-        color=discord.Color.gold() if not finished else discord.Color.dark_grey(),
-    )
-    emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
-    emb.add_field(name="🏆 Ganadores", value=str(g.winners_count), inline=True)
-    if finished:
-        emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
-        if winners:
-            emb.add_field(name="🎉 Ganadores del sorteo",
-                          value="\n".join(f"{i}. <@{uid}>" for i, uid in enumerate(winners, start=1)),
-                          inline=False)
-        elif note:
-            emb.add_field(name="Resultado", value=note, inline=False)
-    else:
-        emb.add_field(name="⏳ Termina", value=f"<t:{end_unix}:t> (<t:{end_unix}:R>)", inline=False)
-        emb.add_field(name="👥 Anotados", value=str(len(g.entrants)), inline=True)
-    emb.set_footer(text="Smogg Sorteos System")
-    return emb
-
-async def _giveaway_channel(guild: discord.Guild, g: GiveawayItem):
-    """Devuelve el canal del sorteo (canal de texto, hilo, etc.) o None si no se puede acceder."""
-    ch = guild.get_channel(g.channel_id) or guild.get_thread(g.channel_id)
-    if ch is None:
-        try:
-            ch = await guild.fetch_channel(g.channel_id)
-        except Exception:
-            return None
-    if not hasattr(ch, "send") or not hasattr(ch, "fetch_message"):
-        return None
-    return ch
-
-async def _giveaway_panel_worker(g: GiveawayItem):
-    while True:
-        await asyncio.sleep(GIVEAWAY_PANEL_REFRESH_SECONDS)
-        giveaways_panel_dirty.discard(g.message_id)
-        if g.finished or g.message_id not in giveaways:
-            return
-        try:
-            ch = bot.get_channel(g.channel_id)
-            if ch is not None and hasattr(ch, "get_partial_message"):
-                await ch.get_partial_message(g.message_id).edit(embed=build_giveaway_embed(g))
-        except Exception as exc:
-            print(f"Sorteo {g.message_id}: no pude actualizar el contador: {exc}")
-        if g.message_id not in giveaways_panel_dirty:
-            return
+CALLER_ROLE_ID = int(os.getenv("CALLER_ROLE_ID", "1559711827422617720"))
 
 
-def giveaway_request_panel_refresh(g: GiveawayItem):
-    """Actualiza el número de anotados del panel. Agrupa muchos clics en una sola edición cada pocos
-    segundos para no pasarse del límite de ediciones de Discord."""
-    task = giveaways_panel_tasks.get(g.message_id)
-    if task is not None and not task.done():
-        giveaways_panel_dirty.add(g.message_id)
-        return
-    giveaways_panel_tasks[g.message_id] = asyncio.create_task(_giveaway_panel_worker(g))
+def is_council_or_admin(member) -> bool:
+    """Council, dueño del servidor o administrador."""
+    from guildshop import can_manage as _can_manage
+    return isinstance(member, discord.Member) and _can_manage(member)
 
 
-async def finish_giveaway_message(ch, g: GiveawayItem, winners: Optional[list[int]],
-                                  note: Optional[str] = None):
-    """Deshabilita el botón y deja visible el resultado en el mensaje original del sorteo."""
-    try:
-        msg = await ch.fetch_message(g.message_id)
-    except Exception:
-        return
-    view = GiveawayJoinView()
-    for child in view.children:
-        child.disabled = True
-    try:
-        await msg.edit(embed=build_giveaway_embed(g, winners=winners, finished=True, note=note), view=view)
-    except Exception:
-        pass
+def is_staff_or_council(member) -> bool:
+    return isinstance(member, discord.Member) and (is_staff_member(member) or is_council_or_admin(member))
 
-async def resolve_valid_entrants(guild: discord.Guild, entrants) -> list[int]:
-    """Participantes válidos: siguen en el servidor y no son bots."""
-    valid = []
-    for uid in entrants:
-        member = guild.get_member(uid)
-        if member is None:
-            try:
-                member = await guild.fetch_member(uid)
-            except Exception:
-                member = None
-        if member is not None and not member.bot:
-            valid.append(uid)
-    return valid
 
-async def run_giveaway_flow(guild_id: int, g: GiveawayItem):
-    # Esperar hasta el final
-    now = datetime.now(timezone.utc)
-    delay = (g.end_at - now).total_seconds()
-    if delay > 0:
-        await asyncio.sleep(delay)
-
-    guild = bot.get_guild(guild_id)
-    if not guild:
-        # No borrar el registro persistente por un fallo temporal de caché/conexión.
-        return
-
-    g.finished = True      # frena las actualizaciones del contador para no pisar el resultado final
-    ch = await _giveaway_channel(guild, g)
-    if ch is None:
-        # Se conserva en SQLite para reintentar en la próxima reconexión.
-        g.finished = False
-        return
-
-    async with g.lock:
-        entrants = list(g.entrants)
-
-    valid = await resolve_valid_entrants(guild, entrants)
-    wanted = max(1, int(g.winners_count))
-    no_pings = discord.AllowedMentions.none()
-
-    if not valid:
-        note = "No hubo participantes válidos."
-        record_giveaway_result(g, guild_id, 0, [], "no_entrants")
-        await finish_giveaway_message(ch, g, None, note)
-        try:
-            await ch.send(f"📭 Sorteo de `{g.prize}` cancelado: no se anotó nadie.", allowed_mentions=no_pings)
-        except Exception:
-            pass
-        remove_giveaway(g.message_id)
-        return
-
-    count = wanted
-    partial = False
-    if len(valid) < wanted:
-        if not GIVEAWAY_ALLOW_PARTIAL:
-            note = f"Se pidieron {wanted} ganadores pero solo hay {len(valid)} participantes válidos."
-            record_giveaway_result(g, guild_id, len(valid), [], "insufficient")
-            await finish_giveaway_message(ch, g, None, note)
-            try:
-                await ch.send(
-                    f"⚠️ No se pudo sortear `{g.prize}`: se pidieron **{wanted}** ganadores y solo hay "
-                    f"**{len(valid)}** participantes válidos. <@{g.creator_id}>, creá el sorteo de nuevo "
-                    f"con menos ganadores si querés repetirlo.",
-                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=g.creator_id)],
-                                                             roles=False, everyone=False),
-                )
-            except Exception:
-                pass
-            remove_giveaway(g.message_id)
-            return
-        count = len(valid)
-        partial = True
-
-    winners = pick_giveaway_winners(valid, count)
-    outcome = "partial" if partial else "ok"
-    record_giveaway_result(g, guild_id, len(valid), winners, outcome)
-    await finish_giveaway_message(ch, g, winners)
-
-    lines = [f"🏆 **¡Sorteo finalizado!** Premio: `{g.prize}`", ""]
-    lines += [f"{i}. <@{uid}>" for i, uid in enumerate(winners, start=1)]
-    lines.append("")
-    lines.append(f"Participantes válidos: **{len(valid)}**.")
-    if partial:
-        lines.append(f"Se pidieron {wanted} ganadores, pero solo había {len(winners)} participantes válidos.")
-    text = "\n".join(lines)
-    allowed = discord.AllowedMentions(users=[discord.Object(id=u) for u in winners], roles=False, everyone=False)
-    sent = False
-    for _attempt in range(2):
-        try:
-            await ch.send(text, allowed_mentions=allowed)
-            sent = True
-            break
-        except Exception:
-            await asyncio.sleep(2)
-    if not sent:
-        print(f"⚠️ Sorteo {g.message_id}: no pude anunciar el resultado; queda guardado en giveaway_history.")
-    remove_giveaway(g.message_id)
+def is_cta_manager(member) -> bool:
+    """Quien puede iniciar y administrar CTA: Staff, Caller, Council y administradores."""
+    return isinstance(member, discord.Member) and (
+        is_council_or_admin(member) or any(r.id in {STAFF_ROLE_ID, CALLER_ROLE_ID} for r in member.roles))
 
 
 # ---------- UTILIDADES ----------
@@ -1544,80 +1275,6 @@ async def deltimer_mapa_autocomplete(interaction: discord.Interaction, current: 
     cur = (current or "").casefold()
     return [app_commands.Choice(name=r["mapa"][:100], value=r["mapa"][:100]) for r in rows if cur in r["mapa"].casefold()][:25]
 
-
-@bot.tree.command(name="sorteo", description="Crear sorteo (solo Staff)", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(
-    premio="Qué se sortea (texto libre)",
-    tiempo="Duración en H:M (ej: 0:30, 2:00, 6:10)",
-    ganadores=f"Cantidad de ganadores (1 a {GIVEAWAY_MAX_WINNERS}). Por defecto 1",
-)
-async def sorteo_slash(interaction: discord.Interaction, premio: str, tiempo: str,
-                       ganadores: app_commands.Range[int, 1, GIVEAWAY_MAX_WINNERS] = 1):
-    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        return await respond_ephemeral(interaction, "❌ Este comando solo funciona dentro del servidor.")
-
-    if not is_staff_member(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo el **Staff** puede crear sorteos.")
-
-    if not premio or not premio.strip():
-        return await respond_ephemeral(interaction, "❌ El premio no puede estar vacío.")
-
-    dur = parse_duration_hhmm(tiempo.strip())
-    if dur is None:
-        return await respond_ephemeral(
-            interaction,
-            "❌ Tiempo inválido.\nUsá `H:M` (ej: `0:30`, `2:00`, `6:10`)."
-        )
-
-    h, m = dur
-    if h == 0 and m == 0:
-        return await respond_ephemeral(interaction, "❌ La duración tiene que ser mayor a `0:00`.")
-    end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
-
-    await interaction.response.defer(ephemeral=True)
-
-    temp_g = GiveawayItem(
-        prize=premio.strip(),
-        end_at=end_at,
-        channel_id=interaction.channel.id,
-        message_id=0,
-        creator_id=interaction.user.id,
-        winners_count=int(ganadores),
-    )
-
-    try:
-        msg = await interaction.channel.send(embed=build_giveaway_embed(temp_g), view=GiveawayJoinView())
-    except Exception:
-        return await interaction.followup.send(
-            "❌ No pude publicar el sorteo. Revisá que el bot pueda enviar mensajes en este canal.",
-            ephemeral=True)
-
-    temp_g.message_id = msg.id
-    # Primero se guarda en la base y recién después en memoria: si el guardado falla, no queda
-    # un sorteo publicado que no existe en SQLite (causa del error FOREIGN KEY al anotarse).
-    try:
-        save_giveaway(temp_g, interaction.guild.id)
-    except Exception as exc:
-        print(f"❌ No pude guardar el sorteo {msg.id}: {exc}")
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-        return await interaction.followup.send(
-            "❌ No pude guardar el sorteo en la base de datos, así que lo cancelé. Avisale a un administrador.",
-            ephemeral=True)
-
-    giveaways[msg.id] = temp_g
-
-    # Arrancar flujo en background (se vuelve a iniciar desde SQLite tras un reinicio)
-    start_giveaway_task(interaction.guild.id, temp_g)
-
-    await interaction.followup.send(
-        f"✅ Sorteo creado. Premio: `{temp_g.prize}` · Ganadores: {temp_g.winners_count} · "
-        f"Termina: <t:{int(end_at.timestamp())}:R>",
-        ephemeral=True
-    )
-
 def staff_only_slash():
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
@@ -1673,52 +1330,20 @@ async def list_role_error(interaction: discord.Interaction, error: app_commands.
         return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/list_role`.")
     return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
 
-@bot.tree.command(
-    name="delrole",
-    description="(Staff) Elimina un rol (sin tagear a nadie)",
-    guild=discord.Object(id=GUILD_ID)
-)
-@staff_only_slash()
-@app_commands.describe(rol="Rol que querés borrar")
-async def delrole_slash(interaction: discord.Interaction, rol: discord.Role):
-    if interaction.guild is None:
-        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-
-    # Bloqueos de seguridad
-    if rol.id == STAFF_ROLE_ID or rol.managed:
-        return await respond_ephemeral(interaction, "❌ No se puede eliminar ese rol (Staff o rol administrado).")
-
-    # Evitar borrar @everyone
-    if interaction.guild.default_role and rol.id == interaction.guild.default_role.id:
-        return await respond_ephemeral(interaction, "❌ No se puede eliminar @everyone.")
-
-    # Intentar borrar
-    try:
-        role_name = rol.name
-        await rol.delete(reason=f"Eliminado por {interaction.user} (Staff)")
-
-        # Ephemeral + sin mentions
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                f"🗑️ Rol **{role_name}** eliminado correctamente.",
-                ephemeral=True,
-                allowed_mentions=NO_MENTIONS
-            )
-        else:
-            await interaction.response.send_message(
-                f"🗑️ Rol **{role_name}** eliminado correctamente.",
-                ephemeral=True,
-                allowed_mentions=NO_MENTIONS
-            )
-
-    except discord.Forbidden:
-        return await respond_ephemeral(interaction, "❌ No pude eliminar el rol. Me falta el permiso **Gestionar roles** o el rol está por encima del mío.")
-    except Exception:
-        return await respond_ephemeral(interaction, "❌ Ocurrió un error inesperado al eliminar el rol.")
-
 # ---------- COMANDOS STAFF ----------
+def council_only():
+    async def predicate(ctx: commands.Context):
+        if ctx.guild is None:
+            return False
+        if not is_council_or_admin(ctx.author):
+            await ctx.reply("❌ Solo el **Council** y los administradores pueden usar este comando.")
+            return False
+        return True
+    return commands.check(predicate)
+
+
 @bot.command(name="addroll-list")
-@staff_only()
+@council_only()
 @commands.guild_only()
 async def addroll_list(ctx: commands.Context, *, args: str = None):
     if not args:
@@ -2296,46 +1921,6 @@ class FocoPanelView(discord.ui.View):
             await interaction.response.send_modal(FocoDonorModal(interaction.user))
         except Exception:
             return await respond_ephemeral(interaction, "❌ No pude abrir el formulario. Probá de nuevo.")
-
-class GiveawayJoinView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🎟️ Anotarme", style=discord.ButtonStyle.success, custom_id="giveaway_join_btn")
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-
-        msg = interaction.message
-        if msg is None:
-            return await respond_ephemeral(interaction, "❌ No pude leer el mensaje del sorteo.")
-
-        g = giveaways.get(msg.id)
-        if g is None:
-            return await respond_ephemeral(interaction, "❌ Este sorteo ya terminó o no está activo.")
-
-        if datetime.now(timezone.utc) >= g.end_at:
-            return await respond_ephemeral(interaction, "⏰ Llegaste tarde, el sorteo ya terminó.")
-
-        if interaction.user.bot:
-            return await respond_ephemeral(interaction, "❌ Los bots no pueden participar.")
-
-        try:
-            async with g.lock:
-                if interaction.user.id in g.entrants:
-                    return await respond_ephemeral(interaction, "✅ Ya estabas anotado.")
-                # Guardar primero; solo si se guardó se agrega a la memoria.
-                save_giveaway_entrant(g.message_id, interaction.user.id, g=g, guild_id=interaction.guild.id)
-                g.entrants.add(interaction.user.id)
-        except sqlite3.Error as exc:
-            print(f"❌ No pude guardar la inscripción al sorteo {g.message_id}: {exc}")
-            return await respond_ephemeral(
-                interaction, "❌ No pude guardar tu inscripción. Probá de nuevo en unos segundos.")
-
-        # El contador del panel se actualiza agrupado (una edición cada pocos segundos).
-        giveaway_request_panel_refresh(g)
-        return await respond_ephemeral(interaction, "✅ Listo, quedaste anotado.")
-
 
 # Limpieza si borran el canal manualmente (por si acaso)
 @bot.event
@@ -3233,6 +2818,8 @@ async def tabsell(
     reparacion: float,
     descuento: Optional[app_commands.Range[float, 0, 100]] = None,
 ):
+    if not is_council_or_admin(interaction.user):
+        return await interaction.response.send_message("❌ Solo el **Council** y los administradores pueden usar `/tabsell`.", ephemeral=True)
     if interaction.guild is None:
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
@@ -3847,7 +3434,7 @@ def cta_set_party_roles(composition_id: int, party_no: int, role_ids: list):
 def cta_is_organizer(member) -> bool:
     """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta_asignar)."""
     perms = getattr(member, "guild_permissions", None)
-    return bool((perms is not None and perms.manage_guild) or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in member.roles))
+    return is_cta_manager(member)
 
 
 def cta_staff_assign(run_id: int, target_id: int, slot_key: str, actor_id: int):
@@ -4937,7 +4524,7 @@ class CTACompositionEditorView(discord.ui.View):
         if interaction.user.id != self.actor_id:
             await interaction.response.send_message("Este editor lo abrió otra persona.", ephemeral=True)
             return False
-        if not interaction.user.guild_permissions.manage_guild and not any(r.id == STAFF_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+        if not is_council_or_admin(interaction.user):
             await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
             return False
         return True
@@ -5050,7 +4637,7 @@ class CTACompositionGroup(app_commands.Group):
 
     async def _admin_check(self, interaction: discord.Interaction):
         member = interaction.user
-        return isinstance(member, discord.Member) and (member.guild_permissions.manage_guild or any(r.id == STAFF_ROLE_ID for r in member.roles))
+        return is_council_or_admin(member)
 
     @app_commands.command(name="crear", description="Crear una composición vacía")
     @app_commands.describe(nombre="Nombre único de la composición")
@@ -5069,6 +4656,8 @@ class CTACompositionGroup(app_commands.Group):
 
     @app_commands.command(name="listar", description="Listar composiciones guardadas")
     async def listar(self, interaction: discord.Interaction):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("Solo el Council o los administradores pueden listar composiciones.", ephemeral=True)
         rows = db_fetchall("""SELECT c.name, c.track, COUNT(s.id) AS n, COUNT(DISTINCT s.party_no) AS p
                               FROM cta_compositions c LEFT JOIN cta_slots s ON s.composition_id=c.id
                               WHERE c.guild_id=? GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (interaction.guild_id,))
@@ -5265,8 +4854,8 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
     member = interaction.user
-    if not (member.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID, CONTENT_CREATOR_ROLE_ID} for r in member.roles)):
-        return await interaction.response.send_message("No tenés permisos para iniciar una CTA.", ephemeral=True)
+    if not is_cta_manager(member):
+        return await interaction.response.send_message("No tenés permisos para iniciar una CTA (solo Staff, Caller y Council).", ephemeral=True)
     try:
         minutes = cta_parse_duration(tiempo)
     except ValueError as exc:
@@ -5278,7 +4867,7 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
         cta_ensure_brawl(interaction.guild_id, interaction.user.id)
         comp = cta_get_composition(interaction.guild_id, nombre)
     if not comp:
-        return await interaction.response.send_message(f"No existe la composición **{nombre}**. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        return await interaction.response.send_message(f"No existe la composición **{nombre}**. Elegila de la lista que aparece al escribir el nombre.", ephemeral=True)
     if not comp["slots"]:
         return await interaction.response.send_message("Esta composición no tiene posiciones. Agregalas con `/compo editar`.", ephemeral=True)
     if len(comp["slots"]) > CTA_MAX_SLOTS:
@@ -5354,7 +4943,7 @@ async def cta_activas(interaction: discord.Interaction):
 @bot.tree.command(name="cta_cerrar", description="Cerrar una CTA antes de tiempo", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta_activas)")
 async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
-    if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in interaction.user.roles)):
+    if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para cerrar CTA.", ephemeral=True)
     run = cta_run_get(cta_id)
     if not run or int(run["guild_id"]) != interaction.guild_id or run["status"] != "open":
@@ -5366,7 +4955,7 @@ async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
 @bot.tree.command(name="cta_asignar", description="Asignar a un jugador a una posición de una CTA", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(cta_id="Número de la CTA", miembro="Jugador", numero="Número de posición (el mismo que se usa en el hilo)", excepcion="Asignar aunque no cumpla los roles pedidos", motivo="Motivo (obligatorio si usás excepción)")
 async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member, numero: app_commands.Range[int, 1, CTA_MAX_SLOTS], excepcion: bool = False, motivo: Optional[str] = None):
-    if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in interaction.user.roles)):
+    if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para asignar posiciones.", ephemeral=True)
     run = cta_run_get(cta_id)
     if not run or int(run["guild_id"]) != interaction.guild_id or run["status"] != "open":
@@ -5398,7 +4987,7 @@ async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: di
 @bot.tree.command(name="cta_liberar", description="Liberar la posición de un jugador en una CTA", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(cta_id="Número de la CTA", miembro="Jugador")
 async def cta_liberar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member):
-    if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or any(r.id in {STAFF_ROLE_ID, RECRUITER_ROLE_ID} for r in interaction.user.roles)):
+    if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para liberar posiciones.", ephemeral=True)
     run = cta_run_get(cta_id)
     if not run or int(run["guild_id"]) != interaction.guild_id or run["status"] != "open":
@@ -5781,150 +5370,6 @@ async def disarray_slash(interaction: discord.Interaction, numero: int):
     await interaction.response.send_message(disarray_message(numero))
 
 
-# ================== /addrolllist: dar un rol a una lista de apodos ==================
-ADDROL_MAX_NAMES = 150
-ADDROL_ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
-
-
-def addrol_parse_names(text: str) -> list:
-    """Apodos separados por coma, punto y coma o salto de línea. Sin repetidos (sin distinguir mayúsculas)."""
-    seen, out = set(), []
-    for raw in re.split(r"[,;\n]+", text or ""):
-        name = " ".join(raw.split())
-        if name.startswith("@"):
-            name = name[1:].strip()
-        key = normalizar_nombre(name)
-        if name and key not in seen:
-            seen.add(key); out.append(name)
-    return out
-
-
-def addrol_parse_role(text: str):
-    """('mention', id) si etiquetaron un rol, ('name', texto) si es una palabra, (None, None) si no hay nada."""
-    m = ADDROL_ROLE_MENTION_RE.search(text or "")
-    if m:
-        return "mention", int(m.group(1))
-    name = " ".join((text or "").split())
-    return ("name", name) if name else (None, None)
-
-
-def addrol_resolve(names: list, members: list) -> dict:
-    """members: [(id, apodo)]. Coincidencia exacta del apodo, sin distinguir mayúsculas.
-    Si dos personas tienen el mismo apodo no se adivina: queda como ambiguo."""
-    idx: dict = {}
-    for uid, label in members:
-        idx.setdefault(normalizar_nombre(label.strip()), []).append(uid)
-    found, not_found, ambiguous = [], [], []
-    for name in names:
-        ids = idx.get(normalizar_nombre(name), [])
-        if len(ids) == 1:
-            found.append((name, ids[0]))
-        elif not ids:
-            not_found.append(name)
-        else:
-            ambiguous.append((name, ids))
-    return {"found": found, "not_found": not_found, "ambiguous": ambiguous}
-
-
-@bot.tree.command(name="addrolllist", description="Da un rol a una lista de apodos de Discord (crea el rol si escribís un nombre)", guild=GUILD_OBJ)
-@app_commands.describe(
-    apodos="Apodos de Discord separados por coma (también sirve un apodo por línea)",
-    rol="Una palabra/nombre para crear el rol, o etiquetá (@) un rol que ya existe",
-)
-async def addrolllist_slash(interaction: discord.Interaction, apodos: str, rol: str):
-    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-    if not comparar_allowed(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo el Staff o quien pueda gestionar roles puede usar este comando.")
-    names = addrol_parse_names(apodos)
-    if not names:
-        return await respond_ephemeral(interaction, "❌ No encontré ningún apodo. Escribilos separados por coma. Ej: `Juan, Pedro, Maria`")
-    if len(names) > ADDROL_MAX_NAMES:
-        return await respond_ephemeral(interaction, f"❌ Máximo {ADDROL_MAX_NAMES} apodos por comando (escribiste {len(names)}).")
-    kind, value = addrol_parse_role(rol)
-    if kind is None:
-        return await respond_ephemeral(interaction, "❌ Indicá el rol: una palabra para crearlo o etiquetá uno existente.")
-    if kind == "name" and len(value) > 100:
-        return await respond_ephemeral(interaction, "❌ El nombre del rol puede tener hasta 100 caracteres.")
-    guild = interaction.guild
-    role = None
-    if kind == "mention":
-        role = guild.get_role(value)
-        if role is None:
-            return await respond_ephemeral(interaction, "❌ No encontré ese rol en el servidor.")
-    else:
-        role = discord.utils.get(guild.roles, name=value)          # si ya existe uno con ese nombre se usa
-    if role is not None:
-        if role.is_default() or role.managed:
-            return await respond_ephemeral(interaction, "❌ Ese rol no se puede asignar manualmente (es @everyone o lo administra una integración).")
-        bot_top = guild.me.top_role if guild.me else None
-        if bot_top is None or role >= bot_top:
-            return await respond_ephemeral(interaction, "❌ Ese rol está por encima (o al mismo nivel) del rol del bot. Mové el rol del bot más arriba.")
-        if guild.owner_id != interaction.user.id and role >= interaction.user.top_role:
-            return await respond_ephemeral(interaction, "❌ No podés dar un rol que está por encima (o al mismo nivel) de tu rol más alto.")
-
-    await interaction.response.defer(ephemeral=True)
-    if not guild.chunked:
-        try:
-            await guild.chunk()
-        except Exception:
-            pass
-    members = [(m.id, discord_label(m)) for m in guild.members if not m.bot]
-    res = addrol_resolve(names, members)
-    if not res["found"]:
-        hint = "\nSi pegaste los apodos separados por espacios, separalos con comas." if len(names) == 1 and " " in names[0] else ""
-        return await interaction.followup.send(
-            f"❌ No encontré a nadie con esos apodos, así que no hice cambios{' (no creé el rol)' if role is None else ''}.{hint}",
-            ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-    created = False
-    if role is None:
-        try:
-            role = await guild.create_role(name=value, reason=f"Creado por {interaction.user} con /addrolllist")
-            created = True
-        except discord.Forbidden:
-            return await interaction.followup.send("❌ No pude crear el rol. Me falta el permiso **Gestionar roles**.", ephemeral=True)
-        except discord.HTTPException as exc:
-            return await interaction.followup.send(f"❌ Discord rechazó la creación del rol: `{exc}`", ephemeral=True)
-
-    assigned, already, failed = [], [], []
-    for name, uid in res["found"]:
-        member = guild.get_member(uid)
-        if member is None:
-            failed.append(name); continue
-        if role in member.roles:
-            already.append(name); continue
-        try:
-            await member.add_roles(role, reason=f"Asignado por {interaction.user} con /addrolllist")
-            assigned.append(name)
-        except discord.HTTPException as exc:
-            print(f"/addrolllist: no pude dar {role.name} a {member}: {exc}")
-            failed.append(name)
-
-    lines = [f"## ✅ Rol {role.name}",
-             f"{'🆕 Rol creado.' if created else 'Usé el rol que ya existía.'}",
-             f"**Apodos en la lista:** {len(names)}",
-             f"**Asignados ahora:** {len(assigned)}",
-             f"**Ya lo tenían:** {len(already)}",
-             f"**No encontrados:** {len(res['not_found'])}"]
-    if res["ambiguous"]:
-        lines.append(f"**Apodo repetido (no asigné a nadie):** {len(res['ambiguous'])}")
-    if failed:
-        lines.append(f"**No pude asignar:** {len(failed)}")
-    messages = ["\n".join(lines)]
-    def add_section(title, items):
-        if items:
-            chunks = chunk_lines([f"• `{i}`" for i in items], 1800)
-            messages.extend(f"{title} ({len(items)}):\n{c}" if k == 0 else c for k, c in enumerate(chunks))
-    add_section("❓ **No encontré a nadie con estos apodos**", res["not_found"])
-    add_section("👥 **Hay más de una persona con estos apodos (no asigné ninguna)**", [n for n, _ in res["ambiguous"]])
-    add_section("⚠️ **No pude asignar el rol a**", failed)
-    for msg in messages[:COMPARAR_MAX_MESSAGES]:
-        await interaction.followup.send(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-    if len(messages) > COMPARAR_MAX_MESSAGES:
-        await interaction.followup.send("…hay más resultados de los que se pueden mostrar.", ephemeral=True)
-
-
 # ================== !topkills / !topattend / !topdeaths ==================
 # Datos: página de asistencia de la guild en AlbionBB (la misma que se ve en el navegador; trae kills,
 # muertes y asistencia por jugador con el filtro por defecto de la página).
@@ -6135,17 +5580,17 @@ async def topdeaths_slash(interaction: discord.Interaction):
 # (sección, [(comando, quién puede usarlo, explicación breve)])
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
-        ("/cta nombre [tiempo] [tab] [city]", "Staff, Reclutador, Content creator", "Publica una CTA con una composición guardada. Dura 40 min por defecto (mínimo 10). La gente se anota escribiendo su número en el hilo. Si la composición tiene track, tab y city son obligatorios."),
+        ("/cta nombre [tiempo] [tab] [city]", "Staff, Caller, Council", "Publica una CTA con una composición guardada. Dura 40 min por defecto (mínimo 10). La gente se anota escribiendo su número en el hilo. Si la composición tiene track, tab y city son obligatorios."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
-        ("/cta_cerrar cta_id", "Staff, Reclutador", "Cierra una CTA antes de tiempo."),
-        ("/cta_asignar · /cta_liberar", "Staff, Reclutador", "Pone o saca a un jugador de una posición."),
+        ("/cta_cerrar cta_id", "Staff, Caller, Council", "Cierra una CTA antes de tiempo."),
+        ("/cta_asignar · /cta_liberar", "Staff, Caller, Council", "Pone o saca a un jugador de una posición."),
         ("/cta_historial", "Todos", "Últimas CTA cerradas."),
-        ("/compo crear · listar · ver · editar", "Staff (listar y ver: todos)", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
-        ("/compo duplicar · renombrar · eliminar", "Staff", "Copiar, renombrar o borrar una composición."),
-        ("/compo rol_party nombre party rol", "Staff", "Rol general de una party: sin ese rol nadie se anota en ella (además de los roles propios de cada posición)."),
-        ("/compo legacy nombre activar", "Staff", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
-        ("/compo track nombre activar", "Staff", "true/false: con track, cada /cta con esa composición pide Tab y City y, al cerrar la inscripción, genera el split (como /transparencia) con la gente anotada, sin crear rol. Los que se anotan tarde quedan en el hilo del split para que decidas si los sumás."),
-        ("/compo builds nombre link", "Staff", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
+        ("/compo crear · listar · ver · editar", "Council / Admin", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
+        ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
+        ("/compo rol_party nombre party rol", "Council / Admin", "Rol general de una party: sin ese rol nadie se anota en ella (además de los roles propios de cada posición)."),
+        ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
+        ("/compo track nombre activar", "Council / Admin", "true/false: con track, cada /cta con esa composición pide Tab y City y, al cerrar la inscripción, genera el split (como /transparencia) con la gente anotada, sin crear rol. Los que se anotan tarde quedan en el hilo del split para que decidas si los sumás."),
+        ("/compo builds nombre link", "Council / Admin", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
         ("`21`", "Todos", "Te anota en la posición 21 (si escribís otro número libre, te cambia)."),
@@ -6155,14 +5600,13 @@ HELP_SECTIONS = [
     ("📊 Estadísticas de la guild", [
         ("/topkills · /topattend · /topdeaths", "Miembros", "Top 10 de kills, asistencia o muertes de la guild (datos de AlbionBB). También con `!topkills`, `!topattend`, `!topdeaths`."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
-        ("/addrolllist apodos rol", "Staff, Gestionar roles", "Da un rol a una lista de apodos de Discord (separados por coma). Si escribís una palabra crea el rol; si etiquetás un rol existente lo usa. Te avisa qué apodos no encontró."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
     ("💰 Economía y timers", [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
-        ("/tabsell nombre_tab …", "Todos", "Calcula el precio de venta de un tab y arma el panel."),
+        ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),
         ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
         ("/apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
@@ -6180,7 +5624,8 @@ HELP_SECTIONS = [
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
         ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
         ("/encargar tarea [cuando]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff, con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
-        ("/mi_registro  ·  /desvincular", "Miembros", "Ver tus personajes vinculados / quitar uno (con confirmación)."),
+        ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
+        ("/desvincular", "Council / Admin", "Quita el personaje vinculado a tu propia cuenta (con confirmación). Los miembros piden al staff que use /admin_desvincular."),
         ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
         ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
@@ -6196,15 +5641,14 @@ HELP_SECTIONS = [
         ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
     ("🎁 Sorteos y roles", [
-        ("/sorteo premio tiempo [ganadores]", "Staff", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
+        ("/sorteo premio tiempo [ganadores]", "Staff / Council", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
         ("/list_role rol", "Staff", "Lista los miembros que tienen un rol."),
-        ("/delrole rol", "Staff", "Elimina un rol sin mencionar a nadie."),
-        ("!addroll-list NombreRol @u1 @u2 …", "Staff", "Crea un rol y se lo da a las personas mencionadas."),
+        ("!addroll-list NombreRol @u1 @u2 …", "Council / Admin", "Crea un rol y se lo da a las personas mencionadas."),
     ]),
     ("⚙️ Administración", [
         ("!panel", "Administradores", "Publica el panel de reclutamiento."),
         ("!panel_foco", "Administradores", "Publica el panel de tickets de foco."),
-        ("/borrar", "Staff, Gestionar mensajes", "Borra los últimos 100 mensajes del canal donde lo uses (no toca fijados ni los paneles del bot)."),
+        ("/borrar", "Council / Admin", "Borra los últimos 100 mensajes del canal donde lo uses (no toca fijados ni los paneles del bot)."),
         ("/help", "Todos", "Muestra esta lista."),
     ]),
 ]
@@ -6261,9 +5705,7 @@ def borrar_protected_ids(guild_id: int) -> set:
 
 
 def borrar_allowed(member) -> bool:
-    perms = getattr(member, "guild_permissions", None)
-    return bool((perms is not None and (perms.manage_messages or perms.manage_guild))
-                or any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", [])))
+    return is_council_or_admin(member)
 
 
 @bot.tree.command(name="borrar", description=f"Borra los últimos {BORRAR_LIMIT} mensajes de este canal (no toca fijados ni paneles del bot)", guild=GUILD_OBJ)
@@ -6271,7 +5713,7 @@ async def borrar_slash(interaction: discord.Interaction):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
     if not borrar_allowed(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo el Staff o quien pueda gestionar mensajes puede usar este comando.")
+        return await respond_ephemeral(interaction, "❌ Solo el **Council** y los administradores pueden usar este comando.")
     channel = interaction.channel
     if channel is None or not hasattr(channel, "purge"):
         return await respond_ephemeral(interaction, "❌ No puedo borrar mensajes en este tipo de canal.")
@@ -6298,7 +5740,6 @@ async def on_ready():
         bot.add_view(FocoTicketActionView())
         bot.add_view(RecruitView())            # tickets viejos (con los botones por rol)
         bot.add_view(RecruitTicketView())      # tickets nuevos: Aceptar / Rechazar / Cerrar
-        bot.add_view(GiveawayJoinView())
         bot.add_view(SplitSoldView())
         bot.add_view(TimerDeleteView())
         bot.add_view(CTAPanelView())
@@ -6317,15 +5758,10 @@ async def on_ready():
         try:
             restore_persistent_state(guild)
             bot._persistent_state_loaded = True
-            print(f"✅ SQLite restaurado: {len(giveaways)} sorteos, {len(timers)} timers y {len(ticket_images)} imágenes de postulación")
+            print(f"✅ SQLite restaurado: {len(timers)} timers y {len(ticket_images)} imágenes de postulación")
         except Exception as exc:
             print(f"❌ Error restaurando SQLite: {exc}")
 
-    # Reanudar también en reconexiones: si un intento anterior no pudo acceder al canal,
-    # el registro sigue en SQLite y se vuelve a programar.
-    if guild:
-        for g in list(giveaways.values()):
-            start_giveaway_task(guild.id, g)
 
     # CTA: recuperar paneles persistentes y reanudar cierres después de reinicios.
     if not cta_housekeeping.is_running():
