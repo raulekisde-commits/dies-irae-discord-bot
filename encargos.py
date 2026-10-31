@@ -157,6 +157,21 @@ class EncargosCog(commands.Cog):
         await _say(interaction, f"✅ Tarea #{t.id} publicada en <#{t.channel_id}>." if t.status != "scheduled"
                    else f"⚠️ Tarea #{t.id} guardada, pero no pude publicarla ahora; se reintenta sola.")
 
+    @app_commands.command(name="top-tareas", description="Quiénes aceptaron y cerraron más tareas del staff")
+    @app_commands.guild_only()
+    async def top_tareas(self, interaction: discord.Interaction):
+        if not can_take(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council y el rol Opinólogo pueden ver este ranking.")
+        taken, done = await self.run(edb.top_users)
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+        def lines(rows):
+            return "\n".join(f"{medals.get(i, f'`{i}.`')} <@{u}> — **{n}**" for i, (u, n) in enumerate(rows, start=1)) or "Todavía no hay datos."
+        emb = discord.Embed(title="🏆 Top tareas", color=discord.Color.gold())
+        emb.add_field(name="✋ Más tareas aceptadas", value=lines(taken), inline=True)
+        emb.add_field(name="✅ Más tareas cerradas", value=lines(done), inline=True)
+        await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
+
     # ---------- botones ----------
     async def _task(self, interaction) -> Optional[edb.Task]:
         t = await self.run(edb.find_by_message, interaction.message.id) if interaction.message else None

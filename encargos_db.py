@@ -272,3 +272,16 @@ def finish(db_path: str, task_id: int, user_id: int, override: bool) -> Change:
             return Change("ok", _load(conn, task_id))
     finally:
         conn.close()
+
+
+def top_users(db_path: str, size: int = 10):
+    """(más tareas aceptadas, más tareas cerradas): listas de (user_id, cantidad). «Aceptadas» = veces que alguien tomó una tarea."""
+    conn = connect(db_path)
+    try:
+        taken = [(int(r[0]), int(r[1])) for r in conn.execute(
+            "SELECT actor_id, COUNT(*) AS n FROM task_events WHERE kind='taken' GROUP BY actor_id ORDER BY n DESC, actor_id LIMIT ?", (size,))]
+        done = [(int(r[0]), int(r[1])) for r in conn.execute(
+            "SELECT done_by, COUNT(*) AS n FROM tasks WHERE status='done' AND done_by IS NOT NULL GROUP BY done_by ORDER BY n DESC, done_by LIMIT ?", (size,))]
+        return taken, done
+    finally:
+        conn.close()

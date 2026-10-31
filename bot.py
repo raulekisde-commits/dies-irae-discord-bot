@@ -4008,6 +4008,13 @@ async def cta_finish_run(run_id: int, actor_id: int):
             await thread.send(f"🏁 <@{actor_id}> cerró la CTA. Ya no se aceptan más anotados.", allowed_mentions=CTA_NO_PINGS)
         except Exception:
             pass
+    cog = bot.get_cog("EncargosCog")
+    if cog is not None:                                   # tarea para el staff: revisar el combat log de esta CTA
+        try:
+            await cog.create(text=f"Revisar el combat log de {cta_run_title(run)}", created_by=actor_id, source=f"cta:{run_id}:combatlog_review",
+                             link=f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}")
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude crear la tarea de revisar el combat log: {exc!r}")
     return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}", True
 
 
@@ -5723,7 +5730,8 @@ HELP_SECTIONS = [
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
         ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
         ("/encargar tarea [cuando]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff, con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
-        ("/invitar usuario quien_es", "Legacy", "Invita a alguien: le saca el rol Public, le da el rol Invitado y queda registrado quién lo invitó y por qué."),
+        ("/top-tareas", "Staff / Council / Opinólogo", "Ranking de quién aceptó y quién cerró más tareas del staff."),
+        ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (por ahora: invitados)."),
