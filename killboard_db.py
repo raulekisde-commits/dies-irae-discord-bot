@@ -255,7 +255,7 @@ TOP_KEYS = {
     "kills": ("⚔️ Top kills", "kills", True, "kills"),
     "deaths": ("💀 Top muertes", "deaths", True, "muertes"),
     "attendance": ("🛡️ Top asistencia", "attendance", True, "asistencias"),
-    "first5": ("☠️ Top primeras muertes (de los 5 primeros en morir)", "first5", True, "veces"),
+    "first5": ("💥 Muertes en el primer engage", "first5", True, "veces"),
     "avg_ip": ("📈 Mejor IP promedio", "avg_ip", True, "IP"),
     "max_ip": ("⬆️ IP más alta registrada", "max_ip", True, "IP"),
     "min_ip": ("⬇️ IP más baja registrada", "min_ip", False, "IP"),

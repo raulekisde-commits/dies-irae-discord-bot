@@ -5703,7 +5703,7 @@ HELP_SECTIONS = [
     ]),
     ("📊 Estadísticas de la guild", [
         ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, muertes en el primer engage, IP promedio/máxima/mínima, winrate y tareas del staff. Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
-        ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de primeras muertes, roles más jugados e IP de un jugador (por defecto, vos)."),
+        ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de muertes en el primer engage, roles más jugados e IP de un jugador (por defecto, vos)."),
         ("/killboard cargar · borrar · probar", "Staff / Council (cargar también Caller en el hilo de stats de una CTA)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
