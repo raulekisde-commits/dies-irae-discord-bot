@@ -5752,7 +5752,7 @@ HELP_SECTIONS = [
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (se muestra en el canal)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
-        ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (por ahora: invitados)."),
+        ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings y casino)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
         ("/desvincular", "Council / Admin", "Quita el personaje vinculado a tu propia cuenta (con confirmación). Los miembros piden al staff que use /admin_desvincular."),
         ("/admin_registro · /admin_desvincular · /admin_vincular", "Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
