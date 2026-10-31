@@ -381,6 +381,31 @@ cooldowns = {}
 # NUEVO: foco tickets
 active_foco_tickets = {}   # user_id -> channel_id (ayuda rápida, pero además validamos por topic)
 
+def _clamp_command_texts(tree, guild=None) -> int:
+    """Discord rechaza TODA la sincronización si un comando o parámetro tiene una descripción de más de 100 caracteres.
+    Antes de sincronizar se recortan, así un texto largo no deja al bot sin comandos nuevos. Devuelve cuántos recortó."""
+    fixed = 0
+
+    def walk(cmd):
+        nonlocal fixed
+        if len(getattr(cmd, "description", "") or "") > 100:
+            cmd.description = cmd.description[:99] + "…"
+            fixed += 1
+            print(f"⚠️ Descripción demasiado larga recortada en /{getattr(cmd, 'qualified_name', cmd.name)}")
+        for p in (getattr(cmd, "_params", None) or {}).values():
+            d = getattr(p, "description", "") or ""
+            if len(d) > 100:
+                p.description = d[:99] + "…"
+                fixed += 1
+                print(f"⚠️ Descripción de parámetro recortada en /{getattr(cmd, 'qualified_name', cmd.name)} ({getattr(p, 'name', '?')})")
+        for sub in getattr(cmd, "commands", None) or []:
+            walk(sub)
+
+    for c in tree.get_commands(guild=guild):
+        walk(c)
+    return fixed
+
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -464,8 +489,9 @@ class MyBot(commands.Bot):
         except Exception as e:
             print("❌ Error cargando Wuju Coins:", e)
         try:
-            await self.tree.sync(guild=GUILD_OBJ)
-            print("✅ Slash commands sincronizados (guild) [setup_hook]")
+            _clamp_command_texts(self.tree, GUILD_OBJ)
+            synced = await self.tree.sync(guild=GUILD_OBJ)
+            print(f"✅ Slash commands sincronizados (guild) [setup_hook]: {len(synced)} comandos")
         except Exception as e:
             print("❌ Error sync slash commands [setup_hook]:", e)
 
