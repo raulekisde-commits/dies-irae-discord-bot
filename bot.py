@@ -3182,6 +3182,7 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "stats_channel_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "stats_message_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "stats_thread_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "stats_state", "INTEGER")        # NULL = sin crear; -1 = creándose; 1 = creado
         # Cada posición pide exactamente UN rol de juego: si tenía varios queda el primero (las que no tienen ninguno se marcan en /compo ver).
         for row in conn.execute("SELECT id, role_ids_json FROM cta_slots").fetchall():
             new_ids, changed = cu.migrate_role_ids(row[1])
@@ -3834,6 +3835,9 @@ async def cta_close_run(run_id: int, reason="timeout"):
     task3 = asyncio.create_task(cta_create_split_task(run))
     cta_role_tasks.add(task3)
     task3.add_done_callback(cta_role_tasks.discard)
+    task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
+    cta_role_tasks.add(task4)
+    task4.add_done_callback(cta_role_tasks.discard)
 
 
 async def cta_create_split_task(run: dict):
@@ -4037,7 +4041,8 @@ async def cta_finish_run(run_id: int, actor_id: int):
     voice = bot.get_cog("CTAVoiceCog")
     if voice is not None:
         await voice.stop_run(run_id)
-    stats_note = await cta_create_stats_panel(run, actor_id)
+    stats_note = await cta_create_stats_panel_once(run, actor_id)         # normalmente ya existe desde que cerró la inscripción
+    await cta_post_voice_lists(run_id)                                    # recién ahora hay datos de voz completos
     try:
         await cta_refresh_board(run_id)
     except Exception as exc:
@@ -4059,8 +4064,48 @@ async def cta_finish_run(run_id: int, actor_id: int):
     return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}", True
 
 
+def _stats_thread_mention(run_id: int) -> str:
+    row = db_fetchall("SELECT stats_thread_id FROM cta_runs WHERE id=?", (run_id,))
+    return f"<#{row[0]['stats_thread_id']}>" if row and row[0]["stats_thread_id"] else "el hilo de stats"
+
+
+async def cta_create_stats_panel_once(run: dict, actor_id: int) -> str:
+    """Crea el panel + hilo de stats una sola vez por CTA (se reclama de forma atómica; si falla, se puede reintentar)."""
+    run_id = int(run["id"])
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        claimed = conn.execute("UPDATE cta_runs SET stats_state=-1 WHERE id=? AND stats_state IS NULL AND stats_thread_id IS NULL", (run_id,)).rowcount
+        conn.commit()
+    if not claimed:
+        return f"Panel de stats: {_stats_thread_mention(run_id)}."
+    try:
+        note = await cta_create_stats_panel(run, actor_id)
+    except Exception as exc:
+        print(f"CTA #{run_id}: falló el panel de stats: {exc!r}")
+        note = "⚠️ No pude crear el panel de stats."
+    ok = bool(db_fetchall("SELECT 1 FROM cta_runs WHERE id=? AND stats_thread_id IS NOT NULL", (run_id,)))
+    db_execute("UPDATE cta_runs SET stats_state=? WHERE id=?", (1 if ok else None, run_id))   # sin hilo: queda libre para reintentar al terminar la CTA
+    return note
+
+
+async def cta_post_voice_lists(run_id: int):
+    """Al terminar la CTA: en el hilo de stats, quién anotado no estuvo en voz y quién estuvo sin estar anotado."""
+    row = db_fetchall("SELECT stats_thread_id FROM cta_runs WHERE id=?", (run_id,))
+    if not row or not row[0]["stats_thread_id"]:
+        return
+    try:
+        thread = bot.get_channel(int(row[0]["stats_thread_id"])) or await bot.fetch_channel(int(row[0]["stats_thread_id"]))
+        not_voice, extra = await asyncio.to_thread(cv.compare_with_signups, DB_PATH, run_id)
+        for header, ids in (("📵 **Anotados que NO estuvieron en voz** (menos de 2 min)", not_voice),
+                            ("🎧 **Estuvieron en voz pero NO estaban anotados**", extra)):
+            lines = [f"• <@{u}>" for u in ids] or ["Nadie."]
+            for i, chunk in enumerate(chunk_lines(lines)):
+                await thread.send((header + f" ({len(ids)})\n" if i == 0 else "") + chunk, allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude publicar las listas de voz: {exc!r}")
+
+
 async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
-    """Panel + hilo de stats en el canal fijo, y tarea para el Staff de cargar el killboard. Devuelve una línea de resultado."""
+    """Panel + hilo de stats en el canal fijo, y tareas para el Staff (killboard y conectados). Devuelve una línea de resultado."""
     run_id = int(run["id"])
     guild = bot.get_guild(int(run["guild_id"]))
     if guild is None:
@@ -4079,7 +4124,7 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
     roles_text = " · ".join(f"{k}: {v}" for k, v in sorted(by_role.items(), key=lambda kv: -kv[1])) or "—"
     cta_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}"
     emb = discord.Embed(title=f"📊 {title}", color=discord.Color(0x5865F2),
-                        description=f"Composición: **{run['composition_name']}**\nCerrada por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>")
+                        description=f"Composición: **{run['composition_name']}**\nInscripción cerrada · <t:{int(datetime.now(timezone.utc).timestamp())}:f>")
     emb.add_field(name="👥 Anotados", value=str(len(people)), inline=True)
     emb.add_field(name="🗡️ Killboard", value="⏳ Sin cargar", inline=True)
     emb.add_field(name="📋 Conectados", value="⏳ Sin cargar", inline=True)
@@ -4102,15 +4147,6 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
                           allowed_mentions=CTA_NO_PINGS)
     except Exception:
         pass
-    try:
-        not_voice, extra = await asyncio.to_thread(cv.compare_with_signups, DB_PATH, run_id)
-        for header, ids in (("📵 **Anotados que NO estuvieron en voz** (menos de 2 min)", not_voice),
-                            ("🎧 **Estuvieron en voz pero NO estaban anotados**", extra)):
-            lines = [f"• <@{u}>" for u in ids] or ["Nadie."]
-            for i, chunk in enumerate(chunk_lines(lines)):
-                await thread.send((header + f" ({len(ids)})\n" if i == 0 else "") + chunk, allowed_mentions=CTA_NO_PINGS)
-    except Exception as exc:
-        print(f"CTA #{run_id}: no pude publicar las listas de voz: {exc!r}")
     cog = bot.get_cog("EncargosCog")
     if cog is not None:
         try:
