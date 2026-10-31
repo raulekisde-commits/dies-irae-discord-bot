@@ -5702,8 +5702,8 @@ HELP_SECTIONS = [
         ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
     ]),
     ("📊 Estadísticas de la guild", [
-        ("/ranking tipo", "Miembros", "Rankings de la guild: kills, muertes, asistencia, primeras muertes, IP promedio/máxima/mínima. Solo cuentan los killboards cargados por el staff. También `!topkills`, `!topattend`, `!topdeaths`. (`/top` sigue siendo el top de Wuju Coins.)"),
-        ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de primeras muertes, roles más jugados e IP de un jugador (por defecto, vos)."),
+        ("/ranking tipo", "Miembros", "Rankings de la guild: kills, muertes, asistencia, muertes en el primer engage, IP promedio/máxima/mínima. Solo cuentan los killboards cargados por el staff. También `!topkills`, `!topattend`, `!topdeaths`. (`/top` sigue siendo el top de Wuju Coins.)"),
+        ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de muertes en el primer engage, roles más jugados e IP de un jugador (por defecto, vos)."),
         ("/killboard cargar · borrar · probar", "Staff / Council (cargar también Caller en el hilo de stats de una CTA)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
