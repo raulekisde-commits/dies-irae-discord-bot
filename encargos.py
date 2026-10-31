@@ -13,6 +13,7 @@ import encargos_db as edb
 from guildshop import can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
+TASK_LOG_CHANNEL_ID = int(os.getenv("TASK_LOG_CHANNEL_ID", "1566014626309873776"))
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 TASKS_CHANNEL_ID = int(os.getenv("TASKS_CHANNEL_ID", "1565986098679644270"))
@@ -184,6 +185,13 @@ class EncargosCog(commands.Cog):
                     "notfound": "❌ No encuentro esa tarea."}
         if res.status != "ok":
             return await _say(interaction, messages.get(res.status, "❌ No se pudo."))
+        if res.task.status == "done" and await self.log_done(res.task):
+            try:
+                await interaction.response.send_message("✅ Tarea terminada. Quedó registrada en el canal de logs.", ephemeral=True)
+                await interaction.message.delete()
+                return
+            except Exception:
+                traceback.print_exc()
         try:
             await interaction.response.edit_message(content=interaction.message.content, embed=self.embed(res.task),
                                                     view=None if res.task.status == "done" else TaskView(self), allowed_mentions=NO_MENTIONS)
@@ -209,6 +217,18 @@ class EncargosCog(commands.Cog):
             override = is_staff_or_council(interaction.user)
             await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
 
+    async def log_done(self, t: edb.Task) -> bool:
+        """Deja el registro de la tarea terminada en el canal de logs. False si no se pudo (entonces el panel NO se borra)."""
+        try:
+            ch = await self._channel(TASK_LOG_CHANNEL_ID)
+            if ch is None:
+                return False
+            await ch.send(content=f"✅ Tarea #{t.id} terminada por <@{t.done_by}>", embed=self.embed(t), allowed_mentions=NO_MENTIONS)
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
+
     async def complete_by_source(self, source: str, user_id: int) -> bool:
         """Termina sola una tarea automática (p. ej. cargar el killboard de una CTA) y actualiza su panel. False si no hay tarea abierta."""
         t = await self.run(edb.find_by_source, source)
@@ -220,6 +240,9 @@ class EncargosCog(commands.Cog):
         try:
             ch = self.bot.get_channel(res.task.channel_id) or await self.bot.fetch_channel(res.task.channel_id)
             msg = await ch.fetch_message(res.task.message_id)
+            if await self.log_done(res.task):
+                await msg.delete()
+                return True
             await msg.edit(embed=self.embed(res.task), view=None, allowed_mentions=NO_MENTIONS)
         except Exception as exc:
             print(f"Tarea {t.id}: terminada pero no pude actualizar el panel: {exc!r}")
