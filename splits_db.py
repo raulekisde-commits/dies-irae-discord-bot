@@ -246,6 +246,9 @@ def init_schema(db_path: str) -> None:
         if "source_cta_id" not in cols:                      # base creada antes de esta columna
             conn.execute("ALTER TABLE splits ADD COLUMN source_cta_id INTEGER")
             conn.commit()
+        if "mirror_message_id" not in {r[1] for r in conn.execute("PRAGMA table_info(split_requests)")}:
+            conn.execute("ALTER TABLE split_requests ADD COLUMN mirror_message_id INTEGER")
+            conn.commit()
         for col, ddl in (("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("bolsitas", "INTEGER NOT NULL DEFAULT 0"),
                          ("scout_pay", "INTEGER NOT NULL DEFAULT 0"),
                          ("pay_round", "INTEGER NOT NULL DEFAULT 0"), ("edit_snapshot", "TEXT")):
@@ -606,10 +609,29 @@ def set_request_message(db_path: str, split_id: int, user_id: int, message_id: i
         conn.close()
 
 
+def set_request_mirror(db_path: str, split_id: int, user_id: int, message_id: int) -> None:
+    """Segundo mensaje con los mismos botones (en el hilo de la CTA)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE split_requests SET mirror_message_id=? WHERE split_id=? AND user_id=?", (message_id, split_id, user_id))
+    finally:
+        conn.close()
+
+
+def mirror_of(db_path: str, split_id: int, user_id: int) -> Tuple[Optional[int], Optional[int]]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT message_id, mirror_message_id FROM split_requests WHERE split_id=? AND user_id=?", (split_id, user_id)).fetchone()
+        return (r["message_id"], r["mirror_message_id"]) if r else (None, None)
+    finally:
+        conn.close()
+
+
 def get_request_by_message(db_path: str, message_id: int) -> Optional[Request]:
     conn = connect(db_path)
     try:
-        return _req(conn.execute("SELECT * FROM split_requests WHERE message_id=?", (message_id,)).fetchone())
+        return _req(conn.execute("SELECT * FROM split_requests WHERE message_id=? OR mirror_message_id=?", (message_id, message_id)).fetchone())
     finally:
         conn.close()
 

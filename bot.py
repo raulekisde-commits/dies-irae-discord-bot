@@ -3126,6 +3126,13 @@ def cta_db_init():
         conn.execute("UPDATE cta_party_access SET access_match='any' WHERE access_match<>'any'")
         # Título de cada CTA (hora redonda UTC o el que se indicó). Todas las CTA son «track».
         db_ensure_column(conn, "cta_runs", "title", "TEXT")
+        # Estado final de la CTA: NULL = en curso · 'finished' (botón Cerrar CTA) · 'cancelled' (botón Cancelar CTA).
+        db_ensure_column(conn, "cta_runs", "final_state", "TEXT")
+        db_ensure_column(conn, "cta_runs", "final_by", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "final_at", "TEXT")
+        db_ensure_column(conn, "cta_runs", "stats_channel_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "stats_message_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "stats_thread_id", "INTEGER")
         # Cada posición pide exactamente UN rol de juego: si tenía varios queda el primero (las que no tienen ninguno se marcan en /compo ver).
         for row in conn.execute("SELECT id, role_ids_json FROM cta_slots").fetchall():
             new_ids, changed = cu.migrate_role_ids(row[1])
@@ -3133,6 +3140,7 @@ def cta_db_init():
                 conn.execute("UPDATE cta_slots SET role_ids_json=?, access_mode='roles' WHERE id=?", (new_ids, row[0]))
         conn.commit()
     cu.init_schedule(DB_PATH)
+    cu.init_positions(DB_PATH)
 
 
 cta_db_init()
@@ -3572,8 +3580,10 @@ def cta_board_specs(run: dict) -> list:
         thread_ref = f"<#{run['thread_id']}>" if run.get("thread_id") else "el hilo de esta CTA"
         status = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>\n"
                   f"Para anotarte, escribí el número de tu posición en {thread_ref}.")
+    elif run.get("final_state") == "finished":
+        status = "🏁 **CTA finalizada** · esta es la composición final"
     else:
-        status = "🔒 **Inscripciones cerradas** · esta es la composición final"
+        status = "🔒 **Inscripciones cerradas** · esta es la composición final · el masseo sigue hasta que Council o Caller cierren la CTA"
     builds_line = f"\n🔗 [Builds]({snapshot['builds_url']})" if snapshot.get("builds_url") else ""
     legacy_line = ""
     legacy_end = cta_legacy_window_end(run, snapshot) if is_open else None
@@ -3702,7 +3712,7 @@ async def cta_refresh_panel(bot_obj, run_id: int):
     try:
         msg = await channel.fetch_message(int(run["message_id"]))
         await msg.edit(embeds=cta_panel_groups(run)[0],
-                       view=CTAPanelView(run_id=int(run_id), closed=run["status"] != "open", thread_url=thread_url),
+                       view=CTAPanelView(run_id=int(run_id), closed=run["status"] != "open", thread_url=thread_url, final=run.get("final_state") is not None),
                        allowed_mentions=CTA_NO_PINGS)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
         print(f"CTA #{run_id}: no se pudo actualizar el panel: {exc}")
@@ -3742,6 +3752,10 @@ async def cta_close_run(run_id: int, reason="timeout"):
     if not changed:
         return
     cta_audit(int(run["guild_id"]), int(run["created_by"]), "cta_closed", run_id, reason)
+    try:
+        await asyncio.to_thread(cu.snapshot_positions, DB_PATH, run_id)       # historial: en qué posición quedó cada persona
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude guardar el historial de posiciones: {exc!r}")
     try:
         await cta_refresh_board(run_id)
     except Exception as exc:
@@ -3825,6 +3839,240 @@ async def cta_create_track_split(run_id: int):
               " No se creó ningún rol. Si te anotás ahora, el organizador decide si te suma al split.")
 
 
+STATS_CHANNEL_ID = int(os.getenv("STATS_CHANNEL_ID", str(cu.STATS_CHANNEL_ID)))
+
+
+def is_council_or_caller(member) -> bool:
+    return isinstance(member, discord.Member) and (
+        is_council_or_admin(member) or any(r.id == CALLER_ROLE_ID for r in member.roles))
+
+
+class CTAFinalConfirmView(discord.ui.View):
+    """Confirmación privada para «Cerrar CTA» / «Cancelar CTA» (evita un clic por error)."""
+    def __init__(self, run_id: int, state: str, user_id: int):
+        super().__init__(timeout=120)
+        self.run_id, self.state, self.user_id, self.used = run_id, state, user_id, False
+        ok = discord.ui.Button(label="Sí, cerrar CTA" if state == "finished" else "Sí, cancelar CTA",
+                               style=discord.ButtonStyle.success if state == "finished" else discord.ButtonStyle.danger)
+        no = discord.ui.Button(label="Volver", style=discord.ButtonStyle.secondary)
+        ok.callback, no.callback = self._ok, self._no
+        self.add_item(ok)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Esta confirmación es de otra persona.", ephemeral=True)
+            return False
+        return True
+
+    async def _no(self, interaction: discord.Interaction):
+        self.used = True
+        await interaction.response.edit_message(content="Listo, no se cambió nada.", view=None)
+
+    async def _ok(self, interaction: discord.Interaction):
+        if self.used:
+            return await interaction.response.send_message("Ya lo hiciste.", ephemeral=True)
+        self.used = True
+        await interaction.response.edit_message(content="⏳ Procesando…", view=None)
+        if self.state == "finished":
+            text, offer_delete = await cta_finish_run(self.run_id, interaction.user.id)
+        else:
+            text, offer_delete = await cta_abort_run(self.run_id, interaction.user.id), False
+        if offer_delete:
+            await interaction.edit_original_response(content=text + "\n\n¿Querés borrar el mensaje de la CTA del canal? (Transparencia y stats no se tocan.)",
+                                                     view=CTADeleteMessageView(self.run_id, interaction.user.id))
+        else:
+            await interaction.edit_original_response(content=text, view=None)
+
+
+class CTADeleteMessageView(discord.ui.View):
+    def __init__(self, run_id: int, user_id: int):
+        super().__init__(timeout=300)
+        self.run_id, self.user_id = run_id, user_id
+        ok = discord.ui.Button(label="Borrar mensaje de la CTA", style=discord.ButtonStyle.danger)
+        no = discord.ui.Button(label="Dejarlo", style=discord.ButtonStyle.secondary)
+        ok.callback, no.callback = self._ok, self._no
+        self.add_item(ok)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Esto es de otra persona.", ephemeral=True)
+            return False
+        return True
+
+    async def _no(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="👍 El mensaje de la CTA queda en el canal.", view=None)
+
+    async def _ok(self, interaction: discord.Interaction):
+        run = cta_run_get(self.run_id)
+        await interaction.response.edit_message(content="⏳ Borrando…", view=None)
+        ok = await cta_delete_message(run)
+        cta_audit(int(run["guild_id"]), interaction.user.id, "cta_message_deleted", self.run_id, f"ok={ok}")
+        await interaction.edit_original_response(content="🗑️ Mensaje de la CTA borrado." if ok else "⚠️ No pude borrar el mensaje (¿ya no existe o me falta permiso?).", view=None)
+
+
+async def cta_delete_message(run: dict) -> bool:
+    """Borra solo el mensaje de la CTA del canal (su hilo de inscripción se va con él). No toca transparencia ni stats."""
+    try:
+        ch = bot.get_channel(int(run["channel_id"])) or await bot.fetch_channel(int(run["channel_id"]))
+        thread = await cta_get_thread(run)
+        if thread is not None:
+            try:
+                await thread.delete()
+            except Exception:
+                pass
+        msg = await ch.fetch_message(int(run["message_id"]))
+        await msg.delete()
+        return True
+    except discord.NotFound:
+        return True
+    except Exception as exc:
+        print(f"CTA #{run['id']}: no pude borrar el mensaje: {exc!r}")
+        return False
+
+
+async def cta_ask_final(interaction: discord.Interaction, run_id: Optional[int], state: str):
+    if not is_council_or_caller(interaction.user):
+        return await interaction.response.send_message("🔒 Solo el Council y el Caller pueden usar este botón.", ephemeral=True)
+    run = cta_run_get(run_id) if run_id else None
+    if not run:
+        return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+    if run.get("final_state") is not None or run["status"] == "cancelled":
+        return await interaction.response.send_message("Esta CTA ya fue cerrada o cancelada.", ephemeral=True)
+    title = cta_run_title(run)
+    if state == "finished":
+        text = (f"¿Cerrar **{title}**? Se crea el panel y el hilo de stats y ya no se aceptan más anotados."
+                + (" Además termina la inscripción ahora." if run["status"] == "open" else ""))
+    else:
+        text = (f"¿Cancelar **{title}**? Se borra la CTA, queda un registro de «CTA cancelada» en el canal de splits "
+                "y el split (si existe) queda cancelado, sin poder pagarse.")
+    await interaction.response.send_message(text, view=CTAFinalConfirmView(int(run_id), state, interaction.user.id), ephemeral=True)
+
+
+async def cta_finish_run(run_id: int, actor_id: int):
+    """Botón «Cerrar CTA». Devuelve (texto para quien lo apretó, si corresponde ofrecer borrar el mensaje)."""
+    run = cta_run_get(run_id)
+    if not run:
+        return "No encontré esta CTA.", False
+    if run["status"] == "open":
+        await cta_close_run(run_id, reason=f"finish:{actor_id}")
+    res = await asyncio.to_thread(cu.begin_final, DB_PATH, run_id, "finished", actor_id)
+    if res != "ok":
+        return "Esta CTA ya estaba cerrada o cancelada.", False
+    run = cta_run_get(run_id)
+    cta_audit(int(run["guild_id"]), actor_id, "cta_finished", run_id, "")
+    stats_note = await cta_create_stats_panel(run, actor_id)
+    try:
+        await cta_refresh_board(run_id)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude refrescar el tablero final: {exc!r}")
+    await cta_refresh_panel(bot, run_id)
+    thread = await cta_get_thread(run)
+    if thread is not None:
+        try:
+            await thread.send(f"🏁 <@{actor_id}> cerró la CTA. Ya no se aceptan más anotados.", allowed_mentions=CTA_NO_PINGS)
+        except Exception:
+            pass
+    return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}", True
+
+
+async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
+    """Panel + hilo de stats en el canal fijo, y tarea para el Staff de cargar el killboard. Devuelve una línea de resultado."""
+    run_id = int(run["id"])
+    guild = bot.get_guild(int(run["guild_id"]))
+    if guild is None:
+        return "⚠️ No pude crear el panel de stats (no veo el servidor)."
+    ch = guild.get_channel(STATS_CHANNEL_ID)
+    if ch is None:
+        try:
+            ch = await bot.fetch_channel(STATS_CHANNEL_ID)
+        except Exception:
+            return f"⚠️ No encuentro el canal de stats (<#{STATS_CHANNEL_ID}>)."
+    title = cta_run_title(run)
+    people = await asyncio.to_thread(cu.positions, DB_PATH, run_id)
+    by_role: dict = {}
+    for p in people:
+        by_role[p["role_name"] or "Sin posición"] = by_role.get(p["role_name"] or "Sin posición", 0) + 1
+    roles_text = " · ".join(f"{k}: {v}" for k, v in sorted(by_role.items(), key=lambda kv: -kv[1])) or "—"
+    cta_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}"
+    emb = discord.Embed(title=f"📊 {title}", color=discord.Color(0x5865F2),
+                        description=f"Composición: **{run['composition_name']}**\nCerrada por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>")
+    emb.add_field(name="👥 Anotados", value=str(len(people)), inline=True)
+    emb.add_field(name="🗡️ Killboard", value="⏳ Sin cargar", inline=True)
+    emb.add_field(name="🎭 Posiciones", value=roles_text[:1000], inline=False)
+    emb.add_field(name="🔗 CTA", value=f"[Hilo de la CTA]({cta_url})", inline=False)
+    emb.set_footer(text=f"CTA #{run_id}")
+    try:
+        msg = await ch.send(embed=emb, allowed_mentions=CTA_NO_PINGS)
+        thread = await msg.create_thread(name=f"Stats {title}"[:100], auto_archive_duration=10080)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude crear el panel de stats: {exc!r}")
+        return "⚠️ No pude crear el panel de stats (revisá los permisos del bot en ese canal)."
+    db_execute("UPDATE cta_runs SET stats_channel_id=?, stats_message_id=?, stats_thread_id=? WHERE id=?", (ch.id, msg.id, thread.id, run_id))
+    try:
+        await thread.send("📊 Acá se carga el killboard de esta CTA y se ven sus estadísticas. El Staff tiene una tarea pendiente para cargarlo.",
+                          allowed_mentions=CTA_NO_PINGS)
+    except Exception:
+        pass
+    cog = bot.get_cog("EncargosCog")
+    if cog is not None:
+        try:
+            await cog.create(text=f"Cargar el killboard de {title}", created_by=actor_id, source=f"cta:{run_id}:killboard",
+                             link=f"https://discord.com/channels/{run['guild_id']}/{thread.id}")
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude crear la tarea del killboard: {exc!r}")
+    return f"Panel de stats creado: {thread.mention}."
+
+
+async def cta_abort_run(run_id: int, actor_id: int) -> str:
+    """Botón «Cancelar CTA»: borra la CTA y deja un registro en el canal de splits; el split (si existe) queda cancelado."""
+    run = cta_run_get(run_id)
+    if not run:
+        return "No encontré esta CTA."
+    res = await asyncio.to_thread(cu.begin_final, DB_PATH, run_id, "cancelled", actor_id)
+    if res != "ok":
+        return "Esta CTA ya estaba cerrada o cancelada."
+    cta_audit(int(run["guild_id"]), actor_id, "cta_cancelled", run_id, "")
+    import splits_db as _sdb
+    title = cta_run_title(run)
+    cog = bot.get_cog("SplitsCog")
+    split, split_note = None, ""
+    if cog is not None:
+        try:
+            split = await cog.run(_sdb.find_by_cta, run_id)
+            if split is not None:
+                r = await cog.run(_sdb.cancel_split, split.id, actor_id)
+                if r == "cancelled":
+                    await cog.sync_split(split.id)
+                    th = await cog._get_channel(split.thread_id)
+                    if th is not None:
+                        await th.send(f"🚫 **La CTA {title} fue cancelada** por <@{actor_id}>. Este split no se puede pagar.", allowed_mentions=CTA_NO_PINGS)
+                    split_note = "Split cancelado."
+                elif r in ("closed", "closing"):
+                    split_note = "⚠️ El split ya estaba pagado o pagándose: no se pudo cancelar."
+        except Exception as exc:
+            print(f"CTA #{run_id}: error cancelando el split: {exc!r}")
+            split_note = "⚠️ No pude cancelar el split, revisalo a mano."
+    signups = [int(x["user_id"]) for x in cta_get_signups(run_id)]
+    mentions = " ".join(f"<@{u}>" for u in signups)
+    if len(mentions) > 1500:
+        mentions = mentions[:1500].rsplit(" ", 1)[0] + " …"
+    record = (f"🛑 **CTA cancelada** · {title} ({run['composition_name']})\n"
+              f"Cancelada por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>\n"
+              f"Anotados: **{len(signups)}**" + (f"\n{mentions}" if mentions else "") + (f"\n{split_note}" if split_note else ""))
+    rec_ch = None
+    if cog is not None:
+        rec_ch = await cog._get_channel(split.channel_id if split is not None else cog.channel_id)
+    if rec_ch is not None:
+        try:
+            await rec_ch.send(record, allowed_mentions=CTA_NO_PINGS)
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude dejar el registro de cancelación: {exc!r}")
+    deleted = await cta_delete_message(run)
+    return f"🛑 **{title}** cancelada. " + (split_note + " " if split_note else "") + ("Se borró la CTA." if deleted else "⚠️ No pude borrar el mensaje de la CTA.")
+
+
 async def cta_ensure_thread_and_board(run_id: int):
     """Recupera una CTA abierta tras un reinicio: hilo, instrucciones y tablero."""
     run = cta_run_get(run_id)
@@ -3896,6 +4144,9 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         return True
     action, number = command
     if run["status"] != "open":
+        if run.get("final_state") is not None:
+            await cta_reply_short(message, "🏁 La CTA ya fue cerrada: no se aceptan más anotados.", 10)
+            return True
         if run.get("track") and action == "join" and not mentions and run["status"] == "closed":
             # CTA con track: quien se anota tarde queda como solicitud en el hilo del split (el organizador decide).
             cog = bot.get_cog("SplitsCog")
@@ -3911,6 +4162,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
                 "listed": "✅ Ya estás en la lista del split.",
                 "accepted": "✅ Ya te sumaron al split.",
                 "rejected": "🔒 El organizador ya decidió no sumarte a este split.",
+                "final": "🏁 La CTA ya fue cerrada: no se aceptan más anotados.",
             }
             await cta_reply_short(message, texts.get(state, "🔒 Las inscripciones de esta CTA ya están cerradas."), 12)
             return True
@@ -4065,10 +4317,11 @@ class CTAPanelView(discord.ui.View):
     """Panel del canal. La inscripción se hace escribiendo el número en el hilo; acá quedan el
     acceso al hilo y la opción de cancelar la plaza. Los botones viejos siguen funcionando."""
 
-    def __init__(self, run_id: Optional[int] = None, closed: bool = False, thread_url: Optional[str] = None):
+    def __init__(self, run_id: Optional[int] = None, closed: bool = False, thread_url: Optional[str] = None, final: bool = False):
         super().__init__(timeout=None)
         self.run_id = run_id
         self.closed = closed
+        self.final = final
         if thread_url:
             self.add_item(discord.ui.Button(label="Ir al hilo para anotarte", emoji="💬",
                                             style=discord.ButtonStyle.link, url=thread_url))
@@ -4076,8 +4329,21 @@ class CTAPanelView(discord.ui.View):
         refresh = discord.ui.Button(label="Actualizar panel", emoji="🔄", style=discord.ButtonStyle.primary, custom_id="cta:refresh" if run_id is None else f"cta:refresh:{run_id}")
         cancel.callback = self.cancel_callback
         refresh.callback = self.refresh_callback
-        self.add_item(cancel)
+        if not final:
+            self.add_item(cancel)
         self.add_item(refresh)
+        if run_id is not None and not final:
+            fin = discord.ui.Button(label="Cerrar CTA", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
+            ab = discord.ui.Button(label="Cancelar CTA", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
+            fin.callback, ab.callback = self.finish_callback, self.abort_callback
+            self.add_item(fin)
+            self.add_item(ab)
+
+    async def finish_callback(self, interaction: discord.Interaction):
+        await cta_ask_final(interaction, self.run_id, "finished")
+
+    async def abort_callback(self, interaction: discord.Interaction):
+        await cta_ask_final(interaction, self.run_id, "cancelled")
 
     def _resolve_run_id(self, interaction: discord.Interaction):
         if self.run_id:
@@ -5720,9 +5986,9 @@ async def on_ready():
         cta_housekeeping.start()
         print("✅ CTA housekeeping iniciado")
     if not getattr(bot, "_cta_views_restored", False):
-        for cta_row in db_fetchall("SELECT id, status, message_id FROM cta_runs WHERE message_id IS NOT NULL"):
+        for cta_row in db_fetchall("SELECT id, status, message_id, final_state FROM cta_runs WHERE message_id IS NOT NULL AND status<>'cancelled'"):
             try:
-                bot.add_view(CTAPanelView(run_id=int(cta_row["id"]), closed=cta_row["status"] != "open"), message_id=int(cta_row["message_id"]))
+                bot.add_view(CTAPanelView(run_id=int(cta_row["id"]), closed=cta_row["status"] != "open", final=cta_row["final_state"] is not None), message_id=int(cta_row["message_id"]))
             except Exception as exc:
                 print(f"CTA #{cta_row['id']}: no se pudo restaurar la vista: {exc}")
         bot._cta_views_restored = True

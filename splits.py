@@ -10,6 +10,7 @@ from discord.ext import commands
 
 import economy_db as eco
 import splits_db as sdb
+import ctautil as cu
 from names import resolve_names
 from deposits import is_council
 from guildshop import can_manage
@@ -784,6 +785,8 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.find_by_cta, cta_id)
         if s is None:
             return None
+        if await self.run(cu.final_state, cta_id) is not None:
+            return "final"                                    # la CTA ya fue cerrada/cancelada: no se aceptan más
         state, count = await self.run(sdb.add_request, s.id, user_id, slot_no)
         if state != "new":
             return state
@@ -797,6 +800,11 @@ class SplitsCog(commands.Cog):
             pos = f" (quería la posición {slot_no})" if slot_no else ""
             m = await th.send(f"🙋 <@{user_id}> se anotó después del cierre{pos}.", view=SplitRequestView(self), allowed_mentions=NO_MENTIONS)
             await self.run(sdb.set_request_message, s.id, user_id, m.id)
+            cth_id = await self.run(cu.thread_id_of, cta_id)
+            cth = await self._get_channel(cth_id) if cth_id and cth_id != s.thread_id else None
+            if cth is not None:                               # los mismos botones en el hilo de la CTA (masseo)
+                m2 = await cth.send(f"🙋 <@{user_id}> se anotó después del cierre{pos}.", view=SplitRequestView(self), allowed_mentions=NO_MENTIONS)
+                await self.run(sdb.set_request_mirror, s.id, user_id, m2.id)
         except Exception as exc:
             print(f"⚠️ Split #{s.id}: no pude publicar la solicitud de {user_id}: {exc!r}")
         return state
@@ -809,6 +817,8 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.get_split, req.split_id)
         if s is None or not (can_manage(interaction.user) or interaction.user.id == s.creator_id):
             return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede decidir.")
+        if s.source_cta_id is not None and await self.run(cu.final_state, s.source_cta_id) is not None:
+            return await _say(interaction, "🔒 La CTA ya fue cerrada: no se pueden aceptar más anotados.")
         try:
             res = await self.run(sdb.decide_request, req.split_id, req.user_id, accept, interaction.user.id)
         except sdb.SplitError as exc:
@@ -823,7 +833,18 @@ class SplitsCog(commands.Cog):
                                                     allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
+        main_id, mirror_id = await self.run(sdb.mirror_of, req.split_id, req.user_id)
+        for other_id, chan_id in ((main_id, s.thread_id), (mirror_id, await self.run(cu.thread_id_of, s.source_cta_id) if s.source_cta_id else None)):
+            if other_id and other_id != getattr(msg, "id", None) and chan_id:
+                try:
+                    ch = await self._get_channel(chan_id)
+                    om = await ch.fetch_message(other_id)
+                    await om.edit(content=f"{verdict} por <@{interaction.user.id}>: <@{req.user_id}>", view=None, allowed_mentions=NO_MENTIONS)
+                except Exception:
+                    pass
         if res == "accepted":
+            if s.source_cta_id is not None:
+                await self.run(cu.add_late_position, s.source_cta_id, req.user_id, req.slot_no)     # entra al historial con la posición pedida
             await self.sync_split(req.split_id)
 
     # ---------- /editar ----------
