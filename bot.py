@@ -3807,6 +3807,23 @@ async def cta_close_run(run_id: int, reason="timeout"):
     task2 = asyncio.create_task(cta_create_combatlog_task(run))
     cta_role_tasks.add(task2)
     task2.add_done_callback(cta_role_tasks.discard)
+    task3 = asyncio.create_task(cta_create_split_task(run))
+    cta_role_tasks.add(task3)
+    task3.add_done_callback(cta_role_tasks.discard)
+
+
+async def cta_create_split_task(run: dict):
+    """Al cerrar la CTA: tarea para el Staff (con mención) de repartir el split. Una sola por CTA."""
+    cog = bot.get_cog("EncargosCog")
+    if cog is None:
+        print(f"CTA #{run['id']}: no hay módulo de encargos, no se creó la tarea del split.")
+        return
+    link = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}" + (f"/{run['message_id']}" if not run.get("thread_id") and run.get("message_id") else "")
+    try:
+        await cog.create(text=f"Repartir el split de {cta_run_title(run)}", created_by=int(run["created_by"]),
+                         source=f"cta:{run['id']}:split", link=link)
+    except Exception as exc:
+        print(f"CTA #{run['id']}: no pude crear la tarea del split: {exc!r}")
 
 
 async def cta_create_combatlog_task(run: dict):
