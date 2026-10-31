@@ -355,10 +355,20 @@ class KillboardCog(commands.Cog):
         self._last_use[user_id] = now
         return False
 
+    async def _allowed(self, interaction, command: str) -> bool:
+        """Permisos por defecto (Miembro/Invitado, cualquier canal) editables con /perms-canal y /perms-comando."""
+        eco_cog = self.bot.get_cog("EconomyCog")
+        if eco_cog is not None:
+            return await eco_cog.slash_authorize(interaction, command)
+        if not is_member(interaction.user):
+            await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
+            return False
+        return True
+
     async def send_ranking(self, interaction: discord.Interaction, key: str):
         """Lo usa `/top tipo` para los rankings que salen de los killboards cargados."""
-        if not is_member(interaction.user):
-            return await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
+        if not await self._allowed(interaction, "top"):
+            return
         if self._cooldown(interaction.user.id):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
         await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
@@ -368,8 +378,8 @@ class KillboardCog(commands.Cog):
     @app_commands.describe(usuario="Jugador (por defecto, vos)")
     @app_commands.guild_only()
     async def stats(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
-        if not is_member(interaction.user):
-            return await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
+        if not await self._allowed(interaction, "stats"):
+            return
         target = usuario or interaction.user
         regs = await self.run(rdb.get_registrations, target.id)
         if not regs:
