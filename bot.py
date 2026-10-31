@@ -88,6 +88,13 @@ except Exception:
     async def setup_sorteos(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar sorteos.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from warnings_sys import setup_warnings
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_warnings(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar warnings_sys.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from invitados import setup_invitados
 except Exception:
     import traceback as _tb
@@ -427,6 +434,7 @@ class MyBot(commands.Bot):
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
+            await _safe_setup("warnings", setup_warnings, self, DB_PATH, GUILD_ID)
             await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
@@ -5740,6 +5748,9 @@ HELP_SECTIONS = [
         ("/encargar tarea [cuando]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff, con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
         ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
+        ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
+        ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (se muestra en el canal)."),
+        ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (por ahora: invitados)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
