@@ -11,6 +11,7 @@ from discord.ext import commands
 import economy_db as eco
 import splits_db as sdb
 import ctautil as cu
+import os
 from names import resolve_names
 from deposits import is_council
 from guildshop import can_manage
@@ -205,6 +206,16 @@ class ReopenView(discord.ui.View):
     async def _ok(self, interaction: discord.Interaction):
         self.stop()
         await self.cog.reopen_split(interaction, self.split_id)
+
+
+STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
+CALLER_ROLE_ID = int(os.getenv("CALLER_ROLE_ID", "1559711827422617720"))
+
+
+def can_decide_late(member, split) -> bool:
+    """Quién acepta o descarta a los anotados tarde: Council/admin, Staff, Caller o quien creó el split."""
+    ids = {r.id for r in getattr(member, "roles", [])}
+    return can_manage(member) or bool(ids & {STAFF_ROLE_ID, CALLER_ROLE_ID}) or member.id == split.creator_id
 
 
 class SplitRequestView(discord.ui.View):
@@ -815,8 +826,8 @@ class SplitsCog(commands.Cog):
         if req is None:
             return await _say(interaction, "❌ No encuentro esta solicitud.")
         s = await self.run(sdb.get_split, req.split_id)
-        if s is None or not (can_manage(interaction.user) or interaction.user.id == s.creator_id):
-            return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede decidir.")
+        if s is None or not can_decide_late(interaction.user, s):
+            return await _say(interaction, "🔒 Solo el Council, el Staff, el Caller o quien creó el split puede decidir.")
         if s.source_cta_id is not None and await self.run(cu.final_state, s.source_cta_id) is not None:
             return await _say(interaction, "🔒 La CTA ya fue cerrada: no se pueden aceptar más anotados.")
         try:
