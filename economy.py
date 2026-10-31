@@ -18,6 +18,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import economy_db as eco
+import killboard_db as kb
 from slashctx import SlashContext
 from paging import PagedView, chunk
 import stats_db
@@ -631,10 +632,35 @@ class EconomyCog(commands.Cog):
     async def bal_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
         await self.bal.callback(self, SlashContext(interaction), objetivo=usuario.mention if usuario else "")
 
-    @app_commands.command(name="top", description="Top 10 de Wuju Coins")
+    TOP_CHOICES = ([app_commands.Choice(name="💰 Wuju Coins (por defecto)", value="wuju")]
+                   + [app_commands.Choice(name=v[0], value=k) for k, v in kb.TOP_KEYS.items()]
+                   + [app_commands.Choice(name="🎲 Winrate (dados y coinflip)", value="winrate"),
+                      app_commands.Choice(name="🛠️ Tareas del staff", value="tareas")])
+
+    @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
+    @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
+    @app_commands.choices(tipo=TOP_CHOICES)
     @app_commands.guild_only()
-    async def top_slash(self, interaction: discord.Interaction):
-        await self.top.callback(self, SlashContext(interaction))
+    async def top_slash(self, interaction: discord.Interaction, tipo: Optional[app_commands.Choice[str]] = None):
+        key = getattr(tipo, "value", tipo) or "wuju"
+        if key == "wuju":
+            return await self.top.callback(self, SlashContext(interaction))
+        if key in kb.TOP_KEYS:
+            other = self.bot.get_cog("KillboardCog")
+            if other is None:
+                return await self._ephemeral(interaction, "❌ Los rankings de killboards no están disponibles ahora.")
+            return await other.send_ranking(interaction, key)
+        if key == "winrate":
+            other = self.bot.get_cog("GamesCog")
+            if other is None:
+                return await self._ephemeral(interaction, "❌ El ranking de winrate no está disponible ahora.")
+            return await other.topwinrate.callback(other, SlashContext(interaction))
+        if key == "tareas":
+            other = self.bot.get_cog("EncargosCog")
+            if other is None:
+                return await self._ephemeral(interaction, "❌ El ranking de tareas no está disponible ahora.")
+            return await other.send_top(interaction)
+        await self._ephemeral(interaction, "❌ Tipo de top desconocido.")
 
     @app_commands.command(name="addmoney", description="Agrega Wuju Coins a una persona")
     @app_commands.describe(usuario="Persona que recibe", cantidad="Cantidad (ej: 150.000)", motivo="Motivo (opcional)")
