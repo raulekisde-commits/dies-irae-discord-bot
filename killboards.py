@@ -385,10 +385,10 @@ class KillboardCog(commands.Cog):
             emb.description = f"{target.mention}\n\nTodavía no aparece en ningún killboard cargado."
         else:
             emb.description = target.mention
-            emb.add_field(name="⚔️ Kills", value=f"## {s['kills']:,}".replace(",", "."), inline=True)
-            emb.add_field(name="💀 Muertes", value=f"## {s['deaths']:,}".replace(",", "."), inline=True)
-            emb.add_field(name="🛡️ Asistencia", value=f"## {s['attendance']:,}".replace(",", ".") + "\npeleas", inline=True)
-            emb.add_field(name="💥 Muertes en el primer engage", value=f"## {s['first5_pct']:.0f}%\n{s['first5']} de {s['attendance']} peleas", inline=False)
+            emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="💀 Muertes", value=f"**{s['deaths']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="🛡️ Asistencia", value=f"**{s['attendance']:,}**".replace(",", ".") + " peleas", inline=True)
+            emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
             counts = await self.run(kb.role_counts, target.id, names)
             total = sum(counts.values())
             if total:
