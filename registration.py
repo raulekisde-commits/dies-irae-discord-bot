@@ -814,6 +814,16 @@ class RegistrationCog(commands.Cog):
         if getattr(member, "bot", False):
             return
         try:
+            regs = await self.run(rdb.get_registrations, member.id)          # antes de liberarlos, para el registro de salidas
+        except Exception:
+            regs = []
+        try:
+            log_cog = self.bot.get_cog("MemberLogCog")
+            if log_cog is not None:
+                await log_cog.post_leave(member, regs)
+        except Exception:
+            traceback.print_exc()
+        try:
             await self.run(rdb.cancel_active_for, member.id, None, "el miembro salió del servidor")
             await self.run(rdb.remove_pending_recruit, member.id, None, "el miembro salió del servidor")
             removed = await self.run(rdb.unlink, member.id, None, None, "el miembro salió del servidor")

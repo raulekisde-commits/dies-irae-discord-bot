@@ -95,6 +95,20 @@ except Exception:
     async def setup_warnings(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar warnings_sys.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from miembros import setup_miembros
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_miembros(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar miembros.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
+    from reactionroles import setup_reactionroles
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_reactionroles(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar reactionroles.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from invitados import setup_invitados
 except Exception:
     import traceback as _tb
@@ -434,6 +448,8 @@ class MyBot(commands.Bot):
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
+            await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
+            await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
             await _safe_setup("warnings", setup_warnings, self, DB_PATH, GUILD_ID)
             await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
@@ -5768,6 +5784,9 @@ HELP_SECTIONS = [
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (se muestra en el canal)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
+        ("/canal-entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
+        ("/canal-salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
+        ("/reaction-roles crear · agregar · quitar · eliminar · listar", "Council / Admin", "Mensajes de roles por reacción: `crear nombre` publica el panel y `agregar nombre rol emoji` suma un rol. Quien reacciona recibe el rol y al sacar la reacción se lo quita (si ya lo tenía, no pasa nada)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings y casino)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
