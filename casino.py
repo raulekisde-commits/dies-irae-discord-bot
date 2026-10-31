@@ -84,35 +84,6 @@ class CasinoCog(commands.Cog):
             traceback.print_exc()
             await _reply(interaction, "❌ No pude completar el comando.")
 
-    @app_commands.command(name="auditoria-casino", description="(Council) Busca indicios de trampa: suerte anómala, parejas que juegan entre sí, transferencias raras")
-    @app_commands.describe(dias="Cuántos días hacia atrás revisar (por defecto 30; 0 = todo el historial)")
-    @app_commands.guild_only()
-    async def auditoria_casino(self, interaction: discord.Interaction, dias: Optional[app_commands.Range[int, 0, 3650]] = 30):
-        try:
-            if interaction.guild is None or not can_manage(interaction.user):
-                return await _reply(interaction, "❌ Solo el rol **Council** (o administradores) puede usar este comando.")
-            await interaction.response.defer(ephemeral=True)
-            import audit_db
-            rep = await self.run(audit_db.build_report, dias or None)
-            eco_cog = self.bot.get_cog("EconomyCog")
-            money = eco_cog.money if eco_cog is not None else eco.format_amount
-            sections = audit_db.format_sections(rep, money)
-            span = f"últimos {dias} días" if dias else "todo el historial"
-            e = discord.Embed(title="🕵️ Auditoría del casino", color=discord.Color.orange(),
-                              description=f"Se revisaron **{rep.games:,}** partidas terminadas con ganador ({span}). Son **indicios para mirar a mano**, no pruebas.")
-            titles = {"luck": "🍀 Suerte anómala (dados, coinflip y 1v1)", "pairs": "🤝 Parejas que juegan casi solo entre sí",
-                      "transfers": "💸 Transferencias sospechosas (/give-money)"}
-            empty = {"luck": f"Nadie se aparta del azar (se evalúa a quien jugó {audit_db.MIN_GAMES_LUCK}+ partidas).",
-                     "pairs": "Ninguna pareja llama la atención.", "transfers": "Sin envíos en un solo sentido ni cuentas que reciban de muchas."}
-            for key in ("luck", "pairs", "transfers"):
-                value = "\n".join(sections[key])[:1024] or empty[key]
-                e.add_field(name=titles[key], value=value, inline=False)
-            e.set_footer(text="Con muchas personas algunas salen raras solo por casualidad; dos amigos también pueden jugar siempre entre sí. Revisá antes de actuar.")
-            await interaction.followup.send(embed=e, ephemeral=True, allowed_mentions=NO_MENTIONS)
-        except Exception:
-            traceback.print_exc()
-            await _reply(interaction, "❌ No pude generar la auditoría.")
-
     @app_commands.command(name="casinoban", description="(Council) Bloquea o desbloquea a una persona del casino (repetirlo la saca de la lista)")
     @app_commands.describe(usuario="Persona")
     @app_commands.guild_only()
