@@ -379,22 +379,33 @@ class KillboardCog(commands.Cog):
             return await _say(interaction, f"{target.mention} no tiene un personaje de Albion registrado.")
         names = [kb.norm(r.char_name) for r in regs]
         s = await self.run(kb.player_stats, names)
-        emb = discord.Embed(title=f"📊 Stats de {', '.join(r.char_name for r in regs)}", color=discord.Color.blurple())
+        emb = discord.Embed(title=f"📊 Stats · {', '.join(r.char_name for r in regs)}", color=discord.Color.gold())
+        try:
+            emb.set_thumbnail(url=target.display_avatar.url)
+        except Exception:
+            pass
         if not s["attendance"]:
-            emb.description = "Todavía no aparece en ningún killboard cargado."
+            emb.description = f"{target.mention}\n\nTodavía no aparece en ningún killboard cargado."
         else:
-            emb.add_field(name="🛡️ Asistencias", value=str(s["attendance"]), inline=True)
-            emb.add_field(name="⚔️ Kills", value=str(s["kills"]), inline=True)
-            emb.add_field(name="💀 Muertes", value=str(s["deaths"]), inline=True)
-            emb.add_field(name="☠️ Entre los 5 primeros en morir", value=f"{s['first5']} de {s['attendance']} peleas ({s['first5_pct']:.0f}%)", inline=False)
+            emb.description = f"{target.mention}\n\n**⚔️ Kills**\n# {s['kills']:,}".replace(",", ".")
+            emb.add_field(name="💀 Muertes", value=f"**{s['deaths']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="☠️ Primeros en morir", value=f"**{s['first5']}** de {s['attendance']} peleas\n({s['first5_pct']:.0f}%)", inline=True)
             counts = await self.run(kb.role_counts, target.id, names)
             total = sum(counts.values())
             if total:
                 top3 = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
-                emb.add_field(name="🎭 Roles más jugados", value="\n".join(f"{cu.PLAYED_ROLES.get(rid, rid)}: {100.0 * n / total:.0f}% ({n})" for rid, n in top3), inline=False)
+                medals = ["🥇", "🥈", "🥉"]
+                lines = []
+                for i, (rid, n) in enumerate(top3):
+                    pct = 100.0 * n / total
+                    bar = "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
+                    lines.append(f"{medals[i]} **{cu.PLAYED_ROLES.get(rid, rid)}** · {pct:.0f}%\n`{bar}`")
+                emb.add_field(name="🎭 Roles más jugados", value="\n".join(lines), inline=False)
             if s["avg_ip"]:
-                emb.add_field(name="📈 IP", value=f"promedio **{s['avg_ip']:.0f}** · máx **{s['max_ip']:.0f}** · mín **{s['min_ip']:.0f}**", inline=False)
-        emb.set_footer(text="Datos de los killboards cargados por el staff")
+                emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
+                emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
+                emb.add_field(name="⬇️ IP mínima", value=f"**{s['min_ip']:.0f}**", inline=True)
+        emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
 
 
