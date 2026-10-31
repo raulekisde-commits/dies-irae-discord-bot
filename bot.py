@@ -95,6 +95,20 @@ except Exception:
     async def setup_invitados(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar invitados.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from ctavoice import setup_ctavoice
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_ctavoice(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar ctavoice.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
+    from killboards import setup_killboards
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_killboards(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar killboards.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from roulette import setup_roulette
 except Exception:
     import traceback as _tb
@@ -413,6 +427,8 @@ class MyBot(commands.Bot):
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
+            await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
+            await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
@@ -3013,6 +3029,7 @@ import json
 import copy
 import contextlib
 import ctautil as cu
+import ctavoice as cv
 
 CTA_EMOJIS_DEFAULT = {
     "Golem": "🔨", "Heavy Mace": "🛡️", "Monarch": "🛡️", "GA": "🛡️",
@@ -3764,6 +3781,12 @@ async def cta_close_run(run_id: int, reason="timeout"):
         await asyncio.to_thread(cu.snapshot_positions, DB_PATH, run_id)       # historial: en qué posición quedó cada persona
     except Exception as exc:
         print(f"CTA #{run_id}: no pude guardar el historial de posiciones: {exc!r}")
+    voice = bot.get_cog("CTAVoiceCog")
+    if voice is not None:
+        try:
+            await voice.start(run_id)                                              # empieza el seguimiento del canal de voz
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude iniciar el seguimiento de voz: {exc!r}")
     try:
         await cta_refresh_board(run_id)
     except Exception as exc:
@@ -3970,6 +3993,9 @@ async def cta_finish_run(run_id: int, actor_id: int):
         return "Esta CTA ya estaba cerrada o cancelada.", False
     run = cta_run_get(run_id)
     cta_audit(int(run["guild_id"]), actor_id, "cta_finished", run_id, "")
+    voice = bot.get_cog("CTAVoiceCog")
+    if voice is not None:
+        await voice.stop_run(run_id)
     stats_note = await cta_create_stats_panel(run, actor_id)
     try:
         await cta_refresh_board(run_id)
@@ -4023,6 +4049,15 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
                           allowed_mentions=CTA_NO_PINGS)
     except Exception:
         pass
+    try:
+        not_voice, extra = await asyncio.to_thread(cv.compare_with_signups, DB_PATH, run_id)
+        for header, ids in (("📵 **Anotados que NO estuvieron en voz** (menos de 2 min)", not_voice),
+                            ("🎧 **Estuvieron en voz pero NO estaban anotados**", extra)):
+            lines = [f"• <@{u}>" for u in ids] or ["Nadie."]
+            for i, chunk in enumerate(chunk_lines(lines)):
+                await thread.send((header + f" ({len(ids)})\n" if i == 0 else "") + chunk, allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude publicar las listas de voz: {exc!r}")
     cog = bot.get_cog("EncargosCog")
     if cog is not None:
         try:
@@ -4042,6 +4077,9 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
     if res != "ok":
         return "Esta CTA ya estaba cerrada o cancelada."
     cta_audit(int(run["guild_id"]), actor_id, "cta_cancelled", run_id, "")
+    voice = bot.get_cog("CTAVoiceCog")
+    if voice is not None:
+        await voice.stop_run(run_id)
     import splits_db as _sdb
     title = cta_run_title(run)
     cog = bot.get_cog("SplitsCog")
@@ -5599,207 +5637,40 @@ async def disarray_slash(interaction: discord.Interaction, numero: int):
 
 
 # ================== !topkills / !topattend / !topdeaths ==================
-# Datos: página de asistencia de la guild en AlbionBB (la misma que se ve en el navegador; trae kills,
-# muertes y asistencia por jugador con el filtro por defecto de la página).
-ALBION_TOP_URL = os.getenv("ALBION_TOP_URL", f"https://albionbb.com/guilds/{ALBION_GUILD_ID}/attendance")
-ALBION_TOP_SIZE = 10
-ALBION_TOP_CACHE_SECONDS = 300          # resultado fresco
-ALBION_TOP_STALE_SECONDS = 6 * 3600     # si AlbionBB falla, se usa lo último guardado hasta este límite
-ALBION_TOP_USER_COOLDOWN = 15           # segundos entre usos por persona
-ALBION_TOP_STATS = {
-    "kills": ("topkills", "⚔️", "Top kills", "kills"),
-    "attendance": ("topattend", "🛡️", "Top asistencia", "asistencias"),
-    "deaths": ("topdeaths", "💀", "Top muertes", "muertes"),
-}
-_albion_top_cache: dict = {"at": 0.0, "players": []}
-_albion_top_last_use: dict = {}
-_albion_top_lock = asyncio.Lock()
+# Salen SOLO de los killboards que cargó el staff (ver killboards.py). También existe /top tipo.
+TOP_PREFIX_KEYS = {"kills": "kills", "attendance": "attendance", "deaths": "deaths"}
+_top_last_use: dict = {}
 
 
-def _albion_nuxt_decode(raw):
-    """Decodifica el formato compacto de Nuxt (__NUXT_DATA__): lista de nodos que se referencian por índice."""
-    memo: dict = {}
-
-    def ref(x):
-        return get(x) if isinstance(x, int) and not isinstance(x, bool) and x >= 0 else None
-
-    def get(i):
-        if i in memo:
-            return memo[i]
-        v = raw[i]
-        if isinstance(v, list):
-            if v and isinstance(v[0], str):          # nodo especial, p. ej. ["ShallowReactive", 3]
-                out = ref(v[1]) if len(v) > 1 and v[0] in ("ShallowReactive", "Reactive", "ShallowRef", "Ref") else None
-                memo[i] = out
-                return out
-            out = []
-            memo[i] = out
-            out.extend(ref(x) for x in v)
-            return out
-        if isinstance(v, dict):
-            out = {}
-            memo[i] = out
-            for k, x in v.items():
-                out[k] = ref(x)
-            return out
-        memo[i] = v
-        return v
-
-    return get(0)
-
-
-def _albion_top_players(html: str) -> list:
-    """Saca la lista de jugadores (con kills/deaths/attendance) del HTML de AlbionBB. Lanza ValueError si no la encuentra."""
-    m = re.search(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', html or "", re.S)
-    if not m:
-        raise ValueError("la página no trae los datos esperados (¿bloqueo o cambio de formato?)")
-    decoded = _albion_nuxt_decode(json.loads(m.group(1)))
-    found: list = []
-
-    def walk(o, depth=0):
-        if depth > 40 or found:
-            return
-        if isinstance(o, list):
-            dicts = [x for x in o if isinstance(x, dict)]
-            if dicts and len(dicts) == len(o) and all(k in dicts[0] for k in ("name", "kills", "deaths", "attendance")):
-                found.extend(dicts)
-                return
-            for x in o:
-                walk(x, depth + 1)
-        elif isinstance(o, dict):
-            for x in o.values():
-                walk(x, depth + 1)
-
-    walk(decoded)
-    if not found:
-        raise ValueError("no encontré la tabla de jugadores en la página")
-    return found
-
-
-def _albion_top_rank(players: list, key: str, size: int = ALBION_TOP_SIZE) -> list:
-    """Top por 'key' (mayor primero; empate: orden alfabético). Ignora valores vacíos o 0 y filas inválidas."""
-    rows = []
-    for p in players:
-        try:
-            value = int(p.get(key) or 0)
-        except (TypeError, ValueError):
-            continue
-        name = str(p.get("name") or "").strip()
-        if name and value > 0:
-            rows.append((name, value))
-    rows.sort(key=lambda r: (-r[1], r[0].casefold()))
-    return rows[:size]
-
-
-def _albion_top_embed(key: str, rows: list, total_players: int, age_seconds: float, stale: bool) -> discord.Embed:
-    _cmd, icon, title, unit = ALBION_TOP_STATS[key]
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = [f"{medals.get(i, f'`{i:>2}.`')} **{discord.utils.escape_markdown(name)}** — {value:,} {unit}".replace(",", ".")
-             for i, (name, value) in enumerate(rows, start=1)]
-    embed = discord.Embed(title=f"{icon} {title} · {ALBION_GUILD_NAME}",
-                          description="\n".join(lines) if lines else "Todavía no hay datos para mostrar.",
-                          color=discord.Color.gold())
-    mins = int(age_seconds // 60)
-    when = "recién actualizado" if mins < 1 else f"actualizado hace {mins} min"
-    note = " · ⚠️ AlbionBB no respondió, son datos guardados" if stale else ""
-    embed.set_footer(text=f"Fuente: AlbionBB · {total_players} jugadores en la tabla · {when}{note}")
-    return embed
-
-
-async def _albion_top_fetch() -> tuple:
-    """Devuelve (jugadores, edad_en_segundos, desactualizado). Usa caché de 5 min; si AlbionBB falla,
-    sirve el último resultado guardado (hasta 6 h). Si no hay nada guardado, lanza el error."""
-    async with _albion_top_lock:
-        now = time.time()
-        if _albion_top_cache["players"] and now - _albion_top_cache["at"] < ALBION_TOP_CACHE_SECONDS:
-            return _albion_top_cache["players"], now - _albion_top_cache["at"], False
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; SmoggBot/1.0)", "Accept": "text/html"}
-        try:
-            async with bot.http_session.get(ALBION_TOP_URL, headers=headers,
-                                            timeout=aiohttp.ClientTimeout(total=ALBION_TIMEOUT_SECONDS)) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status}")
-                html = await resp.text()
-            players = _albion_top_players(html)
-            _albion_top_cache.update(at=time.time(), players=players)
-            return players, 0.0, False
-        except Exception as exc:
-            print(f"!top*: no pude leer AlbionBB: {type(exc).__name__}: {exc}")
-            if _albion_top_cache["players"] and now - _albion_top_cache["at"] < ALBION_TOP_STALE_SECONDS:
-                return _albion_top_cache["players"], now - _albion_top_cache["at"], True
-            raise
-
-
-async def _albion_top_build(member, guild, key: str):
-    """Lógica común de !top* y /top*. Devuelve (texto_de_error, embed, es_privado).
-    Solo uno de los dos primeros viene con valor."""
-    if guild is None or not isinstance(member, discord.Member):
-        return ("Este comando solo funciona dentro del servidor.", None, True)
-    member_role = guild.get_role(MIEMBRO_ROLE_ID)
-    if not ((member_role is not None and member_role in member.roles) or is_staff_member(member)):
-        return ("❌ Este comando es solo para miembros de la guild.", None, True)
-    now = time.time()
-    if now - _albion_top_last_use.get(member.id, 0.0) < ALBION_TOP_USER_COOLDOWN:
-        return ("⏳ Esperá unos segundos antes de volver a usar este comando.", None, True)
-    _albion_top_last_use[member.id] = now
-    try:
-        players, age, stale = await _albion_top_fetch()
-    except Exception as exc:
-        return ("❌ No pude leer los datos de AlbionBB. Probá de nuevo en un rato.\n"
-                f"Detalle técnico (para el administrador): `{type(exc).__name__}: {str(exc)[:300]}`", None, True)
-    rows = _albion_top_rank(players, key)
-    return (None, _albion_top_embed(key, rows, len(players), age, stale), False)
-
-
-async def _albion_top_command(ctx: commands.Context, key: str):
-    async with ctx.typing():
-        error, embed, _private = await _albion_top_build(ctx.author, ctx.guild, key)
-    if ctx.guild is None:
+async def _top_command(ctx: commands.Context, key: str):
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
         return
-    if error:
-        return await ctx.reply(error, mention_author=False, delete_after=15 if error.startswith("⏳") else None)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-
-async def _albion_top_slash(interaction: discord.Interaction, key: str):
-    """Versión con /. El resultado se publica en el canal (público); los errores los ve solo quien lo usó."""
-    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        return await respond_ephemeral(interaction, "❌ Este comando solo funciona dentro del servidor.")
-    await interaction.response.defer()
-    error, embed, _private = await _albion_top_build(interaction.user, interaction.guild, key)
-    if error:
-        return await interaction.followup.send(error, ephemeral=True)
-    await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    cog = bot.get_cog("KillboardCog")
+    if cog is None:
+        return await ctx.reply("❌ El módulo de killboards no está disponible.", mention_author=False)
+    member_role = ctx.guild.get_role(MIEMBRO_ROLE_ID)
+    if not ((member_role is not None and member_role in ctx.author.roles) or is_staff_member(ctx.author)):
+        return await ctx.reply("❌ Este comando es solo para miembros de la guild.", mention_author=False)
+    now = time.time()
+    if now - _top_last_use.get(ctx.author.id, 0.0) < 15:
+        return await ctx.reply("⏳ Esperá unos segundos antes de volver a usar este comando.", mention_author=False, delete_after=15)
+    _top_last_use[ctx.author.id] = now
+    await ctx.send(embed=await cog.top_embed(key), allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="topkills")
 async def topkills_cmd(ctx: commands.Context):
-    await _albion_top_command(ctx, "kills")
+    await _top_command(ctx, "kills")
 
 
 @bot.command(name="topattend")
 async def topattend_cmd(ctx: commands.Context):
-    await _albion_top_command(ctx, "attendance")
+    await _top_command(ctx, "attendance")
 
 
 @bot.command(name="topdeaths")
 async def topdeaths_cmd(ctx: commands.Context):
-    await _albion_top_command(ctx, "deaths")
-
-
-@bot.tree.command(name="topkills", description="Top 10 de kills de la guild (AlbionBB)", guild=GUILD_OBJ)
-async def topkills_slash(interaction: discord.Interaction):
-    await _albion_top_slash(interaction, "kills")
-
-
-@bot.tree.command(name="topattend", description="Top 10 de asistencia de la guild (AlbionBB)", guild=GUILD_OBJ)
-async def topattend_slash(interaction: discord.Interaction):
-    await _albion_top_slash(interaction, "attendance")
-
-
-@bot.tree.command(name="topdeaths", description="Top 10 de muertes de la guild (AlbionBB)", guild=GUILD_OBJ)
-async def topdeaths_slash(interaction: discord.Interaction):
-    await _albion_top_slash(interaction, "deaths")
+    await _top_command(ctx, "deaths")
 
 
 # ============================================================
@@ -5824,7 +5695,9 @@ HELP_SECTIONS = [
         ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
     ]),
     ("📊 Estadísticas de la guild", [
-        ("/topkills · /topattend · /topdeaths", "Miembros", "Top 10 de kills, asistencia o muertes de la guild (datos de AlbionBB). También con `!topkills`, `!topattend`, `!topdeaths`."),
+        ("/top tipo", "Miembros", "Rankings de la guild: kills, muertes, asistencia, primeras muertes, IP promedio/máxima/mínima. Solo cuentan los killboards cargados por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
+        ("/stats [usuario]", "Miembros", "Panel público con asistencias, kills, muertes, % de primeras muertes, roles más jugados e IP de un jugador (por defecto, vos)."),
+        ("/killboard cargar · borrar · probar", "Staff / Council (cargar también Caller en el hilo de stats de una CTA)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/verratas", "Staff", "Lista los miembros de Discord cuyo apodo no figura en la guild de Albion."),

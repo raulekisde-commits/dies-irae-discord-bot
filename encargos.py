@@ -195,6 +195,22 @@ class EncargosCog(commands.Cog):
             override = is_staff_or_council(interaction.user)
             await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
 
+    async def complete_by_source(self, source: str, user_id: int) -> bool:
+        """Termina sola una tarea automática (p. ej. cargar el killboard de una CTA) y actualiza su panel. False si no hay tarea abierta."""
+        t = await self.run(edb.find_by_source, source)
+        if t is None:
+            return False
+        res = await self.run(edb.finish, t.id, user_id, True)
+        if res.status != "ok":
+            return False
+        try:
+            ch = self.bot.get_channel(res.task.channel_id) or await self.bot.fetch_channel(res.task.channel_id)
+            msg = await ch.fetch_message(res.task.message_id)
+            await msg.edit(embed=self.embed(res.task), view=None, allowed_mentions=NO_MENTIONS)
+        except Exception as exc:
+            print(f"Tarea {t.id}: terminada pero no pude actualizar el panel: {exc!r}")
+        return True
+
     # ---------- publicación programada ----------
     @tasks.loop(seconds=10)
     async def ticker(self):
