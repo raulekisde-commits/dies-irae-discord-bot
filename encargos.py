@@ -157,9 +157,8 @@ class EncargosCog(commands.Cog):
         await _say(interaction, f"✅ Tarea #{t.id} publicada en <#{t.channel_id}>." if t.status != "scheduled"
                    else f"⚠️ Tarea #{t.id} guardada, pero no pude publicarla ahora; se reintenta sola.")
 
-    @app_commands.command(name="top-tareas", description="Quiénes aceptaron y cerraron más tareas del staff")
-    @app_commands.guild_only()
-    async def top_tareas(self, interaction: discord.Interaction):
+    async def send_top(self, interaction: discord.Interaction):
+        """Lo usa `/top tareas`: quién aceptó y quién cerró más tareas del staff."""
         if not can_take(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council y el rol Opinólogo pueden ver este ranking.")
         taken, done = await self.run(edb.top_users)

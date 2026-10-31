@@ -355,16 +355,13 @@ class KillboardCog(commands.Cog):
         self._last_use[user_id] = now
         return False
 
-    @app_commands.command(name="ranking", description="Rankings de la guild (solo killboards cargados por el staff)")
-    @app_commands.describe(tipo="Qué ranking ver")
-    @app_commands.choices(tipo=[app_commands.Choice(name=v[0], value=k) for k, v in kb.TOP_KEYS.items()])
-    @app_commands.guild_only()
-    async def ranking_cmd(self, interaction: discord.Interaction, tipo: app_commands.Choice[str]):
+    async def send_ranking(self, interaction: discord.Interaction, key: str):
+        """Lo usa `/top tipo` para los rankings que salen de los killboards cargados."""
         if not is_member(interaction.user):
             return await _say(interaction, "❌ Este comando es solo para miembros de la guild.")
         if self._cooldown(interaction.user.id):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
-        await interaction.response.send_message(embed=await self.top_embed(getattr(tipo, "value", tipo)), allowed_mentions=NO_MENTIONS)
+        await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
 
     # ---------- /stats ----------
     @app_commands.command(name="stats", description="Estadísticas de un jugador (si no indicás a nadie, las tuyas)")

@@ -5702,7 +5702,7 @@ HELP_SECTIONS = [
         ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
     ]),
     ("📊 Estadísticas de la guild", [
-        ("/ranking tipo", "Miembros", "Rankings de la guild: kills, muertes, asistencia, primeras muertes, IP promedio/máxima/mínima. Solo cuentan los killboards cargados por el staff. También `!topkills`, `!topattend`, `!topdeaths`. (`/top` sigue siendo el top de Wuju Coins.)"),
+        ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, muertes en el primer engage, IP promedio/máxima/mínima, winrate y tareas del staff. Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
         ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de primeras muertes, roles más jugados e IP de un jugador (por defecto, vos)."),
         ("/killboard cargar · borrar · probar", "Staff / Council (cargar también Caller en el hilo de stats de una CTA)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/comparar killboard rol guild", "Staff, Gestionar roles", "Compara los jugadores de una guild en un killboard de AlbionBB con la gente que tiene un rol (por apodo): quiénes estuvieron sin el rol y quiénes tienen el rol y no estuvieron."),
@@ -5730,7 +5730,6 @@ HELP_SECTIONS = [
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
         ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
         ("/encargar tarea [cuando]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff, con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
-        ("/top-tareas", "Staff / Council / Opinólogo", "Ranking de quién aceptó y quién cerró más tareas del staff."),
         ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
