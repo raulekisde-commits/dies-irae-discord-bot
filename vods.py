@@ -20,6 +20,7 @@ MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 ART = timezone(timedelta(hours=-3))                         # Argentina, sin horario de verano
 MENTOR_ROLES = ("tank", "healer", "supp", "dps")
+ROLE_IDS = {"tank": 1260755129754189854, "healer": 1260755151296266331, "supp": 1260755342472646656, "dps": 1260755289062248458}   # roles de Discord de combate
 DEFAULT_MIN = 3
 REMINDER_WEEKDAY, REMINDER_HOUR = 5, 18                      # sábado 18:00 (hora argentina): aviso a quien le faltan videos
 VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS vod_config (
     forum_id INTEGER,
     min_per_week INTEGER NOT NULL DEFAULT 3,
     notice_channel_id INTEGER,
+    mentor_channel_id INTEGER,
     last_week_checked TEXT,
     last_reminder_week TEXT
 );
@@ -49,6 +51,14 @@ CREATE TABLE IF NOT EXISTS vod_feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, mentor_id INTEGER NOT NULL,
     thread_id INTEGER NOT NULL, good TEXT NOT NULL, improve TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS vod_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, thread_id INTEGER NOT NULL,
+    role_label TEXT NOT NULL DEFAULT '', channel_id INTEGER, message_id INTEGER, videos_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'open', mentor_id INTEGER, feedback_id INTEGER,
+    created_at TEXT NOT NULL, taken_at TEXT, done_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_vod_tickets_user ON vod_tickets(guild_id, user_id, status);
+CREATE INDEX IF NOT EXISTS idx_vod_tickets_msg ON vod_tickets(message_id);
 CREATE TABLE IF NOT EXISTS vod_week_results (
     guild_id INTEGER NOT NULL, week_start TEXT NOT NULL, user_id INTEGER NOT NULL, videos INTEGER NOT NULL, warned INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, week_start, user_id)
@@ -90,6 +100,10 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        try:
+            conn.execute("ALTER TABLE vod_config ADD COLUMN mentor_channel_id INTEGER")
+        except Exception:
+            pass                                             # ya existe
     finally:
         conn.close()
     init_warnings(db_path)
@@ -106,7 +120,7 @@ def get_config(db_path: str, guild_id: int) -> dict:
 
 def set_config(db_path: str, guild_id: int, **fields) -> dict:
     get_config(db_path, guild_id)
-    allowed = {"forum_id", "min_per_week", "notice_channel_id", "last_week_checked", "last_reminder_week"}
+    allowed = {"forum_id", "min_per_week", "notice_channel_id", "mentor_channel_id", "last_week_checked", "last_reminder_week"}
     conn = connect(db_path)
     try:
         for k, v in fields.items():
@@ -279,6 +293,122 @@ def claim_week_result(db_path: str, guild_id: int, week_key_: str, user_id: int,
         conn.close()
 
 
+import json  # noqa: E402
+
+
+def _tk(conn, row):
+    if row is None:
+        return None
+    d = dict(row)
+    d["videos"] = json.loads(d.pop("videos_json") or "[]")
+    return d
+
+
+def get_open_ticket(db_path: str, guild_id: int, user_id: int) -> Optional[dict]:
+    """Ticket de esa persona que todavía no se respondió (pendiente o tomado)."""
+    conn = connect(db_path)
+    try:
+        return _tk(conn, conn.execute("SELECT * FROM vod_tickets WHERE guild_id=? AND user_id=? AND status IN ('open','taken') ORDER BY id DESC LIMIT 1", (guild_id, user_id)).fetchone())
+    finally:
+        conn.close()
+
+
+def get_ticket(db_path: str, ticket_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        return _tk(conn, conn.execute("SELECT * FROM vod_tickets WHERE id=?", (ticket_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def get_ticket_by_message(db_path: str, message_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        return _tk(conn, conn.execute("SELECT * FROM vod_tickets WHERE message_id=?", (message_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def create_ticket(db_path: str, guild_id: int, user_id: int, thread_id: int, role_label: str, video_url: Optional[str]) -> int:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return int(conn.execute("INSERT INTO vod_tickets(guild_id,user_id,thread_id,role_label,videos_json,created_at) VALUES (?,?,?,?,?,?)",
+                                    (guild_id, user_id, thread_id, role_label, json.dumps([video_url] if video_url else []), utcnow_iso())).lastrowid)
+    finally:
+        conn.close()
+
+
+def ticket_add_video(db_path: str, ticket_id: int, url: str) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT videos_json FROM vod_tickets WHERE id=?", (ticket_id,)).fetchone()
+            vids = json.loads(r["videos_json"] or "[]") if r else []
+            if url not in vids:
+                vids.append(url)
+                conn.execute("UPDATE vod_tickets SET videos_json=? WHERE id=?", (json.dumps(vids[-20:]), ticket_id))
+    finally:
+        conn.close()
+
+
+def ticket_set_message(db_path: str, ticket_id: int, channel_id: int, message_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        conn.execute("UPDATE vod_tickets SET channel_id=?, message_id=? WHERE id=?", (channel_id, message_id, ticket_id))
+    finally:
+        conn.close()
+
+
+def ticket_take(db_path: str, ticket_id: int, mentor_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        return conn.execute("UPDATE vod_tickets SET status='taken', mentor_id=?, taken_at=? WHERE id=? AND status='open'", (mentor_id, utcnow_iso(), ticket_id)).rowcount > 0
+    finally:
+        conn.close()
+
+
+def ticket_release(db_path: str, ticket_id: int, mentor_id: int, force: bool = False) -> bool:
+    conn = connect(db_path)
+    try:
+        q = "UPDATE vod_tickets SET status='open', mentor_id=NULL, taken_at=NULL WHERE id=? AND status='taken'" + ("" if force else " AND mentor_id=?")
+        return conn.execute(q, (ticket_id,) if force else (ticket_id, mentor_id)).rowcount > 0
+    finally:
+        conn.close()
+
+
+def ticket_finish(db_path: str, ticket_id: int, mentor_id: int, feedback_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        return conn.execute("UPDATE vod_tickets SET status='done', mentor_id=?, feedback_id=?, done_at=?, taken_at=COALESCE(taken_at, ?) WHERE id=? AND status IN ('open','taken')",
+                            (mentor_id, feedback_id, utcnow_iso(), utcnow_iso(), ticket_id)).rowcount > 0
+    finally:
+        conn.close()
+
+
+def top_mentors(db_path: str, guild_id: int, since_iso: Optional[str] = None, limit: int = 10) -> List[dict]:
+    """Mentores con más devoluciones dadas (y el tiempo promedio que tardan desde que se pidió, si hay ticket)."""
+    conn = connect(db_path)
+    try:
+        q = ("SELECT f.mentor_id, COUNT(*) n, AVG((julianday(t.done_at) - julianday(t.created_at)) * 24) hours "
+             "FROM vod_feedback f LEFT JOIN vod_tickets t ON t.feedback_id=f.id WHERE f.guild_id=?")
+        p: list = [guild_id]
+        if since_iso:
+            q, p = q + " AND f.created_at>=?", p + [since_iso]
+        return [dict(r) for r in conn.execute(q + " GROUP BY f.mentor_id ORDER BY n DESC, f.mentor_id LIMIT ?", p + [limit])]
+    finally:
+        conn.close()
+
+
+def combat_role_of(member) -> str:
+    """Rol de combate de la persona según sus roles de Discord ('' si no tiene ninguno)."""
+    ids = {getattr(r, "id", None) for r in getattr(member, "roles", [])}
+    for label in MENTOR_ROLES:
+        if ROLE_IDS[label] in ids:
+            return label
+    return ""
+
+
 def is_staff_or_council(member) -> bool:
     if can_manage(member):
         return True
@@ -306,12 +436,12 @@ class FeedbackModal(discord.ui.Modal, title="Devolución de VOD"):
     improve = discord.ui.TextInput(label="Qué corregir", style=discord.TextStyle.paragraph, max_length=800)
     note = discord.ui.TextInput(label="Nota extra (opcional)", style=discord.TextStyle.paragraph, required=False, max_length=500)
 
-    def __init__(self, cog, thread_id: int, target_id: int):
+    def __init__(self, cog, thread_id: int, target_id: int, ticket_id: Optional[int] = None):
         super().__init__()
-        self.cog, self.thread_id, self.target_id = cog, thread_id, target_id
+        self.cog, self.thread_id, self.target_id, self.ticket_id = cog, thread_id, target_id, ticket_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.save_feedback(interaction, self.thread_id, self.target_id, str(self.good), str(self.improve), str(self.note or ""))
+        await self.cog.save_feedback(interaction, self.thread_id, self.target_id, str(self.good), str(self.improve), str(self.note or ""), self.ticket_id)
 
 
 class VodPanelView(discord.ui.View):
@@ -329,6 +459,25 @@ class VodPanelView(discord.ui.View):
         await self.cog.open_feedback(interaction)
 
 
+class TicketView(discord.ui.View):
+    """Botones del ticket en el canal de mentores (persistentes)."""
+    def __init__(self, cog=None):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="🙋 Tomar", style=discord.ButtonStyle.primary, custom_id="vods:t:take")
+    async def take(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.ticket_take_button(interaction)
+
+    @discord.ui.button(label="📝 Dar devolución", style=discord.ButtonStyle.success, custom_id="vods:t:done")
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.ticket_done_button(interaction)
+
+    @discord.ui.button(label="↩️ Soltar", style=discord.ButtonStyle.secondary, custom_id="vods:t:release")
+    async def release(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.ticket_release_button(interaction)
+
+
 # ---------------------------------------------------------------- cog
 class VodsCog(commands.Cog):
     def __init__(self, bot, db_path: str, guild_id: int):
@@ -339,6 +488,7 @@ class VodsCog(commands.Cog):
     async def cog_load(self):
         await asyncio.to_thread(init_schema, self.db_path)
         self.bot.add_view(VodPanelView(self))
+        self.bot.add_view(TicketView(self))
         self.bot.tree.add_command(self.group, guild=discord.Object(id=self.guild_id))
         if not self.weekly.is_running():
             self.weekly.start()
@@ -451,6 +601,7 @@ class VodsCog(commands.Cog):
                     await message.add_reaction("✅")
                 except Exception:
                     pass
+                await self.ticket_for_video(message)
         except Exception:
             traceback.print_exc()
 
@@ -477,12 +628,9 @@ class VodsCog(commands.Cog):
         owner = await self._thread_owner(interaction)
         if not owner or owner[1] != interaction.user.id:
             return await self.say(interaction, "Solo la persona dueña del post puede pedir devolución.")
-        ms = [u for u, _ in await self.run(mentors, owner[0], role) if u != interaction.user.id]
-        if not ms:
-            return await interaction.response.edit_message(content=f"Todavía no hay mentores de **{role}**. Avisale al Staff.", view=None)
-        mentions = " ".join(f"<@{u}>" for u in ms)
-        await interaction.channel.send(f"🙋 {interaction.user.mention} pide devolución de un VOD de **{role}**. Mentores: {mentions}",
-                                       allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=u) for u in ms]))
+        t = await self.upsert_ticket(interaction.guild, interaction.user, interaction.channel_id, role, None)
+        if t is None:
+            return await interaction.response.edit_message(content="El canal de mentores todavía no está configurado. Avisale al Staff.", view=None)
         await interaction.response.edit_message(content="✅ Avisé a los mentores.", view=None)
 
     async def open_feedback(self, interaction):
@@ -494,17 +642,144 @@ class VodsCog(commands.Cog):
             return await self.say(interaction, "🔒 Solo los mentores (o el Staff) pueden dar devoluciones.")
         if owner[1] == interaction.user.id:
             return await self.say(interaction, "No podés darte devolución a vos mismo.")
-        await interaction.response.send_modal(FeedbackModal(self, interaction.channel_id, owner[1]))
+        t = await self.run(get_open_ticket, owner[0], owner[1])
+        if t and t["status"] == "taken" and t["mentor_id"] not in (None, interaction.user.id) and not is_staff_or_council(interaction.user):
+            return await self.say(interaction, f"Este VOD ya lo tomó <@{t['mentor_id']}>.")
+        await interaction.response.send_modal(FeedbackModal(self, interaction.channel_id, owner[1], t["id"] if t else None))
 
-    async def save_feedback(self, interaction, thread_id: int, target_id: int, good: str, improve: str, note: str):
-        guild_id = interaction.guild_id
-        await self.run(add_feedback, guild_id, target_id, interaction.user.id, thread_id, good.strip(), improve.strip(), note.strip())
+    async def save_feedback(self, interaction, thread_id: int, target_id: int, good: str, improve: str, note: str, ticket_id: Optional[int] = None):
+        guild = interaction.guild
+        fid = await self.run(add_feedback, guild.id, target_id, interaction.user.id, thread_id, good.strip(), improve.strip(), note.strip())
         emb = discord.Embed(title="📝 Devolución", color=discord.Color.green(), description=f"Mentor: {interaction.user.mention} → <@{target_id}>")
         emb.add_field(name="✅ Qué estuvo bien", value=good.strip()[:1000], inline=False)
         emb.add_field(name="🔧 Qué corregir", value=improve.strip()[:1000], inline=False)
         if note.strip():
             emb.add_field(name="💬 Nota", value=note.strip()[:600], inline=False)
-        await interaction.response.send_message(embed=emb, allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=target_id)]))
+        th = guild.get_thread(thread_id) or interaction.channel
+        try:
+            await th.send(embed=emb, allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=target_id)]))
+        except Exception:
+            traceback.print_exc()
+        if ticket_id:
+            if await self.run(ticket_finish, ticket_id, interaction.user.id, fid):
+                await self.refresh_ticket(guild, await self.run(get_ticket, ticket_id))
+        await self.say(interaction, f"✅ Devolución enviada en <#{thread_id}>.")
+
+    # ---------- tickets de mentores ----------
+    async def mentor_channel(self, guild):
+        cfg = await self.run(get_config, guild.id)
+        if not cfg["mentor_channel_id"]:
+            return None
+        ch = guild.get_channel(int(cfg["mentor_channel_id"]))
+        if ch is None:
+            try:
+                ch = await self.bot.fetch_channel(int(cfg["mentor_channel_id"]))
+            except Exception:
+                return None
+        return ch
+
+    @staticmethod
+    def ticket_embed(guild_id: int, t: dict) -> discord.Embed:
+        state = {"open": "🟡 Pendiente", "taken": f"🔵 Tomado por <@{t['mentor_id']}>", "done": f"✅ Respondido por <@{t['mentor_id']}>"}[t["status"]]
+        color = {"open": discord.Color.gold(), "taken": discord.Color.blue(), "done": discord.Color.green()}[t["status"]]
+        emb = discord.Embed(title=f"🎬 VOD de {(t['role_label'] or 'sin rol').capitalize()}", color=color, description=f"<@{t['user_id']}> subió un video.")
+        emb.add_field(name="Estado", value=state, inline=True)
+        emb.add_field(name="Post", value=f"<#{t['thread_id']}>", inline=True)
+        vids = "\n".join(f"[Video {i}]({u})" for i, u in enumerate(t["videos"][-10:], start=max(1, len(t["videos"]) - 9))) or "—"
+        emb.add_field(name=f"Videos ({len(t['videos'])})", value=vids[:1000], inline=False)
+        emb.set_footer(text=f"Ticket #{t['id']}")
+        return emb
+
+    async def refresh_ticket(self, guild, t: Optional[dict]):
+        if not t or not t["message_id"] or not t["channel_id"]:
+            return
+        try:
+            ch = guild.get_channel(int(t["channel_id"])) or await self.bot.fetch_channel(int(t["channel_id"]))
+            msg = await ch.fetch_message(int(t["message_id"]))
+            await msg.edit(embed=self.ticket_embed(guild.id, t), view=TicketView(self) if t["status"] != "done" else None, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+
+    async def upsert_ticket(self, guild, member, thread_id: int, role: str, video_url: Optional[str]) -> Optional[dict]:
+        """Un ticket abierto por persona: los videos nuevos se suman al que sigue pendiente; si no hay, se crea y se avisa a los mentores del rol."""
+        ch = await self.mentor_channel(guild)
+        if ch is None:
+            return None
+        t = await self.run(get_open_ticket, guild.id, member.id)
+        if t:
+            if video_url:
+                await self.run(ticket_add_video, t["id"], video_url)
+                t = await self.run(get_ticket, t["id"])
+                await self.refresh_ticket(guild, t)
+            return t
+        tid = await self.run(create_ticket, guild.id, member.id, thread_id, role, video_url)
+        t = await self.run(get_ticket, tid)
+        ms = [u for u, _ in await self.run(mentors, guild.id, role)] if role else []
+        ms = [u for u in ms if u != member.id]
+        if ms:
+            ping = " ".join(f"<@{u}>" for u in ms)
+            allowed = discord.AllowedMentions(users=[discord.Object(id=u) for u in ms])
+        else:
+            ping = f"<@&{STAFF_ROLE_ID}> no hay mentores de **{role or 'ese rol'}** cargados."
+            allowed = discord.AllowedMentions(roles=[discord.Object(id=STAFF_ROLE_ID)])
+        msg = await ch.send(ping, embed=self.ticket_embed(guild.id, t), view=TicketView(self), allowed_mentions=allowed)
+        await self.run(ticket_set_message, tid, ch.id, msg.id)
+        return await self.run(get_ticket, tid)
+
+    async def ticket_for_video(self, message):
+        try:
+            role = combat_role_of(message.author)
+            url = f"https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}"
+            await self.upsert_ticket(message.guild, message.author, message.channel.id, role, url)
+        except Exception:
+            traceback.print_exc()
+
+    async def _ticket_from(self, interaction) -> Optional[dict]:
+        return await self.run(get_ticket_by_message, interaction.message.id)
+
+    def _can_mentor(self, interaction, t: dict, mentor_rows) -> bool:
+        if interaction.user.id == t["user_id"]:
+            return False
+        if is_staff_or_council(interaction.user):
+            return True
+        return any(u == interaction.user.id and (not t["role_label"] or r == t["role_label"]) for u, r in mentor_rows)
+
+    async def ticket_take_button(self, interaction):
+        t = await self._ticket_from(interaction)
+        if not t:
+            return await self.say(interaction, "No encontré este ticket.")
+        if not self._can_mentor(interaction, t, await self.run(mentors, interaction.guild_id)):
+            return await self.say(interaction, "🔒 Solo los mentores de ese rol (o el Staff) pueden tomarlo, y no el dueño del video.")
+        if not await self.run(ticket_take, t["id"], interaction.user.id):
+            return await self.say(interaction, "Ya lo tomó otra persona (o ya está respondido).")
+        t = await self.run(get_ticket, t["id"])
+        await interaction.response.edit_message(embed=self.ticket_embed(interaction.guild_id, t), view=TicketView(self))
+        th = interaction.guild.get_thread(t["thread_id"])
+        if th is not None:
+            try:
+                await th.send(f"🔵 {interaction.user.mention} tomó tu VOD, <@{t['user_id']}>: te va a dar la devolución acá.",
+                              allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=t["user_id"])]))
+            except Exception:
+                pass
+
+    async def ticket_release_button(self, interaction):
+        t = await self._ticket_from(interaction)
+        if not t or t["status"] != "taken":
+            return await self.say(interaction, "Este ticket no está tomado.")
+        if not await self.run(ticket_release, t["id"], interaction.user.id, is_staff_or_council(interaction.user)):
+            return await self.say(interaction, "Solo quien lo tomó (o el Staff) puede soltarlo.")
+        t = await self.run(get_ticket, t["id"])
+        await interaction.response.edit_message(embed=self.ticket_embed(interaction.guild_id, t), view=TicketView(self))
+
+    async def ticket_done_button(self, interaction):
+        t = await self._ticket_from(interaction)
+        if not t or t["status"] == "done":
+            return await self.say(interaction, "Este ticket ya está respondido.")
+        if t["status"] == "open":
+            return await self.say(interaction, "Primero tomalo con **🙋 Tomar**.")
+        if t["mentor_id"] != interaction.user.id and not is_staff_or_council(interaction.user):
+            return await self.say(interaction, f"Lo tomó <@{t['mentor_id']}>.")
+        await interaction.response.send_modal(FeedbackModal(self, t["thread_id"], t["user_id"], t["id"]))
 
     # ---------- semana ----------
     async def member_ids(self, guild) -> List[int]:
@@ -617,9 +892,10 @@ class VodsCog(commands.Cog):
             return True
 
         @g.command(name="config", description="(Council) Foro de VODs, mínimo por semana y canal de avisos")
-        @app_commands.describe(foro="Canal de foro donde el bot crea los posts", minimo="Videos mínimos por semana", avisos="Canal donde se publican los resúmenes semanales")
+        @app_commands.describe(foro="Canal de foro donde el bot crea los posts", minimo="Videos mínimos por semana", avisos="Canal donde se publican los resúmenes semanales",
+                               canal_mentores="Canal de tickets donde los mentores toman los VODs")
         async def config(interaction: discord.Interaction, foro: Optional[discord.ForumChannel] = None, minimo: Optional[app_commands.Range[int, 1, 50]] = None,
-                         avisos: Optional[discord.TextChannel] = None):
+                         avisos: Optional[discord.TextChannel] = None, canal_mentores: Optional[discord.TextChannel] = None):
             if not await gate_admin(interaction):
                 return
             fields = {}
@@ -629,11 +905,14 @@ class VodsCog(commands.Cog):
                 fields["min_per_week"] = int(minimo)
             if avisos is not None:
                 fields["notice_channel_id"] = avisos.id
+            if canal_mentores is not None:
+                fields["mentor_channel_id"] = canal_mentores.id
             cfg = await cog.run(set_config, interaction.guild_id, **fields)
             await cog.say(interaction, "⚙️ **VODs**\n"
                           f"Foro: {'<#%s>' % cfg['forum_id'] if cfg['forum_id'] else 'sin configurar'}\n"
                           f"Mínimo por semana: **{cfg['min_per_week']}**\n"
-                          f"Avisos: {'<#%s>' % cfg['notice_channel_id'] if cfg['notice_channel_id'] else 'sin configurar'}")
+                          f"Avisos: {'<#%s>' % cfg['notice_channel_id'] if cfg['notice_channel_id'] else 'sin configurar'}\n"
+                          f"Canal de mentores: {'<#%s>' % cfg['mentor_channel_id'] if cfg['mentor_channel_id'] else 'sin configurar'}")
 
         @g.command(name="permisos", description="(Council) Que los miembros no puedan crear posts en el foro, solo escribir en el suyo")
         async def permisos(interaction: discord.Interaction):
@@ -724,6 +1003,24 @@ class VodsCog(commands.Cog):
                 return
             n = await cog.run(remove_mentor, interaction.guild_id, usuario.id, getattr(rol, "value", rol) if rol else None)
             await cog.say(interaction, f"✅ Listo, se quitó a {usuario.mention} como mentor." if n else f"{usuario.mention} no era mentor.")
+
+        @g.command(name="top-mentores", description="Mentores que más devoluciones dieron")
+        @app_commands.describe(periodo="Período (por defecto, todo el tiempo)")
+        @app_commands.choices(periodo=[app_commands.Choice(name="Esta semana", value="semana"), app_commands.Choice(name="Últimos 30 días", value="mes"),
+                                       app_commands.Choice(name="Siempre", value="todo")])
+        async def top_mentores(interaction: discord.Interaction, periodo: Optional[app_commands.Choice[str]] = None):
+            p = getattr(periodo, "value", periodo) or "todo"
+            now = datetime.now(timezone.utc)
+            since = {"semana": week_start_of(now).astimezone(timezone.utc).isoformat(), "mes": (now - timedelta(days=30)).isoformat(), "todo": None}[p]
+            rows = await cog.run(top_mentors, interaction.guild_id, since)
+            medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+            lines = []
+            for i, r in enumerate(rows, start=1):
+                avg = f" · responde en ~{r['hours']:.0f} h" if r["hours"] is not None else ""
+                lines.append(f"{medals.get(i, f'`{i:>2}.`')} <@{r['mentor_id']}> — **{r['n']}** devolución{'es' if r['n'] != 1 else ''}{avg}")
+            emb = discord.Embed(title=f"🎓 Top mentores · {dict(semana='esta semana', mes='30 días', todo='siempre')[p]}", color=discord.Color.green(),
+                                description="\n".join(lines) or "Todavía nadie dio devoluciones.")
+            await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
 
         @g.command(name="mentores", description="Lista de mentores por rol")
         async def mentores(interaction: discord.Interaction):

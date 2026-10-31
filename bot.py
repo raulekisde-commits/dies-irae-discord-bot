@@ -5802,7 +5802,7 @@ HELP_SECTIONS = [
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
         ("/compo builds nombre link", "Council / Admin", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
-        ("/vods ver [usuario] · resumen · mentores", "Todos / Staff", "Seguimiento de VODs: mínimo de videos por semana en tu post del foro, resumen de quién falta y mentores por rol."),
+        ("/vods ver [usuario] · resumen · mentores · top-mentores", "Todos / Staff", "Seguimiento de VODs: mínimo de videos por semana en tu post del foro, resumen de quién falta, mentores por rol y su top de devoluciones."),
         ("/vods config · permisos · crear-posts · mentor-agregar · mentor-quitar", "Council / Admin", "Configurar el foro de VODs, el mínimo semanal y los avisos; crear los posts y elegir mentores."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
