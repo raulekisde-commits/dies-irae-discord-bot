@@ -293,3 +293,31 @@ def begin_final(db_path: str, cta_id: int, state: str, actor_id: int) -> str:
             return "ok"
     finally:
         conn.close()
+
+
+ADD_TIME_DEFAULT = 10                 # minutos que suma «!agregartiempo» si no se indica cuántos
+ADD_TIME_MAX = 120                    # tope por vez
+
+
+def parse_extra_minutes(text: Optional[str]) -> int:
+    """Texto de «!agregartiempo [tiempo]» -> minutos a sumar. Acepta `15`, `15m`, `1h`, `1h30` o `00:15`. Sin texto: 10. Lanza ValueError con mensaje listo."""
+    import re
+    if text is None or not str(text).strip():
+        return ADD_TIME_DEFAULT
+    t = str(text).strip().lower()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
+    if m:
+        hours, minutes = int(m.group(1)), int(m.group(2))
+        if minutes > 59:
+            raise ValueError("Los minutos van de 00 a 59.")
+    else:
+        m = re.fullmatch(r"(?:(\d{1,2})\s*h(?:s|oras?)?)?\s*(?:(\d{1,4})\s*(?:m|min|mins|minutos?)?)?", t)
+        if not m or not (m.group(1) or m.group(2)):
+            raise ValueError("No entendí el tiempo. Ejemplos: `!agregartiempo`, `!agregartiempo 15`, `!agregartiempo 1h` o `!agregartiempo 1h30`.")
+        hours, minutes = int(m.group(1) or 0), int(m.group(2) or 0)
+    total = hours * 60 + minutes
+    if total < 1:
+        raise ValueError("Tiene que ser al menos 1 minuto.")
+    if total > ADD_TIME_MAX:
+        raise ValueError(f"Se pueden agregar hasta {ADD_TIME_MAX // 60} horas por vez.")
+    return total
