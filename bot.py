@@ -102,6 +102,13 @@ except Exception:
     async def setup_miembros(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar miembros.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from vods import setup_vods
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_vods(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar vods.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from reactionroles import setup_reactionroles
 except Exception:
     import traceback as _tb
@@ -484,6 +491,7 @@ class MyBot(commands.Bot):
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
+            await _safe_setup("vods", setup_vods, self, DB_PATH, GUILD_ID)
             await _safe_setup("warnings", setup_warnings, self, DB_PATH, GUILD_ID)
             await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
@@ -5871,6 +5879,8 @@ HELP_SECTIONS = [
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
         ("/compo builds nombre link", "Council / Admin", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
+        ("/vods ver [usuario] · resumen · mentores · top-mentores", "Todos / Staff", "Seguimiento de VODs: mínimo de videos por semana en tu post del foro, resumen de quién falta, mentores por rol y su top de devoluciones."),
+        ("/vods config · permisos · crear-posts · mentor-agregar · mentor-quitar", "Council / Admin", "Configurar el foro de VODs, el mínimo semanal y los avisos; crear los posts y elegir mentores."),
         ("/compo reglas listar|agregar|quitar|discord|restablecer", "Council / Admin", "Qué rol de combate (tank, healer, dps...) es cada arma. Viene con una lista por defecto y se puede editar."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
