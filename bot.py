@@ -5198,6 +5198,142 @@ async def cta_name_autocomplete(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=r["name"][:100], value=r["name"]) for r in rows]
 
 
+# ---------- /compo importar y /compo actualizar: composiciones desde albionzvz.com ----------
+try:
+    import compoweb
+    import armas_roles as _armas
+    compoweb.init_schema(DB_PATH)
+except Exception:
+    import traceback as _tb
+    compoweb = None
+    print("No se pudo cargar la importación desde AlbionZvZ (compoweb.py):\n" + _tb.format_exc())
+
+
+def cta_web_load(guild_id: int, web_id: str, force: bool):
+    """(Bloqueante: usar con asyncio.to_thread.) Lee la compo y sus builds y arma las posiciones."""
+    parsed = compoweb.fetch_comp(web_id)
+    ids = [bid for party in parsed["parties"] for slot in party["slots"] for bid in slot]
+    builds, failed = compoweb.fetch_builds(DB_PATH, ids, force=force)
+    defs, notes = compoweb.build_slot_defs(parsed, builds, lambda w: _armas.role_for(DB_PATH, guild_id, w), lambda l: _armas.discord_role_for(DB_PATH, guild_id, l))
+    return parsed, defs, notes, failed, len(builds)
+
+
+def cta_web_notes_text(notes: dict, failed: list) -> str:
+    out = []
+    if notes.get("sin_regla"):
+        out.append("⚠️ Armas **sin rol** (la posición queda abierta para cualquiera): " + ", ".join(notes["sin_regla"]) + ". Cargalas con `/compo reglas agregar` y ejecutá `/compo actualizar`.")
+    if notes.get("sin_discord"):
+        out.append("⚠️ Roles de combate **sin rol de Discord**: " + ", ".join(notes["sin_discord"]) + ". Vinculalos con `/compo reglas discord`.")
+    if notes.get("sin_datos") or failed:
+        out.append(f"⚠️ No pude leer {len(failed)} build(s) del sitio: esas posiciones quedan abiertas hasta el próximo `/compo actualizar`.")
+    return "\n".join(out)
+
+
+@compo_group.command(name="importar", description="Importar una compo de albionzvz.com como composición del bot")
+@app_commands.describe(nombre="Nombre que va a tener la composición en el bot", link="Link de la compo en albionzvz.com")
+async def compo_importar(interaction: discord.Interaction, nombre: str, link: str):
+    if compoweb is None:
+        return await interaction.response.send_message("La importación desde AlbionZvZ no está disponible (revisá el log).", ephemeral=True)
+    if not is_council_or_admin(interaction.user):
+        return await interaction.response.send_message("Solo el Council o los administradores pueden importar composiciones.", ephemeral=True)
+    name = nombre.strip()
+    if not cta_valid_composition_name(name):
+        return await interaction.response.send_message("Usá un nombre de 2 a 40 caracteres: letras, números, espacios, guiones o guion bajo.", ephemeral=True)
+    if cta_get_composition(interaction.guild_id, name):
+        return await interaction.response.send_message("Ya existe una composición con ese nombre. Para refrescarla desde la web usá `/compo actualizar`.", ephemeral=True)
+    web_id = compoweb.comp_id_from(link)
+    if not web_id:
+        return await interaction.response.send_message("No encontré el ID de la compo en ese link (tiene que ser `albionzvz.com/comps/…`).", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        parsed, defs, notes, failed, n_builds = await asyncio.to_thread(cta_web_load, interaction.guild_id, web_id, False)
+    except compoweb.WebError as exc:
+        return await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+    except Exception as exc:
+        print(f"/compo importar: {exc!r}")
+        return await interaction.followup.send("❌ No pude importar la compo (formato inesperado).", ephemeral=True)
+    url = f"{compoweb.SITE}/comps/{web_id}"
+    try:
+        cid = await asyncio.to_thread(compoweb.create_composition, DB_PATH, interaction.guild_id, name, interaction.user.id, url, defs, cta_now_iso())
+    except sqlite3.IntegrityError:
+        return await interaction.followup.send("Ya existe una composición con ese nombre.", ephemeral=True)
+    await asyncio.to_thread(compoweb.save_link, DB_PATH, cid, web_id, url)
+    cta_audit(interaction.guild_id, interaction.user.id, "composition_import", details=f"{name} <- {web_id}")
+    restricted = sum(1 for d in defs if d["role_ids"])
+    text = (f"✅ Composición **{name}** importada de AlbionZvZ: **{len(defs)}** posiciones en **{len(parsed['parties'])}** parties "
+            f"({n_builds} builds distintas, {restricted} con rol de Discord asignado).\nVerla: `/compo ver nombre:{name}` · Refrescarla desde la web: `/compo actualizar`.")
+    extra = cta_web_notes_text(notes, failed)
+    await interaction.followup.send((text + ("\n\n" + extra if extra else ""))[:1990], ephemeral=True)
+
+
+class CTAWebUpdateView(discord.ui.View):
+    def __init__(self, comp_id: int, defs: list, web_id: str, url: str, actor_id: int):
+        super().__init__(timeout=180)
+        self.comp_id, self.defs, self.web_id, self.url, self.actor_id = comp_id, defs, web_id, url, actor_id
+        ok = discord.ui.Button(label="Aplicar cambios", style=discord.ButtonStyle.success)
+        no = discord.ui.Button(label="Cancelar", style=discord.ButtonStyle.secondary)
+        ok.callback, no.callback = self.apply, self.cancel
+        self.add_item(ok); self.add_item(no)
+
+    async def apply(self, interaction: discord.Interaction):
+        if interaction.user.id != self.actor_id:
+            return await interaction.response.send_message("Solo quien ejecutó el comando puede aplicarlo.", ephemeral=True)
+        await asyncio.to_thread(compoweb.apply_update, DB_PATH, self.comp_id, self.defs, cta_now_iso())
+        await asyncio.to_thread(compoweb.save_link, DB_PATH, self.comp_id, self.web_id, self.url)
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_web_update", details=f"comp {self.comp_id} <- {self.web_id}")
+        await interaction.response.edit_message(content="✅ Composición actualizada desde AlbionZvZ." + cta_active_notice(self.comp_id), view=None)
+
+    async def cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.actor_id:
+            return await interaction.response.send_message("Solo quien ejecutó el comando puede cancelarlo.", ephemeral=True)
+        await interaction.response.edit_message(content="Operación cancelada: no se cambió nada.", view=None)
+
+
+@compo_group.command(name="actualizar", description="Volver a leer la compo desde albionzvz.com (muestra los cambios antes de aplicar)")
+@app_commands.describe(nombre="Composición importada de AlbionZvZ")
+async def compo_actualizar(interaction: discord.Interaction, nombre: str):
+    if compoweb is None:
+        return await interaction.response.send_message("La importación desde AlbionZvZ no está disponible (revisá el log).", ephemeral=True)
+    if not is_council_or_admin(interaction.user):
+        return await interaction.response.send_message("Solo el Council o los administradores pueden actualizar composiciones.", ephemeral=True)
+    comp = cta_get_composition(interaction.guild_id, nombre)
+    if not comp:
+        return await interaction.response.send_message("No encontré esa composición.", ephemeral=True)
+    link = await asyncio.to_thread(compoweb.link_for, DB_PATH, comp["id"])
+    if not link:
+        return await interaction.response.send_message("Esa composición no viene de AlbionZvZ (se crea con `/compo importar`).", ephemeral=True)
+    wait = compoweb.cooldown_left(link)
+    if wait:
+        return await interaction.response.send_message(f"Se actualizó hace poco: esperá {wait // 60 + 1} min para volver a consultar el sitio.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        parsed, defs, notes, failed, n_builds = await asyncio.to_thread(cta_web_load, interaction.guild_id, link["web_id"], True)
+    except compoweb.WebError as exc:
+        return await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+    except Exception as exc:
+        print(f"/compo actualizar: {exc!r}")
+        return await interaction.followup.send("❌ No pude leer la compo (formato inesperado).", ephemeral=True)
+    d = compoweb.diff_slots(comp["slots"], defs)
+    lines = [f"🔄 **{comp['name']}** vs la web: **{len(d['changed'])}** cambiadas · **{len(d['added'])}** nuevas · **{len(d['removed'])}** que sobran · {d['same']} iguales."]
+    old = {(int(s["party_no"]), int(s["position_no"])): s for s in comp["slots"]}
+    new = {(x["party_no"], x["position_no"]): x for x in defs}
+    for key in d["changed"][:12]:
+        lines.append(f"• P{key[0]}-{key[1]}: {old[key]['role_name']} → **{new[key]['role_name']}**")
+    if len(d["changed"]) > 12:
+        lines.append(f"… y {len(d['changed']) - 12} más.")
+    extra = cta_web_notes_text(notes, failed)
+    if extra:
+        lines.append("\n" + extra)
+    if not (d["changed"] or d["added"] or d["removed"]):
+        await asyncio.to_thread(compoweb.save_link, DB_PATH, comp["id"], link["web_id"], link["url"])
+        return await interaction.followup.send("\n".join(lines)[:1990] + "\nNo hay nada que cambiar.", ephemeral=True)
+    lines.append("Las posiciones que editaste a mano se pisan con lo de la web." + cta_active_notice(comp["id"]))
+    await interaction.followup.send("\n".join(lines)[:1990], view=CTAWebUpdateView(comp["id"], defs, link["web_id"], link["url"], interaction.user.id), ephemeral=True)
+
+
+compo_actualizar.autocomplete("nombre")(cta_name_autocomplete)
+
+
 async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_override: Optional[str], creator_id: int, *, scheduled: bool = False):
     """Publica la CTA en el canal fijo de CTA. Devuelve (run_id, error_text)."""
     channel = guild.get_channel(cu.CTA_CHANNEL_ID)
@@ -5870,6 +6006,7 @@ HELP_SECTIONS = [
         ("/compo crear · listar · ver · editar", "Council / Admin", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
+        ("/compo importar nombre link · actualizar nombre", "Council / Admin", "Importa una compo de albionzvz.com (cada posición toma el rol de Discord según el arma) y la vuelve a leer del sitio cuando la modificás, mostrando los cambios antes de aplicar."),
         ("/compo builds nombre link", "Council / Admin", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
         ("/compo reglas listar|agregar|quitar|discord|restablecer", "Council / Admin", "Qué rol de combate (tank, healer, dps...) es cada arma. Viene con una lista por defecto y se puede editar."),
     ]),
