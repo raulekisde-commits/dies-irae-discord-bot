@@ -48,10 +48,26 @@ def clean_role(role: str) -> str:
     return re.sub(r"\s+", " ", (role or "").strip().lower())[:ROLE_MAX]
 
 
-def _seed(conn, guild_id: int) -> None:
-    """Carga la lista por defecto la primera vez que el servidor la usa (después no la vuelve a pisar)."""
-    if conn.execute("SELECT 1 FROM weapon_roles_seeded WHERE guild_id=?", (guild_id,)).fetchone():
+_refreshed: set = set()
+
+
+def _refresh_defaults(conn, guild_id: int) -> None:
+    """Si cambió el rol por defecto de un arma (y nadie la editó a mano), se actualiza; además se agregan las armas nuevas. Una vez por arranque."""
+    key = (conn.execute("PRAGMA database_list").fetchone()[2], guild_id)         # (archivo de la base, servidor)
+    if key in _refreshed:
         return
+    _refreshed.add(key)
+    now = utcnow_iso()
+    with write_tx(conn):
+        for wid, en, es, role in DEFAULT_WEAPONS:
+            conn.execute("INSERT OR IGNORE INTO weapon_roles(guild_id,weapon_id,name_en,name_es,role,is_custom,updated_at) VALUES (?,?,?,?,?,0,?)", (guild_id, wid, en, es, role, now))
+            conn.execute("UPDATE weapon_roles SET role=?, updated_at=? WHERE guild_id=? AND weapon_id=? AND is_custom=0 AND role<>?", (role, now, guild_id, wid, role))
+
+
+def _seed(conn, guild_id: int) -> None:
+    """Carga la lista por defecto la primera vez que el servidor la usa; después solo actualiza los roles por defecto que nadie editó."""
+    if conn.execute("SELECT 1 FROM weapon_roles_seeded WHERE guild_id=?", (guild_id,)).fetchone():
+        return _refresh_defaults(conn, guild_id)
     now = utcnow_iso()
     with write_tx(conn):
         conn.execute("INSERT OR IGNORE INTO weapon_roles_seeded(guild_id) VALUES (?)", (guild_id,))
@@ -119,6 +135,11 @@ def role_for(db_path: str, guild_id: int, weapon_id: str) -> Optional[str]:
         return (row["role"] or None) if row else None
     finally:
         conn.close()
+
+
+def weapon_names(db_path: str, guild_id: int) -> dict:
+    """{id de arma: nombre en inglés} para poner el nombre real del arma en las posiciones."""
+    return {r["weapon_id"]: r["name_en"] for r in list_rules(db_path, guild_id)}
 
 
 def find_weapon(rules: List[dict], text: str) -> Optional[dict]:

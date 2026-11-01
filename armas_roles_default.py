@@ -127,7 +127,7 @@ DEFAULT_WEAPONS = [
     ('2H_SHAPESHIFTER_SET3', 'Primal Staff', 'Bastón primitivo', 'tank'),
     ('2H_SHAPESHIFTER_SET1', 'Prowling Staff', 'Bastón de merodeador', ''),
     ('2H_SHAPESHIFTER_SET2', 'Rootbound Staff', 'Bastón enraizado', 'supp'),
-    ('2H_SHAPESHIFTER_CRYSTAL', 'Stillgaze Staff', 'Bastón de Mirada Firme del Anciano', ''),
+    ('2H_SHAPESHIFTER_CRYSTAL', 'Stillgaze Staff', 'Bastón de Mirada Firme del Anciano', 'tank'),
     ('2H_SKULLORB_HELL', 'Cursed Skull', 'Calavera maldita', 'dps'),
     ('MAIN_SPEAR_LANCE_AVALON', 'Daybreaker', 'Portador del alba', 'dps'),
     ('MAIN_SPEAR_KEEPER', 'Heron Spear', 'Lanza de garza', 'dps'),

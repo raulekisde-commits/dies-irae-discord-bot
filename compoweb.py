@@ -20,8 +20,10 @@ CACHE_SECONDS = 3600                       # una build ya consultada hace menos 
 UPDATE_COOLDOWN = 300                      # entre /compo actualizar de la misma compo
 PAUSE = 0.4                                # pausa entre pedidos de builds
 PLAY_TO_LABEL = {"dtank": "tank", "tank": "tank", "healer": "healer", "support": "supp", "dps": "dps"}
-LABEL_EMOJI = {"tank": "🛡️", "healer": "💚", "supp": "✨", "dps": "⚔️"}
+LABEL_EMOJI = {"tank": "🛡️", "healer": "💚", "supp": "✨", "dps": "⚔️", "clump maker": "🌀", "pierce": "🗡️", "galatinas": "⚔️", "shaper": "🔮", "bloodletter": "🩸", "battle mount": "🐴", "bomb": "💣"}
 ROLE_NAME_MAX = 40
+FILL_BATTLEMOUNT_ID = "8d5f2182-aa41-451a-8565-b021beff69e5"        # la plaza «Fill — Battlemount» de la web no es una build
+ICON_RE = re.compile(r'"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})":\{"src":"/item-icons/([A-Z0-9_]+?)__t\d(?:_e\d)?\.png"')
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS compoweb_links (
@@ -108,7 +110,8 @@ def parse_comp_html(html: str) -> dict:
     parties = [{"title": p.get("title") or f"Party {i}", "slots": [list(s) for s in p.get("slots", [])]} for i, p in enumerate(layout.get("parties", []), start=1)]
     if not parties:
         raise WebError("La compo no tiene grupos.")
-    return {"title": json.loads('"' + t.group(1) + '"') if t else "", "parties": parties,
+    weapons = {m.group(1): m.group(2) for m in ICON_RE.finditer(text)}              # id de build -> arma principal (viene en la propia página)
+    return {"title": json.loads('"' + t.group(1) + '"') if t else "", "parties": parties, "weapons": weapons,
             "builds": {o["id"]: {"name": o.get("name") or "Build", "playstyle": (o.get("playstyle") or "").lower()} for o in options}}
 
 
@@ -166,31 +169,39 @@ def weapon_of(build: Optional[dict]) -> str:
 
 
 # ---------------------------------------------------------------- de la web a posiciones del bot
-def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_role_for, fallback_play: Optional[Dict[str, int]] = None) -> Tuple[List[dict], dict]:
-    """Arma las posiciones. role_for(weapon_id) -> rol de combate o None; discord_role_for(label) -> id de rol de Discord o None.
-    Devuelve (posiciones, avisos) con avisos = {"sin_regla": {arma}, "sin_discord": {rol}, "sin_datos": {build}}."""
+def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_role_for, name_for=None) -> Tuple[List[dict], dict]:
+    """Arma las posiciones según el ARMA real de cada build (no según el nombre que le puso quien armó la compo).
+    role_for(weapon_id) -> rol de combate o None · discord_role_for(label) -> id de rol de Discord o None · name_for(weapon_id) -> nombre del arma.
+    Devuelve (posiciones, avisos) con avisos = {"sin_regla": [arma], "sin_discord": [rol], "sin_datos": [build]}."""
     notes = {"sin_regla": set(), "sin_discord": set(), "sin_datos": set()}
+    weapons = parsed.get("weapons", {})
     defs: List[dict] = []
     for pn, party in enumerate(parsed["parties"], start=1):
         for pos, slot in enumerate(party["slots"], start=1):
             names, role_ids, label_seen = [], [], ""
             for bid in slot or []:
-                meta = parsed["builds"].get(bid, {"name": "Build", "playstyle": ""})
-                names.append(meta["name"])
-                data = builds.get(bid)
-                weapon = weapon_of(data) if data else ""
-                if not data:
-                    notes["sin_datos"].add(meta["name"])
-                label = (role_for(weapon) if weapon else None) or ""
-                if weapon and not label:
-                    notes["sin_regla"].add(weapon)
+                if bid == FILL_BATTLEMOUNT_ID:
+                    names.append("Battlemount")
+                    label = "battle mount"
+                else:
+                    meta = parsed["builds"].get(bid, {"name": "Build", "playstyle": ""})
+                    weapon = weapons.get(bid) or weapon_of(builds.get(bid))
+                    label = ""
+                    if weapon:
+                        names.append((name_for(weapon) if name_for else None) or meta["name"])
+                        label = role_for(weapon) or ""
+                        if not label:
+                            notes["sin_regla"].add(weapon)
+                    else:
+                        names.append(meta["name"])
+                        notes["sin_datos"].add(meta["name"])
                 rid = discord_role_for(label) if label else None
                 if label and not rid:
                     notes["sin_discord"].add(label)
                 if rid and rid not in role_ids:
                     role_ids.append(rid)
-                label_seen = label_seen or label or PLAY_TO_LABEL.get(meta["playstyle"], "")
-            name = (" / ".join(names) or "Libre")[:ROLE_NAME_MAX]
+                label_seen = label_seen or label
+            name = (" / ".join(dict.fromkeys(names)) or "Libre")[:ROLE_NAME_MAX]
             defs.append({"party_no": pn, "position_no": pos, "role_name": name, "emoji": LABEL_EMOJI.get(label_seen, ""),
                          "role_ids": role_ids, "access_mode": "roles" if role_ids else "any"})
     return defs, {k: sorted(v) for k, v in notes.items()}

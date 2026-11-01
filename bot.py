@@ -5225,7 +5225,9 @@ class CTAConfirmDeleteCompositionView(discord.ui.View):
 compo_group = CTACompositionGroup()
 try:
     from armas_roles import make_reglas_group
-    compo_group.add_command(make_reglas_group(DB_PATH, is_council_or_admin, {"tank": TANK_ROLE_ID, "healer": HEALER_ROLE_ID, "supp": SUPP_ROLE_ID, "dps": DPS_ROLE_ID}, GUILD_ID))
+    _combat_role_ids = {name.lower(): rid for rid, name in cu.PLAYED_ROLES.items()}      # tank, healer, supp, dps, clump maker, shaper, galatinas, bloodletter, pierce, battle mount, bomb
+    _combat_role_ids["ddps"] = DPS_ROLE_ID
+    compo_group.add_command(make_reglas_group(DB_PATH, is_council_or_admin, _combat_role_ids, GUILD_ID))
 except Exception:
     import traceback as _tb
     print("No se pudo cargar /compo reglas (armas_roles.py):\n" + _tb.format_exc())
@@ -5250,12 +5252,16 @@ except Exception:
 
 
 def cta_web_load(guild_id: int, web_id: str, force: bool):
-    """(Bloqueante: usar con asyncio.to_thread.) Lee la compo y sus builds y arma las posiciones."""
+    """(Bloqueante: usar con asyncio.to_thread.) Lee la compo y arma las posiciones. El arma de cada build viene en la propia página;
+    solo se consulta la API de una build si la página no trae su arma."""
     parsed = compoweb.fetch_comp(web_id)
-    ids = [bid for party in parsed["parties"] for slot in party["slots"] for bid in slot]
-    builds, failed = compoweb.fetch_builds(DB_PATH, ids, force=force)
-    defs, notes = compoweb.build_slot_defs(parsed, builds, lambda w: _armas.role_for(DB_PATH, guild_id, w), lambda l: _armas.discord_role_for(DB_PATH, guild_id, l))
-    return parsed, defs, notes, failed, len(builds)
+    ids = [bid for party in parsed["parties"] for slot in party["slots"] for bid in slot
+           if bid != compoweb.FILL_BATTLEMOUNT_ID and bid not in parsed.get("weapons", {})]
+    builds, failed = compoweb.fetch_builds(DB_PATH, ids, force=force) if ids else ({}, [])
+    names = _armas.weapon_names(DB_PATH, guild_id)
+    defs, notes = compoweb.build_slot_defs(parsed, builds, lambda w: _armas.role_for(DB_PATH, guild_id, w),
+                                           lambda l: _armas.discord_role_for(DB_PATH, guild_id, l), lambda w: names.get(w))
+    return parsed, defs, notes, failed, len(parsed.get("weapons", {}))
 
 
 def cta_web_notes_text(notes: dict, failed: list) -> str:
@@ -5301,7 +5307,7 @@ async def compo_importar(interaction: discord.Interaction, nombre: str, link: st
     cta_audit(interaction.guild_id, interaction.user.id, "composition_import", details=f"{name} <- {web_id}")
     restricted = sum(1 for d in defs if d["role_ids"])
     text = (f"✅ Composición **{name}** importada de AlbionZvZ: **{len(defs)}** posiciones en **{len(parsed['parties'])}** parties "
-            f"({n_builds} builds distintas, {restricted} con rol de Discord asignado).\nVerla: `/compo ver nombre:{name}` · Refrescarla desde la web: `/compo actualizar`.")
+            f"({n_builds} builds distintas, {restricted} posiciones con rol de Discord asignado).\nVerla: `/compo ver nombre:{name}` · Refrescarla desde la web: `/compo actualizar`.")
     extra = cta_web_notes_text(notes, failed)
     await interaction.followup.send((text + ("\n\n" + extra if extra else ""))[:1990], ephemeral=True)
 
