@@ -4303,6 +4303,42 @@ async def cta_ack_ok(message: discord.Message, fallback_text: str):
         await cta_reply_short(message, fallback_text, 8)
 
 
+CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
+
+
+async def cta_add_time(message: discord.Message, run: dict, arg: str):
+    """«!agregartiempo [tiempo]» dentro del hilo: suma tiempo a la inscripción abierta (Staff, Caller, Council)."""
+    member = message.author
+    if not cta_is_organizer(member):
+        return await cta_reply_short(message, "🔒 Solo Staff, Caller y Council pueden agregar tiempo.", 8)
+    if run["status"] != "open":
+        return await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya cerraron: no se puede agregar tiempo.", 10)
+    try:
+        extra = cu.parse_extra_minutes(arg)
+    except ValueError as exc:
+        return await cta_reply_short(message, f"❌ {exc}", 14)
+    now = datetime.now(timezone.utc)
+    new_close = _cta_parse_dt(run["closes_at"]) + timedelta(minutes=extra)
+    if (new_close - now).total_seconds() > CTA_MAX_MINUTES * 60:
+        return await cta_reply_short(message, "❌ Las inscripciones no pueden quedar abiertas más de 23:59 desde ahora.", 12)
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        changed = conn.execute("UPDATE cta_runs SET closes_at=? WHERE id=? AND status='open'", (new_close.isoformat(), int(run["id"]))).rowcount
+        conn.commit()
+    if not changed:
+        return await cta_reply_short(message, "🔒 Las inscripciones ya cerraron: no se puede agregar tiempo.", 10)
+    cta_audit(int(run["guild_id"]), member.id, "cta_add_time", int(run["id"]), f"+{extra} min -> {new_close.isoformat()}")
+    cta_request_board_refresh(int(run["id"]), delay=0.5)
+    try:
+        await message.channel.send(f"⏱️ {member.mention} agregó **{extra} min**: las inscripciones ahora cierran <t:{int(new_close.timestamp())}:t> (<t:{int(new_close.timestamp())}:R>).",
+                                   allowed_mentions=CTA_NO_PINGS)
+    except discord.HTTPException:
+        pass
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
+
+
 async def cta_handle_thread_message(message: discord.Message) -> bool:
     """Procesa los mensajes escritos en el hilo de una CTA. Devuelve True si el hilo pertenece a una CTA."""
     rows = db_fetchall("SELECT * FROM cta_runs WHERE thread_id=?", (message.channel.id,))
@@ -4310,6 +4346,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         return False
     run = dict(rows[0])
     if not isinstance(message.author, discord.Member):
+        return True
+    add_time = CTA_ADD_TIME_RE.match((message.content or "").strip())
+    if add_time:
+        await cta_add_time(message, run, add_time.group(1))
         return True
     mentions = [m for m in message.mentions if not getattr(m, "bot", False) and m.id != message.author.id]
     command = cta_parse_thread_command(re.sub(r"<@!?\d+>", "", message.content or "") if mentions else message.content)
@@ -6011,6 +6051,7 @@ HELP_SECTIONS = [
         ("/compo reglas listar|agregar|quitar|discord|restablecer", "Council / Admin", "Qué rol de combate (tank, healer, dps...) es cada arma. Viene con una lista por defecto y se puede editar."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
+        ("`!agregartiempo [minutos]`", "Staff, Caller, Council", "Dentro del hilo de la CTA: suma tiempo a la inscripción abierta (10 min si no ponés cuántos; ej: `!agregartiempo 15` o `1h`). Máx. 2 horas por vez."),
         ("`21`", "Todos", "Te anota en la posición 21 (si escribís otro número libre, te cambia)."),
         ("`-21` · `salir`", "Todos", "Te saca de la posición 21 / de donde estés."),
         ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
