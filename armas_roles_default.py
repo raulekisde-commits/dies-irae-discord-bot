@@ -77,7 +77,7 @@ DEFAULT_WEAPONS = [
     ('MAIN_HOLYSTAFF_AVALON', 'Hallowfall', 'Santificador', 'healer'),
     ('MAIN_HOLYSTAFF', 'Holy Staff', 'Bastón sagrado', 'healer'),
     ('MAIN_HOLYSTAFF_MORGANA', 'Lifetouch Staff', 'Bastón de toque de vida', 'healer'),
-    ('2H_HOLYSTAFF_CRYSTAL', 'Exalted Staff', 'Bastón exaltado', 'healer'),
+    ('2H_HOLYSTAFF_CRYSTAL', 'Exalted Staff', 'Bastón exaltado', 'supp'),
     ('2H_HOLYSTAFF_HELL', 'Fallen Staff', 'Bastón caído', 'healer'),
     ('2H_HOLYSTAFF', 'Great Holy Staff', 'Gran bastón sagrado', 'healer'),
     ('2H_HOLYSTAFF_UNDEAD', 'Redemption Staff', 'Bastón de redención', 'healer'),
