@@ -28,6 +28,41 @@ MAX_BATTLES_PER_LOAD = 15
 USER_COOLDOWN = 10
 
 
+def voice_without_kb(present, signed, regs, kb_names):
+    """Gente que estuvo en voz, no se anotó y no figura en el killboard.
+    regs: [(discord_id, nombre de personaje)] · kb_names: nombres normalizados del killboard.
+    Devuelve ([(discord_id, [personajes])] sin killboard, [discord_id] sin personaje registrado que no se puede comprobar)."""
+    chars: dict = {}
+    for did, name in regs:
+        chars.setdefault(int(did), []).append(name)
+    missing, unknown = [], []
+    for uid in sorted(set(present) - set(signed)):
+        names = chars.get(uid)
+        if not names:
+            unknown.append(uid)
+        elif not any(kb.norm(n) in kb_names for n in names):
+            missing.append((uid, names))
+    return missing, unknown
+
+
+def voice_kb_text(missing, unknown, has_kb: bool, limit: int = 1900) -> str:
+    head = "🎧 **En voz, sin anotar y sin killboard**"
+    if not has_kb:
+        return head + "\n⏳ Falta cargar el killboard para saber quiénes no aparecen. Se actualiza solo al cargarlo."
+    lines = [f"{head} ({len(missing)})"] + ([f"• <@{u}> ({', '.join(n)[:60]})" for u, n in missing] or ["Nadie. 🎉"])
+    if unknown:
+        lines.append(f"❔ **Sin personaje registrado** ({len(unknown)}): no se puede comprobar si estuvieron en el killboard")
+        lines += [f"• <@{u}>" for u in unknown]
+    out, size = [], 0
+    for i, ln in enumerate(lines):
+        if size + len(ln) + 1 > limit:
+            out.append(f"… y {len(lines) - i} línea(s) más")
+            break
+        out.append(ln)
+        size += len(ln) + 1
+    return "\n".join(out)
+
+
 def _roles(m) -> set:
     return {r.id for r in getattr(m, "roles", [])}
 
@@ -405,6 +440,51 @@ class KillboardCog(commands.Cog):
         for chunk in _chunks(text):
             await _say(interaction, chunk)
 
+    _voice_col_ready = False
+
+    async def refresh_voice_kb(self, cta_id: int):
+        """Mantiene en el hilo de stats UN mensaje con «en voz, sin anotar y sin killboard» (se edita al cargar o borrar killboards). Solo con la CTA ya terminada."""
+        def load():
+            conn = connect(self.db_path)
+            try:
+                if not KillboardCog._voice_col_ready:
+                    try:
+                        conn.execute("ALTER TABLE cta_runs ADD COLUMN voice_kb_msg_id INTEGER")
+                    except Exception:
+                        pass
+                    KillboardCog._voice_col_ready = True
+                return conn.execute("SELECT stats_thread_id, final_state, voice_kb_msg_id FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            finally:
+                conn.close()
+        try:
+            run = await asyncio.to_thread(load)
+            if not run or not run["stats_thread_id"] or run["final_state"] != "finished":
+                return
+            present = await self.run(cv.present_users, cta_id)
+            signed = {int(p["user_id"]) for p in await self.run(cu.positions, cta_id)}
+            names = await self.run(kb.players_of_cta, cta_id)
+            regs = [(r.discord_id, r.char_name) for r in await self.run(rdb.all_registrations)]
+            missing, unknown = voice_without_kb(present, signed, regs, names)
+            text = voice_kb_text(missing, unknown, bool(await self.run(kb.battles_of_cta, cta_id)))
+            thread = self.bot.get_channel(int(run["stats_thread_id"])) or await self.bot.fetch_channel(int(run["stats_thread_id"]))
+            if run["voice_kb_msg_id"]:
+                try:
+                    msg = await thread.fetch_message(int(run["voice_kb_msg_id"]))
+                    return await msg.edit(content=text, allowed_mentions=NO_MENTIONS)
+                except discord.NotFound:
+                    pass
+            msg = await thread.send(text, allowed_mentions=NO_MENTIONS)
+
+            def save():
+                conn = connect(self.db_path)
+                try:
+                    conn.execute("UPDATE cta_runs SET voice_kb_msg_id=? WHERE id=?", (msg.id, cta_id))
+                finally:
+                    conn.close()
+            await asyncio.to_thread(save)
+        except Exception as exc:
+            print(f"CTA #{cta_id}: no pude actualizar la lista de voz sin killboard: {exc!r}")
+
     async def refresh_stats_panel(self, cta_id: int):
         """Actualiza el check «Killboard» del panel de stats de la CTA."""
         conn = connect(self.db_path)
@@ -413,6 +493,7 @@ class KillboardCog(commands.Cog):
         finally:
             conn.close()
         skips = await self.recompute_skips(cta_id)              # siempre, aunque la CTA no tenga panel
+        await self.refresh_voice_kb(cta_id)                     # lista extra del hilo (solo si la CTA ya terminó)
         if not run or not run["stats_message_id"]:
             return
         n = len(await self.run(kb.battles_of_cta, cta_id))
