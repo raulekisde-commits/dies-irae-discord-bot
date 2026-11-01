@@ -422,18 +422,46 @@ intents.guilds = True
 
 GUILD_OBJ = discord.Object(id=GUILD_ID)
 
+STARTUP_INFO: dict = {}
+
+
+def _git_version() -> str:
+    """Último commit que está corriendo (si la carpeta es un repo de git); si no, la fecha de bot.py."""
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%h|%s|%cd", "--date=format:%d/%m %H:%M"], cwd=here, capture_output=True, text=True, timeout=5)
+        if out.returncode == 0 and out.stdout.strip():
+            h, subject, when = (out.stdout.strip().split("|", 2) + ["", ""])[:3]
+            return f"`{h}` — {subject[:120]} ({when})"
+    except Exception:
+        pass
+    try:
+        return "sin git · bot.py modificado " + datetime.fromtimestamp(os.path.getmtime(os.path.abspath(__file__)), timezone.utc).strftime("%d/%m %H:%M UTC")
+    except Exception:
+        return "desconocida"
+
+
 async def _report_startup_errors(bot):
-    """Cuando el bot está listo, te manda por DM (al dueño de la app) los errores de arranque."""
+    """Cuando el bot está listo, le manda un DM al dueño de la app: versión, resultado de la sincronización de comandos y errores de arranque."""
     try:
         await bot.wait_until_ready()
-        if not STARTUP_ERRORS:
-            return
         owner = (await bot.application_info()).owner
-        txt = "⚠️ **Errores al arrancar el bot:**\n" + "\n".join(f"**{n}**\n```{e[-900:]}```" for n, e in STARTUP_ERRORS)
+        sync = STARTUP_INFO.get("sync", "sin dato")
+        lines = [f"🟢 **Bot iniciado** · <t:{int(datetime.now(timezone.utc).timestamp())}:f>",
+                 f"📦 Versión: {_git_version()}",
+                 f"🔁 Comandos: {sync}"]
+        if STARTUP_INFO.get("clamped"):
+            lines.append(f"✂️ Descripciones recortadas por ser muy largas: {STARTUP_INFO['clamped']} (revisá el log)")
+        if STARTUP_ERRORS:
+            lines.append("⚠️ **Errores al arrancar el bot:**\n" + "\n".join(f"**{n}**\n```{e[-900:]}```" for n, e in STARTUP_ERRORS))
+        else:
+            lines.append("✅ Todos los módulos cargaron bien.")
+        txt = "\n".join(lines)
         for i in range(0, len(txt), 1900):
             await owner.send(txt[i:i + 1900])
     except Exception as e:
-        print("No pude enviar el reporte de errores:", e)
+        print("No pude enviar el reporte de arranque:", e)
 
 
 
@@ -498,10 +526,12 @@ class MyBot(commands.Bot):
         except Exception as e:
             print("❌ Error cargando Wuju Coins:", e)
         try:
-            _clamp_command_texts(self.tree, GUILD_OBJ)
+            STARTUP_INFO["clamped"] = _clamp_command_texts(self.tree, GUILD_OBJ)
             synced = await self.tree.sync(guild=GUILD_OBJ)
+            STARTUP_INFO["sync"] = f"✅ {len(synced)} sincronizados"
             print(f"✅ Slash commands sincronizados (guild) [setup_hook]: {len(synced)} comandos")
         except Exception as e:
+            STARTUP_INFO["sync"] = f"❌ falló la sincronización: {str(e)[:500]}"
             print("❌ Error sync slash commands [setup_hook]:", e)
 
     async def close(self):
