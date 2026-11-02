@@ -81,6 +81,13 @@ except Exception:
     async def setup_encargos(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar encargos.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from coaching import setup_coaching
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_coaching(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar coaching.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from sorteos import setup_sorteos
 except Exception:
     import traceback as _tb
@@ -509,6 +516,7 @@ class MyBot(commands.Bot):
             await _safe_setup("raffles", setup_raffles, self, DB_PATH, GUILD_ID)
             await _safe_setup("roulette", setup_roulette, self, DB_PATH, GUILD_ID)
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
+            await _safe_setup("coaching", setup_coaching, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
@@ -6447,6 +6455,9 @@ HELP_SECTIONS = [
         ("/recuperar persona", "Staff / Council / Admin", "Si alguien de esa lista volvió al servidor, le devuelve su registro de Albion, sus roles y su apodo. Solo funciona de a una persona y únicamente si ya volvió."),
         ("/completar-registros", "Staff / Council / Admin", "Busca en Albion el ID, servidor y guild de los registros que quedaron solo con nombre (p. ej. vinculados cuando la API no respondía) y lista los que no pudo verificar."),
         ("/estado-api", "Admin", "Revisa si la API de Albion está respondiendo en cada región (búsqueda de jugadores y lista de la guild), cuánto tarda, el estado de la lista guardada en el bot y cuántos registros/reclutas quedaron pendientes."),
+        ("/coaching-panel", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea para el rol Coaching indicando el rol que juega; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
+        ("/coaching-reporte [semana]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte."),
+        ("/mis-vods", "Miembros", "Cuántos VODs subiste esta semana y cuántos te faltan para el mínimo (si tenés el rol Observación)."),
         ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
         ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz (si lo rechaza o lo deja vencer, el bot lo cargada públicamente): la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),

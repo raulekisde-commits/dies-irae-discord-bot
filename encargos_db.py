@@ -315,6 +315,17 @@ def top_users(db_path: str, size: int = 10):
 
 # ---------- hilo de coordinación y recordatorio horario ----------
 REMIND_EVERY = 3600          # segundos entre avisos mientras la tarea siga tomada y sin cerrar
+REMIND_EVERY_COACH = 12 * 3600       # las devoluciones de coaching (source «coach:…») llevan más tiempo: aviso cada 12 h
+
+
+def set_text(db_path: str, task_id: int, text: str) -> None:
+    text = " ".join((text or "").split())[:MAX_TEXT]
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE tasks SET text = ? WHERE id = ? AND status <> 'done'", (text, task_id))
+    finally:
+        conn.close()
 
 
 def set_thread(db_path: str, task_id: int, thread_id: Optional[int]) -> None:
@@ -332,8 +343,9 @@ def due_reminders(db_path: str, now: Optional[float] = None) -> List[int]:
     conn = connect(db_path)
     try:
         return [int(r["id"]) for r in conn.execute(
-            "SELECT id FROM tasks WHERE status = 'taken' AND taker_id IS NOT NULL AND COALESCE(last_reminder, taken_at, 0) <= ? ORDER BY id",
-            (now - REMIND_EVERY,))]
+            "SELECT id FROM tasks WHERE status = 'taken' AND taker_id IS NOT NULL AND COALESCE(last_reminder, taken_at, 0) <= "
+            "? - CASE WHEN source LIKE 'coach:%' THEN ? ELSE ? END ORDER BY id",
+            (now, REMIND_EVERY_COACH, REMIND_EVERY))]
     finally:
         conn.close()
 
