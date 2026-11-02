@@ -280,6 +280,39 @@ class DuelDiscordTests(DiscordBase):
         self.assertIsNone(eco.get_command_channel(self.db, "1v1"))
         self.assertIn("deshabilitado", inter.text)
 
+    def ctx_for(self, author, text, mentions):
+        import types
+        replies = []
+
+        async def reply(t, **kw):
+            replies.append(t)
+
+        msg = types.SimpleNamespace(mentions=mentions)
+        ctx = types.SimpleNamespace(guild=self.guild, author=author, channel=self.panelch, message=msg, reply=reply, send=self.panelch.send)
+        ctx.replies = replies
+        return ctx
+
+    def test_prefijo_1v1_funciona_como_el_slash(self):
+        ctx = self.ctx_for(self.alice, f"<@{self.bob.id}> 100", [self.bob])
+        run(self.cog.duel_prefix.callback(self.cog, ctx, texto=f"<@{self.bob.id}> 100"))
+        self.assertEqual(self.bal(self.alice), 9900)                                    # se descontó la apuesta
+        self.assertEqual(len(self.panelch.sent), 1)                                      # y quedó el panel del duelo
+        self.assertEqual(ctx.replies, [])
+
+    def test_prefijo_1v1_sin_persona_o_sin_monto_explica_el_uso(self):
+        for texto, mentions in (("100", []), (f"<@{self.bob.id}>", [self.bob])):
+            ctx = self.ctx_for(self.alice, texto, mentions)
+            run(self.cog.duel_prefix.callback(self.cog, ctx, texto=texto))
+            self.assertIn("Uso: `!1v1", ctx.replies[0])
+        self.assertEqual(self.bal(self.alice), 10000)
+
+    def test_prefijo_1v1_respeta_canal_habilitado(self):
+        eco.clear_command_channel(self.db, "1v1")
+        ctx = self.ctx_for(self.alice, f"<@{self.bob.id}> 100", [self.bob])
+        run(self.cog.duel_prefix.callback(self.cog, ctx, texto=f"<@{self.bob.id}> 100"))
+        self.assertIn("/eco perms-canal", ctx.replies[0])
+        self.assertEqual(self.bal(self.alice), 10000)
+
     def test_limit_caps_1v1_bets(self):
         eco.set_bet_limit(self.db, "1v1", 1_000)
         i = self.challenge(self.alice, self.bob, "1.001")
