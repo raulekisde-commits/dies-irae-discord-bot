@@ -226,24 +226,107 @@ def tier_chip(d, x, y, text, size=15):
     return w
 
 
-def render(data: dict, title: str = "") -> bytes:
-    """PNG de la build, con caché en disco: la misma build (mismos datos) se dibuja una sola vez."""
+def _key(data: dict, title: str = "") -> str:
     import hashlib
     import json
-    key = hashlib.sha1(json.dumps([data, title], sort_keys=True, default=str).encode()).hexdigest()[:20]
-    path = os.path.join(cache_dir(), f"card_{key}.png")
+    return hashlib.sha1(json.dumps([data, title], sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+
+def _read_saved(key: str):
     try:
-        with open(path, "rb") as f:
+        with open(os.path.join(cache_dir(), f"card_{key}.png"), "rb") as f:
             return f.read()
     except Exception:
-        pass
+        return None
+
+
+def render(data: dict, title: str = "") -> bytes:
+    """PNG de la build, con caché en disco: la misma build (mismos datos) se dibuja una sola vez."""
+    key = _key(data, title)
+    saved = _read_saved(key)
+    if saved is not None:
+        return saved
     png = _render(data, title)
     try:
-        with open(path, "wb") as f:
+        with open(os.path.join(cache_dir(), f"card_{key}.png"), "wb") as f:
             f.write(png)
     except Exception:
         pass
     return png
+
+
+MAX_PARALELO = 3                           # dibujos distintos a la vez (cada uno usa CPU y baja íconos)
+_inflight: dict = {}                       # clave de la build -> tarea que la está dibujando
+_sem = None
+
+
+async def render_async(data: dict, title: str = "", on_wait=None) -> bytes:
+    """Como `render`, pero para muchos pedidos a la vez: si la imagen ya está guardada sale directo; si no, quien llega mientras se la dibuja
+    espera ese mismo resultado (un solo dibujo por build) y los dibujos distintos se hacen de a MAX_PARALELO. `on_wait` se llama (async) solo
+    si hay que esperar, para avisarle a la persona."""
+    import asyncio
+    global _sem
+    key = _key(data, title)
+    saved = await asyncio.to_thread(_read_saved, key)
+    if saved is not None:
+        return saved
+    if on_wait is not None:
+        try:
+            await on_wait()
+        except Exception:
+            pass
+    task = _inflight.get(key)
+    if task is None:
+        if _sem is None:
+            _sem = asyncio.Semaphore(MAX_PARALELO)
+
+        async def work():
+            async with _sem:
+                return await asyncio.to_thread(render, data, title)
+
+        task = asyncio.ensure_future(work())
+        _inflight[key] = task
+        task.add_done_callback(lambda _t, k=key: _inflight.pop(k, None))
+    return await asyncio.shield(task)
+
+
+def cache_status() -> dict:
+    """Estado de la carpeta de caché: cuál usa, si se puede escribir y cuánto hay guardado (para el aviso al arrancar y /diagnostico)."""
+    d = cache_dir()
+    ok = False
+    try:
+        probe = os.path.join(d, ".probe")
+        with open(probe, "w") as f:
+            f.write("1")
+        os.remove(probe)
+        ok = True
+    except Exception:
+        pass
+    imgs = icons = size = 0
+    try:
+        for n in os.listdir(d):
+            if not n.endswith(".png"):
+                continue
+            if n.startswith("card_"):
+                imgs += 1
+            else:
+                icons += 1
+            try:
+                size += os.path.getsize(os.path.join(d, n))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return {"dir": d, "writable": ok, "images": imgs, "icons": icons, "bytes": size}
+
+
+def cache_summary() -> tuple:
+    """(ok, texto) legible del estado de la caché."""
+    s = cache_status()
+    if not s["writable"]:
+        return False, (f"Las imágenes de builds **no se pueden guardar** (`{s['dir']}` sin permiso de escritura): se redibujan y se vuelven a bajar los íconos en "
+                       "cada pedido. Dale permiso de escritura a esa carpeta o definí `BUILDCARD_CACHE`.")
+    return True, f"Caché de builds en `{s['dir']}`: {s['images']} imágenes y {s['icons']} íconos ({s['bytes'] / 1048576:.1f} MB)."
 
 
 def _render(data: dict, title: str = "") -> bytes:
