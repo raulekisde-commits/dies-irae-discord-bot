@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS split_people (
     pos      INTEGER NOT NULL,
     PRIMARY KEY (split_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS split_half (                -- (solo AVA) personas que cobran la mitad de la parte de la lista general
+    split_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    pos      INTEGER NOT NULL,
+    PRIMARY KEY (split_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS split_looters (
     split_id INTEGER NOT NULL,
     user_id  INTEGER NOT NULL,
@@ -142,6 +148,7 @@ class Split:
     edit_snapshot: Optional[str] = None
     scouts: List[int] = field(default_factory=list)
     people: List[int] = field(default_factory=list)
+    half: List[int] = field(default_factory=list)
     looters: List[Looter] = field(default_factory=list)
 
     @property
@@ -175,6 +182,8 @@ class Calc:
     per_person: int
     leftover: int
     scouts_total: int = 0
+    half: int = 0                 # cantidad de personas de la lista "mitad"
+    per_half: int = 0             # lo que cobra cada una (la mitad de per_person)
 
     @property
     def looter_tax_total(self) -> int:
@@ -197,6 +206,10 @@ def compute(s: Split) -> Calc:
     scouts_total = s.scout_pay * len(s.scouts) if s.is_ava else 0
     to_split = max(net - sale - guild - sum(lt.values()) - scouts_total, 0) + s.bolsitas      # las bolsitas se suman al total a splitear
     n = len(s.people)
+    h = len(s.half) if s.is_ava else 0
+    if h:                                                   # la lista mitad cobra la mitad de la parte: el total se divide en "medias partes"
+        unit = to_split // (2 * n + h)
+        return Calc(looted_total, repair_total, gross, net, sale, guild, lt, to_split, n, 2 * unit, to_split - unit * (2 * n + h), scouts_total, h, unit)
     per = to_split // n if n else 0
     return Calc(looted_total, repair_total, gross, net, sale, guild, lt, to_split, n, per, to_split - per * n, scouts_total)
 
@@ -270,6 +283,7 @@ def _load(conn: sqlite3.Connection, split_id: int) -> Optional[Split]:
     s = Split(*tuple(r))
     s.people = [int(x["user_id"]) for x in conn.execute("SELECT user_id FROM split_people WHERE split_id=? ORDER BY pos", (split_id,))]
     s.scouts = [int(x["user_id"]) for x in conn.execute("SELECT user_id FROM split_scouts WHERE split_id=? ORDER BY pos", (split_id,))]
+    s.half = [int(x["user_id"]) for x in conn.execute("SELECT user_id FROM split_half WHERE split_id=? ORDER BY pos", (split_id,))]
     s.looters = [Looter(int(x["user_id"]), int(x["looted"]), int(x["repair"]), x["tax_pct"])
                  for x in conn.execute("SELECT user_id, looted, repair, tax_pct FROM split_looters WHERE split_id=? ORDER BY pos", (split_id,))]
     return s
@@ -420,12 +434,53 @@ def add_people(db_path: str, split_id: int, user_ids: Iterable[int], *, role_id:
                     continue
                 if len(have) >= MAX_PEOPLE:
                     raise SplitError(f"Máximo {MAX_PEOPLE} personas en un split.")
+                conn.execute("DELETE FROM split_half WHERE split_id=? AND user_id=?", (split_id, uid))      # la parte entera pisa a la mitad
                 conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (split_id, uid, _next_pos(conn, "split_people", split_id)))
                 have.add(uid)
                 new += 1
             if role_id is not None:
                 conn.execute("UPDATE splits SET role_id=? WHERE id=?", (role_id, split_id))
         return new
+    finally:
+        conn.close()
+
+
+def add_half(db_path: str, split_id: int, user_ids: Iterable[int]) -> Tuple[int, int]:
+    """Agrega gente a la lista MITAD (solo splits AVA): cobran la mitad de la parte. Si estaban en la lista general, pasan a la mitad.
+    Devuelve (nuevas en la lista mitad, movidas desde la lista general)."""
+    new = moved = 0
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            _require_open(conn, split_id)
+            s = _load(conn, split_id)
+            if not s.is_ava:
+                raise SplitError("La lista mitad solo existe en los splits AVA (/transparencia-ava).")
+            have = set(s.half)
+            for uid in dict.fromkeys(int(u) for u in user_ids):
+                if uid in have:
+                    continue
+                if len(have) >= MAX_PEOPLE:
+                    raise SplitError(f"Máximo {MAX_PEOPLE} personas en la lista mitad.")
+                if conn.execute("DELETE FROM split_people WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount:
+                    moved += 1
+                conn.execute("INSERT INTO split_half(split_id, user_id, pos) VALUES (?,?,?)", (split_id, uid, _next_pos(conn, "split_half", split_id)))
+                have.add(uid)
+                new += 1
+        return new, moved
+    finally:
+        conn.close()
+
+
+def remove_half(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
+    n = 0
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            _require_open(conn, split_id)
+            for uid in dict.fromkeys(int(u) for u in user_ids):
+                n += conn.execute("DELETE FROM split_half WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount
+        return n
     finally:
         conn.close()
 
@@ -439,6 +494,7 @@ def remove_people(db_path: str, split_id: int, user_ids: Iterable[int]) -> Tuple
             _require_open(conn, split_id)
             for uid in dict.fromkeys(int(u) for u in user_ids):
                 removed += conn.execute("DELETE FROM split_people WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount
+                removed += conn.execute("DELETE FROM split_half WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount
                 if conn.execute("DELETE FROM split_looters WHERE split_id=? AND user_id=?", (split_id, uid)).rowcount:
                     lost_looters.append(uid)
         return removed, lost_looters
@@ -753,6 +809,14 @@ def pay_out(db_path: str, s: Split, actor_id: int) -> Tuple[Calc, Dict[int, int]
             ops.append(res.op_id)
         for u in s.people:
             paid[u] = paid.get(u, 0) + calc.per_person
+    if calc.per_half > 0 and s.half:
+        res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=s.half, amount=calc.per_half,
+                                  request_key=f"{_rk(s.id, rnd)}:half",
+                                  reason=f"Split {s.title} (#{s.id}): media parte" + (" (reajuste)" if rnd > 1 else ""))
+        if res.created:
+            ops.append(res.op_id)
+        for u in s.half:
+            paid[u] = paid.get(u, 0) + calc.per_half
     if s.is_ava and s.scout_pay > 0:
         for uid in s.scouts:
             res = eco.apply_operation(db_path, kind="add", actor_id=actor_id, user_ids=[uid], amount=s.scout_pay,
@@ -795,7 +859,7 @@ def _snapshot(s: Split) -> str:
     return json.dumps(dict(
         title=s.title, tab=s.tab, city=s.city, role_id=s.role_id, total=s.total, repair=s.repair, tax_sale=s.tax_sale,
         tax_guild=s.tax_guild, tax_looter=s.tax_looter, bolsitas=s.bolsitas, scout_pay=s.scout_pay,
-        people=s.people, scouts=s.scouts, looters=[[l.user_id, l.looted, l.repair, l.tax_pct] for l in s.looters]))
+        people=s.people, half=s.half, scouts=s.scouts, looters=[[l.user_id, l.looted, l.repair, l.tax_pct] for l in s.looters]))
 
 
 def reopen(db_path: str, split_id: int, actor_id: int) -> str:
@@ -815,6 +879,8 @@ def reopen(db_path: str, split_id: int, actor_id: int) -> str:
                 paid: Dict[int, int] = {}
                 for u in s.people:
                     paid[u] = paid.get(u, 0) + calc.per_person
+                for u in s.half:
+                    paid[u] = paid.get(u, 0) + calc.per_half
                 if s.is_ava:
                     for u in s.scouts:
                         paid[u] = paid.get(u, 0) + s.scout_pay
@@ -846,10 +912,12 @@ def cancel_edit(db_path: str, split_id: int) -> str:
                          "bolsitas=?, scout_pay=?, status='closed', edit_snapshot=NULL, closed_at=? WHERE id=?",
                          (d["title"], d["tab"], d["city"], d["role_id"], d["total"], d["repair"], d["tax_sale"], d["tax_guild"],
                           d["tax_looter"], d["bolsitas"], d["scout_pay"], utcnow_iso(), split_id))
-            for table in ("split_people", "split_scouts", "split_looters"):
+            for table in ("split_people", "split_half", "split_scouts", "split_looters"):
                 conn.execute(f"DELETE FROM {table} WHERE split_id=?", (split_id,))
             for i, u in enumerate(d["people"], 1):
                 conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (split_id, u, i))
+            for i, u in enumerate(d.get("half", []), 1):
+                conn.execute("INSERT INTO split_half(split_id, user_id, pos) VALUES (?,?,?)", (split_id, u, i))
             for i, u in enumerate(d["scouts"], 1):
                 conn.execute("INSERT INTO split_scouts(split_id, user_id, pos) VALUES (?,?,?)", (split_id, u, i))
             for i, (u, looted, repair, tax) in enumerate(d["looters"], 1):
