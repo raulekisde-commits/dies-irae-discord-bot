@@ -564,6 +564,30 @@ class SplitDiscordTests(DiscordBase):
         self.assertEqual((again.id, msg2, err2), (split.id, None, None))                      # no se duplica
         self.assertEqual(len(self.panelch.sent), 1)
 
+    def _cierre_de_split_de_cta(self, con_killboard: bool):
+        import killboard_db as kbdb
+        kbdb.init_schema(self.db)
+        if con_killboard:
+            P = lambda n, g="Smogg": {"Name": n, "GuildName": g, "AverageItemPower": 1300}
+            evs = [{"Killer": P("Alice"), "Victim": P("Rival", "Otros"), "TimeStamp": "2026-10-31T22:00:00Z", "Participants": [], "GroupMembers": []}]
+            kbdb.save_battle(self.db, "700", 7, 1, kbdb.parse_events(evs, "Smogg"))
+        split, _msg, _err = run(self.cog.create_from_cta(cta_id=7, title="CTA #7", tab="T", city="C", user_ids=[self.alice.id], creator_id=self.admin.id))
+        i = self.inter(self.admin, message=self.panelch.sent[0])
+        run(self.cog.on_close_pressed(i))
+        return i
+
+    def test_cerrar_split_de_cta_sin_killboard_pide_confirmar(self):
+        i = self._cierre_de_split_de_cta(con_killboard=False)
+        self.assertIn("no tiene killboard cargado", i.text)
+        self.assertIn("¿Seguro que querés splitear sin killboard?", i.text)
+        view = next(kw["view"] for _c, kw in i.response.sent if kw.get("view"))
+        self.assertEqual(view.children[0].label, "Sí, cerrar sin killboard")
+
+    def test_cerrar_split_de_cta_con_killboard_no_avisa(self):
+        i = self._cierre_de_split_de_cta(con_killboard=True)
+        self.assertNotIn("sin killboard", i.text)
+        self.assertIn("¿Cerrar", i.text)
+
     def test_add_bomb_entra_directo_al_split(self):
         self.assertEqual(run(self.cog.add_bomb(cta_id=7, user_id=self.bob.id, actor_id=self.admin.id)), "nosplit")      # todavía no hay split
         split, _msg, _err = run(self.cog.create_from_cta(cta_id=7, title="CTA #7", tab="T", city="C", user_ids=[self.alice.id], creator_id=self.admin.id))
