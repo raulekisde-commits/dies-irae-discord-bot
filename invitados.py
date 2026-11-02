@@ -52,7 +52,7 @@ INFO_TEXTS = {
                "• **Dados** (`/casino dados`): partida abierta de 5 minutos; se anota quien quiere y gana el número más alto, que se lleva el pozo.\n"
                "• **Coinflip** (`/casino coinflip`): desafío de cara o cruz; lo acepta una persona y el ganador se queda con todo.\n"
                "• **1v1** (`/casino 1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
-               "• **Apuestas** (`/apuesta apostar`, `/apuesta todo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
+               "• **Apuestas** (`/casino apuestas apostar`, `/casino apuestas todo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
                "• **Ruleta**: una sola para todo el servidor.\n\n"
                "**Tus estadísticas**\n"
                "• `/casino winrate [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
@@ -102,7 +102,7 @@ INFO_STAFF = {
                "• `/casino limite juego cantidad` (Council) — apuesta máxima de dados, coinflip o 1v1; 0 quita el límite. Aplica a partidas nuevas.\n"
                "• `/casino ban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
                "• `/eco perms-canal` y `/eco perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
-               "• `/apuesta crear enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
+               "• `/casino apuestas crear enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
                "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/casino winrate`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
