@@ -682,6 +682,7 @@ class EconomyCog(commands.Cog):
     TOP_CHOICES = ([app_commands.Choice(name="💰 Wuju Coins (por defecto)", value="wuju")]
                    + [app_commands.Choice(name=v[0], value=k) for k, v in kb.TOP_KEYS.items()]
                    + [app_commands.Choice(name="🎲 Winrate (dados y coinflip)", value="winrate"),
+                      app_commands.Choice(name="🔥 Rachas de coinflip", value="racha"),
                       app_commands.Choice(name="🛠️ Tareas del staff", value="tareas"),
                       app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach")])
 
@@ -705,6 +706,11 @@ class EconomyCog(commands.Cog):
             if other is None:
                 return await self._ephemeral(interaction, "❌ El ranking de winrate no está disponible ahora.")
             return await other.topwinrate.callback(other, SlashContext(interaction))
+        if key == "racha":
+            other = self.bot.get_cog("GamesCog")
+            if other is None:
+                return await self._ephemeral(interaction, "❌ El ranking de rachas no está disponible ahora.")
+            return await other.send_top_rachas(SlashContext(interaction))
         if key == "tareas":
             other = self.bot.get_cog("EncargosCog")
             if other is None:

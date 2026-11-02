@@ -301,6 +301,15 @@ class GamesCog(commands.Cog):
         for icon, name, w in (("🎲", "Dados", dice), ("🪙", "Coinflip", coin)):
             emb.add_field(name=f"{icon} Winrate {name}", value=f"**{w.percent}**\n{w.wins} ganadas de {w.played} partidas", inline=True)
         emb.add_field(name="🎰 Total apostado", value=f"**{self.money(st.wagered)}**\nen {st.games} apuestas", inline=False)
+        level, nxt = stats_db.gambler_level(st.wagered)
+        lvl_text = f"{level.icon} **{level.name}**" if level else "Sin nivel todavía"
+        if nxt is not None:
+            lvl_text += f"\nSiguiente: {nxt.icon} {nxt.name} (le faltan {self.money(nxt.min_wagered - st.wagered)})"
+        else:
+            lvl_text += "\nNivel máximo"
+        emb.add_field(name="🎭 Nivel de ludópata", value=lvl_text, inline=False)
+        streak = await self.run(stats_db.get_streak, target.id)
+        emb.add_field(name="🔥 Racha de coinflip", value=f"Actual: **{streak.current}** · Mejor: **{streak.best}**\nvictorias seguidas", inline=False)
         emb.add_field(name="🏆 Total ganado", value=self.money(max(st.net, 0)), inline=True)
         emb.add_field(name="📉 Total perdido", value=self.money(max(-st.net, 0)), inline=True)
         emb.add_field(name="⚖️ Resultado neto", value=self.money(st.net), inline=True)
@@ -344,6 +353,23 @@ class GamesCog(commands.Cog):
         emb.add_field(name="🎲 Dados", value=self._winrate_lines(dice), inline=False)
         emb.add_field(name="🪙 Coinflip", value=self._winrate_lines(coin), inline=False)
         emb.set_footer(text=f"Mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas terminadas con rival para entrar al top.")
+        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+
+    TOP_STREAKS_SHOWN = 15
+
+    async def send_top_rachas(self, ctx):
+        """Top de mejores rachas de coinflip (victorias seguidas)."""
+        rows = await self.run(stats_db.top_streaks)
+        emb = discord.Embed(title="🔥 Top rachas de coinflip", color=GREEN)
+        if not rows:
+            emb.description = f"Todavía nadie ganó {stats_db.MIN_STREAK_FOR_TOP} coinflips seguidos."
+        else:
+            lines = [f"`{i}.` <@{s.user_id}> — **{s.best}** seguidas" + (f" · ahora {s.current}" if s.current else "")
+                     for i, s in enumerate(rows[:self.TOP_STREAKS_SHOWN], 1)]
+            if len(rows) > self.TOP_STREAKS_SHOWN:
+                lines.append(f"… y {len(rows) - self.TOP_STREAKS_SHOWN} más")
+            emb.description = "\n".join(lines)
+        emb.set_footer(text="Victorias seguidas en coinflip con rival: una derrota corta la racha; las partidas devueltas no cuentan.")
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
 
     @commands.command(name="totalapostado")
