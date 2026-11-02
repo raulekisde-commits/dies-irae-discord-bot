@@ -49,7 +49,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "completar-registros",
-                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info"}
+                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "recuperar-lista", "recuperar"}
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -801,6 +801,65 @@ class RegistrationCog(commands.Cog):
         for chunk in self._chunks(lines):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    @app_commands.command(name="recuperar-lista", description="(Staff) Los últimos 5 miembros registrados que se fueron del servidor")
+    @app_commands.guild_only()
+    async def recuperar_lista(self, interaction: discord.Interaction):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        saved = await self.run(rdb.list_left_members)
+        if not saved:
+            return await _say(interaction, "ℹ️ No hay datos guardados: todavía no se fue ningún miembro registrado.")
+        blocks = []
+        for m in saved:
+            chars = ", ".join(f"**{discord.utils.escape_markdown(r['char_name'])}**" for r in m["regs"])
+            back = "✅ ya volvió (usá `/recuperar`)" if interaction.guild.get_member(m["discord_id"]) else "⏳ todavía no volvió"
+            blocks.append(f"• <@{m['discord_id']}> (`{m['discord_id']}`) · {chars}\n"
+                          f"   se fue {m['left_at'][:16].replace('T', ' ')} UTC · {len(m['roles'])} rol(es)"
+                          + (f" · apodo {discord.utils.escape_markdown(m['nick'])}" if m["nick"] else "") + f" · {back}")
+        await _say(interaction, f"📤 **Últimos {len(saved)} registrados que se fueron** (se guardan 5; el siguiente pisa al más viejo):\n"
+                   + "\n".join(blocks) + "\nCuando vuelvan al servidor: `/recuperar @persona`.")
+
+    @app_commands.command(name="recuperar", description="(Staff) Devuelve registro, roles y apodo a alguien que se fue y volvió al servidor")
+    @app_commands.describe(persona="La persona que volvió (tiene que estar entre los 5 de /recuperar-lista)")
+    @app_commands.guild_only()
+    async def recuperar(self, interaction: discord.Interaction, persona: discord.Member):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        uid = persona.id
+        saved = await self.run(rdb.list_left_members)
+        m = next((x for x in saved if x["discord_id"] == uid), None)
+        if m is None:
+            return await _say(interaction, "❌ Esa persona no está entre los 5 guardados. Mirá la lista con `/recuperar-lista`.")
+        member = interaction.guild.get_member(uid)
+        if member is None:
+            return await _say(interaction, "❌ Esa persona todavía no volvió al servidor: se puede recuperar recién cuando vuelva a entrar.")
+        await interaction.response.defer(ephemeral=True)
+        results = []
+        for r in m["regs"]:
+            try:
+                await self.run(rdb.admin_link, uid, r["char_name"], interaction.user.id, char_id=r.get("char_id"), region=r.get("region"),
+                               guild_name=r.get("guild_name"), method=r.get("method") or "admin_override")
+                results.append(f"✅ Registro **{discord.utils.escape_markdown(r['char_name'])}** devuelto.")
+            except rdb.RegError as exc:
+                results.append(f"⚠️ **{discord.utils.escape_markdown(r['char_name'])}**: {exc}")
+        guild = interaction.guild
+        roles = [guild.get_role(i) for i, _n in m["roles"]]
+        roles = [r for r in roles if r is not None and not getattr(r, "managed", False)]
+        missing = [n for i, n in m["roles"] if guild.get_role(i) is None]
+        try:
+            if roles:
+                await member.add_roles(*roles, reason=f"Recuperado por {interaction.user}")
+            results.append(f"✅ {len(roles)} rol(es) devuelto(s)." + (f" No existen más: {', '.join(missing)}." if missing else ""))
+        except discord.Forbidden:
+            results.append("⚠️ No pude devolver los roles: mi rol tiene que estar por encima de ellos.")
+        except Exception as exc:
+            results.append(f"⚠️ No pude devolver los roles ({exc.__class__.__name__}).")
+        if m["regs"]:
+            results.append(await self.apply_nickname(member, m["regs"][0]["char_name"]))
+        await self.run(rdb.delete_left_member, uid)
+        await self.audit_log(f"♻️ <@{interaction.user.id}> recuperó a <@{uid}> con `/recuperar`.")
+        await interaction.followup.send("\n".join(results), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     @app_commands.command(name="completar-registros", description="(Staff) Completa el ID de los registros sin ID y lista los que no pudo verificar")
     @app_commands.guild_only()
     async def completar_registros(self, interaction: discord.Interaction):
@@ -917,6 +976,11 @@ class RegistrationCog(commands.Cog):
             regs = await self.run(rdb.get_registrations, member.id)          # antes de liberarlos, para el registro de salidas
         except Exception:
             regs = []
+        try:                                                                  # se guardan los datos de los últimos 5 registrados que se van
+            roles = [(r.id, r.name) for r in getattr(member, "roles", []) if r.id != member.guild.id and not getattr(r, "managed", False)]
+            await self.run(rdb.save_left_member, member.id, name=str(member), nick=getattr(member, "nick", None), roles=roles, regs=regs)
+        except Exception:
+            traceback.print_exc()
         try:
             log_cog = self.bot.get_cog("MemberLogCog")
             if log_cog is not None:
