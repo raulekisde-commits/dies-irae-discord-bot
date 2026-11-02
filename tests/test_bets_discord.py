@@ -189,7 +189,7 @@ class BetsDiscordTests(unittest.TestCase):
 
     def create(self, user=None, enunciado="¿Quién gana?", opciones="Gana Smogg, Pierde Smogg, Empate"):
         i = self.inter(user or self.creator)
-        run(self.cog.apuesta.callback(self.cog, i, enunciado, opciones))
+        run(self.cog.apuesta(i, enunciado, opciones))
         bets = bdb.list_bets(self.db, ("open", "closed", "resolved", "cancelled"))
         if bets and bets[0].message_id:
             msg = next((m for m in self.channel.sent if m.id == bets[0].message_id), None)
@@ -221,7 +221,7 @@ class BetsDiscordTests(unittest.TestCase):
         self.assertTrue(any(isinstance(v, betsm.BetPanelView) for v in self.bot.persistent_views))
         self.assertEqual([c.custom_id for c in betsm.BetPanelView(self.cog).children], ["bet:detail", "bet:cancel"])
 
-    # ---------- /apuesta crear ----------
+    # ---------- /casino apuestas crear ----------
     def test_create_requires_permission(self):
         bet, i = self.create(self.plain)
         self.assertIsNone(bet)
@@ -326,7 +326,7 @@ class BetsDiscordTests(unittest.TestCase):
         self.assertIn("no existe", self.all_in(self.alice, "Otra", thread).text)
         self.assertIn("Uso", self.all_in(self.alice, "", thread).text)
         self.assertIn("dentro del hilo", self.all_in(self.alice, "Empate", self.channel).text)
-        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, thread), bet.id))
+        run(self.cog.cerrarapuesta(self.inter(self.creator, thread), bet.id))
         self.assertIn("ya no acepta", self.all_in(self.alice, "Empate", thread).text)
         self.assertEqual(self.bal(self.alice), 1000)
 
@@ -336,15 +336,15 @@ class BetsDiscordTests(unittest.TestCase):
         bet, _ = self.create()
         thread = self.thread_of(bet)
         i = self.inter(self.alice, thread)
-        run(self.cog.apostar_slash.callback(self.cog, i, "Gana Smogg", "1.000"))
+        run(self.cog.apostar_slash(i, "Gana Smogg", "1.000"))
         self.assertIn("apostó", i.text)
         self.assertEqual(self.bal(self.alice), 4000)
         i = self.inter(self.alice, self.channel)                           # fuera del hilo: error privado
-        run(self.cog.apostar_slash.callback(self.cog, i, "Gana Smogg", "1.000"))
+        run(self.cog.apostar_slash(i, "Gana Smogg", "1.000"))
         self.assertIn("dentro del hilo", i.text)
         self.assertTrue(i.ephemeral_all)
         i = self.inter(self.bob, thread)
-        run(self.cog.apostartodo_slash.callback(self.cog, i, "Empate"))
+        run(self.cog.apostartodo_slash(i, "Empate"))
         views = i.views
         self.assertEqual(len(views), 1)
         self.assertEqual(self.bal(self.bob), 2000)
@@ -386,13 +386,13 @@ class BetsDiscordTests(unittest.TestCase):
         bet, _ = self.create()
         thread = self.thread_of(bet)
         i = self.inter(self.alice, thread)
-        run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
+        run(self.cog.cerrarapuesta(i, bet.id))
         self.assertIn("Solo quien creó", i.text)
         i = self.inter(self.staff, thread)
-        run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
+        run(self.cog.cerrarapuesta(i, bet.id))
         self.assertIn("Solo quien creó", i.text)                 # el rol Staff solo no alcanza (Council y Admin sí: ver más abajo)
         i = self.inter(self.creator, thread)
-        run(self.cog.cerrarapuesta.callback(self.cog, i, None))  # inferida desde el hilo
+        run(self.cog.cerrarapuesta(i, None))  # inferida desde el hilo
         self.assertIn("cerrada", i.text)
         self.assertEqual(bdb.get_bet(self.db, bet.id).status, "closed")
         ctx = self.bet_cmd(bet, self.alice, "Empate 10")
@@ -414,7 +414,7 @@ class BetsDiscordTests(unittest.TestCase):
             bet, _ = self.create()
             thread = self.thread_of(bet)
             i = self.inter(who, thread)
-            run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
+            run(self.cog.cerrarapuesta(i, bet.id))
             self.assertIn("cerrada", i.text)
             self.assertEqual(bdb.get_bet(self.db, bet.id).status, "closed")
 
@@ -423,13 +423,13 @@ class BetsDiscordTests(unittest.TestCase):
         thread = self.thread_of(bet)
         for who in (self.alice, self.staff, self.plain):
             i = self.inter(who, thread)
-            run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
+            run(self.cog.cerrarapuesta(i, bet.id))
             self.assertIn("Solo quien creó", i.text)
         self.assertEqual(bdb.get_bet(self.db, bet.id).status, "open")
-        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, thread), None))
+        run(self.cog.cerrarapuesta(self.inter(self.creator, thread), None))
         for who in (self.alice, self.staff, self.plain):
             i = self.inter(who, thread)
-            run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+            run(self.cog.resolverapuesta(i, "Gana Smogg", None))
             self.assertIn("Solo quien creó", i.text)
         self.assertEqual(bdb.get_bet(self.db, bet.id).status, "closed")
 
@@ -441,14 +441,14 @@ class BetsDiscordTests(unittest.TestCase):
                 eco.apply_operation(self.db, kind="remove", actor_id=1, user_ids=[u.id], amount=self.bal(u), request_key=f"z:{who.id}:{u.id}") if self.bal(u) else None
             bet = self.full_example()
             thread = self.thread_of(bet)
-            run(self.cog.cerrarapuesta.callback(self.cog, self.inter(who, thread), None))
+            run(self.cog.cerrarapuesta(self.inter(who, thread), None))
             i = self.inter(who, thread)
-            run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+            run(self.cog.resolverapuesta(i, "Gana Smogg", None))
             run(i.views[0]._ok(self.inter(who, thread)))
             self.assertEqual(bdb.get_bet(self.db, bet.id).status, "resolved")
             results.append((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)))
             i = self.inter(who, thread)
-            run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+            run(self.cog.resolverapuesta(i, "Gana Smogg", None))
             self.assertIn("ya fue resuelta", i.text)                  # no se paga dos veces
             self.assertEqual((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)), results[-1])
         self.assertEqual(len(set(results)), 1)                        # mismos pagos que si resuelve el creador
@@ -464,7 +464,7 @@ class BetsDiscordTests(unittest.TestCase):
         bet, _ = self.create()
         thread = self.thread_of(bet)
         i = self.inter(council, thread)
-        run(self.cog.cancelarapuesta.callback(self.cog, i, bet.id))
+        run(self.cog.cancelarapuesta(i, bet.id))
         self.assertIn("Solo quien creó", i.text)                      # cancelar sigue siendo del creador o de un administrador
 
     def full_example(self):
@@ -480,14 +480,14 @@ class BetsDiscordTests(unittest.TestCase):
         bet = self.full_example()
         thread = self.thread_of(bet)
         i = self.inter(self.creator, thread)
-        run(self.cog.resolverapuesta.callback(self.cog, i, "gana smogg", None))
+        run(self.cog.resolverapuesta(i, "gana smogg", None))
         self.assertIn("cerrá la apuesta", i.text.lower())          # todavía abierta
-        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, thread), None))
+        run(self.cog.cerrarapuesta(self.inter(self.creator, thread), None))
         i = self.inter(self.alice, thread)
-        run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+        run(self.cog.resolverapuesta(i, "Gana Smogg", None))
         self.assertIn("Solo quien creó", i.text)
         i = self.inter(self.creator, thread)
-        run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+        run(self.cog.resolverapuesta(i, "Gana Smogg", None))
         self.assertEqual(bdb.get_bet(self.db, bet.id).status, "closed")      # falta confirmar
         run(i.views[0]._ok(self.inter(self.creator, thread)))
         self.assertEqual((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)), (25000, 75000, 0))
@@ -499,16 +499,16 @@ class BetsDiscordTests(unittest.TestCase):
         self.assertTrue(any("Ganó" in (m.content or "") for m in thread.sent))
         # segunda resolución: rechazada y sin pagos nuevos
         i = self.inter(self.creator, thread)
-        run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+        run(self.cog.resolverapuesta(i, "Gana Smogg", None))
         self.assertIn("ya fue resuelta", i.text)
         self.assertEqual(self.bal(self.alice), 25000)
 
     def test_resolve_without_winners_cancels_and_refunds(self):
         bet = self.full_example()
         thread = self.thread_of(bet)
-        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, thread), None))
+        run(self.cog.cerrarapuesta(self.inter(self.creator, thread), None))
         i = self.inter(self.creator, thread)
-        run(self.cog.resolverapuesta.callback(self.cog, i, "Empate", None))
+        run(self.cog.resolverapuesta(i, "Empate", None))
         self.assertIn("Nadie apostó", i.text)
         run(i.views[0]._ok(self.inter(self.creator, thread)))
         self.assertEqual((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)), (5000, 15000, 80000))
@@ -518,17 +518,17 @@ class BetsDiscordTests(unittest.TestCase):
         bet = self.full_example()
         thread = self.thread_of(bet)
         i = self.inter(self.alice, thread)
-        run(self.cog.cancelarapuesta.callback(self.cog, i, None))
+        run(self.cog.cancelarapuesta(i, None))
         self.assertIn("Solo quien creó", i.text)
         i = self.inter(self.admin, thread)
-        run(self.cog.cancelarapuesta.callback(self.cog, i, None))
+        run(self.cog.cancelarapuesta(i, None))
         self.assertEqual(bdb.get_bet(self.db, bet.id).status, "open")        # pide confirmación
         view = i.views[0]
         run(view._ok(self.inter(self.admin, thread)))
         self.assertEqual((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)), (5000, 15000, 80000))
         run(view._ok(self.inter(self.admin, thread)))                        # doble clic
         i = self.inter(self.creator, thread)
-        run(self.cog.cancelarapuesta.callback(self.cog, i, None))
+        run(self.cog.cancelarapuesta(i, None))
         self.assertIn("ya fue resuelta o cancelada", i.text)
         self.assertEqual(self.bal(self.alice), 5000)
 
@@ -702,9 +702,9 @@ class BetsDiscordTests(unittest.TestCase):
 
     def test_bet_movements_visible_in_history(self):
         bet = self.full_example()
-        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, self.thread_of(bet)), None))
+        run(self.cog.cerrarapuesta(self.inter(self.creator, self.thread_of(bet)), None))
         i = self.inter(self.creator, self.thread_of(bet))
-        run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+        run(self.cog.resolverapuesta(i, "Gana Smogg", None))
         run(i.views[0]._ok(self.inter(self.creator, self.thread_of(bet))))
         types = [r.mov_type for r in eco.get_history(self.db, self.alice.id)]
         self.assertEqual(types[:2], ["bet_payout", "bet_stake"])
@@ -721,9 +721,9 @@ class BetsDiscordTests(unittest.TestCase):
         # apostar no lo toca; los premios tampoco cuentan como depósito
         bet, _ = self.create()
         self.bet_cmd(bet, self.alice, "Gana Smogg 1000")
-        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, self.thread_of(bet)), None))
+        run(self.cog.cerrarapuesta(self.inter(self.creator, self.thread_of(bet)), None))
         i = self.inter(self.creator, self.thread_of(bet))
-        run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+        run(self.cog.resolverapuesta(i, "Gana Smogg", None))
         run(i.views[0]._ok(self.inter(self.creator, self.thread_of(bet))))
         self.assertEqual(eco.get_lifetime_deposits(self.db, self.alice.id), 6000)
         ctx = self.say("bal", self.alice, self.channel, {"objetivo": ""})

@@ -137,6 +137,55 @@ class CasinoCog(commands.Cog):
     async def casino_1v1(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
         await self._delegate(interaction, "DuelsCog", "duel", "duelos", usuario, cantidad)
 
+    # ---------- /casino apuestas ...: la lógica vive en bets.py ----------
+    apuestas_g = app_commands.Group(name="apuestas", description="Crear, cerrar y resolver apuestas con Wuju Coins", parent=casino_g)
+
+    @apuestas_g.command(name="crear", description="Crea una apuesta con Wuju Coins")
+    @app_commands.describe(enunciado="Qué se apuesta", opciones="Opciones separadas por comas (ej: Gana Smogg, Pierde Smogg, Empate)")
+    async def apuestas_crear(self, interaction: discord.Interaction, enunciado: str, opciones: str):
+        await self._delegate(interaction, "BetsCog", "apuesta", "apuestas", enunciado, opciones)
+
+    @apuestas_g.command(name="apostar", description="Apostá Wuju Coins a una opción (dentro del hilo de la apuesta)")
+    @app_commands.describe(opcion="Opción a la que apostás", cantidad="Cantidad (ej: 5,000)")
+    async def apuestas_apostar(self, interaction: discord.Interaction, opcion: str, cantidad: str):
+        await self._delegate(interaction, "BetsCog", "apostar_slash", "apuestas", opcion, cantidad)
+
+    @apuestas_g.command(name="todo", description="Apostá TODO tu saldo a una opción (pide confirmación)")
+    @app_commands.describe(opcion="Opción a la que apostás todo")
+    async def apuestas_todo(self, interaction: discord.Interaction, opcion: str):
+        await self._delegate(interaction, "BetsCog", "apostartodo_slash", "apuestas", opcion)
+
+    @apuestas_g.command(name="cerrar", description="Cierra una apuesta: ya no se aceptan más apuestas (quien la creó, Council o administradores)")
+    @app_commands.describe(id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
+    async def apuestas_cerrar(self, interaction: discord.Interaction, id: Optional[int] = None):
+        await self._delegate(interaction, "BetsCog", "cerrarapuesta", "apuestas", id)
+
+    @apuestas_g.command(name="resolver", description="Define la opción ganadora y reparte el pozo (quien la creó, Council o administradores)")
+    @app_commands.describe(opcion="Opción ganadora", id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
+    async def apuestas_resolver(self, interaction: discord.Interaction, opcion: str, id: Optional[int] = None):
+        await self._delegate(interaction, "BetsCog", "resolverapuesta", "apuestas", opcion, id)
+
+    @apuestas_g.command(name="cancelar", description="Cancela una apuesta y devuelve todo lo apostado (creador o administrador)")
+    @app_commands.describe(id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
+    async def apuestas_cancelar(self, interaction: discord.Interaction, id: Optional[int] = None):
+        await self._delegate(interaction, "BetsCog", "cancelarapuesta", "apuestas", id)
+
+    async def _ac_apuestas_opcion(self, interaction: discord.Interaction, current: str):
+        bets = self.bot.get_cog("BetsCog")
+        return await bets.option_autocomplete(interaction, current) if bets is not None else []
+
+    @apuestas_apostar.autocomplete("opcion")
+    async def _ac_apuestas_apostar(self, interaction: discord.Interaction, current: str):
+        return await self._ac_apuestas_opcion(interaction, current)
+
+    @apuestas_todo.autocomplete("opcion")
+    async def _ac_apuestas_todo(self, interaction: discord.Interaction, current: str):
+        return await self._ac_apuestas_opcion(interaction, current)
+
+    @apuestas_resolver.autocomplete("opcion")
+    async def _ac_apuestas_resolver(self, interaction: discord.Interaction, current: str):
+        return await self._ac_apuestas_opcion(interaction, current)
+
     @casino_g.command(name="winrate", description="Winrate, total apostado, ganado/perdido y lista negra de una persona (por defecto, vos)")
     @app_commands.describe(usuario="Persona a consultar")
     async def casino_winrate(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):

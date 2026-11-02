@@ -493,9 +493,11 @@ def _choices(**kw):
 
 
 class Group:
-    def __init__(self, *, name, description="", **kw):
-        self.name, self.description = name, description
+    def __init__(self, *, name, description="", parent=None, **kw):
+        self.name, self.description, self.parent = name, description, parent
         self.commands = {}
+        if parent is not None:                      # como discord.py: un subgrupo cuelga de su grupo padre
+            parent.commands[name] = self
 
     def command(self, *, name=None, description="", **kw):
         def deco(fn):

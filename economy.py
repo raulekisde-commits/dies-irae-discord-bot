@@ -1176,6 +1176,7 @@ class EconomyCog(commands.Cog):
     # ---------------- alertas privadas de transferencias sospechosas ----------------
     ALERT_WINDOW_DAYS = 7              # ventana de transferencias que se analiza
     ALERT_REPEAT_SECONDS = 12 * 3600   # un aviso por caso cada 12 h (en memoria; si el bot reinicia puede repetirse)
+    ALERT_MIN_TOTAL = 30_000_000       # solo avisa si el patrón mueve al menos esto en la ventana (30 M); por debajo es ruido
 
     async def _alert_if_suspicious(self, interaction, sender, receiver, amount: int, ref: str):
         """Avisa por DM a Council y administradores si esta transferencia encaja en un patrón de audit_db. NUNCA bloquea ni modifica nada."""
@@ -1185,12 +1186,12 @@ class EconomyCog(commands.Cog):
             pairs, collectors = audit_db.transfer_report(transfers)
             findings = []
             for r in pairs:
-                if r.sender == sender.id and r.receiver == receiver.id:
+                if r.sender == sender.id and r.receiver == receiver.id and r.total >= self.ALERT_MIN_TOTAL:
                     findings.append((("pair", r.sender, r.receiver),
                                      f"**Envíos casi siempre en un solo sentido:** {r.count} transferencias de {sender.mention} a {receiver.mention} "
                                      f"en {self.ALERT_WINDOW_DAYS} días, por {self.money(r.total)} (devuelto: {self.money(r.back_total)})."))
             for c in collectors:
-                if c.user_id == receiver.id:
+                if c.user_id == receiver.id and c.total >= self.ALERT_MIN_TOTAL:
                     findings.append((("collector", c.user_id),
                                      f"**Recibe de muchas cuentas:** {receiver.mention} recibió de {c.senders} personas distintas "
                                      f"en {self.ALERT_WINDOW_DAYS} días, por {self.money(c.total)} en total."))
