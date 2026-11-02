@@ -17,7 +17,14 @@ SEEN_HOURS = 24
 LOOKAHEAD_MAX_H = 20                  # un horario que ya pasó daría «mañana»; más lejos que esto es un timer que ya salió
 TIERS_NORMAL = {"4.4", "5.4", "6.4", "7.4", "8.4"}
 NODE_MATERIAL = {"ore": "mineral", "hide": "cuero", "wood": "madera", "fiber": "fibra", "fibre": "fibra"}
-VORTEX_TIER = {"green": "common", "blue": "rare", "purple": "epic", "gold": "legendary", "yellow": "legendary"}
+# El otro bot nombra los vortex/cores por color; acá se guardan por tier (Common/Rare/Epic/Legendary). También se aceptan el nombre del tier
+# y los colores en español, por si el otro panel cambia de estilo.
+VORTEX_TIER = {"green": "common", "verde": "common", "common": "common",
+               "blue": "rare", "azul": "rare", "rare": "rare",
+               "purple": "epic", "violet": "epic", "violeta": "epic", "morado": "epic", "epic": "epic",
+               "gold": "legendary", "golden": "legendary", "yellow": "legendary", "amarillo": "legendary", "dorado": "legendary",
+               "legendary": "legendary"}
+PAST_GRACE_MIN = 20                   # igual que TIMER_KEEP_MINUTES: un timer que salió hace más que esto ya no sirve
 
 _EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 _MD_RE = re.compile(r"[*_`~|>]")
@@ -69,7 +76,11 @@ def parse_timers(text: str, now: Optional[datetime] = None) -> Tuple[List[dict],
             continue
         if unix:
             spawn = datetime.fromtimestamp(int(unix.group(1)), timezone.utc)
+            if spawn < now - timedelta(minutes=PAST_GRACE_MIN):
+                continue                                   # el otro panel muestra «hace 2 horas»: ya salió, no se carga
         else:
+            if re.search(r"\b(hace|ago)\b", line, re.I):
+                continue                                   # texto «hace X» sin timestamp: ya salió
             h, m = int(clock_m.group(1)), int(clock_m.group(2))
             if not (0 <= h <= 23 and 0 <= m <= 59):
                 skipped += 1
