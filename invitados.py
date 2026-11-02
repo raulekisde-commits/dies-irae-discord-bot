@@ -95,7 +95,7 @@ INFO_STAFF = {
                   "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n"
                   "• Quien invita queda como responsable: si hay problemas, revisá `/quien-invito` o la lista para saber a quién consultar."),
     "warnings": ("• `/warning usuario razon` — pone un warning. Queda guardado quién lo puso, cuándo y por qué. La respuesta la ve solo quien ejecuta el comando.\n"
-                 "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). Es el único comando que se muestra en el canal.\n"
+                 "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). La respuesta es privada, como la del resto de los comandos de warnings.\n"
                  "• `/warning-top` — quién acumula más warnings (privado).\n"
                  "• Los puede usar **Staff** y **Council**. Escribí un motivo claro: es el único registro que queda."),
     "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/dados`, `/coinflip` y `/1v1`.\n"
