@@ -25,6 +25,13 @@ import registration_db as rdb
 from deposits import is_council
 from guildshop import can_manage
 
+STAFF_ROLE_ID = 1257896709246423083
+
+
+def can_admin_registro(member) -> bool:
+    """Comandos admin_* del registro: Council, administradores o rol Staff."""
+    return can_manage(member) or any(getattr(r, "id", None) == STAFF_ROLE_ID for r in getattr(member, "roles", []))
+
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD = discord.Color.gold()
 GREY = discord.Color.light_grey()
@@ -512,8 +519,8 @@ class RegistrationCog(commands.Cog):
     @app_commands.describe(usuario="Miembro")
     @app_commands.guild_only()
     async def admin_registro(self, interaction: discord.Interaction, usuario: discord.Member):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         regs = await self.run(rdb.get_registrations, usuario.id)
         pending = await self.run(rdb.pending_requests_for, usuario.id)
         rows = await self.run(rdb.recent_audit, usuario.id, 6)
@@ -530,8 +537,8 @@ class RegistrationCog(commands.Cog):
     @app_commands.describe(usuario="Miembro", motivo="Motivo (queda en la auditoría)")
     @app_commands.guild_only()
     async def admin_desvincular(self, interaction: discord.Interaction, usuario: discord.Member, motivo: Optional[str] = None):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         regs = await self.run(rdb.get_registrations, usuario.id)
         if not regs:
             n = await self.run(rdb.cancel_active_for, usuario.id, interaction.user.id, "cancelada por un administrador")
@@ -554,8 +561,8 @@ class RegistrationCog(commands.Cog):
     @app_commands.describe(usuario="Miembro", personaje="Nombre exacto del personaje en Albion")
     @app_commands.guild_only()
     async def admin_vincular(self, interaction: discord.Interaction, usuario: discord.Member, personaje: str):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         if usuario.bot:
             return await _say(interaction, "❌ No se puede vincular a un bot.")
         await interaction.response.defer(ephemeral=True)
