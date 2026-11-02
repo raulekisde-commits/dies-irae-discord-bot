@@ -741,10 +741,16 @@ def time_left_str(end_at: datetime) -> str:
     return f"{minutes}m"
 
 def is_timers_member(member: discord.Member) -> bool:
-    role = _get_timers_role(member.guild)
-    if role is None:
+    """Pueden cargar y borrar timers los miembros REGISTRADOS (rol Miembro + registro de Albion). El rol «timers» ya no hace falta."""
+    import registration_db as _rdb
+    if not any(r.id == MIEMBRO_ROLE_ID for r in member.roles):
         return False
-    return role in member.roles
+    try:
+        if not _rdb.registration_required(DB_PATH):
+            return True
+        return _rdb.is_registered(DB_PATH, member.id)
+    except Exception:
+        return False
 
 # ✅ helper anti-40060
 async def respond_ephemeral(interaction: discord.Interaction, content: str):
@@ -1221,7 +1227,7 @@ async def before_timer_posts_cleanup():
 
 
 # ================== SLASH COMMANDS TIMERS ==================
-@bot.tree.command(name="timeradd", description="Agregar timer (solo rol Timers)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="timeradd", description="Agregar un timer (miembros registrados)", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(
     material="Material",
     mapa="Nombre del mapa",
@@ -1261,7 +1267,7 @@ async def timeradd_slash(
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
     if not is_timers_member(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo el rol **timers** puede usar este comando.")
+        return await respond_ephemeral(interaction, "❌ Solo los miembros registrados pueden cargar timers.")
 
     mapa = mapa.strip()
     if not mapa:
@@ -1305,6 +1311,13 @@ async def timeradd_slash(
 
     await interaction.response.defer(ephemeral=True)
 
+    # Sin duplicados: mismo material, mapa, tier y hora UTC que uno ya cargado (se revisa y se guarda sin pausas en medio).
+    dup = timer_find_entries(interaction.guild.id, mat, mapa, clock, tr)
+    if dup:
+        who = dup[0].get("created_by")
+        return await interaction.followup.send(
+            f"⚠️ Ese timer ya está cargado ({mat}{' ' + tr if tr else ''} · {mapa} · {clock[0]:02d}:{clock[1]:02d} UTC)"
+            + (f" por <@{who}>" if who else "") + ". No lo subí de nuevo.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
     timer_add_entry(interaction.guild.id, mat, tr, mapa, target_utc, interaction.user.id)
     category = timer_category(mat)
     try:
@@ -1356,7 +1369,7 @@ async def deltimer_slash(
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
     if not (is_timers_member(interaction.user) or is_staff_member(interaction.user)):
-        return await respond_ephemeral(interaction, "❌ Solo el rol **timers** o el Staff pueden usar este comando.")
+        return await respond_ephemeral(interaction, "❌ Solo los miembros registrados o el Staff pueden usar este comando.")
     clock = parse_clock_hhmm(tiempo)
     if clock is None:
         return await respond_ephemeral(interaction, "❌ Tiempo inválido. Usá el horario UTC en formato `HH:MM` (00:00 a 23:59), ej: `16:10`.")
@@ -6399,7 +6412,7 @@ HELP_SECTIONS = [
     ("💰 Economía y timers", [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),
-        ("/deltimer material mapa tiempo [tier]", "Rol Timers, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
+        ("/deltimer material mapa tiempo [tier]", "Miembros registrados, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
         ("/apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
         ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
@@ -6444,7 +6457,7 @@ HELP_SECTIONS = [
         ("/eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),
         ("/historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
         ("/verhistorial [usuario] [completo]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. Con `completo:true` te llega TODO el historial como archivo CSV, solo visible para vos en el canal. El staff puede ver los de otra persona."),
-        ("/timeradd material mapa tiempo [tier]", "Rol Timers", "Agrega un timer (hora UTC en que sale) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
+        ("/timeradd material mapa tiempo [tier]", "Miembros registrados", "Agrega un timer (hora UTC en que sale; si ya hay uno igual con el mismo material, mapa, tier y hora, no lo duplica) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
     ("🎁 Sorteos y roles", [
         ("/sorteo premio tiempo [ganadores]", "Staff / Council", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
