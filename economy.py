@@ -501,7 +501,7 @@ class EconomyCog(commands.Cog):
     # ---------------- addmoney / remove-money ----------------
     async def _parse_amount_or_reply(self, ctx: commands.Context, text: str) -> Optional[int]:
         try:
-            return eco.parse_amount(text)
+            return eco.parse_amount_short(text)
         except eco.AmountError as exc:
             await ctx.reply(f"❌ {exc}", mention_author=False, allowed_mentions=NO_MENTIONS)
             return None

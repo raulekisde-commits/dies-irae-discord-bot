@@ -48,7 +48,7 @@ ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h au
 ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
-EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular",
+EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos",
                    "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info"}
 
 
@@ -753,6 +753,48 @@ class RegistrationCog(commands.Cog):
         lines = [f"• <@{m.id}> ({discord.utils.escape_markdown(m.display_name)})" for m in discord_unlinked]
         for n, chunk in enumerate(self._chunks(lines)):
             await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="sincronizar-apodos", description="(Staff) Revisa que cada apodo sea el personaje de Albion y corrige los que no")
+    @app_commands.describe(solo_ver="true: solo muestra qué cambiaría, sin tocar ningún apodo (por defecto false)")
+    @app_commands.guild_only()
+    async def sincronizar_apodos(self, interaction: discord.Interaction, solo_ver: Optional[bool] = False):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        first: Dict[int, rdb.Registration] = {}
+        for r in await self.run(rdb.all_registrations):
+            first.setdefault(r.discord_id, r)             # si tiene varios personajes, manda el primero que registró
+        ok, changed, failed, absent = 0, [], [], 0
+        for did, reg in first.items():
+            member = guild.get_member(did)
+            if member is None or member.bot:
+                absent += 1
+                continue
+            want = reg.char_name[:32]
+            if (member.nick or "") == want:
+                ok += 1
+                continue
+            old = member.nick or member.name
+            if solo_ver:
+                changed.append(f"• <@{did}>: {discord.utils.escape_markdown(old)} → **{discord.utils.escape_markdown(want)}**")
+                continue
+            msg = await self.apply_nickname(member, reg.char_name)
+            if msg.startswith("✅"):
+                changed.append(f"• <@{did}>: {discord.utils.escape_markdown(old)} → **{discord.utils.escape_markdown(want)}**")
+            else:
+                failed.append(f"• <@{did}> ({discord.utils.escape_markdown(want)}): {msg.replace('ℹ️ No pude cambiarte el apodo', 'no pude').split(' El registro')[0]}")
+            await asyncio.sleep(0.6)                      # no pasarnos del límite de Discord al editar apodos
+        verb = "Cambiaría" if solo_ver else "Corregidos"
+        head = (f"🏷️ **Apodos vs. personaje de Albion** · {verb}: **{len(changed)}** · ya estaban bien: **{ok}**"
+                + (f" · no pude: **{len(failed)}**" if failed else "") + (f" · fuera del servidor: {absent}" if absent else ""))
+        lines = [head]
+        if changed:
+            lines += ["", f"**{verb}:**"] + changed
+        if failed:
+            lines += ["", "**No se pudieron cambiar:**"] + failed
+        for chunk in self._chunks(lines):
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="sin-discord", description="(Staff) Jugadores de la guild de Albion que todavía no tienen Discord vinculado")
     @app_commands.guild_only()
