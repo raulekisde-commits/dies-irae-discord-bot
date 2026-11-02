@@ -105,6 +105,52 @@ class GamesDbTests(unittest.TestCase):
         self.assertEqual(stats_db.get_winrate(self.db, "coinflip", 1).percent, "—")
         self.assertEqual(stats_db.get_winrate(self.db, "dice", 77).played, 0)
 
+    def play_coin(self, a, b, a_wins, t=0):
+        self.fund(a, 100000)
+        self.fund(b, 100000)
+        g = gdb.create_game(self.db, kind="coinflip", guild_id=1, channel_id=10 + t, creator_id=a, stake=100, now=self.t0 + t * 1000).game
+        gdb.join_game(self.db, g.id, b, now=self.t0 + t * 1000 + 1, rng=ScriptRng(0 if a_wins else 1))      # el coinflip se resuelve al entrar el rival; el creador juega «cara»
+
+    def test_racha_actual_y_mejor_de_coinflip(self):
+        for t, a_wins in enumerate([True, True, True, False, True, True]):          # 1 gana 3, pierde, gana 2
+            self.play_coin(1, 2, a_wins, t=t)
+        s1, s2 = stats_db.get_streak(self.db, 1), stats_db.get_streak(self.db, 2)
+        self.assertEqual((s1.current, s1.best, s1.played), (2, 3, 6))
+        self.assertEqual((s2.current, s2.best), (0, 1))                           # 2 ganó una sola vez seguida (la 4.ª)
+        self.assertEqual(stats_db.get_streak(self.db, 77), stats_db.Streak(77))
+
+    def test_la_racha_solo_cuenta_coinflips_terminados_con_rival(self):
+        self.play_coin(1, 2, True, t=0)
+        self.play_dice(1, 2, a_wins=False, t=1)                                     # los dados no cortan ni suman
+        self.fund(1, 100000)
+        g = gdb.create_game(self.db, kind="coinflip", guild_id=1, channel_id=50, creator_id=1, stake=100, now=self.t0 + 9000).game
+        gdb.resolve_game(self.db, g.id, now=self.t0 + 9301)                         # sin rival: se devuelve
+        self.play_coin(1, 2, True, t=3)
+        self.assertEqual(stats_db.get_streak(self.db, 1).current, 2)
+
+    def test_la_racha_respeta_el_reinicio_de_estadisticas(self):
+        for t in range(3):
+            self.play_coin(1, 2, True, t=t)
+        stats_db.reset_user(self.db, 1)
+        self.assertEqual(stats_db.get_streak(self.db, 1).best, 0)
+
+    def test_top_de_rachas_ordena_y_pide_minimo(self):
+        for t, a_wins in enumerate([True, True, True]):
+            self.play_coin(1, 2, a_wins, t=t)                                       # 1: mejor 3
+        for t, a_wins in enumerate([True, True], start=10):
+            self.play_coin(3, 4, a_wins, t=t)                                       # 3: mejor 2
+        self.play_coin(5, 6, True, t=20)                                            # 5: 1 sola (no entra)
+        self.assertEqual([(s.user_id, s.best) for s in stats_db.top_streaks(self.db)], [(1, 3), (3, 2)])
+
+    def test_niveles_de_ludopata(self):
+        self.assertEqual(stats_db.gambler_level(0), (None, stats_db.LEVELS[0]))
+        cur, nxt = stats_db.gambler_level(295_709_085)                              # el 10.º del top real
+        self.assertEqual((cur.name, nxt.name), ("Ludópata", "Ludópata terminal"))
+        self.assertEqual(stats_db.gambler_level(1_887_604_439)[0].name, "Rey de la ludopatía")
+        self.assertIsNone(stats_db.gambler_level(10 ** 12)[1])
+        self.assertEqual(stats_db.gambler_level(stats_db.LEVELS[2].min_wagered)[0], stats_db.LEVELS[2])      # el borde ya cuenta
+        self.assertEqual([lv.min_wagered for lv in stats_db.LEVELS], sorted(lv.min_wagered for lv in stats_db.LEVELS))
+
     def test_server_wagered_sums_everything_net_of_refunds(self):
         self.play_dice(1, 2, a_wins=True, t=0)                      # 2 entradas de 100
         self.play_dice(1, 2, a_wins=False, t=1)                     # otras 2
@@ -637,6 +683,28 @@ class GamesDiscordTests(unittest.TestCase):
         self.assertIn("lista negra", ctx3.out[0][1].description)
         self.assertEqual(gm.GamesCog.winrate_slash.name, "stats-winrate")
 
+    def test_winrate_muestra_nivel_y_racha_y_hay_top_de_rachas(self):
+        for n in range(3):
+            self.play_coin_db(self.gamer.id, self.admin.id, win=True, t=n)
+        ctx = FakeCtx(self.guild, self.admin, self.ch)
+        ctx.message.mentions = [self.gamer]
+        run(self.cog.winrate.callback(self.cog, ctx, objetivo=self.gamer.mention))
+        fields = {n: v for n, v, _ in ctx.out[0][1].fields}
+        self.assertIn("Sin nivel todavía", fields["🎭 Nivel de ludópata"])
+        self.assertIn("Curioso", fields["🎭 Nivel de ludópata"])                    # el siguiente
+        self.assertIn("Actual: **3** · Mejor: **3**", fields["🔥 Racha de coinflip"])
+        ctx2 = FakeCtx(self.guild, self.admin, self.ch)
+        run(self.cog.send_top_rachas(ctx2))
+        emb = ctx2.out[0][1]
+        self.assertIn(str(self.gamer.id), emb.description)
+        self.assertIn("**3** seguidas", emb.description)
+
+    def play_coin_db(self, a, b, win, t=0):
+        for u in (a, b):
+            eco.apply_operation(self.db, kind="add", actor_id=1, user_ids=[u], amount=100000, request_key=f"c{u}{os.urandom(3).hex()}")
+        g = gdb.create_game(self.db, kind="coinflip", guild_id=GUILD_ID, channel_id=10 + t, creator_id=a, stake=100, now=1000.0 * (t + 1)).game
+        gdb.join_game(self.db, g.id, b, now=1000.0 * (t + 1) + 1, rng=ScriptRng(0 if win else 1))
+
     def play_dice_db(self, a, b, win, t=0):
         for u in (a, b):
             eco.apply_operation(self.db, kind="add", actor_id=1, user_ids=[u], amount=100000, request_key=f"w{u}{os.urandom(3).hex()}")
@@ -1001,6 +1069,14 @@ class EconomySlashTests(unittest.TestCase):
         i = self.inter(self.alice)
         run(self.ecog.top_slash.callback(self.ecog, i))
         self.assertTrue([kw["embed"] for _, kw in i.response.sent if kw.get("embed")])
+
+    def test_top_tiene_la_opcion_de_rachas_de_coinflip(self):
+        self.assertIn("racha", [c.value for c in economy.EconomyCog.TOP_CHOICES])
+        i = self.inter(self.alice)
+        i.channel_id = GAME_CH
+        eco.set_command_channel(self.db, "top", GAME_CH)
+        run(self.ecog.top_slash.callback(self.ecog, i, discord.app_commands.Choice(name="rachas", value="racha")))
+        self.assertTrue(i.text)                                                  # responde algo (el ranking, o el aviso si el juego no está cargado)
 
 
 if __name__ == "__main__":

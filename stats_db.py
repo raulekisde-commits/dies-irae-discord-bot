@@ -7,7 +7,7 @@ no cuenta, y lo que todavía está en juego tampoco.
 - perdido:  pérdida NETA de los juegos en que salió perdiendo (lo que puso − lo que recuperó).
 """
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import sqlite3
 
@@ -273,3 +273,95 @@ def server_wagered(db_path: str) -> ServerWagered:
         amount = -(int(st["total"]) if st else 0) - (int(rf["total"]) if rf else 0)
         out[stake] = (max(amount, 0), int(st["n"]) if st else 0)
     return ServerWagered(out, users)
+
+
+# ============================================================
+# Niveles de ludópata (según lo apostado en total) — se calculan al consultar, no se guardan: lo apostado ya es dato guardado
+# ============================================================
+@dataclass(frozen=True)
+class Level:
+    min_wagered: int
+    icon: str
+    name: str
+
+
+# Rangos pensados con el top real a los 3-4 días (el 1.º ~1.900 M, el 10.º ~295 M): el top 10 cae entre «Ludópata» y «Rey».
+# Para ajustarlos alcanza con tocar esta lista (de menor a mayor).
+LEVELS: Tuple[Level, ...] = (
+    Level(1_000_000, "🎲", "Curioso"),
+    Level(5_000_000, "🎰", "Aficionado"),
+    Level(25_000_000, "🃏", "Apostador"),
+    Level(100_000_000, "💸", "Viciado"),
+    Level(250_000_000, "🔥", "Ludópata"),
+    Level(600_000_000, "💀", "Ludópata terminal"),
+    Level(1_000_000_000, "👑", "Rey de la ludopatía"),
+)
+
+
+def gambler_level(wagered: int) -> Tuple[Optional[Level], Optional[Level]]:
+    """(nivel actual, nivel siguiente) según lo apostado. El actual es None si todavía no llegó al primero; el siguiente es None en el último."""
+    current = None
+    for lv in LEVELS:
+        if wagered >= lv.min_wagered:
+            current = lv
+    nxt = next((lv for lv in LEVELS if lv.min_wagered > wagered), None)
+    return current, nxt
+
+
+# ============================================================
+# Rachas de coinflip (victorias seguidas). Se leen del historial de partidas, que no se borra: no hace falta otra tabla.
+# ============================================================
+@dataclass
+class Streak:
+    user_id: int
+    current: int = 0
+    best: int = 0
+    played: int = 0
+
+
+MIN_STREAK_FOR_TOP = 2
+
+
+def _streaks(db_path: str, user_id: Optional[int]) -> Dict[int, Streak]:
+    sql = """SELECT p.user_id AS u, CASE WHEN g.winner_id = p.user_id THEN 1 ELSE 0 END AS won
+               FROM game_players p JOIN games g ON g.id = p.game_id
+               LEFT JOIN stats_reset r ON r.user_id = p.user_id
+              WHERE g.kind = 'coinflip' AND g.status = 'done' AND g.winner_id IS NOT NULL
+                AND (r.reset_at IS NULL OR g.resolved_at > r.reset_at) {flt}
+              ORDER BY g.id"""
+    sql = sql.format(flt="AND p.user_id = ?" if user_id is not None else "")
+    params = [user_id] if user_id is not None else []
+
+    def once():
+        conn = connect(db_path)
+        try:
+            return [(int(r["u"]), int(r["won"])) for r in conn.execute(sql, params)]
+        finally:
+            conn.close()
+
+    try:
+        rows = once()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        init_schema(db_path)
+        rows = once()
+    out: Dict[int, Streak] = {}
+    for uid, won in rows:
+        st = out.setdefault(uid, Streak(uid))
+        st.played += 1
+        st.current = st.current + 1 if won else 0
+        st.best = max(st.best, st.current)
+    return out
+
+
+def get_streak(db_path: str, user_id: int) -> Streak:
+    """Racha de victorias seguidas en coinflip: la actual (se corta con cada derrota) y la mejor de siempre."""
+    return _streaks(db_path, user_id).get(user_id, Streak(user_id))
+
+
+def top_streaks(db_path: str, min_best: int = MIN_STREAK_FOR_TOP) -> List[Streak]:
+    """Ranking por mejor racha (desempata por racha actual, luego por menos partidas jugadas y por id)."""
+    rows = [s for s in _streaks(db_path, None).values() if s.best >= min_best]
+    rows.sort(key=lambda s: (-s.best, -s.current, s.played, s.user_id))
+    return rows
