@@ -1,4 +1,4 @@
-"""Juegos con Wuju Coins — /dados y /coinflip (lógica y persistencia, sin Discord).
+"""Juegos con Wuju Coins — /casino dados y /casino coinflip (lógica y persistencia, sin Discord).
 
 Reglas de dinero (todas dentro de UNA transacción por acción, sobre `eco_accounts`):
 - Entrar/crear = se descuenta la entrada en el mismo momento en que se registra la persona.

@@ -1,4 +1,4 @@
-"""Juegos con Wuju Coins — /dados y /coinflip (capa de Discord).
+"""Juegos con Wuju Coins — /casino dados y /casino coinflip (capa de Discord).
 
 La lógica de dinero y estado vive en games_db.py. Acá: permisos de creación (canal + rol, igual que el resto de la
 economía), paneles con botón, el avance por tiempo (cada 5 s se resuelven los juegos vencidos, también tras un reinicio)
@@ -311,9 +311,6 @@ class GamesCog(commands.Cog):
             pass
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="stats-winrate", description="Winrate, total apostado, ganado/perdido y lista negra de una persona (por defecto, vos)")
-    @app_commands.describe(usuario="Persona a consultar")
-    @app_commands.guild_only()
     async def winrate_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
         ctx = SlashContext(interaction)
         if usuario is not None:
@@ -361,22 +358,12 @@ class GamesCog(commands.Cog):
         emb.set_footer(text="Suma todo lo puesto en juego desde siempre (incluye lo que sigue en juego); se descuenta lo devuelto.")
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="totalapostado", description="Todo lo que se apostó en el servidor (apuestas, dados, coinflip y duelos)")
-    @app_commands.guild_only()
     async def totalapostado_slash(self, interaction: discord.Interaction):
         await self.totalapostado.callback(self, SlashContext(interaction))
 
-    @app_commands.command(name="dados", description="Crea una partida de dados (5 minutos). Gana el número más alto y se lleva el pozo")
-    @app_commands.describe(cantidad=f"Lo que ponés para entrar (máximo {eco.format_amount(gdb.MAX_STAKE)})")
-    @app_commands.guild_only()
     async def dados_slash(self, interaction: discord.Interaction, cantidad: str):
         await self.dados.callback(self, SlashContext(interaction), cantidad=cantidad)
 
-    @app_commands.command(name="coinflip", description="Desafía a alguien a cara o cruz (dura 5 minutos). El que sale se queda con todo")
-    @app_commands.describe(cantidad=f"Lo que apostás (máximo {eco.format_amount(gdb.MAX_STAKE)})",
-                           lado="Lado que elegís (opcional; si no, cara). Quien acepte toma el otro")
-    @app_commands.choices(lado=[app_commands.Choice(name="Cara", value="cara"), app_commands.Choice(name="Cruz", value="cruz")])
-    @app_commands.guild_only()
     async def coinflip_slash(self, interaction: discord.Interaction, cantidad: str, lado: Optional[app_commands.Choice[str]] = None):
         side = lado.value if hasattr(lado, "value") else lado
         await self._create(SlashContext(interaction), "coinflip", cantidad, side)

@@ -139,16 +139,16 @@ class Tests(InvBase):
     def test_info_is_user_only_and_info_staff_adds_team_part(self):
         for topic in iv.INFO_TEXTS:
             user_txt = iv.INFO_TEXTS[topic][1]
-            for staff_only in ("/casinoban", "/eco perms-canal", "/warning ", "/invitados`", "/panel coaching", "/eco addmoney"):
+            for staff_only in ("/casino ban", "/eco perms-canal", "/warning ", "/invitados`", "/panel coaching", "/eco addmoney"):
                 self.assertNotIn(staff_only, user_txt, f"{topic}: {staff_only} no va en /info")
             self.assertIn(topic, iv.INFO_STAFF)
-        self.assertIn("/stats-winrate", iv.INFO_TEXTS["casino"][1])
-        self.assertNotIn("/winrate", iv.INFO_TEXTS["casino"][1].replace("/stats-winrate", ""))
+        self.assertIn("/casino winrate", iv.INFO_TEXTS["casino"][1])
+        self.assertNotIn("/winrate", iv.INFO_TEXTS["casino"][1].replace("/casino winrate", ""))
         emb_u = iv.InvitadosCog.info_embed("casino", False)
         emb_s = iv.InvitadosCog.info_embed("casino", True)
         self.assertNotIn("Para el equipo", emb_u.description)
         self.assertIn("Para el equipo", emb_s.description)
-        self.assertIn("/casinoban", emb_s.description)
+        self.assertIn("/casino ban", emb_s.description)
         self.assertIn(iv.INFO_TEXTS["casino"][1], emb_s.description)
         for topic in iv.INFO_TEXTS:
             self.assertLess(len(iv.InvitadosCog.info_embed(topic, True).description), 4000)
@@ -168,7 +168,7 @@ class Tests(InvBase):
         self.assertIn("10%", iv.INFO_TEXTS["economia"][1])
         self.assertIn("Ver mi build", iv.INFO_TEXTS["zvz"][1])
         self.assertIn("/cta ", iv.INFO_STAFF["zvz"])
-        self.assertIn("/stats-winrate", iv.INFO_TEXTS["stats"][1])
+        self.assertIn("/casino winrate", iv.INFO_TEXTS["stats"][1])
         self.assertIn("/killboard", iv.INFO_STAFF["stats"])
 
     def test_split_commands_renamed(self):

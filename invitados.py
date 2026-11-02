@@ -49,14 +49,14 @@ INFO_TEXTS = {
                  "• Si tenés dudas sobre uno, hablá con el Staff o el Council."),
     "casino": ("🎰 Sistema de casino",
                "Juegos para apostar **Wuju Coins**, la moneda del servidor (`/bal` para ver tu saldo, `/top` para el ranking).\n\n"
-               "• **Dados** (`/dados`): partida abierta de 5 minutos; se anota quien quiere y gana el número más alto, que se lleva el pozo.\n"
-               "• **Coinflip** (`/coinflip`): desafío de cara o cruz; lo acepta una persona y el ganador se queda con todo.\n"
-               "• **1v1** (`/1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
+               "• **Dados** (`/casino dados`): partida abierta de 5 minutos; se anota quien quiere y gana el número más alto, que se lleva el pozo.\n"
+               "• **Coinflip** (`/casino coinflip`): desafío de cara o cruz; lo acepta una persona y el ganador se queda con todo.\n"
+               "• **1v1** (`/casino 1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
                "• **Apuestas** (`/apuesta apostar`, `/apuesta todo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
                "• **Ruleta**: una sola para todo el servidor.\n\n"
                "**Tus estadísticas**\n"
-               "• `/stats-winrate [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
-               "• `/top winrate` y `/totalapostado` — rankings. En los paneles de apuestas ves Top apostado, Top ganado y Top perdido.\n\n"
+               "• `/casino winrate [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
+               "• `/top winrate` y `/casino total` — rankings. En los paneles de apuestas ves Top apostado, Top ganado y Top perdido.\n\n"
                "**Reglas**\n"
                "• Las apuestas se descuentan al instante y no hay devolución si perdés.\n"
                "• Cada juego funciona solo en ciertos canales y para ciertos roles. Los invitados no tienen acceso al casino salvo que se les habilite.\n"
@@ -98,12 +98,12 @@ INFO_STAFF = {
                  "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). La respuesta es privada, como la del resto de los comandos de warnings.\n"
                  "• `/warning-top` — quién acumula más warnings (privado).\n"
                  "• Los puede usar **Staff** y **Council**. Escribí un motivo claro: es el único registro que queda."),
-    "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/dados`, `/coinflip` y `/1v1`.\n"
-               "• `/limite juego cantidad` (Council) — apuesta máxima de dados, coinflip o 1v1; 0 quita el límite. Aplica a partidas nuevas.\n"
-               "• `/casinoban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
+    "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/casino dados`, `/casino coinflip` y `/casino 1v1`.\n"
+               "• `/casino limite juego cantidad` (Council) — apuesta máxima de dados, coinflip o 1v1; 0 quita el límite. Aplica a partidas nuevas.\n"
+               "• `/casino ban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
                "• `/eco perms-canal` y `/eco perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
                "• `/apuesta crear enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
-               "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/stats-winrate`.\n"
+               "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/casino winrate`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
                  "• `/eco set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco eco-stats` (Staff) — total de monedas en el servidor. `/eco historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
@@ -167,7 +167,7 @@ INFO_TEXTS.update({
               "• 🎭 Tus roles más jugados.\n"
               "• 📈 IP promedio, máxima y mínima.\n"
               "Solo cuentan los killboards que cargó el staff.\n\n"
-              "**`/stats-winrate [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
+              "**`/casino winrate [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
               "**Rankings**\n"
               "• `/top` — Wuju Coins, kills, muertes, asistencia, skippers, IP, winrate, tareas del staff y coaches.\n"
               "• `/coaching mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
@@ -260,7 +260,7 @@ INFO_STAFF.update({
               "• `/killboard borrar batalla` (Staff / Council) — saca un killboard para que deje de contar.\n"
               "• `/killboard probar batalla` (Staff / Council) — muestra qué datos trae AlbionBB sin guardar nada.\n"
               "• Los jugadores sin personaje registrado no suman: usá `/sin-albion`.\n"
-              "• Las stats del casino (`/stats-winrate`) salen del historial de apuestas y no dependen de killboards."),
+              "• Las stats del casino (`/casino winrate`) salen del historial de apuestas y no dependen de killboards."),
     "registro": ("• `/admin_registro usuario` — ver los personajes vinculados a un miembro.\n"
                  "• `/admin_desvincular usuario` — quitar un personaje vinculado. También sirve si dos personas reclaman el mismo.\n"
                  "• `/admin_vincular` (excepcional) — vincula a mano sin que la persona acepte.\n"

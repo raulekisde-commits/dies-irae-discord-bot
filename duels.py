@@ -1,4 +1,4 @@
-"""/1v1 usuario cantidad — duelo entre dos personas (capa de Discord)."""
+"""/casino 1v1 usuario cantidad — duelo entre dos personas (capa de Discord)."""
 import asyncio
 import traceback
 from typing import Optional
@@ -121,10 +121,7 @@ class DuelsCog(commands.Cog):
         emb.set_footer(text=f"Duelo #{d.id}")
         return emb
 
-    # ---------- /1v1 ----------
-    @app_commands.command(name="1v1", description="Retá a alguien a un duelo de cara o cruz: el que sale se queda con todo")
-    @app_commands.describe(usuario="A quién retás", cantidad="Lo que apostás (sin tope: hasta tu balance total)")
-    @app_commands.guild_only()
+    # ---------- /casino 1v1 ----------
     async def duel(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
         try:
             me = interaction.user

@@ -1,4 +1,4 @@
-"""Ruleta europea de casino: /ruleta (panel + hilo de apuestas), /ruleta-editar, /ruleta-stats. Apuestas con /apuesta apostar dentro del hilo.
+"""Ruleta europea de casino: /casino ruleta (panel + hilo de apuestas), /casino ruleta-editar, /casino ruleta-stats. Apuestas con /apuesta apostar dentro del hilo.
 
 Toda la lógica de dinero y reglas está en roulette_db.py (transacciones atómicas); acá solo hay interfaz de Discord."""
 import asyncio
@@ -152,14 +152,12 @@ class RouletteCog(commands.Cog):
             return f"https://discord.com/channels/{panel.guild_id}/{panel.channel_id}/{panel.message_id}"
         return f"https://discord.com/channels/{panel.guild_id}/{panel.channel_id}"
 
-    @app_commands.command(name="ruleta", description="Abre la ruleta del casino (solo staff; hay una única ruleta en todo el servidor)")
-    @app_commands.guild_only()
     async def ruleta(self, interaction: discord.Interaction):
         if not await self._allowed(interaction.user, "ruleta"):
             return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/eco perms-comando` pueden abrir la ruleta.")
         ch = interaction.channel
         if ch is None or isinstance(ch, discord.Thread):
-            return await _say(interaction, "❌ Usá `/ruleta` en un canal de texto (no dentro de un hilo).")
+            return await _say(interaction, "❌ Usá `/casino ruleta` en un canal de texto (no dentro de un hilo).")
         await interaction.response.defer(ephemeral=True)
         panel, created = await self.run(rdb.create_panel, interaction.guild.id, ch.id, interaction.user.id)
         if not created:
@@ -176,14 +174,6 @@ class RouletteCog(commands.Cog):
             return await _say(interaction, "❌ No pude publicar el panel (¿permisos para enviar mensajes y crear hilos?). La ruleta no quedó abierta.")
         await _say(interaction, f"✅ Ruleta abierta: {msg.jump_url}")
 
-    @app_commands.command(name="ruleta-editar", description="Edita la configuración de la ruleta (solo staff)")
-    @app_commands.describe(capital_inicial="Capital inicial (no cambia el balance actual)", balance_casa="Nuevo balance de la casa (ajuste auditado; requiere motivo)",
-                           motivo="Motivo del ajuste de balance", apuesta_min="Apuesta mínima", apuesta_max="Apuesta máxima",
-                           reserva="Reserva de seguridad", segundos="Duración de la ronda en segundos (15-600)",
-                           pagos_editables="Habilitar/deshabilitar la edición de pagos", pago_color="Multiplicador rojo/negro",
-                           pago_paridad="Multiplicador par/impar", pago_falta_pasa="Multiplicador falta/pasa", pago_docena="Multiplicador docenas",
-                           pago_columna="Multiplicador columnas", pago_numero="Multiplicador número exacto")
-    @app_commands.guild_only()
     async def ruleta_editar(self, interaction: discord.Interaction, capital_inicial: Optional[str] = None, balance_casa: Optional[str] = None,
                             motivo: Optional[str] = None, apuesta_min: Optional[str] = None, apuesta_max: Optional[str] = None,
                             reserva: Optional[str] = None, segundos: Optional[app_commands.Range[int, 15, 600]] = None,
@@ -211,7 +201,7 @@ class RouletteCog(commands.Cog):
         except (rdb.RouletteError, eco.AmountError) as exc:
             return await _say(interaction, f"❌ {exc}")
         if not changed:
-            return await _say(interaction, "ℹ️ No indicaste nada para cambiar. Mirá la configuración actual en el panel o con `/ruleta-stats`.")
+            return await _say(interaction, "ℹ️ No indicaste nada para cambiar. Mirá la configuración actual en el panel o con `/casino ruleta-stats`.")
         panel = await self.run(rdb.get_active_panel)
         if panel is not None:
             await self.refresh_panel(panel.id)
@@ -221,8 +211,6 @@ class RouletteCog(commands.Cog):
                                 f"Mín: {self.money(cfg.min_bet)} · Máx: {self.money(cfg.max_bet)} · Ronda: {cfg.round_seconds}s · "
                                 f"Pagos editables: {'sí' if cfg.payouts_enabled else 'no'}")
 
-    @app_commands.command(name="ruleta-stats", description="Estadísticas de la ruleta (solo staff)")
-    @app_commands.guild_only()
     async def ruleta_stats(self, interaction: discord.Interaction):
         if not await self._allowed(interaction.user, "ruleta-stats"):
             return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/eco perms-comando` pueden ver las estadísticas.")
