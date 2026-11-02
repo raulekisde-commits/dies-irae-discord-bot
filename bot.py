@@ -1557,6 +1557,50 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
 
     await ctx.reply(f"✅ Rol **{role.name}** asignado. OK: {ok} | Fallos: {fail}")
 
+async def addroll_list_run(guild: discord.Guild, actor, personas: str, rol: Optional[discord.Role], nombre: Optional[str]) -> str:
+    """Lógica de /addroll-list: da un rol (existente o nuevo con ese nombre) a las personas mencionadas. Devuelve el texto de respuesta."""
+    members = []
+    for m in re.finditer(r"<@!?(\d+)>", personas or ""):
+        member = guild.get_member(int(m.group(1)))
+        if member is not None and member not in members:
+            members.append(member)
+    if not members:
+        return "❌ Mencioná al menos a 1 persona del servidor. Ej: `@Ana @Beto`."
+    name = " ".join((nombre or "").split())
+    if rol is not None and rol.id == guild.id:
+        return "❌ No se puede usar @everyone."
+    if rol is None and not name:
+        return "❌ Elegí un rol existente o escribí el nombre del rol a crear."
+    role = rol or discord.utils.get(guild.roles, name=name)
+    if role is None:
+        try:
+            role = await guild.create_role(name=name, reason=f"Rol creado automáticamente por {actor} (Staff)")
+        except discord.Forbidden:
+            return "❌ No pude crear el rol. Me falta el permiso **Gestionar roles** o el rol está por encima del mío."
+        except Exception:
+            return "❌ Ocurrió un error inesperado al crear el rol."
+    ok, fail = 0, 0
+    for member in members:
+        try:
+            await member.add_roles(role, reason=f"Asignado por {actor} (Staff)")
+            ok += 1
+        except Exception:
+            fail += 1
+    return f"✅ Rol **{role.name}** asignado. OK: {ok} | Fallos: {fail}"
+
+
+@bot.tree.command(name="addroll-list", description="(Council) Da un rol a varias personas (si el rol no existe, lo crea)", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(personas="Mencioná a las personas, por ejemplo @Ana @Beto", rol="Rol que ya existe (o escribí el nombre abajo para crear uno)",
+                       nombre="Nombre del rol: si no existe, se crea")
+@app_commands.guild_only()
+async def addroll_list_slash(interaction: discord.Interaction, personas: str, rol: Optional[discord.Role] = None, nombre: Optional[str] = None):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member) or not is_council_or_admin(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el **Council** y los administradores pueden usar este comando.")
+    await interaction.response.defer(ephemeral=True)
+    text = await addroll_list_run(interaction.guild, interaction.user, personas, rol, nombre)
+    await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
 # ---------- RECRUIT VIEW ----------
 class RecruitView(discord.ui.View):
     def __init__(self):
@@ -6356,7 +6400,8 @@ def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]
 
 @bot.event
 async def on_message(message: discord.Message):
-    await bot.process_commands(message)
+    # Los comandos con prefijo «!» están apagados (no se llama a bot.process_commands): todo se hace con los comandos /.
+    # Los objetos de comando siguen existiendo porque varios comandos / reutilizan su código con .callback.
 
     if message.guild is None or message.author.bot:
         return

@@ -1332,6 +1332,19 @@ class SplitsCog(commands.Cog):
         text = await self._add_to_list(interaction.user, interaction.channel.id if interaction.channel else None, id, members)
         await _say(interaction, text) if text[:1] in "❌🔒ℹ" else await interaction.response.send_message(text, allowed_mentions=NO_MENTIONS)
 
+    @app_commands.command(name="agregarlistamitad", description="Agrega gente a la lista mitad de un split AVA (cobran la mitad de la parte)")
+    @app_commands.describe(personas="Mencioná a todas las personas que quieras, por ejemplo @Ana @Beto",
+                           id="Número del split (no hace falta dentro de su hilo)")
+    @app_commands.guild_only()
+    async def agregarlistamitad_slash(self, interaction: discord.Interaction, personas: str, id: Optional[int] = None):
+        members = []
+        for m in MENTION_RE.finditer(personas or ""):
+            member = interaction.guild.get_member(int(m.group(1))) if interaction.guild else None
+            if member is not None and member not in members:
+                members.append(member)
+        text = await self._add_to_half(interaction.user, interaction.channel.id if interaction.channel else None, id, members)
+        await _say(interaction, text) if text[:1] in "❌🔒ℹ" else await interaction.response.send_message(text, allowed_mentions=NO_MENTIONS)
+
     async def _post_result(self, s: sdb.Split, calc: sdb.Calc, paid: Dict[int, int], actor_id: int):
         th = await self._get_channel(s.thread_id)
         if th is None:
