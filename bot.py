@@ -8,6 +8,7 @@ import re
 import traceback
 import io
 import aiohttp
+import guildfilter
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -314,6 +315,7 @@ NODES_SOURCE_GUILD_ID = 1086080340587712584      # servidor del otro bot (solo s
 NODES_SOURCE_CHANNEL_ID = 1546326872097427516    # canal donde el otro bot mantiene su panel de timers
 NODES_SOURCE_BOT_ID = 1546325145503928431
 NODES_SOURCE_OWNER_ID = 542775576461705218       # los timers copiados quedan a nombre de la persona dueña de ese bot
+EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
 
@@ -512,6 +514,13 @@ class MyBot(commands.Bot):
             self, DB_PATH, source_channel_id=NODES_SOURCE_CHANNEL_ID, source_bot_id=NODES_SOURCE_BOT_ID, owner_id=NODES_SOURCE_OWNER_ID,
             target_guild_id=GUILD_ID, find_entries=timer_find_entries, add_entry=timer_add_entry, category_of=timer_category,
             refresh=timer_panel_refresh)
+
+    def dispatch(self, event_name, /, *args, **kwargs):
+        # Solo se atienden los eventos del servidor propio: si el bot está invitado a otro, nada de eso toca la lógica de acá
+        # (incluye los comandos con prefijo, que viven en on_message).
+        if not guildfilter.event_allowed(args, EVENT_GUILD_IDS):
+            return
+        return super().dispatch(event_name, *args, **kwargs)
 
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()

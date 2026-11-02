@@ -290,21 +290,21 @@ def top(db_path: str, key: str, size: int = 10) -> List[Tuple[str, float, dict]]
     return rows[:size]
 
 
-def role_counts(db_path: str, discord_id: int, names_norm: Iterable[str]) -> Dict[int, int]:
-    """Roles de juego más usados: en cuántas CTA estuvo anotado con cada uno, contando solo las CTA donde también está en el killboard."""
-    names = list(names_norm)
-    if not names:
-        return {}
+def role_counts(db_path: str, discord_id: int, names_norm: Iterable[str] = ()) -> Dict[object, int]:
+    """Roles de juego más usados: en cuántas CTA CERRADAS se anotó la persona con cada rol (no depende de los killboards cargados).
+    La clave es el ID del rol de juego; si la posición no tenía rol cargado, el nombre que figuraba en la posición. (`names_norm` ya no se usa.)"""
     conn = connect(db_path)
     try:
-        q = ",".join("?" * len(names))
-        rows = conn.execute(f"""SELECT pos.role_id AS role_id, COUNT(DISTINCT pos.cta_id) AS n
-                                FROM cta_positions pos
-                                WHERE pos.user_id=? AND pos.role_id IS NOT NULL AND pos.cta_id IN (
-                                    SELECT b.cta_id FROM kb_battles b JOIN kb_players p ON p.battle_id=b.battle_id
-                                    WHERE b.cta_id IS NOT NULL AND p.name_norm IN ({q}))
-                                GROUP BY pos.role_id""", [discord_id] + names).fetchall()
-        return {int(r["role_id"]): int(r["n"]) for r in rows}
+        rows = conn.execute("""SELECT pos.role_id AS role_id, pos.role_name AS role_name, COUNT(DISTINCT pos.cta_id) AS n
+                               FROM cta_positions pos
+                               WHERE pos.user_id=? AND pos.cta_id IN (SELECT id FROM cta_runs WHERE status='closed')
+                               GROUP BY pos.role_id, CASE WHEN pos.role_id IS NULL THEN pos.role_name END""", (discord_id,)).fetchall()
+        out: Dict[object, int] = {}
+        for r in rows:
+            key = int(r["role_id"]) if r["role_id"] is not None else ((r["role_name"] or "").strip() or None)
+            if key is not None:
+                out[key] = out.get(key, 0) + int(r["n"])
+        return out
     finally:
         conn.close()
 

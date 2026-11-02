@@ -77,16 +77,29 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(kb.player_stats(self.db, ["ana"])["attendance"], 1)
         self.assertEqual(kb.save_battle(self.db, "200", None, 1, p2), "new")         # tras borrar se puede volver a cargar
 
-    def test_roles_only_when_in_killboard_of_that_cta(self):
-        kb.save_battle(self.db, "100", 7, 1, kb.parse_events(EVENTS, "Smogg"))
+    def test_roles_cuentan_todas_las_cta_cerradas_con_o_sin_killboard(self):
         c = connect(self.db)
-        for cta, role in ((7, 111), (8, 222)):
-            c.execute("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id) VALUES (?,?,?,?)", (cta, 55, "1:1", role))
+        c.execute("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, status TEXT)")
+        for cta, status in ((7, "closed"), (8, "closed"), (9, "closed"), (10, "open"), (11, "cancelled")):
+            c.execute("INSERT INTO cta_runs(id, status) VALUES (?,?)", (cta, status))
+        for cta, role, name in ((7, 111, "Tank"), (8, 111, "Tank"), (9, 222, "Healer"), (10, 111, "Tank"), (11, 111, "Tank")):
+            c.execute("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id,role_name) VALUES (?,?,?,?,?)", (cta, 55, "1:1", role, name))
         c.close()
-        self.assertEqual(kb.role_counts(self.db, 55, ["ana"]), {111: 1})              # CTA 8 no tiene killboard
-        self.assertEqual(kb.role_counts(self.db, 55, ["nadie"]), {})
-        kb.save_battle(self.db, "300", None, 1, kb.parse_events(EVENTS, "Smogg"))      # suelto: no suma roles
-        self.assertEqual(kb.role_counts(self.db, 55, ["ana"]), {111: 1})
+        kb.save_battle(self.db, "100", 7, 1, kb.parse_events(EVENTS, "Smogg"))          # solo la CTA 7 tiene killboard: igual cuentan las 3 cerradas
+        self.assertEqual(kb.role_counts(self.db, 55, ["ana"]), {111: 2, 222: 1})        # la abierta (10) y la cancelada (11) no cuentan
+        self.assertEqual(kb.role_counts(self.db, 55), {111: 2, 222: 1})                 # no depende de los nombres del killboard
+        self.assertEqual(kb.role_counts(self.db, 99), {})
+
+    def test_roles_sin_rol_cargado_se_cuentan_por_nombre(self):
+        c = connect(self.db)
+        c.execute("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, status TEXT)")
+        for cta in (1, 2, 3):
+            c.execute("INSERT INTO cta_runs(id, status) VALUES (?, 'closed')", (cta,))
+        c.execute("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id,role_name) VALUES (1,55,'1:1',NULL,'Scout')")
+        c.execute("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id,role_name) VALUES (2,55,'1:1',NULL,'Scout')")
+        c.execute("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id,role_name) VALUES (3,55,'1:1',NULL,NULL)")   # sin nada: no se cuenta
+        c.close()
+        self.assertEqual(kb.role_counts(self.db, 55), {"Scout": 2})
 
 
 if __name__ == "__main__":
