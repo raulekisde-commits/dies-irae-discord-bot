@@ -17,6 +17,7 @@ TASK_LOG_CHANNEL_ID = int(os.getenv("TASK_LOG_CHANNEL_ID", "1566014626309873776"
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 TASKS_CHANNEL_ID = int(os.getenv("TASKS_CHANNEL_ID", "1565986098679644270"))
+COACHING_ROLE_ID = int(os.getenv("COACHING_ROLE_ID", "1566691393726980167"))
 STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
 
 COLORS = {"open": discord.Color.orange(), "taken": discord.Color.blue(), "done": discord.Color.green()}
@@ -42,8 +43,8 @@ def is_staff_or_council(member) -> bool:
 
 
 def can_take(member) -> bool:
-    """Pueden tomar una tarea: Staff, Council, administradores y el rol Opinólogo."""
-    return is_staff_or_council(member) or OPINOLOGO_ROLE_ID in _roles(member)
+    """Pueden tomar una tarea: Staff, Council, administradores, el rol Opinólogo y el rol Coaching."""
+    return is_staff_or_council(member) or bool({OPINOLOGO_ROLE_ID, COACHING_ROLE_ID} & _roles(member))
 
 
 class TaskView(discord.ui.View):
@@ -209,7 +210,7 @@ class EncargosCog(commands.Cog):
 
     async def on_take(self, interaction: discord.Interaction):
         if not can_take(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, el Council y el rol Opinólogo pueden tomar tareas.")
+            return await _say(interaction, "🔒 Solo el Staff, el Council y los roles Opinólogo y Coaching pueden tomar tareas.")
         t = await self._task(interaction)
         if t:
             res = await self.run(edb.take, t.id, interaction.user.id)
@@ -220,6 +221,8 @@ class EncargosCog(commands.Cog):
     # ---------- hilo de coordinación + aviso cada hora ----------
     async def open_thread(self, t: edb.Task, msg) -> None:
         """Crea (o reutiliza) el hilo de la tarea y etiqueta a quien la tomó. Si no se puede crear, la tarea sigue igual."""
+        if (t.source or "").startswith("coach:"):          # las devoluciones de coaching se hacen en el post del foro: sin hilo aparte
+            return
         try:
             thread = await self._channel(t.thread_id) if t.thread_id else None
             if thread is None and msg is not None:
@@ -288,6 +291,22 @@ class EncargosCog(commands.Cog):
         except Exception:
             traceback.print_exc()
             return False
+
+    async def update_text_by_source(self, source: str, text: str) -> bool:
+        """Cambia el texto de una tarea abierta (y su panel). False si no hay tarea o ya está terminada."""
+        t = await self.run(edb.find_by_source, source)
+        if t is None or t.status == "done":
+            return False
+        await self.run(edb.set_text, t.id, text)
+        t = await self.run(edb.get_task, t.id)
+        if t.message_id:
+            try:
+                ch = await self._channel(t.channel_id)
+                msg = await ch.fetch_message(t.message_id)
+                await msg.edit(embed=self.embed(t), allowed_mentions=NO_MENTIONS)
+            except Exception as exc:
+                print(f"Tarea {t.id}: no pude actualizar el panel: {exc!r}")
+        return True
 
     async def complete_by_source(self, source: str, user_id: int) -> bool:
         """Termina sola una tarea automática (p. ej. cargar el killboard de una CTA) y actualiza su panel. False si no hay tarea abierta."""
