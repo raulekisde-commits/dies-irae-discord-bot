@@ -439,6 +439,37 @@ def admin_link(db_path: str, discord_id: int, char_name: str, actor_id: int, *, 
         conn.close()
 
 
+def incomplete_registrations(db_path: str) -> List[Registration]:
+    """Registros guardados sin ID de personaje (p. ej. vínculos hechos mientras la API de Albion no respondía)."""
+    conn = connect(db_path)
+    try:
+        return [_reg(r) for r in conn.execute("SELECT * FROM albion_links WHERE char_id IS NULL OR char_id='' ORDER BY id")]
+    finally:
+        conn.close()
+
+
+def fill_registration(db_path: str, reg_id: int, char_id: str, region: Optional[str], guild_name: Optional[str], actor_id: int) -> bool:
+    """Completa ID, servidor y guild de un registro que solo tenía el nombre. No cambia nombre ni dueño.
+    False si ya no hacía falta; RegError si ese ID ya pertenece a otra cuenta."""
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            row = conn.execute("SELECT * FROM albion_links WHERE id=? AND (char_id IS NULL OR char_id='')", (reg_id,)).fetchone()
+            if row is None:
+                return False
+            if conn.execute("SELECT 1 FROM albion_links WHERE char_id=? AND id<>?", (char_id, reg_id)).fetchone():
+                raise RegError("Ese personaje ya está vinculado a otra cuenta.")
+            try:
+                conn.execute("UPDATE albion_links SET char_id=?, region=?, guild_name=?, updated_at=? WHERE id=?",
+                             (char_id, region, guild_name, utcnow_iso(), reg_id))
+            except sqlite3.IntegrityError:
+                raise RegError("Ese personaje ya está vinculado a otra cuenta.")
+            _audit(conn, actor_id, "admin_completed", int(row["discord_id"]), None, f"personaje={row['char_name']} id={char_id}")
+            return True
+    finally:
+        conn.close()
+
+
 # ---------- reclutas aceptados que todavía no entraron a la guild ----------
 @dataclass
 class PendingRecruit:
