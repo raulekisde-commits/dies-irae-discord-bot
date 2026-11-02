@@ -602,6 +602,27 @@ class KillboardCog(commands.Cog):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
         await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
 
+    async def _roles_field(self, guild, discord_id: int, names) -> Optional[str]:
+        """Top 3 de roles jugados con su %: cuenta todas las CTA cerradas en las que la persona estuvo anotada (haya killboard o no)."""
+        counts = await self.run(kb.role_counts, discord_id, names)
+        total = sum(counts.values())
+        if not total:
+            return None
+
+        def label(key) -> str:
+            if isinstance(key, int):
+                role = guild.get_role(key) if guild is not None else None
+                return cu.PLAYED_ROLES.get(key) or (role.name if role is not None else f"Rol {key}")
+            return str(key)
+        top3 = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))[:3]
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (key, n) in enumerate(top3):
+            pct = 100.0 * n / total
+            bar = "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
+            lines.append(f"{medals[i]} **{label(key)}** · {pct:.0f}%\n`{bar}`")
+        return "\n".join(lines)
+
     # ---------- /stats ----------
     @app_commands.command(name="stats", description="Estadísticas de un jugador (si no indicás a nadie, las tuyas)")
     @app_commands.describe(usuario="Jugador (por defecto, vos)")
@@ -621,10 +642,13 @@ class KillboardCog(commands.Cog):
         except Exception:
             pass
         skips = await self.run(kb.skip_count, names)
+        roles_field = await self._roles_field(interaction.guild, target.id, names)
         if not s["attendance"]:
             emb.description = f"{target.mention}\n\nTodavía no aparece en ningún killboard cargado."
             if skips:
                 emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
+            if roles_field:
+                emb.add_field(name="🎭 Roles más jugados", value=roles_field, inline=False)
         else:
             emb.description = target.mention
             emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
@@ -632,17 +656,8 @@ class KillboardCog(commands.Cog):
             emb.add_field(name="🛡️ Asistencia", value=f"**{s['attendance']:,}**".replace(",", ".") + " peleas", inline=True)
             emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
             emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
-            counts = await self.run(kb.role_counts, target.id, names)
-            total = sum(counts.values())
-            if total:
-                top3 = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
-                medals = ["🥇", "🥈", "🥉"]
-                lines = []
-                for i, (rid, n) in enumerate(top3):
-                    pct = 100.0 * n / total
-                    bar = "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
-                    lines.append(f"{medals[i]} **{cu.PLAYED_ROLES.get(rid, rid)}** · {pct:.0f}%\n`{bar}`")
-                emb.add_field(name="🎭 Roles más jugados", value="\n".join(lines), inline=False)
+            if roles_field:
+                emb.add_field(name="🎭 Roles más jugados", value=roles_field, inline=False)
             if s["avg_ip"]:
                 emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
