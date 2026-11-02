@@ -182,6 +182,8 @@ def init_positions(db_path: str) -> None:
     try:
         conn.executescript(POSITIONS_SCHEMA)
         conn.executescript(BOMBS_SCHEMA)
+        if "panel_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(cta_bombs)")}:
+            conn.execute("ALTER TABLE cta_bombs ADD COLUMN panel_id INTEGER")
     finally:
         conn.close()
 
@@ -194,10 +196,79 @@ CREATE TABLE IF NOT EXISTS cta_bombs (
     added_at TEXT NOT NULL,
     PRIMARY KEY (cta_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS cta_bomb_panels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cta_id INTEGER NOT NULL,
+    n INTEGER NOT NULL,
+    channel_id INTEGER,
+    message_id INTEGER,
+    thread_id INTEGER,
+    created_at TEXT NOT NULL
+);
 """
 
 
-def bomb_add(db_path: str, cta_id: int, user_id: int) -> str:
+def bomb_panel_add(db_path: str, cta_id: int, channel_id: int, message_id: int, thread_id: int) -> dict:
+    """Registra un panel de Bomb de la CTA (puede haber varios). Devuelve {id, n} con n = número de panel dentro de la CTA."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            n = conn.execute("SELECT COUNT(*) AS n FROM cta_bomb_panels WHERE cta_id=?", (cta_id,)).fetchone()["n"] + 1
+            cur = conn.execute("INSERT INTO cta_bomb_panels(cta_id, n, channel_id, message_id, thread_id, created_at) VALUES (?,?,?,?,?,?)",
+                               (cta_id, n, channel_id, message_id, thread_id, utcnow_iso()))
+            return {"id": int(cur.lastrowid), "n": int(n), "cta_id": cta_id, "channel_id": channel_id, "message_id": message_id, "thread_id": thread_id}
+    finally:
+        conn.close()
+
+
+def bomb_panels(db_path: str, cta_id: int) -> List[dict]:
+    conn = connect(db_path)
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM cta_bomb_panels WHERE cta_id=? ORDER BY n", (cta_id,))]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def bomb_panel_by(db_path: str, *, message_id: Optional[int] = None, thread_id: Optional[int] = None) -> Optional[dict]:
+    """Panel de Bomb que corresponde a un mensaje o a un hilo."""
+    conn = connect(db_path)
+    try:
+        if message_id is not None:
+            r = conn.execute("SELECT * FROM cta_bomb_panels WHERE message_id=?", (message_id,)).fetchone()
+        else:
+            r = conn.execute("SELECT * FROM cta_bomb_panels WHERE thread_id=?", (thread_id,)).fetchone()
+        return dict(r) if r else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def bomb_migrate_old(db_path: str) -> int:
+    """Los paneles de Bomb de la primera versión (una columna por CTA) pasan a la tabla de paneles. Devuelve cuántos movió."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            rows = conn.execute("SELECT id, bomb_channel_id, bomb_message_id, bomb_thread_id FROM cta_runs "
+                                "WHERE bomb_thread_id IS NOT NULL AND bomb_thread_id>0").fetchall()
+            moved = 0
+            for r in rows:
+                if conn.execute("SELECT 1 FROM cta_bomb_panels WHERE cta_id=?", (r["id"],)).fetchone():
+                    continue
+                cur = conn.execute("INSERT INTO cta_bomb_panels(cta_id, n, channel_id, message_id, thread_id, created_at) VALUES (?,?,?,?,?,?)",
+                                   (r["id"], 1, r["bomb_channel_id"], r["bomb_message_id"], r["bomb_thread_id"], utcnow_iso()))
+                conn.execute("UPDATE cta_bombs SET panel_id=? WHERE cta_id=? AND panel_id IS NULL", (cur.lastrowid, r["id"]))
+                moved += 1
+            return moved
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        conn.close()
+
+
+def bomb_add(db_path: str, cta_id: int, user_id: int, panel_id: Optional[int] = None) -> str:
     """Anota a alguien como Bomb. Cuenta como anotado y entra al historial con el rol Bomb.
     Devuelve 'new' · 'exists' · 'regular' (ya tiene una posición de la compo) · 'final' (la CTA terminó o se canceló) · 'missing'."""
     conn = connect(db_path)
@@ -212,7 +283,7 @@ def bomb_add(db_path: str, cta_id: int, user_id: int) -> str:
                 return "exists"
             if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
                 return "regular"
-            conn.execute("INSERT INTO cta_bombs(cta_id, user_id, added_at) VALUES (?,?,?)", (cta_id, user_id, utcnow_iso()))
+            conn.execute("INSERT INTO cta_bombs(cta_id, user_id, added_at, panel_id) VALUES (?,?,?,?)", (cta_id, user_id, utcnow_iso(), panel_id))
             conn.execute("INSERT OR REPLACE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,0)",
                          (cta_id, user_id, "bomb", BOMB_ROLE_ID, "Bomb"))
             return "new"
@@ -222,10 +293,15 @@ def bomb_add(db_path: str, cta_id: int, user_id: int) -> str:
         conn.close()
 
 
-def bomb_list(db_path: str, cta_id: int) -> List[int]:
+def bomb_list(db_path: str, cta_id: int, panel_id: Optional[int] = None) -> List[int]:
+    """Bomb anotados en la CTA (de todos los paneles, o solo de uno)."""
     conn = connect(db_path)
     try:
-        return [int(r["user_id"]) for r in conn.execute("SELECT user_id FROM cta_bombs WHERE cta_id=? ORDER BY added_at, user_id", (cta_id,))]
+        if panel_id is None:
+            q = conn.execute("SELECT user_id FROM cta_bombs WHERE cta_id=? ORDER BY added_at, user_id", (cta_id,))
+        else:
+            q = conn.execute("SELECT user_id FROM cta_bombs WHERE cta_id=? AND panel_id=? ORDER BY added_at, user_id", (cta_id, panel_id))
+        return [int(r["user_id"]) for r in q]
     except sqlite3.OperationalError:
         return []
     finally:
