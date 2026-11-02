@@ -384,15 +384,16 @@ class _Rollback(Exception):
 # ============================================================
 # Cerrar / resolver / cancelar
 # ============================================================
-def close_bet(db_path: str, bet_id: int, actor_id: int) -> Result:
+def close_bet(db_path: str, bet_id: int, actor_id: int, *, can_override: bool = False) -> Result:
+    """Cierra la apuesta. La cierra su creador o, si `can_override` (Council/Admin, lo decide quien llama), cualquiera de ellos."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
             bet = _load(conn, bet_id)
             if bet is None:
                 return Result(False, "not_found", "Esa apuesta no existe.")
-            if actor_id != bet.creator_id:
-                return Result(False, "permission", "Solo quien creó la apuesta puede cerrarla.")
+            if actor_id != bet.creator_id and not can_override:
+                return Result(False, "permission", "Solo quien creó la apuesta (o el Council y los administradores) puede cerrarla.")
             if bet.status != "open":
                 return Result(False, "state", "La apuesta ya no está abierta.")
             conn.execute("UPDATE bets SET status='closed', closed_at=? WHERE id=? AND status='open'", (utcnow_iso(), bet_id))
@@ -431,15 +432,16 @@ def compute_payouts(pool: int, winner_stakes: Dict[int, int]) -> Tuple[Dict[int,
     return payouts, remainder
 
 
-def resolve_bet(db_path: str, bet_id: int, actor_id: int, option_idx: int) -> Result:
+def resolve_bet(db_path: str, bet_id: int, actor_id: int, option_idx: int, *, can_override: bool = False) -> Result:
+    """Resuelve y paga. Lo hace su creador o, si `can_override` (Council/Admin, lo decide quien llama), cualquiera de ellos."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
             bet = _load(conn, bet_id)
             if bet is None:
                 return Result(False, "not_found", "Esa apuesta no existe.")
-            if actor_id != bet.creator_id:
-                return Result(False, "permission", "Solo quien creó la apuesta puede resolverla.")
+            if actor_id != bet.creator_id and not can_override:
+                return Result(False, "permission", "Solo quien creó la apuesta (o el Council y los administradores) puede resolverla.")
             if bet.status == "resolved":
                 return Result(False, "state", "Esa apuesta ya fue resuelta; no se paga dos veces.")
             if bet.status == "cancelled":

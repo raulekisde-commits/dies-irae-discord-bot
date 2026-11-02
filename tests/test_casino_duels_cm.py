@@ -729,6 +729,21 @@ class CambioMonedaTests(DiscordBase):
             self.assertTrue(ch.deleted)
             self.assertIsNone(ddb.open_ticket_of(self.db, GUILD_ID, self.alice.id, ddb.get_by_channel(self.db, ch.id).kind))
 
+    def test_admin_without_council_role_can_also_use_ticket_buttons(self):
+        self.fund(self.alice, 100)
+        self.open_buy(amount="2.500")
+        buy_ch = self.last_channel()
+        # quien no es Council ni administrador sigue rechazado
+        self.assertIn("Council", self.press("on_buy_add", self.alice, buy_ch).text)
+        # un administrador (sin rol Council) recibe la confirmación y puede agregar los Wuju Coins
+        i = self.press("on_buy_add", self.admin, buy_ch)
+        view = i.response.sent[0][1]["view"]
+        run(view._ok(self.inter(self.admin, buy_ch)))
+        self.assertEqual(self.bal(self.alice), 2500 + 100)
+        # y cerrar el ticket
+        self.press("on_close", self.admin, buy_ch)
+        self.assertTrue(buy_ch.deleted)
+
     def test_buttons_do_not_cross_ticket_kinds(self):
         self.fund(self.alice, 100)
         self.open_sell()
