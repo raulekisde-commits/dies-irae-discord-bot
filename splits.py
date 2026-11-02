@@ -11,6 +11,7 @@ from discord.ext import commands
 import economy_db as eco
 import splits_db as sdb
 import ctautil as cu
+import killboard_db as kbdb
 import os
 from names import resolve_names
 from deposits import is_council
@@ -1082,6 +1083,15 @@ class SplitsCog(commands.Cog):
         await self._done(interaction, split_id, f"✅ {n} persona(s) nueva(s) agregada(s) desde {getattr(role, 'mention', 'el rol')}.")
 
     # ---------- cerrar el split ----------
+    async def _cta_sin_killboard(self, s) -> bool:
+        """True si el split salió de una CTA y esa CTA no tiene ningún killboard cargado (si no se puede saber, False: no se frena el cierre)."""
+        if s.source_cta_id is None:
+            return False
+        try:
+            return not await self.run(kbdb.battles_of_cta, s.source_cta_id)
+        except Exception:
+            return False
+
     async def on_close_pressed(self, interaction: discord.Interaction):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o un administrador puede cerrar un split.")
@@ -1104,13 +1114,15 @@ class SplitsCog(commands.Cog):
                               f"(+ taxes de looters {self.money(c.looter_tax_total)}, scouts {self.money(c.scouts_total)}).\n"
                               f"Esto **mueve Wuju Coins**.",
                               view=ConfirmCloseView(self, s.id, interaction.user.id, label="Sí, confirmar edición"))
+        sin_kb = await self._cta_sin_killboard(s)
+        aviso = ("⚠️ **Esta CTA no tiene killboard cargado.** ¿Seguro que querés splitear sin killboard?\n\n" if sin_kb else "")
         await _say(interaction,
-                   f"¿Cerrar **Split {s.title}** y pagar?\n"
+                   aviso + f"¿Cerrar **Split {s.title}** y pagar?\n"
                    f"• {c.people} persona(s) × {self.money(c.per_person)}\n"
                    + (f"• Lista mitad: {c.half} persona(s) × {self.money(c.per_half)}\n" if c.half else "") +
                    f"• Tax looters: {self.money(c.looter_tax_total)} en total\n"
                    f"Esto **mueve Wuju Coins** y no se puede deshacer.",
-                   view=ConfirmCloseView(self, s.id, interaction.user.id))
+                   view=ConfirmCloseView(self, s.id, interaction.user.id, label="Sí, cerrar sin killboard" if sin_kb else "Sí, cerrar y pagar"))
 
     async def close_split(self, interaction: discord.Interaction, split_id: int):
         if not can_manage(interaction.user):
