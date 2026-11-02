@@ -2142,13 +2142,13 @@ class RecruitRecordView(discord.ui.View):
             b.disabled = True
         self.stop()
         try:
-            await interaction.response.edit_message(content="👥 **¿Tenés amigos en la guild?** (por defecto: No)",
+            await interaction.response.edit_message(content="👥 **¿Tenés amigos en la guild o alguien que te pueda vouchear?** (por defecto: No)",
                                                     view=RecruitFriendsView(self.answers, can_record))
         except Exception:
             pass
 
 
-class RecruitFriendsModal(discord.ui.Modal, title="Amigos en la guild"):
+class RecruitFriendsModal(discord.ui.Modal, title="Amigos / quién te vouchea"):
     quienes = discord.ui.TextInput(label="¿Quiénes? (nicks en Albion)", placeholder="Ej: Juan, Pedro", required=False, max_length=300)
 
     def __init__(self, view: "RecruitFriendsView"):
@@ -2165,7 +2165,7 @@ class RecruitFriendsModal(discord.ui.Modal, title="Amigos en la guild"):
 
 
 class RecruitFriendsView(discord.ui.View):
-    """Último paso (efímero): ¿tenés amigos en la guild? Por defecto, No."""
+    """Último paso (efímero): ¿tenés amigos en la guild o quién te vouchee? Por defecto, No."""
     def __init__(self, answers: dict, can_record: bool):
         super().__init__(timeout=300)
         self.answers = answers
@@ -2235,7 +2235,7 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
     data.add_field(name="🕒 Horarios (UTC)", value=answers["horarios"][:1000] or "—", inline=False)
     data.add_field(name="📜 Gremio anterior", value=answers["gremio"][:1000] or "—", inline=False)
     data.add_field(name="🎥 ¿Puede grabar sus CTAs?", value="✅ Sí" if can_record else "🚫 No", inline=True)
-    data.add_field(name="👥 Amigos en la guild", value=(answers.get("amigos") or "No")[:1000], inline=True)
+    data.add_field(name="👥 Amigos en la guild / quién lo vouchea", value=(answers.get("amigos") or "No")[:1000], inline=True)
     data.set_footer(text=f"Postulante: {user} · Aceptar / Rechazar / Cerrar: solo reclutadores")
 
     pedido = discord.Embed(
