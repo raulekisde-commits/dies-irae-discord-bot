@@ -23,6 +23,7 @@ FORUM_CHANNEL_ID = int(os.getenv("COACHING_FORUM_ID", "1566695879656607924"))
 MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
+COACHING_TASKS_CHANNEL_ID = int(os.getenv("COACHING_TASKS_CHANNEL_ID", "1566710577173102602"))     # canal donde salen las tareas de devolución
 ROLE_LABELS = [n for n in cu.PLAYED_ROLES.values() if n != "Bomb"]
 
 
@@ -193,7 +194,8 @@ class CoachingCog(commands.Cog):
                     fresh = False
                 else:
                     await enc.create(text=text, created_by=message.author.id, source=f"coach:{message.id}", link=message.jump_url,
-                                     ping_roles=[COACHING_ROLE_ID], ping_staff=False)
+                                     ping_roles=[COACHING_ROLE_ID, OPINOLOGO_ROLE_ID], ping_staff=False,
+                                     channel_id=COACHING_TASKS_CHANNEL_ID)
             except Exception as exc:
                 print(f"coaching: no pude crear la tarea del VOD {message.id}: {exc!r}")
         try:
