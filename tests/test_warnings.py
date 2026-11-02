@@ -30,7 +30,7 @@ class Warnings(DiscordBase):
         i = self.inter(self.stf)
         run(self.cog.warnings.callback(self.cog, i, self.bob))
         kw = i.response.sent[0][1]
-        self.assertFalse(kw.get("ephemeral"))                       # la lista de alguien la ve el canal
+        self.assertTrue(kw.get("ephemeral"))                        # la lista de warnings es privada
         self.assertIn("insultó", str(kw["embed"].description)); self.assertIn("2", str(kw["embed"].description))
         i = self.inter(self.stf)
         run(self.cog.warning_top.callback(self.cog, i))

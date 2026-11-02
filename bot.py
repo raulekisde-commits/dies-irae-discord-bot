@@ -366,19 +366,6 @@ ALBIONBB_BASE_URL = f"https://api.albionbb.com/{ALBIONBB_REGION}"
 # Plantel de la guild en Albion (API oficial del juego). El ID es el mismo que aparece en la URL de AlbionBB.
 ALBION_GUILD_NAME = os.getenv("ALBION_GUILD_NAME", "Smogg")
 ALBION_GUILD_ID = os.getenv("ALBION_GUILD_ID", "FkCFeONGTeqETPtZhJEubg")
-_ALBION_GAMEINFO_BY_REGION = {
-    "eu": "https://gameinfo-ams.albiononline.com",
-    "west": "https://gameinfo.albiononline.com", "us": "https://gameinfo.albiononline.com",
-    "east": "https://gameinfo-sgp.albiononline.com", "asia": "https://gameinfo-sgp.albiononline.com",
-}
-# Smogg figura en el servidor de Américas (Europa y Asia devuelven la guild vacía/inexistente).
-ALBION_GAMEINFO_BASE = os.getenv("ALBION_GAMEINFO_BASE", "https://gameinfo.albiononline.com")
-ALBION_TIMEOUT_SECONDS = 45
-ALBION_RETRIES = 2
-ALBION_GAMEINFO_ALL = ["https://gameinfo.albiononline.com", "https://gameinfo-ams.albiononline.com",
-                       "https://gameinfo-sgp.albiononline.com"]
-ALBION_ROSTER_CACHE_SECONDS = 120
-_albion_roster_cache: dict = {"at": 0.0, "names": set()}
 ALBIONBB_BATTLE_URL = f"{ALBIONBB_BASE_URL}/battles"
 ALBIONBB_KILLS_URL = f"{ALBIONBB_BASE_URL}/battles/kills"
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
@@ -1426,12 +1413,21 @@ def staff_only_slash():
     return app_commands.check(predicate)
 
 
+def staff_council_admin_slash():
+    """Staff, Council, propietario o Administrator (se evalúa en cada ejecución; no depende de ocultar el comando)."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return False
+        return is_staff_or_council(interaction.user)
+    return app_commands.check(predicate)
+
+
 @bot.tree.command(
     name="list_role",
-    description="(Staff) Lista los miembros (apodo del server) que tienen un rol",
+    description="(Staff, Council y Admin) Lista los miembros (apodo del server) que tienen un rol",
     guild=discord.Object(id=GUILD_ID)
 )
-@staff_only_slash()
+@staff_council_admin_slash()
 @app_commands.describe(rol="Rol del que querés listar miembros")
 async def list_role_slash(interaction: discord.Interaction, rol: discord.Role):
     if interaction.guild is None:
@@ -1470,7 +1466,7 @@ async def list_role_slash(interaction: discord.Interaction, rol: discord.Role):
 @list_role_slash.error
 async def list_role_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/list_role`.")
+        return await respond_ephemeral(interaction, "❌ Solo el **Staff**, el **Council** y los administradores pueden usar `/list_role`.")
     return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
 
 # ---------- COMANDOS STAFF ----------
@@ -2620,262 +2616,8 @@ async def obtener_jugadores_albion(
     return jugadores
 
 
-# ============================================================
-# MATCHING DISCORD
-# ============================================================
-
-def construir_indice_discord(
-    guild: discord.Guild
-) -> dict[str, list[discord.Member]]:
-
-    """
-    Construye un índice:
-
-    nombre -> miembros Discord
-
-    Busca tanto:
-    - nickname/apodo
-    - username
-
-    Todo comparado ignorando mayúsculas.
-    """
-
-    indice = {}
-
-    for member in guild.members:
-
-        # ----------------------------------------------------
-        # Username
-        # ----------------------------------------------------
-
-        username = normalizar_nombre(member.name)
-
-        indice.setdefault(username, [])
-        indice[username].append(member)
-
-        # ----------------------------------------------------
-        # Nickname / apodo
-        # ----------------------------------------------------
-
-        if member.nick:
-
-            nickname = normalizar_nombre(member.nick)
-
-            indice.setdefault(nickname, [])
-            indice[nickname].append(member)
-
-    return indice
-
-
-# ============================================================
-# SLASH COMMAND: ROL DESDE ALBIONBB
-# ============================================================
-
-@bot.tree.command(
-    name="rolalbion",
-    description="Crea un rol y lo asigna a participantes de AlbionBB.",
-    guild=GUILD_OBJ,
-)
-@app_commands.describe(
-    ids="IDs o link de AlbionBB. Ej: 1461052597,1461051559,1461048629",
-    guild="Nombre exacto de la guild de Albion. Ej: Smogg",
-    rol="Nombre del rol que se creará. Ej: Smogg ZvZ"
-)
-async def rolalbion(
-    interaction: discord.Interaction,
-    ids: str,
-    guild: str,
-    rol: str,
-):
-    """Crea un rol y lo asigna mediante coincidencia exacta de nombres."""
-    await interaction.response.defer(ephemeral=True)
-
-    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-        return await interaction.followup.send(
-            "❌ Este comando solo puede usarse dentro del servidor.",
-            ephemeral=True,
-        )
-
-    if not interaction.user.guild_permissions.manage_roles:
-        return await interaction.followup.send(
-            "❌ Necesitás el permiso **Gestionar roles** para usar este comando.",
-            ephemeral=True,
-        )
-
-    battle_ids = extraer_ids(ids)
-    if not battle_ids:
-        return await interaction.followup.send(
-            "❌ No encontré ningún ID de batalla.\n\n"
-            "Ejemplo:\n"
-            "`/rolalbion ids:1461052597,1461051559,1461048629 guild:Smogg rol:Smogg ZvZ`",
-            ephemeral=True,
-        )
-
-    if len(battle_ids) > 50:
-        return await interaction.followup.send(
-            "❌ Podés consultar como máximo 50 batallas por comando.",
-            ephemeral=True,
-        )
-
-    guild_name = guild.strip()
-    role_name = rol.strip()
-    if not guild_name or not role_name:
-        return await interaction.followup.send(
-            "❌ La guild y el nombre del rol no pueden estar vacíos.",
-            ephemeral=True,
-        )
-
-    # Obtener participantes reales de las batallas.
-    try:
-        jugadores = await obtener_jugadores_albion(battle_ids)
-    except Exception as error:
-        print(f"❌ /rolalbion AlbionBB: {error!r}")
-        return await interaction.followup.send(
-            "❌ No pude obtener los participantes de AlbionBB.\n"
-            "Revisá los IDs y que AlbionBB esté disponible.",
-            ephemeral=True,
-        )
-
-    guild_key = normalizar_nombre(guild_name)
-    jugadores_guild = []
-
-    for datos in jugadores.values():
-        if normalizar_nombre(datos["guild"]) == guild_key:
-            jugadores_guild.append(datos["name"])
-
-    # Deduplicar jugadores que aparecieron en varias batallas.
-    jugadores_guild = list(dict.fromkeys(jugadores_guild))
-
-    if not jugadores_guild:
-        return await interaction.followup.send(
-            f"❌ No encontré participantes de **{guild_name}** en las "
-            f"{len(battle_ids)} batallas consultadas.",
-            ephemeral=True,
-        )
-
-    # Discord necesita la lista de miembros para poder comparar apodos.
-    try:
-        await interaction.guild.chunk(cache=True)
-    except Exception:
-        pass
-
-    indice_discord: dict[str, dict[int, discord.Member]] = {}
-
-    for member in interaction.guild.members:
-        # Username actual de Discord.
-        username_key = normalizar_nombre(member.name)
-        indice_discord.setdefault(username_key, {})[member.id] = member
-
-        # Apodo dentro del servidor.
-        if member.nick:
-            nickname_key = normalizar_nombre(member.nick)
-            indice_discord.setdefault(nickname_key, {})[member.id] = member
-
-    encontrados: list[tuple[str, discord.Member]] = []
-    no_encontrados: list[str] = []
-    ambiguos: list[tuple[str, list[discord.Member]]] = []
-
-    for jugador in jugadores_guild:
-        candidatos = list(indice_discord.get(normalizar_nombre(jugador), {}).values())
-
-        if len(candidatos) == 0:
-            no_encontrados.append(jugador)
-        elif len(candidatos) == 1:
-            encontrados.append((jugador, candidatos[0]))
-        else:
-            ambiguos.append((jugador, candidatos))
-
-    # Crear o reutilizar el rol.
-    role = discord.utils.get(interaction.guild.roles, name=role_name)
-
-    if role is None:
-        try:
-            role = await interaction.guild.create_role(
-                name=role_name,
-                reason=f"Creado por /rolalbion para la guild {guild_name}",
-            )
-        except discord.Forbidden:
-            return await interaction.followup.send(
-                "❌ No puedo crear roles. Necesito **Gestionar roles**.",
-                ephemeral=True,
-            )
-        except discord.HTTPException as error:
-            return await interaction.followup.send(
-                f"❌ Discord rechazó la creación del rol: `{error}`",
-                ephemeral=True,
-            )
-
-    bot_member = interaction.guild.me
-    if bot_member is None or role >= bot_member.top_role:
-        return await interaction.followup.send(
-            "❌ El rol está por encima o al mismo nivel que el rol del bot.\n"
-            "Mové el rol del bot por encima del rol que querés asignar.",
-            ephemeral=True,
-        )
-
-    asignados = []
-    ya_tenian = []
-    errores = []
-
-    for jugador, member in encontrados:
-        try:
-            if role in member.roles:
-                ya_tenian.append((jugador, member))
-            else:
-                await member.add_roles(
-                    role,
-                    reason=f"Participación AlbionBB - {guild_name}",
-                )
-                asignados.append((jugador, member))
-        except discord.Forbidden:
-            errores.append((jugador, member))
-        except discord.HTTPException as error:
-            print(f"⚠️ Error asignando {role_name} a {member}: {error}")
-            errores.append((jugador, member))
-
-    # Resultado compacto. Los detalles se mandan en mensajes efímeros separados
-    # para no superar el límite de 2000 caracteres de Discord.
-    resumen = (
-        "## ⚔️ Rol AlbionBB\n"
-        f"**Guild:** `{guild_name}`\n"
-        f"**Batallas:** `{len(battle_ids)}`\n"
-        f"**Jugadores de la guild:** `{len(jugadores_guild)}`\n"
-        f"**Encontrados:** `{len(encontrados)}`\n"
-        f"**Asignados ahora:** `{len(asignados)}`\n"
-        f"**Ya tenían el rol:** `{len(ya_tenian)}`\n"
-        f"**No encontrados:** `{len(no_encontrados)}`\n"
-        f"**Ambiguos:** `{len(ambiguos)}`\n"
-        f"**Errores:** `{len(errores)}`\n\n"
-        f"**Rol:** {role.mention}"
-    )
-
-    await interaction.followup.send(
-        resumen,
-        ephemeral=True,
-        allowed_mentions=discord.AllowedMentions(roles=True),
-    )
-
-    detalles: list[str] = []
-    detalles.extend(f"✓ `{j}` → {m.display_name}" for j, m in asignados)
-    detalles.extend(f"↪ `{j}` → {m.display_name} (ya lo tenía)" for j, m in ya_tenian)
-    detalles.extend(f"✗ `{j}` → NO ENCONTRADO" for j in no_encontrados)
-    detalles.extend(
-        f"⚠ `{j}` → {', '.join(m.display_name for m in miembros)}"
-        for j, miembros in ambiguos
-    )
-    detalles.extend(f"🚫 `{j}` → {m.display_name} (sin permisos)" for j, m in errores)
-
-    if detalles:
-        for inicio in range(0, len(detalles), 25):
-            bloque = "\n".join(detalles[inicio:inicio + 25])
-            await interaction.followup.send(
-                bloque,
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-
 async def albion_participantes_para_split(guild: discord.Guild, texto: str, guild_name: str) -> dict:
-    """Misma búsqueda que /rolalbion (AlbionBB + coincidencia exacta de nombre/apodo), pero solo devuelve el resultado.
+    """Busca a los participantes de la guild en AlbionBB (coincidencia exacta de nombre/apodo de Discord) y solo devuelve el resultado.
     Lo usa el botón «Agregar killboard» del panel de edición de /split."""
     battle_ids = extraer_ids(texto)
     if not battle_ids:
@@ -3175,117 +2917,6 @@ async def tabsell(
         f"{thread_warning}",
         ephemeral=True,
     )
-
-
-# ============================================================
-# /calcularsplit (solo Staff)
-# ============================================================
-SPLIT_CALC_DEFAULT_SALE_TAX = 15.0
-SPLIT_CALC_DEFAULT_GUILD_TAX = 5.0
-SPLIT_CALC_MAX_NUMBERS = 50
-_SPLIT_CALC_SEPARATORS_RE = re.compile(r"[\s+;]+")
-_SPLIT_CALC_NUMBER_RE = re.compile(r"^\d{1,15}(?:\.\d{1,4})?$")
-
-
-def parse_number_sum(text: str) -> Optional[float]:
-    """'1000000 500 23333' -> 1023833.0
-
-    Los números se separan con espacios (también se aceptan '+' y ';').
-    La coma NO es separador: '1,000,000' es inválido en vez de sumarse mal en silencio.
-    Devuelve None si no hay números, hay demasiados o algún valor no es válido.
-    """
-    tokens = [t for t in _SPLIT_CALC_SEPARATORS_RE.split((text or "").strip()) if t]
-    if not tokens or len(tokens) > SPLIT_CALC_MAX_NUMBERS:
-        return None
-    total = Decimal(0)
-    for token in tokens:
-        if not _SPLIT_CALC_NUMBER_RE.match(token):
-            return None
-        total += Decimal(token)
-    return float(total)
-
-
-def calc_split_final(total: float, sale_tax: float, guild_tax: float, reparacion: float, bolsitas: float = 0.0) -> int:
-    """Split final = total - (total × (tax venta + tax guild) / 100) - reparación + bolsitas.
-    Las bolsitas se suman al final: no pagan tax ni se restan."""
-    return round(total - (total * (sale_tax + guild_tax) / 100) - reparacion + bolsitas)
-
-
-def build_split_calc_panel(
-    total: float, reparacion: float, bolsitas: float,
-    sale_tax: float, guild_tax: float, split_final: float,
-) -> str:
-    return (
-        "Split:\n"
-        f"Total: {fmt_num(total)}\n"
-        f"Reparacion: {fmt_num(reparacion)}\n"
-        f"Bolsitas: {fmt_num(bolsitas)}\n"
-        f"Tax de venta: {fmt_num(sale_tax)}%\n"
-        f"Tax de guild: {fmt_num(guild_tax)}%\n\n"
-        f"Split final: {fmt_num(split_final)}"
-    )
-
-
-@bot.tree.command(
-    name="calcularsplit",
-    description="(Staff) Calcula el split y publica el panel en este canal.",
-    guild=GUILD_OBJ,
-)
-@staff_only_slash()
-@app_commands.describe(
-    total="Total. Podés poner varios números separados por espacio. Ej: 1000000 500 23333",
-    reparacion="Reparación. Podés poner varios números separados por espacio. Ej: 15000 2500",
-    bolsitas="Bolsitas (opcional, por defecto 0). Se suman al split final",
-    tax_de_venta="Tax de venta en % (opcional, por defecto 15)",
-    tax_de_guild="Tax de guild en % (opcional, por defecto 5)",
-)
-async def calcularsplit_slash(
-    interaction: discord.Interaction,
-    total: str,
-    reparacion: str,
-    bolsitas: Optional[app_commands.Range[float, 0.0, 1e15]] = None,
-    tax_de_venta: Optional[app_commands.Range[float, 0, 100]] = None,
-    tax_de_guild: Optional[app_commands.Range[float, 0, 100]] = None,
-):
-    if interaction.guild is None:
-        return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-
-    total_sum = parse_number_sum(total)
-    if total_sum is None:
-        return await respond_ephemeral(
-            interaction,
-            "❌ **Total** inválido. Usá solo números separados por espacios, ej: `1000000 500 23333` "
-            "(sin comas ni puntos de miles)."
-        )
-
-    rep_sum = parse_number_sum(reparacion)
-    if rep_sum is None:
-        return await respond_ephemeral(
-            interaction,
-            "❌ **Reparación** inválida. Usá solo números separados por espacios, ej: `15000 2500` "
-            "(sin comas ni puntos de miles)."
-        )
-
-    bag = 0.0 if bolsitas is None else bolsitas
-    sale_tax = SPLIT_CALC_DEFAULT_SALE_TAX if tax_de_venta is None else tax_de_venta
-    guild_tax = SPLIT_CALC_DEFAULT_GUILD_TAX if tax_de_guild is None else tax_de_guild
-
-    if sale_tax + guild_tax > 100:
-        return await respond_ephemeral(interaction, "❌ La suma de **tax de venta** y **tax de guild** no puede superar 100%.")
-
-    final = calc_split_final(total_sum, sale_tax, guild_tax, rep_sum, bag)
-
-    # Mensaje público en el canal donde se ejecutó el comando
-    await interaction.response.send_message(
-        build_split_calc_panel(total_sum, rep_sum, bag, sale_tax, guild_tax, final),
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
-
-@calcularsplit_slash.error
-async def calcularsplit_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/calcularsplit`.")
-    return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
 
 
 # ================== SISTEMA CTA SMOGG ==================
@@ -6424,10 +6055,8 @@ HELP_SECTIONS = [
         ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de muertes en el primer engage, roles más jugados e IP de un jugador (por defecto, vos)."),
         ("/killboard cargar · conectados · borrar · probar", "Staff / Council (cargar y conectados también Caller y Opinólogo en el hilo de stats de una CTA, con los botones del panel)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
-        ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
     ("💰 Economía y timers", [
-        ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),
         ("/deltimer material mapa tiempo [tier]", "Miembros registrados, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
@@ -6449,7 +6078,7 @@ HELP_SECTIONS = [
         ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
-        ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (se muestra en el canal)."),
+        ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (respuesta privada)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/canal-entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
         ("/canal-salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
@@ -6482,7 +6111,7 @@ HELP_SECTIONS = [
     ]),
     ("🎁 Sorteos y roles", [
         ("/sorteo premio tiempo [ganadores]", "Staff / Council", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
-        ("/list_role rol", "Staff", "Lista los miembros que tienen un rol."),
+        ("/list_role rol", "Staff / Council / Admin", "Lista los miembros que tienen un rol."),
         ("!addroll-list NombreRol @u1 @u2 …", "Council / Admin", "Crea un rol y se lo da a las personas mencionadas."),
     ]),
     ("⚙️ Administración", [
