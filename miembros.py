@@ -1,4 +1,4 @@
-"""Registro de entradas y salidas del servidor: /canal-entradas y /canal-salidas.
+"""Registro de entradas y salidas del servidor: /canal entradas y /canal salidas.
 
 • Entradas: el bot solo menciona a quien entró («@persona entró al servidor»), sin bienvenida.
 • Salidas: quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."""
@@ -127,15 +127,9 @@ class MemberLogCog(commands.Cog):
         what = "se va a mencionar a quien entre al servidor" if kind == "join" else "se va a publicar quién se fue, sus roles y su cuenta de Albion"
         await interaction.response.send_message(f"✅ Registro de {label} configurado en {channel.mention}: {what}.", ephemeral=True)
 
-    @app_commands.command(name="canal-entradas", description="(Council/Admin) Canal donde se menciona a quien entra al servidor")
-    @app_commands.describe(canal="Canal (por defecto, este)", desactivar="Apagar este registro")
-    @app_commands.guild_only()
     async def canal_entradas(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         await self._configure(interaction, "join", canal, desactivar)
 
-    @app_commands.command(name="canal-salidas", description="(Council/Admin) Canal donde se registra quién se fue, sus roles y su cuenta de Albion")
-    @app_commands.describe(canal="Canal (por defecto, este)", desactivar="Apagar este registro")
-    @app_commands.guild_only()
     async def canal_salidas(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         await self._configure(interaction, "leave", canal, desactivar)
 

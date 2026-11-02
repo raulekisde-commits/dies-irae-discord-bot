@@ -359,7 +359,7 @@ class ShopDiscordTests(unittest.TestCase):
     def test_command_names_registered(self):
         names = {getattr(gs.GuildShopCog, n).name for n in dir(gs.GuildShopCog)
                  if isinstance(getattr(gs.GuildShopCog, n, None), discord_stub.AppCommand)}
-        self.assertEqual(names, {"guild-shop", "guildshop", "dados"})
+        self.assertEqual(names, {"guild-shop", "guildshop", "dados", "entradas", "salidas", "registro", "economia"})
         self.assertEqual(gs.GuildShopCog.canal.name, "canal")
         self.assertEqual(gs.GuildShopCog.canal_logs.name, "logs")
 

@@ -270,7 +270,7 @@ INFO_STAFF.update({
                  "• `/reclutas-pendientes` — aceptados que todavía no entraron a la guild.\n"
                  "• `/recuperar-lista` y `/recuperar @persona` — los últimos 5 registrados que se fueron del servidor; si vuelve, devuelve registro, roles y apodo.\n"
                  "• `/estado-api` (Admin) — revisa si la API de Albion responde. Si no registra a nadie, empezá por acá.\n"
-                 "• `/registro_canal` y `/registro_obligatorio` (Admin) — canal de avisos y exigir (o no) estar registrado.\n"
+                 "• `/canal registro` y `/registro_obligatorio` (Admin) — canal de avisos y exigir (o no) estar registrado.\n"
                  "• `/desvincular` (Council) — quita el personaje de tu propia cuenta.\n\n"
                  "**Qué garantiza y qué no**\n"
                  "• La API de Albion no tiene login: prueba que el personaje existe y su guild, pero **no quién lo controla**.\n"
