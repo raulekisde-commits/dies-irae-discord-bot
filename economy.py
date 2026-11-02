@@ -771,10 +771,6 @@ class EconomyCog(commands.Cog):
         self._emoji_raw = raw
         await self._ephemeral(interaction, f"✅ Icono de {eco.CURRENCY_NAME} actualizado: {emoji}")
 
-    @app_commands.command(name="bal-registro", description="(Admin) Canal donde se publican los movimientos de Wuju Coins")
-    @app_commands.describe(canal="Canal de auditoría económica")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def registro_bal(self, interaction: discord.Interaction, canal: discord.TextChannel):
         if not await self._require_admin(interaction):
             return
@@ -801,7 +797,7 @@ class EconomyCog(commands.Cog):
     @staticmethod
     def _cmd_label(command: str) -> str:
         if command == "1v1":
-            return "`/1v1`"
+            return "`/casino 1v1`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"

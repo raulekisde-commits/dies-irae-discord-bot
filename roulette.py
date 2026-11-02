@@ -1,4 +1,4 @@
-"""Ruleta europea de casino: /ruleta (panel + hilo de apuestas), /ruleta-editar, /ruleta-stats. Apuestas con /apostar dentro del hilo.
+"""Ruleta europea de casino: /casino ruleta (panel + hilo de apuestas), /casino ruleta-editar, /casino ruleta-stats. Apuestas con /apuesta apostar dentro del hilo.
 
 Toda la lógica de dinero y reglas está en roulette_db.py (transacciones atómicas); acá solo hay interfaz de Discord."""
 import asyncio
@@ -116,7 +116,7 @@ class RouletteCog(commands.Cog):
             e.add_field(name=f"🎡 Ronda #{rnd.id if rnd else '—'}", value=when, inline=False)
             e.add_field(name="👥 Participantes", value=f"{parts:,} ({n:,} apuestas)", inline=True)
             e.add_field(name="💰 Total apostado", value=self.money(staked), inline=True)
-        e.add_field(name=SEP, value="Apostá **dentro del hilo** con `/apostar`: `rojo`, `negro`, `par`, `impar`, `falta`, `pasa`, "
+        e.add_field(name=SEP, value="Apostá **dentro del hilo** con `/apuesta apostar`: `rojo`, `negro`, `par`, `impar`, `falta`, `pasa`, "
                                      "`docena 1-3`, `columna 1-3`, `numero 0-36`." if is_open else "La ruleta está cerrada. Las apuestas pendientes fueron devueltas.",
                     inline=False)
         e.set_footer(text="Ruleta europea · 37 números · ventaja de la casa 2,70%")
@@ -152,14 +152,12 @@ class RouletteCog(commands.Cog):
             return f"https://discord.com/channels/{panel.guild_id}/{panel.channel_id}/{panel.message_id}"
         return f"https://discord.com/channels/{panel.guild_id}/{panel.channel_id}"
 
-    @app_commands.command(name="ruleta", description="Abre la ruleta del casino (solo staff; hay una única ruleta en todo el servidor)")
-    @app_commands.guild_only()
     async def ruleta(self, interaction: discord.Interaction):
         if not await self._allowed(interaction.user, "ruleta"):
             return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/eco perms-comando` pueden abrir la ruleta.")
         ch = interaction.channel
         if ch is None or isinstance(ch, discord.Thread):
-            return await _say(interaction, "❌ Usá `/ruleta` en un canal de texto (no dentro de un hilo).")
+            return await _say(interaction, "❌ Usá `/casino ruleta` en un canal de texto (no dentro de un hilo).")
         await interaction.response.defer(ephemeral=True)
         panel, created = await self.run(rdb.create_panel, interaction.guild.id, ch.id, interaction.user.id)
         if not created:
@@ -168,22 +166,14 @@ class RouletteCog(commands.Cog):
             msg = await ch.send(embed=await self.panel_embed(panel), view=RouletteView(self), allowed_mentions=NO_MENTIONS)
             thread = await msg.create_thread(name="🎰 Apuestas de la ruleta", auto_archive_duration=10080)
             await self.run(rdb.set_panel_message, panel.id, msg.id, thread.id)
-            await thread.send("🎰 **Bienvenidos a la ruleta.** Apostá acá con `/apostar` (ej: `/apostar rojo 100k`, `/apostar numero 17 25k`, "
-                              "`/apostar docena 2 100k`). Podés hacer varias apuestas por ronda.", allowed_mentions=NO_MENTIONS)
+            await thread.send("🎰 **Bienvenidos a la ruleta.** Apostá acá con `/apuesta apostar` (ej: `/apuesta apostar rojo 100k`, `/apuesta apostar numero 17 25k`, "
+                              "`/apuesta apostar docena 2 100k`). Podés hacer varias apuestas por ronda.", allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self.run(rdb.abort_panel, panel.id)           # libera el estado global
             return await _say(interaction, "❌ No pude publicar el panel (¿permisos para enviar mensajes y crear hilos?). La ruleta no quedó abierta.")
         await _say(interaction, f"✅ Ruleta abierta: {msg.jump_url}")
 
-    @app_commands.command(name="ruleta-editar", description="Edita la configuración de la ruleta (solo staff)")
-    @app_commands.describe(capital_inicial="Capital inicial (no cambia el balance actual)", balance_casa="Nuevo balance de la casa (ajuste auditado; requiere motivo)",
-                           motivo="Motivo del ajuste de balance", apuesta_min="Apuesta mínima", apuesta_max="Apuesta máxima",
-                           reserva="Reserva de seguridad", segundos="Duración de la ronda en segundos (15-600)",
-                           pagos_editables="Habilitar/deshabilitar la edición de pagos", pago_color="Multiplicador rojo/negro",
-                           pago_paridad="Multiplicador par/impar", pago_falta_pasa="Multiplicador falta/pasa", pago_docena="Multiplicador docenas",
-                           pago_columna="Multiplicador columnas", pago_numero="Multiplicador número exacto")
-    @app_commands.guild_only()
     async def ruleta_editar(self, interaction: discord.Interaction, capital_inicial: Optional[str] = None, balance_casa: Optional[str] = None,
                             motivo: Optional[str] = None, apuesta_min: Optional[str] = None, apuesta_max: Optional[str] = None,
                             reserva: Optional[str] = None, segundos: Optional[app_commands.Range[int, 15, 600]] = None,
@@ -211,7 +201,7 @@ class RouletteCog(commands.Cog):
         except (rdb.RouletteError, eco.AmountError) as exc:
             return await _say(interaction, f"❌ {exc}")
         if not changed:
-            return await _say(interaction, "ℹ️ No indicaste nada para cambiar. Mirá la configuración actual en el panel o con `/ruleta-stats`.")
+            return await _say(interaction, "ℹ️ No indicaste nada para cambiar. Mirá la configuración actual en el panel o con `/casino ruleta-stats`.")
         panel = await self.run(rdb.get_active_panel)
         if panel is not None:
             await self.refresh_panel(panel.id)
@@ -221,8 +211,6 @@ class RouletteCog(commands.Cog):
                                 f"Mín: {self.money(cfg.min_bet)} · Máx: {self.money(cfg.max_bet)} · Ronda: {cfg.round_seconds}s · "
                                 f"Pagos editables: {'sí' if cfg.payouts_enabled else 'no'}")
 
-    @app_commands.command(name="ruleta-stats", description="Estadísticas de la ruleta (solo staff)")
-    @app_commands.guild_only()
     async def ruleta_stats(self, interaction: discord.Interaction):
         if not await self._allowed(interaction.user, "ruleta-stats"):
             return await _say(interaction, "🔒 Solo administradores, el Council o un rol autorizado con `/eco perms-comando` pueden ver las estadísticas.")
@@ -246,7 +234,7 @@ class RouletteCog(commands.Cog):
             e.add_field(name="🧾 Ajustes y cambios recientes", value="\n".join(lines)[:1024], inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    # ---------- apuestas (las invoca bets.py cuando /apostar o !apostar se usan en un hilo de ruleta) ----------
+    # ---------- apuestas (las invoca bets.py cuando /apuesta apostar o !apostar se usan en un hilo de ruleta) ----------
     async def autocomplete_options(self, interaction, current: str):
         ch_id = interaction.channel.id if interaction.channel else 0
         panel = await self.run(rdb.find_panel_by_thread, ch_id)
@@ -278,7 +266,7 @@ class RouletteCog(commands.Cog):
             return True
         parts = (args or "").strip().rsplit(None, 1)
         if len(parts) < 2:
-            await reply("Uso: `/apostar [rojo|negro|par|impar|falta|pasa|docena 1-3|columna 1-3|numero 0-36] [cantidad]`")
+            await reply("Uso: `/apuesta apostar [rojo|negro|par|impar|falta|pasa|docena 1-3|columna 1-3|numero 0-36] [cantidad]`")
             return True
         try:
             kind, sel = rdb.parse_selection(parts[0])
@@ -317,7 +305,7 @@ class RouletteCog(commands.Cog):
             return await _say(interaction, "ℹ️ No hay una ronda en curso.")
         bets = await self.run(rdb.user_bets, rnd.id, interaction.user.id)
         if not bets:
-            return await _say(interaction, "ℹ️ Todavía no apostaste en esta ronda. Hacelo en el hilo con `/apostar`.")
+            return await _say(interaction, "ℹ️ Todavía no apostaste en esta ronda. Hacelo en el hilo con `/apuesta apostar`.")
         lines = [f"• {rdb.label_of(b.kind, b.selection)} — {self.money(b.amount)}" for b in bets[:25]]
         await _say(interaction, f"🎟️ **Tus apuestas (ronda #{rnd.id})** — total {self.money(sum(b.amount for b in bets))}\n" + "\n".join(lines))
 

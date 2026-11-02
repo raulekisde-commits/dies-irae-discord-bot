@@ -156,7 +156,7 @@ class EconomyDiscordTests(unittest.TestCase):
         self.assertEqual(found, prefix)
         slash = {getattr(economy.EconomyCog, n).name for n in dir(economy.EconomyCog)
                  if isinstance(getattr(economy.EconomyCog, n, None), discord_stub.AppCommand)}
-        self.assertEqual(slash, {"config-moneda", "bal-registro", "bal-reintentar-registro", "perms-canal", "perms-comando", "perms-ver", "verhistorial", "importar-bal", "set-balance", "eco-stats", "reset", "bal", "top", "addmoney", "addmoney-role", "remove-money", "give-money"})
+        self.assertEqual(slash, {"config-moneda", "bal-reintentar-registro", "perms-canal", "perms-comando", "perms-ver", "verhistorial", "importar-bal", "set-balance", "eco-stats", "reset", "bal", "top", "addmoney", "addmoney-role", "remove-money", "give-money"})
 
     # ---------- !bal ----------
     def test_bal_disabled_until_channel_configured(self):
@@ -450,10 +450,10 @@ class EconomyDiscordTests(unittest.TestCase):
 
     def test_registro_and_config_moneda_admin_only(self):
         inter = FakeInteraction(self.guild, self.alice, self.channels[BAL_CHANNEL])
-        run(economy.EconomyCog.registro_bal.callback(self.cog, inter, self.channels[LOG_CHANNEL]))
+        run(economy.EconomyCog.registro_bal(self.cog, inter, self.channels[LOG_CHANNEL]))
         self.assertIsNone(eco.get_setting(self.db, "log_channel_id"))
         inter = FakeInteraction(self.guild, self.admin, self.channels[BAL_CHANNEL])
-        run(economy.EconomyCog.registro_bal.callback(self.cog, inter, self.channels[LOG_CHANNEL]))
+        run(economy.EconomyCog.registro_bal(self.cog, inter, self.channels[LOG_CHANNEL]))
         self.assertEqual(eco.get_setting(self.db, "log_channel_id"), str(LOG_CHANNEL))
 
     # ---------- icono ----------

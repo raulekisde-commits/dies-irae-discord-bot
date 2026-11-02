@@ -52,7 +52,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "sincronizar-registros",
-                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
+                   "canal registro", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -1003,9 +1003,6 @@ class RegistrationCog(commands.Cog):
         for n, chunk in enumerate(self._chunks(lines)):
             await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="registro_canal", description="(Admin) Canal donde el bot avisa los registros y desvinculaciones")
-    @app_commands.describe(canal="Canal de texto")
-    @app_commands.guild_only()
     async def registro_canal(self, interaction: discord.Interaction, canal: discord.TextChannel):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
@@ -1107,7 +1104,7 @@ class RegistrationGate:
         """True si puede seguir. Reglas: apagado → todos; bots, administradores y los comandos del propio registro → exentos."""
         if getattr(user, "bot", False) or not await self.enabled():
             return True
-        if command_name and command_name.split(" ")[0] in EXEMPT_COMMANDS:
+        if command_name and (command_name in EXEMPT_COMMANDS or command_name.split(" ")[0] in EXEMPT_COMMANDS):
             return True
         perms = getattr(user, "guild_permissions", None)
         if perms is not None and perms.administrator:                 # los administradores nunca quedan bloqueados
