@@ -21,7 +21,8 @@ NO_MENTIONS = discord.AllowedMentions.none()
 COMMAND_LIMIT = 100                 # Discord admite como máximo 100 comandos / por servidor
 
 
-def diagnose(member, channel, *, member_role_id: Optional[int], registered: Optional[bool], command_count: Optional[int]) -> List[Tuple[bool, str]]:
+def diagnose(member, channel, *, member_role_id: Optional[int], registered: Optional[bool], command_count: Optional[int],
+             build_cache: Optional[Tuple[bool, str]] = None) -> List[Tuple[bool, str]]:
     """Lista de (ok, texto). Función pura para poder probarla."""
     out: List[Tuple[bool, str]] = []
     roles = {r.id for r in getattr(member, "roles", [])}
@@ -53,6 +54,8 @@ def diagnose(member, channel, *, member_role_id: Optional[int], registered: Opti
         near = command_count >= COMMAND_LIMIT - 5
         out.append((not near, f"El bot tiene **{command_count}/{COMMAND_LIMIT}** comandos / (el máximo de Discord es {COMMAND_LIMIT})."
                               + (" Está al límite: al pasarlo, los nuevos no aparecen para nadie." if near else "")))
+    if build_cache is not None:
+        out.append(build_cache)
     return out
 
 
@@ -76,6 +79,15 @@ class DiagnosticoCog(commands.Cog):
         except Exception:
             return None
 
+    @staticmethod
+    def _build_cache():
+        """(ok, texto) del estado de la caché de imágenes de builds; None si no está disponible."""
+        try:
+            import buildcard
+            return buildcard.cache_summary()
+        except Exception:
+            return None
+
     async def build(self, member, channel, staff_view: bool):
         import asyncio
         eco_cog = self.bot.get_cog("EconomyCog")
@@ -85,7 +97,8 @@ class DiagnosticoCog(commands.Cog):
         except Exception:
             registered = None
         items = diagnose(member, channel, member_role_id=member_role_id, registered=registered,
-                         command_count=self._command_count() if staff_view else None)
+                         command_count=self._command_count() if staff_view else None,
+                         build_cache=self._build_cache() if staff_view else None)
         bad = [t for ok, t in items if not ok]
         lines = [("✅ " if ok else "❌ ") + t for ok, t in items]
         verdict = ("Se encontró **al menos un problema**; arreglando eso deberían aparecer." if bad else "Por parte del bot y de los permisos del canal **está todo bien**.")
