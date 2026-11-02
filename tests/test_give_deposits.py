@@ -350,6 +350,7 @@ class GiveAlertTests(GiveHelper, DiscordBase):
                 self.dms[_m.id].append(embed)
             m.send = send
         self.fund(self.alice, 100000)
+        self.ecog.ALERT_MIN_TOTAL = 0          # estos tests miran los patrones con montos chicos; el piso de 30 M se prueba aparte
 
     def alerts(self, m):
         return [e for e in self.dms[m.id] if e is not None and "patrón sospechoso" in (e.title or "")]
@@ -395,6 +396,20 @@ class GiveAlertTests(GiveHelper, DiscordBase):
             self.give(u, self.bob, "10")
         self.assertEqual(len(self.alerts(self.admin)), 1)
         self.assertIn("muchas cuentas", " ".join(v for _, v, _ in self.alerts(self.admin)[0].fields))
+
+    def test_el_aviso_pide_un_piso_de_30_millones(self):
+        self.ecog.ALERT_MIN_TOTAL = 30_000_000                                          # el valor real
+        self.assertEqual(economy.EconomyCog.ALERT_MIN_TOTAL, 30_000_000)
+        for _ in range(3):
+            self.give(self.alice, self.bob, "100")                                      # mismo patrón de 3 envíos en un sentido, pero chico
+        self.assertEqual((self.alerts(self.admin), self.alerts(self.council)), ([], []))
+
+    def test_con_montos_grandes_el_patron_si_avisa(self):
+        self.ecog.ALERT_MIN_TOTAL = 30_000_000
+        self.fund(self.alice, 100_000_000)
+        for _ in range(3):
+            self.give(self.alice, self.bob, "10.000.000")                              # 30 M en total: llega al piso
+        self.assertEqual(len(self.alerts(self.admin)), 1)
 
     def test_alert_failure_never_affects_the_transfer(self):
         orig = economy.audit_db.collect_transfers
