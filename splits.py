@@ -820,6 +820,24 @@ class SplitsCog(commands.Cog):
             print(f"⚠️ Split #{s.id}: no pude publicar la solicitud de {user_id}: {exc!r}")
         return state
 
+    async def add_bomb(self, *, cta_id: int, user_id: int, actor_id: int) -> str:
+        """Un Bomb anotado después de armarse el split: entra a la lista directamente (sin pedir permiso).
+        'nosplit' (todavía no hay split: va a entrar cuando se arme) · 'added' · 'listed' · 'closed' · 'full' · 'rejected'."""
+        s = await self.run(sdb.find_by_cta, cta_id)
+        if s is None:
+            return "nosplit"
+        state, _ = await self.run(sdb.add_request, s.id, user_id, None)
+        if state in ("listed", "closed", "rejected"):
+            return state
+        try:
+            res = await self.run(sdb.decide_request, s.id, user_id, True, actor_id)
+        except sdb.SplitError:
+            return "full"
+        if res == "accepted":
+            await self.sync_split(s.id)
+            return "added"
+        return "listed" if res == "decided" else res
+
     async def on_request_decision(self, interaction: discord.Interaction, accept: bool):
         msg = getattr(interaction, "message", None)
         req = await self.run(sdb.get_request_by_message, msg.id) if msg is not None else None

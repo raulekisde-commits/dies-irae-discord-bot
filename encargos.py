@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import encargos_db as edb
-from guildshop import can_manage
+from guildshop import can_manage, COUNCIL_ROLE_ID
 
 NO_MENTIONS = discord.AllowedMentions.none()
 TASK_LOG_CHANNEL_ID = int(os.getenv("TASK_LOG_CHANNEL_ID", "1566014626309873776"))
@@ -124,7 +124,10 @@ class EncargosCog(commands.Cog):
             if ch is None:
                 raise RuntimeError("canal no disponible")
             note = "\n_(Salió con retraso: el bot estaba desconectado a la hora programada.)_" if late else ""
-            msg = await ch.send(content=f"<@&{STAFF_ROLE_ID}> nueva tarea{note}", embed=self.embed(t), view=TaskView(self), allowed_mentions=STAFF_PING)
+            roles = ([STAFF_ROLE_ID] if t.ping_staff else []) + [r for r in t.ping_roles if r != STAFF_ROLE_ID or not t.ping_staff]
+            tags = " ".join([f"<@&{r}>" for r in roles] + [f"<@{u}>" for u in t.ping_users])
+            allowed = discord.AllowedMentions(users=[discord.Object(id=u) for u in t.ping_users], roles=[discord.Object(id=r) for r in roles], everyone=False)
+            msg = await ch.send(content=f"{tags} nueva tarea{note}".strip(), embed=self.embed(t), view=TaskView(self), allowed_mentions=allowed)
         except Exception:
             traceback.print_exc()
             await self.run(edb.unclaim_publish, task_id)          # se reintenta en el próximo ciclo
@@ -133,24 +136,28 @@ class EncargosCog(commands.Cog):
         return True
 
     async def create(self, *, text: str, created_by: int, publish_at: Optional[float] = None, source: Optional[str] = None,
-                     link: Optional[str] = None, channel_id: Optional[int] = None) -> edb.Task:
-        """Crea una tarea (la usan /encargar y los avisos automáticos, como el del combatlog de una CTA)."""
+                     link: Optional[str] = None, channel_id: Optional[int] = None, ping_roles=(), ping_users=(), ping_staff: bool = True) -> edb.Task:
+        """Crea una tarea (la usan /encargar y los avisos automáticos, como el del combatlog de una CTA).
+        Etiqueta al Staff (salvo ping_staff=False) y, además, a los roles y personas indicados."""
         t = await self.run(edb.create_task, guild_id=self.guild_id, channel_id=channel_id or TASKS_CHANNEL_ID, text=text, created_by=created_by,
-                           publish_at=publish_at, source=source, link=link)
+                           publish_at=publish_at, source=source, link=link, ping_roles=ping_roles, ping_users=ping_users, ping_staff=ping_staff)
         if t.status == "scheduled" and (t.publish_at or 0) <= datetime.now(timezone.utc).timestamp():
             await self.publish(t.id)
         return await self.run(edb.get_task, t.id)
 
     # ---------- comando ----------
     @app_commands.command(name="encargar", description="Crea una tarea para el staff (panel con botones y mención al Staff)")
-    @app_commands.describe(tarea="Qué hay que hacer", cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h")
+    @app_commands.describe(tarea="Qué hay que hacer", cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h",
+                           rol="(Opcional) Rol a etiquetar además del Staff", persona="(Opcional) Persona a etiquetar además del Staff")
     @app_commands.guild_only()
-    async def encargar(self, interaction: discord.Interaction, tarea: str, cuando: Optional[str] = None):
+    async def encargar(self, interaction: discord.Interaction, tarea: str, cuando: Optional[str] = None,
+                       rol: Optional[discord.Role] = None, persona: Optional[discord.Member] = None):
         if not is_staff_or_council(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff y el Council pueden encargar tareas.")
         try:
             at = edb.parse_when(cuando) if cuando and cuando.strip() else None
-            t = await self.create(text=tarea, created_by=interaction.user.id, publish_at=at)
+            t = await self.create(text=tarea, created_by=interaction.user.id, publish_at=at,
+                                  ping_roles=[rol.id] if rol is not None and not rol.is_default() else [], ping_users=[persona.id] if persona is not None else [])
         except edb.TaskError as exc:
             return await _say(interaction, f"❌ {exc}")
         if at and at > datetime.now(timezone.utc).timestamp():
