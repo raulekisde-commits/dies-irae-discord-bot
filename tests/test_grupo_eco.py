@@ -16,8 +16,9 @@ class EcoGroupTests(unittest.TestCase):
     def test_permisos_siguen_guardados_con_el_mismo_texto(self):
         # los permisos delegados se guardan por clave de texto: agrupar no los pierde
         import economy_db as edb
-        for key in ("addmoney", "remove-money", "set-balance", "eco-stats"):
+        for key in ("addmoney", "remove-money", "eco-stats"):
             self.assertIn(key, edb.GRANTABLE_COMMANDS)
+        self.assertNotIn("set-balance", edb.GRANTABLE_COMMANDS)          # /eco set-balance es solo Admin y no se delega
 
 
 if __name__ == "__main__":
