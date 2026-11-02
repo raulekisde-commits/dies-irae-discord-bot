@@ -76,6 +76,30 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(len(t), 1)
 
 
+class ColoresYPasadosTests(unittest.TestCase):
+    def test_colores_a_tier_como_en_la_captura(self):
+        base = int(NOW.timestamp()) + 600
+        txt = "\n".join([f"🟨 Gold Vortex - A - <t:{base}:R> 14:40 UTC", f"🟦 Blue Vortex - B - <t:{base}:R> 14:40 UTC",
+                         f"🟪 Purple Vortex - C - <t:{base}:R> 14:40 UTC", f"🟩 Green Vortex - D - <t:{base}:R> 14:40 UTC",
+                         f"🟨 Gold Core - E - <t:{base}:R> 14:40 UTC"])
+        t, skipped = ns.parse_timers(txt, NOW)
+        self.assertEqual([(x["material"], x["tier"], x["mapa"]) for x in t],
+                         [("vortex", "legendary", "A"), ("vortex", "rare", "B"), ("vortex", "epic", "C"), ("vortex", "common", "D"),
+                          ("core", "legendary", "E")])
+        self.assertEqual(skipped, 0)
+
+    def test_tambien_acepta_el_nombre_del_tier(self):
+        t, _ = ns.parse_timers("Epic Vortex - X - en 1 hora 15:00 UTC\nLegendary Core - Y - en 1 hora 15:10 UTC\nRare Vortex - Z - en 1 hora 15:20 UTC", NOW)
+        self.assertEqual([x["tier"] for x in t], ["epic", "legendary", "rare"])
+
+    def test_los_que_ya_salieron_no_se_cargan(self):
+        pasado = int(NOW.timestamp()) - 2 * 3600
+        reciente = int(NOW.timestamp()) - 5 * 60
+        txt = f"⛏️ 8.4 Ore - Vieja - <t:{pasado}:R> 12:30 UTC\n⛏️ 8.4 Ore - Reciente - <t:{reciente}:R> 14:25 UTC\n8.4 Ore - Texto - hace 2 horas 12:30 UTC"
+        t, _ = ns.parse_timers(txt, NOW)
+        self.assertEqual([x["mapa"] for x in t], ["Reciente"])
+
+
 class SeenTests(unittest.TestCase):
     def test_no_repite_ni_revive_borrados(self):
         db = os.path.join(tempfile.mkdtemp(), "t.db")
