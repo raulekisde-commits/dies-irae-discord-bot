@@ -221,14 +221,14 @@ class BetsDiscordTests(unittest.TestCase):
         self.assertTrue(any(isinstance(v, betsm.BetPanelView) for v in self.bot.persistent_views))
         self.assertEqual([c.custom_id for c in betsm.BetPanelView(self.cog).children], ["bet:detail", "bet:cancel"])
 
-    # ---------- /apuesta ----------
+    # ---------- /apuesta crear ----------
     def test_create_requires_permission(self):
         bet, i = self.create(self.plain)
         self.assertIsNone(bet)
         self.assertIn("No tenés permiso", i.text)
         bet, _ = self.create(self.admin)
         self.assertIsNotNone(bet)
-        bet2, _ = self.create(self.creator)           # rol otorgado con /perms-comando
+        bet2, _ = self.create(self.creator)           # rol otorgado con /eco perms-comando
         self.assertNotEqual(bet2.id, bet.id)
 
     def test_create_builds_panel_and_thread(self):
@@ -575,7 +575,7 @@ class BetsDiscordTests(unittest.TestCase):
         run(self.ecog.verhistorial.callback(self.ecog, i, self.alice))
         self.assertIn("Solo el staff", i.text)
         self.assertEqual(i.embeds, [])
-        # un rol otorgado con /perms-comando también cuenta como staff
+        # un rol otorgado con /eco perms-comando también cuenta como staff
         eco.grant_command_role(self.db, "verhistorial", MEMBER_ROLE)
         i = self.inter(self.bob)
         run(self.ecog.verhistorial.callback(self.ecog, i, self.alice))
