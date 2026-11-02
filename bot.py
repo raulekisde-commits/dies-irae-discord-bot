@@ -3907,7 +3907,7 @@ def cta_instructions_text(run: dict, total: int) -> str:
            if json.loads(run["snapshot_json"]).get("legacy_first") else "") +
         f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>.\n"
         f"• La lista de parties y el contador de anotados están en el panel principal, arriba del hilo. Se actualiza sola.\n"
-        f"• Al cerrar la inscripción se arma el hilo de transparencia con la lista de anotados."
+        f"• Al cerrar la inscripción se arma el hilo del split con la lista de anotados."
     )
 
 
@@ -4386,7 +4386,7 @@ class CTAFinalConfirmView(discord.ui.View):
         else:
             text, offer_delete = await cta_abort_run(self.run_id, interaction.user.id), False
         if offer_delete:
-            await interaction.edit_original_response(content=text + "\n\n¿Querés borrar el mensaje de la CTA del canal? (Transparencia y stats no se tocan.)",
+            await interaction.edit_original_response(content=text + "\n\n¿Querés borrar el mensaje de la CTA del canal? (El split y las stats no se tocan.)",
                                                      view=CTADeleteMessageView(self.run_id, interaction.user.id))
         else:
             await interaction.edit_original_response(content=text, view=None)
@@ -4420,7 +4420,7 @@ class CTADeleteMessageView(discord.ui.View):
 
 
 async def cta_delete_message(run: dict) -> bool:
-    """Borra solo el mensaje de la CTA del canal (su hilo de inscripción se va con él). No toca transparencia ni stats."""
+    """Borra solo el mensaje de la CTA del canal (su hilo de inscripción se va con él). No toca el split ni las stats."""
     try:
         ch = bot.get_channel(int(run["channel_id"])) or await bot.fetch_channel(int(run["channel_id"]))
         thread = await cta_get_thread(run)
@@ -6382,7 +6382,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
-        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo de transparencia y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
+        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
         ("/cta_cancelar_programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
@@ -6428,7 +6428,7 @@ HELP_SECTIONS = [
         ("/limite juego cantidad", "Council", "Pone la apuesta máxima de dados, coinflip o 1v1 (0 quita el límite). Se aplica a las partidas nuevas."),
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
         ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
-        ("/encargar tarea [cuando] [rol] [persona]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff (y, si querés, a un rol o una persona más), con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla."),
+        ("/encargar tarea [cuando] [rol] [persona]", "Staff / Council", "Publica una tarea en el canal de tareas mencionando al Staff (y, si querés, a un rol o una persona más), con botones Tomar, Soltar y Terminada (pueden tomarla Staff, Council y Opinólogo). `cuando` = HH:MM UTC o +90m para programarla. Al tomarla se crea un hilo para que se coordinen, y cada hora el bot etiqueta a quien la tiene para que la cierre si ya terminó."),
         ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
@@ -6446,6 +6446,7 @@ HELP_SECTIONS = [
         ("/recuperar-lista", "Staff / Council / Admin", "Lista los últimos 5 miembros registrados que se fueron del servidor (se guardan sus datos; el sexto pisa al más viejo)."),
         ("/recuperar persona", "Staff / Council / Admin", "Si alguien de esa lista volvió al servidor, le devuelve su registro de Albion, sus roles y su apodo. Solo funciona de a una persona y únicamente si ya volvió."),
         ("/completar-registros", "Staff / Council / Admin", "Busca en Albion el ID, servidor y guild de los registros que quedaron solo con nombre (p. ej. vinculados cuando la API no respondía) y lista los que no pudo verificar."),
+        ("/estado-api", "Admin", "Revisa si la API de Albion está respondiendo en cada región (búsqueda de jugadores y lista de la guild), cuánto tarda, el estado de la lista guardada en el bot y cuántos registros/reclutas quedaron pendientes."),
         ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
         ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz (si lo rechaza o lo deja vencer, el bot lo cargada públicamente): la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),

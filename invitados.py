@@ -69,7 +69,7 @@ INFO_TEXTS = {
                  "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo.\n"
                  "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
                  "**Splits**\n"
-                 "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de transparencias): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
+                 "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
                  "**Cambiar tu balance**\n"
                  "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
 }
