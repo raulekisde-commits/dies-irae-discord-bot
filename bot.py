@@ -6403,6 +6403,7 @@ HELP_SECTIONS = [
         ("/desvincular", "Council / Admin", "Quita el personaje vinculado a tu propia cuenta (con confirmación). Los miembros piden al staff que use /admin_desvincular."),
         ("/admin_registro · /admin_desvincular · /admin_vincular", "Staff / Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
         ("/sincronizar-apodos [solo_ver]", "Staff / Council / Admin", "Revisa que el apodo de cada miembro registrado sea su personaje de Albion y corrige los que no coinciden (`solo_ver:true` solo muestra qué cambiaría)."),
+        ("/recuperar-salidos [persona] [restaurar]", "Staff / Council / Admin", "Muestra los últimos 5 miembros registrados que se fueron del servidor (registro, roles, apodo). Con `restaurar:true`, si ya volvió, le devuelve el registro, los roles y el apodo."),
         ("/completar-registros", "Staff / Council / Admin", "Busca en Albion el ID, servidor y guild de los registros que quedaron solo con nombre (p. ej. vinculados cuando la API no respondía) y lista los que no pudo verificar."),
         ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casinoban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),

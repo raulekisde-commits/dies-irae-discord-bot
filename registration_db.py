@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS albion_links (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_links_discord ON albion_links(discord_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_links_char_id ON albion_links(char_id) WHERE char_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_links_char_name ON albion_links(lower(char_name));
+CREATE TABLE IF NOT EXISTS left_members (               -- últimos miembros registrados que se fueron del servidor (se guardan 5)
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_id INTEGER NOT NULL UNIQUE,
+    name       TEXT,
+    nick       TEXT,
+    left_at    TEXT NOT NULL,
+    roles_json TEXT NOT NULL DEFAULT '[]',                 -- [[id, nombre], ...]
+    regs_json  TEXT NOT NULL DEFAULT '[]'                  -- registros de Albion que tenía
+);
 CREATE TABLE IF NOT EXISTS albion_link_requests (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     target_id     INTEGER NOT NULL,
@@ -540,3 +549,46 @@ def set_flag(db_path: str, key: str, value: Optional[str]) -> None:
 REQUIRED_KEY = "registro:obligatorio"
 REVIEW_CHANNEL_KEY = "registro:canal"
 ROSTER_KEY = "registro:roster"
+
+
+# ---------- últimos miembros registrados que se fueron del servidor ----------
+LEFT_KEEP = 5
+
+
+def save_left_member(db_path: str, discord_id: int, *, name: str, nick: Optional[str], roles: list, regs: List[Registration]) -> None:
+    """Guarda los datos de quien se fue (solo si estaba registrado). Se conservan los últimos LEFT_KEEP: el siguiente pisa al más viejo."""
+    if not regs:
+        return
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            conn.execute("DELETE FROM left_members WHERE discord_id=?", (discord_id,))
+            conn.execute("INSERT INTO left_members(discord_id, name, nick, left_at, roles_json, regs_json) VALUES (?,?,?,?,?,?)",
+                         (discord_id, name, nick, utcnow_iso(), json.dumps([[int(i), n] for i, n in roles]),
+                          json.dumps([dict(char_id=r.char_id, char_name=r.char_name, region=r.region, guild_name=r.guild_name,
+                                           method=r.method, registered_at=r.registered_at) for r in regs])))
+            conn.execute("DELETE FROM left_members WHERE id NOT IN (SELECT id FROM left_members ORDER BY id DESC LIMIT ?)", (LEFT_KEEP,))
+    finally:
+        conn.close()
+
+
+def _left(r) -> dict:
+    return dict(discord_id=int(r["discord_id"]), name=r["name"], nick=r["nick"], left_at=r["left_at"],
+                roles=[(int(i), n) for i, n in json.loads(r["roles_json"] or "[]")], regs=json.loads(r["regs_json"] or "[]"))
+
+
+def list_left_members(db_path: str) -> List[dict]:
+    conn = connect(db_path)
+    try:
+        return [_left(r) for r in conn.execute("SELECT * FROM left_members ORDER BY id DESC")]
+    finally:
+        conn.close()
+
+
+def delete_left_member(db_path: str, discord_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            conn.execute("DELETE FROM left_members WHERE discord_id=?", (discord_id,))
+    finally:
+        conn.close()
