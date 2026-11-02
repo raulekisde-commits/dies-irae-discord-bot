@@ -85,7 +85,7 @@ INFO_TEXTS = {
                  "• Si tenés el rol <@&1559680220800360519>, tenés que subir **mínimo 3 VODs por semana** (la semana va de lunes a domingo, hora UTC).\n"
                  "• Los miembros sin ese rol también pueden subir VODs para pedir devolución, pero no tienen mínimo.\n\n"
                  "**Comandos**\n"
-                 "• `/mis-vods` — cuántos VODs subiste esta semana y cuántos te faltan.\n"
+                 "• `/coaching mis-vods` — cuántos VODs subiste esta semana y cuántos te faltan.\n"
                  "• `/top coach` — los coaches que más devoluciones dan."),
 }
 
@@ -113,7 +113,7 @@ INFO_STAFF = {
     "zvz-vods": ("• `/coaching-panel` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
                  "• Cada VOD genera una tarea para el rol **Coaching** indicando con qué rol juega la persona. Pueden tomarla Coaching, Staff, Opinólogo y Council. No tiene hilo; el recordatorio es cada 12 h.\n"
                  "• La tarea se completa sola cuando alguien del equipo responde en el post, o con el botón **Terminada**.\n"
-                 "• `/coaching-reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
+                 "• `/coaching reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
                  "• `/top coach` — quién cierra más devoluciones."),
 }
 
@@ -170,7 +170,7 @@ INFO_TEXTS.update({
               "**`/stats-winrate [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
               "**Rankings**\n"
               "• `/top` — Wuju Coins, kills, muertes, asistencia, skippers, IP, winrate, tareas del staff y coaches.\n"
-              "• `/mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
+              "• `/coaching mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
     "registro": ("📝 Registro de tu personaje",
                  "El registro vincula tu cuenta de Discord con tu personaje de Albion. Sin registro no podés usar varios comandos de miembros (si el registro es obligatorio).\n\n"
                  "**Comandos**\n"
