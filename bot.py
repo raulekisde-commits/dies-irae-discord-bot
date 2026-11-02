@@ -5597,11 +5597,13 @@ async def compo_ver_builds(interaction: discord.Interaction, nombre: str, build:
     await interaction.followup.send(embed=emb, view=view, ephemeral=True)
 
 
+buildcard_error = ""
 try:
     import buildcard
-except Exception:
+except Exception as _exc:
     buildcard = None
-    print("Sin imagen de builds (falta Pillow: pip install -r requirements.txt).")
+    buildcard_error = "falta instalar Pillow en el servidor" if "PIL" in repr(_exc) else repr(_exc)[:80]
+    print(f"Sin imagen de builds ({buildcard_error}): pip install -r requirements.txt")
 
 
 async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dict):
@@ -5613,12 +5615,14 @@ async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dic
         print(f"/compo ver-builds {meta['id']}: {exc!r}")
         return await interaction.followup.send(f"❌ No pude leer el detalle de **{meta['name']}** ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
     where = f"Usada en: {', '.join(meta['positions'][:20])}" + (" …" if len(meta["positions"]) > 20 else "")
+    reason = buildcard_error
     if buildcard is not None:
         try:
             png = await asyncio.to_thread(buildcard.render, data, meta["name"])
             return await interaction.followup.send(content=f"🧩 **{meta['name']}** · {comp['name']}\n{where}", file=discord.File(io.BytesIO(png), filename="build.png"), ephemeral=True)
         except Exception as exc:
             print(f"/compo ver-builds: no pude dibujar la imagen de {meta['id']}: {exc!r}")
+            reason = f"error al dibujar: {exc.__class__.__name__}: {exc}"[:90]
     bname, play, desc = compoweb.build_summary(data)
     emb = discord.Embed(title=f"🧩 {meta['name']}", color=discord.Color.blurple(),
                         description=f"**{compoweb.PLAYSTYLE_ES.get(play, play.upper() or 'Build')}**" + (f" · {desc[:300]}" if desc else "") + f"\n{where}")
@@ -5628,7 +5632,7 @@ async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dic
     draft = draft.get("draft") or draft
     if draft.get("mainHand"):
         emb.set_thumbnail(url=f"https://render.albiononline.com/v1/item/{compoweb.item_type(draft['mainHand'])}.png")
-    emb.set_footer(text=f"Composición: {comp['name']}")
+    emb.set_footer(text=f"Composición: {comp['name']}" + (f" · sin imagen: {reason}" if reason else ""))
     await interaction.followup.send(embed=emb, ephemeral=True)
 
 
