@@ -326,7 +326,7 @@ class EditView(_OwnedView):
         if ava:
             self.add_button("Agregar scouts", self._add_scouts, style=discord.ButtonStyle.success, emoji="🔭", row=1)
             self.add_button("Quitar scouts", self._rm_scouts, style=discord.ButtonStyle.danger, emoji="➖", row=1)
-            self.add_button("Agregar lista mitad", self._add_half, emoji="½", row=1)
+            self.add_button("Agregar lista mitad", self._add_half, emoji="🌓", row=1)
             self.add_button("Quitar lista mitad", self._rm_half, emoji="➖", row=1)
         else:
             self.add_button("Agregar looters", self._add_looters, style=discord.ButtonStyle.success, emoji="🪙", row=1)
