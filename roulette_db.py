@@ -316,7 +316,7 @@ def get_config(db_path: str) -> Config:
 
 
 # ============================================================
-# Configuración (/ruleta-editar)
+# Configuración (/casino ruleta-editar)
 # ============================================================
 def _exposure_now(conn, cfg: Config) -> int:
     """Pérdida máxima de la casa con las apuestas de las rondas abiertas (≥ 0)."""

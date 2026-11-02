@@ -130,7 +130,7 @@ class RankingsCog(commands.Cog):
             emb.description = "\n".join(f"`{i}.` {names[uid]}" for i, uid in enumerate(shown, 1))
             if len(ids) > len(shown):
                 emb.description += f"\n… y {len(ids) - len(shown)} más"
-        emb.set_footer(text=f"{len(ids)} persona(s) bloqueada(s) · Council: /casinoban")
+        emb.set_footer(text=f"{len(ids)} persona(s) bloqueada(s) · Council: /casino ban")
         return emb
 
     async def panel_embed(self, kind: str) -> discord.Embed:

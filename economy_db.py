@@ -766,7 +766,7 @@ def get_setting(db_path: str, key: str) -> Optional[str]:
 
 
 def get_bet_limit(db_path: str, game: str) -> Optional[int]:
-    """Apuesta máxima configurada con /limite para dados, coinflip o 1v1 (None = sin límite propio)."""
+    """Apuesta máxima configurada con /casino limite para dados, coinflip o 1v1 (None = sin límite propio)."""
     raw = get_setting(db_path, f"bet_limit:{game}")
     try:
         v = int(raw) if raw else 0

@@ -768,7 +768,7 @@ class EconomyCog(commands.Cog):
     @staticmethod
     def _cmd_label(command: str) -> str:
         if command == "1v1":
-            return "`/1v1`"
+            return "`/casino 1v1`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
