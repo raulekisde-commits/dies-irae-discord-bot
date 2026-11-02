@@ -2409,9 +2409,7 @@ async def _publish_admin_panel(interaction: discord.Interaction, embed: discord.
     await respond_ephemeral(interaction, "✅ Panel publicado.")
 
 
-@bot.tree.command(name="panel-reclutamiento", description="(Admin) Publica el panel de reclutamiento en este canal", guild=GUILD_OBJ)
-@app_commands.default_permissions(administrator=True)
-async def panel_slash(interaction: discord.Interaction):
+async def panel_slash(interaction: discord.Interaction):         # se usa desde /panel reclutamiento (panels.py)
     embed = discord.Embed(
         title="⚔️ Smogg Reclutamiento",
         description="Presioná el botón para abrir tu **postulación oficial**.",
@@ -2421,9 +2419,7 @@ async def panel_slash(interaction: discord.Interaction):
     await _publish_admin_panel(interaction, embed, PanelView())
 
 
-@bot.tree.command(name="panel_foco", description="(Admin) Publica el panel de Foco Donor en este canal", guild=GUILD_OBJ)
-@app_commands.default_permissions(administrator=True)
-async def panel_foco_slash(interaction: discord.Interaction):
+async def panel_foco_slash(interaction: discord.Interaction):    # se usa desde /panel foco (panels.py)
     embed = discord.Embed(
         title="Foco Donor",
         description="Presioná el botón para donar foco a la guild.",
@@ -2431,6 +2427,10 @@ async def panel_foco_slash(interaction: discord.Interaction):
     )
     embed.set_footer(text="Smogg Foco Donor System")
     await _publish_admin_panel(interaction, embed, FocoPanelView())
+
+
+# /panel reclutamiento y /panel foco viven en el grupo /panel (panels.py); acá solo se registran sus funciones
+bot.panel_handlers = {"reclutamiento": panel_slash, "foco": panel_foco_slash}
 
 
 # ============================================================
@@ -6097,7 +6097,7 @@ HELP_SECTIONS = [
         ("/recuperar persona", "Staff / Council / Admin", "Si alguien de esa lista volvió al servidor, le devuelve su registro de Albion, sus roles y su apodo. Solo funciona de a una persona y únicamente si ya volvió."),
         ("/sincronizar-registros", "Staff / Council / Admin", "Busca en Albion el ID, servidor y guild de los registros que quedaron solo con nombre (p. ej. vinculados cuando la API no respondía) y lista los que no pudo verificar."),
         ("/estado-api", "Admin", "Revisa si la API de Albion está respondiendo en cada región (búsqueda de jugadores y lista de la guild), cuánto tarda, el estado de la lista guardada en el bot y cuántos registros/reclutas quedaron pendientes."),
-        ("/coaching-panel", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea para el rol Coaching indicando el rol que juega; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
+        ("/panel coaching", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea para el rol Coaching indicando el rol que juega; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
         ("/coaching reporte [semana]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte."),
         ("/coaching mis-vods", "Miembros", "Cuántos VODs subiste esta semana y cuántos te faltan para el mínimo (si tenés el rol Observación)."),
         ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
@@ -6105,7 +6105,7 @@ HELP_SECTIONS = [
         ("/1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz (si lo rechaza o lo deja vencer, el bot lo cargada públicamente): la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /eco perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
         ("!coinflip cantidad [cara|cruz]", "Habilitado con /eco perms-canal y /eco perms-comando", "Desafío de cara o cruz de 5 minutos (podés elegir tu lado con `!coinflip 5k cruz` o `/coinflip cantidad lado`; si no, sos cara y quien acepta toma el otro): lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
         ("/apuesta todo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
-        ("/guild-shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
+        ("/panel shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
         ("/canal logs guildshop [canal]", "Council", "Define el canal donde se registra cada transacción del Guild Shop."),
         ("/eco set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),
         ("/eco eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),

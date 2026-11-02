@@ -1,4 +1,4 @@
-"""Grupo /panel: /panel apuestas y /panel cambiomoneda (publican paneles en el canal)."""
+"""Grupo /panel: publica paneles en el canal (apuestas, cambiomoneda, reclutamiento, foco, shop, coaching)."""
 import traceback
 from typing import Optional
 
@@ -33,6 +33,35 @@ class PanelsCog(commands.Cog):
         if cog is None:
             return await self._missing(interaction, "cambio de moneda")
         await cog.publish_panels(interaction, canal)
+
+    @panel.command(name="reclutamiento", description="(Admin) Publica el panel de reclutamiento en este canal")
+    async def reclutamiento(self, interaction: discord.Interaction):
+        fn = (getattr(self.bot, "panel_handlers", None) or {}).get("reclutamiento")
+        if fn is None:
+            return await self._missing(interaction, "reclutamiento")
+        await fn(interaction)                                      # valida que sea administrador
+
+    @panel.command(name="foco", description="(Admin) Publica el panel de Foco Donor en este canal")
+    async def foco(self, interaction: discord.Interaction):
+        fn = (getattr(self.bot, "panel_handlers", None) or {}).get("foco")
+        if fn is None:
+            return await self._missing(interaction, "Foco Donor")
+        await fn(interaction)                                      # valida que sea administrador
+
+    @panel.command(name="shop", description="(Council) Publica el Top Vendedores y el panel de compra del shop de la guild")
+    @app_commands.describe(canal="Canal donde publicar los dos paneles (por defecto, este canal)")
+    async def shop(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        cog = self.bot.get_cog("GuildShopCog")
+        if cog is None:
+            return await self._missing(interaction, "Guild Shop")
+        await cog.guild_shop(interaction, canal)                   # valida que sea Council/Admin
+
+    @panel.command(name="coaching", description="(Council) Publica el panel para abrir el post de VODs del coaching")
+    async def coaching(self, interaction: discord.Interaction):
+        cog = self.bot.get_cog("CoachingCog")
+        if cog is None:
+            return await self._missing(interaction, "coaching")
+        await cog.coaching_panel(interaction)                      # valida que sea Council/Admin
 
 
 async def setup_panels(bot: commands.Bot, guild_id: int) -> PanelsCog:

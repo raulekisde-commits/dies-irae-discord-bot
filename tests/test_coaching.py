@@ -316,10 +316,10 @@ class CoachingDiscordTests(DiscordBase):
 
     def test_panel_command_is_council_only(self):
         i = self.inter(self.alice)
-        run(self.cog.coaching_panel.callback(self.cog, i))
+        run(self.cog.coaching_panel(i))
         self.assertIn("Solo el Council", i.text)
         i = self.inter(self.council)
-        run(self.cog.coaching_panel.callback(self.cog, i))
+        run(self.cog.coaching_panel(i))
         self.assertEqual(len(self.panelch.sent), 1)
 
 
