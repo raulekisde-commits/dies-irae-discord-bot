@@ -121,15 +121,12 @@ class DuelsCog(commands.Cog):
         emb.set_footer(text=f"Duelo #{d.id}")
         return emb
 
-    # ---------- /1v1 ----------
-    @app_commands.command(name="1v1", description="Retá a alguien a un duelo de cara o cruz: el que sale se queda con todo")
-    @app_commands.describe(usuario="A quién retás", cantidad="Lo que apostás (sin tope: hasta tu balance total)")
-    @app_commands.guild_only()
-    async def duel(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
+    # ---------- /1v1 y !1v1 ----------
+    async def _start_duel(self, *, guild, channel, me, usuario, cantidad: str, say, publish):
+        """Crea y publica un duelo. `say(texto)` responde un error en privado/al canal; `publish(contenido, embed, vista, menciones)` publica el panel y devuelve el mensaje."""
         try:
-            me = interaction.user
-            if interaction.guild is None or not isinstance(me, discord.Member):
-                return await _say(interaction, "❌ Solo disponible en el servidor.")
+            if guild is None or not isinstance(me, discord.Member):
+                return await say("❌ Solo disponible en el servidor.")
             eco_cog = self.economy
             if eco_cog is not None:
                 from economy import is_admin_member
@@ -137,42 +134,78 @@ class DuelsCog(commands.Cog):
                 roles = set(await self.run(eco.get_command_roles, "1v1"))
                 roles.add(eco_cog.member_role_id)               # los miembros pueden usarlo (como hasta ahora); el canal se elige con /eco perms-canal
                 result = eco.authorize(command="1v1", is_admin=is_admin_member(me), member_role_ids={r.id for r in me.roles},
-                                       allowed_role_ids=roles, channel_id=interaction.channel_id, configured_channel_id=channel_id)
+                                       allowed_role_ids=roles, channel_id=getattr(channel, "id", None), configured_channel_id=channel_id)
                 if not result.ok:
-                    return await _say(interaction, f"❌ {result.reason}")
+                    return await say(f"❌ {result.reason}")
             if usuario.bot:
-                return await _say(interaction, "❌ No podés retar a un bot.")
+                return await say("❌ No podés retar a un bot.")
             if usuario.id == me.id:
-                return await _say(interaction, "❌ No podés retarte a vos mismo.")
-            blocked = await self.run(cdb.block_reason, interaction.guild.id, me.id, usuario.id)
+                return await say("❌ No podés retarte a vos mismo.")
+            blocked = await self.run(cdb.block_reason, guild.id, me.id, usuario.id)
             if blocked:
-                return await _say(interaction, blocked)
+                return await say(blocked)
             try:
                 amount = eco.parse_amount_short(cantidad)
             except eco.AmountError as exc:
-                return await _say(interaction, f"❌ {exc}")
+                return await say(f"❌ {exc}")
             over = await self.run(eco.check_bet_limit, "1v1", amount)
             if over:
-                return await _say(interaction, f"❌ {over}")
-            res = await self.run(ddb.create_duel, guild_id=interaction.guild.id, channel_id=interaction.channel.id,
+                return await say(f"❌ {over}")
+            res = await self.run(ddb.create_duel, guild_id=guild.id, channel_id=channel.id,
                                  challenger_id=me.id, challenged_id=usuario.id, stake=amount)
             if res.code == "funds":
-                return await _say(interaction, f"❌ No tenés saldo suficiente. Tu saldo: {self.money(res.balance)}.")
+                return await say(f"❌ No tenés saldo suficiente. Tu saldo: {self.money(res.balance)}.")
             if res.code == "target_funds":
-                return await _say(interaction, f"❌ {usuario.mention} no tiene saldo suficiente para esa apuesta ({self.money(res.balance)}). No se creó el duelo.")
+                return await say(f"❌ {usuario.mention} no tiene saldo suficiente para esa apuesta ({self.money(res.balance)}). No se creó el duelo.")
             duel = res.duel
             try:
-                await interaction.response.send_message(f"{usuario.mention}, {me.mention} te retó a un duelo.", embed=self.panel_embed(duel),
-                                                        view=DuelView(self), allowed_mentions=discord.AllowedMentions(users=[usuario]))
-                msg = await interaction.original_response()
+                msg = await publish(f"{usuario.mention}, {me.mention} te retó a un duelo.", self.panel_embed(duel), DuelView(self),
+                                    discord.AllowedMentions(users=[usuario]))
             except Exception:
                 traceback.print_exc()
                 await self.run(ddb.abort_unpublished, duel.id)
-                return await _say(interaction, "❌ No pude publicar el duelo. Se te devolvió la apuesta.")
+                return await say("❌ No pude publicar el duelo. Se te devolvió la apuesta.")
             await self.run(ddb.set_message, duel.id, msg.id)
         except Exception:
             traceback.print_exc()
-            await _say(interaction, "❌ Ocurrió un error. Revisá tu saldo con `/bal` antes de reintentar.")
+            await say("❌ Ocurrió un error. Revisá tu saldo con `/bal` antes de reintentar.")
+
+    @app_commands.command(name="1v1", description="Retá a alguien a un duelo de cara o cruz: el que sale se queda con todo")
+    @app_commands.describe(usuario="A quién retás", cantidad="Lo que apostás (sin tope: hasta tu balance total)")
+    @app_commands.guild_only()
+    async def duel(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
+        async def say(text):
+            await _say(interaction, text)
+
+        async def publish(content, embed, view, allowed):
+            await interaction.response.send_message(content, embed=embed, view=view, allowed_mentions=allowed)
+            return await interaction.original_response()
+        await self._start_duel(guild=interaction.guild, channel=interaction.channel, me=interaction.user, usuario=usuario,
+                               cantidad=cantidad, say=say, publish=publish)
+
+    @commands.command(name="1v1")
+    async def duel_prefix(self, ctx: commands.Context, *, texto: str = ""):
+        """!1v1 @persona cantidad — igual que /1v1."""
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        usuario = next((m for m in getattr(ctx.message, "mentions", []) if not getattr(m, "bot", False) and m.id != ctx.author.id), None)
+        cantidad = texto
+        for m in getattr(ctx.message, "mentions", []):
+            cantidad = cantidad.replace(f"<@{m.id}>", "").replace(f"<@!{m.id}>", "")
+        cantidad = cantidad.strip()
+
+        async def say(text):
+            try:
+                await ctx.reply(text, mention_author=False, allowed_mentions=NO_MENTIONS)
+            except Exception:
+                traceback.print_exc()
+
+        if usuario is None or not cantidad:
+            return await say("Uso: `!1v1 @persona cantidad` (ej: `!1v1 @Ana 5k`).")
+
+        async def publish(content, embed, view, allowed):
+            return await ctx.send(content, embed=embed, view=view, allowed_mentions=allowed)
+        await self._start_duel(guild=ctx.guild, channel=ctx.channel, me=ctx.author, usuario=usuario, cantidad=cantidad, say=say, publish=publish)
 
     # ---------- botones ----------
     async def _duel_of(self, interaction: discord.Interaction) -> Optional[ddb.Duel]:
