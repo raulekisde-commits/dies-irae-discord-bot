@@ -228,7 +228,7 @@ class BetsDiscordTests(unittest.TestCase):
         self.assertIn("No tenés permiso", i.text)
         bet, _ = self.create(self.admin)
         self.assertIsNotNone(bet)
-        bet2, _ = self.create(self.creator)           # rol otorgado con /perms-comando
+        bet2, _ = self.create(self.creator)           # rol otorgado con /eco perms-comando
         self.assertNotEqual(bet2.id, bet.id)
 
     def test_create_builds_panel_and_thread(self):
@@ -575,7 +575,7 @@ class BetsDiscordTests(unittest.TestCase):
         run(self.ecog.verhistorial.callback(self.ecog, i, self.alice))
         self.assertIn("Solo el staff", i.text)
         self.assertEqual(i.embeds, [])
-        # un rol otorgado con /perms-comando también cuenta como staff
+        # un rol otorgado con /eco perms-comando también cuenta como staff
         eco.grant_command_role(self.db, "verhistorial", MEMBER_ROLE)
         i = self.inter(self.bob)
         run(self.ecog.verhistorial.callback(self.ecog, i, self.alice))

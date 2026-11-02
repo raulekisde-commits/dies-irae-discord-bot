@@ -547,7 +547,7 @@ class GamesDiscordTests(unittest.TestCase):
         c.commit()
         c.close()
         self.fund(self.admin, 1000)
-        self.assertIn("/perms-canal", self.cmd("coinflip", self.admin, "100").text)
+        self.assertIn("/eco perms-canal", self.cmd("coinflip", self.admin, "100").text)
 
     # ---- dados ----
     def test_dice_panel_lists_creator_pool_and_countdown(self):
@@ -989,7 +989,7 @@ class EconomySlashTests(unittest.TestCase):
     def test_bal_and_top_slash_need_their_channel_like_before(self):
         i = self.inter(self.alice)
         run(self.ecog.bal_slash.callback(self.ecog, i, None))
-        self.assertIn("/perms-canal", i.text)
+        self.assertIn("/eco perms-canal", i.text)
         eco.set_command_channel(self.db, "bal", GAME_CH)
         eco.set_command_channel(self.db, "top", GAME_CH)
         eco.apply_operation(self.db, kind="add", actor_id=1, user_ids=[self.bob.id], amount=777, request_key="s2")

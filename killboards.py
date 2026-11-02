@@ -585,7 +585,7 @@ class KillboardCog(commands.Cog):
         return False
 
     async def _allowed(self, interaction, command: str) -> bool:
-        """Permisos por defecto (Miembro/Invitado, cualquier canal) editables con /perms-canal y /perms-comando."""
+        """Permisos por defecto (Miembro/Invitado, cualquier canal) editables con /eco perms-canal y /eco perms-comando."""
         eco_cog = self.bot.get_cog("EconomyCog")
         if eco_cog is not None:
             return await eco_cog.slash_authorize(interaction, command)
