@@ -34,33 +34,33 @@ CREATE TABLE IF NOT EXISTS guests (
 );
 """
 
+# /info: solo lo que le sirve a un usuario. /info-staff: lo mismo + la sección del equipo (INFO_STAFF).
 INFO_TEXTS = {
     "invitados": ("👥 Sistema de invitados",
                   "Permite que alguien de confianza entre a la comunidad sin ser miembro de la guild.\n\n"
                   "• Solo quienes tienen el rol **Legacy** pueden invitar con `/invitar usuario motivo`.\n"
-                  "• Al invitar tenés que indicar el nombre exacto de su personaje de Albion: el bot lo busca, te muestra el personaje y vos confirmás que es tu amigo. Queda registrado igual que con `/registrar`.\n"
-                  "• Al invitado se le saca el rol **Public** y recibe el rol **Invitado**. Tiene acceso a la economía; el casino se le habilita aparte.\n"
-                  "• Queda registrado quién lo invitó y por qué: los miembros pueden consultarlo con `/quien-invito usuario`.\n"
-                  "• El staff ve la lista completa con `/invitados`.\n"
+                  "• Al invitar tenés que indicar el nombre exacto de su personaje de Albion: el bot lo busca, te muestra el personaje y vos confirmás que es tu amigo.\n"
+                  "• El invitado recibe el rol **Invitado** y tiene acceso a la economía; el casino se le habilita aparte.\n"
+                  "• Cualquier miembro puede ver quién invitó a alguien con `/quien-invito usuario`.\n"
                   "• Quien invita responde por su invitado."),
     "warnings": ("⚠️ Sistema de warnings",
-                 "Registro interno de sanciones leves. Solo lo usan el **Staff** y el **Council**.\n\n"
-                 "• `/warning usuario razon` le pone un warning a alguien. Queda guardado quién lo puso, cuándo y por qué.\n"
-                 "• `/warnings usuario` lista los warnings de esa persona (fecha, quién lo puso y motivo). Es el único comando que se muestra en el canal.\n"
-                 "• `/warning-top` muestra quién acumula más warnings.\n"
-                 "• Todo lo demás lo ve solo quien ejecuta el comando."),
+                 "Los warnings son sanciones leves que el **Staff** y el **Council** registran cuando alguien no respeta las reglas del servidor.\n\n"
+                 "• Los gestiona solo el equipo: no hay comandos para usuarios.\n"
+                 "• Si tenés dudas sobre uno, hablá con el Staff o el Council."),
     "casino": ("🎰 Sistema de casino",
                "Juegos para apostar **Wuju Coins**, la moneda del servidor (`/bal` para ver tu saldo, `/top` para el ranking).\n\n"
                "• **Dados** (`/dados`): partida abierta de 5 minutos; se anota quien quiere y gana el número más alto, que se lleva el pozo.\n"
                "• **Coinflip** (`/coinflip`): desafío de cara o cruz; lo acepta una persona y el ganador se queda con todo.\n"
                "• **1v1** (`/1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
-               "• **Apuestas** (`/apostar`, `/apostartodo`): se apuesta a una de las opciones de una apuesta abierta por el staff; el pozo se reparte entre quienes acertaron.\n"
-               "• **Ruleta**: la abre el staff y es una sola para todo el servidor.\n"
-               "• Estadísticas: `/winrate`, `/top winrate` y `/totalapostado`.\n\n"
+               "• **Apuestas** (`/apostar`, `/apostartodo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
+               "• **Ruleta**: una sola para todo el servidor.\n\n"
+               "**Tus estadísticas**\n"
+               "• `/stats-winrate [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
+               "• `/top winrate` y `/totalapostado` — rankings. En los paneles de apuestas ves Top apostado, Top ganado y Top perdido.\n\n"
                "**Reglas**\n"
                "• Las apuestas se descuentan al instante y no hay devolución si perdés.\n"
-               "• El Council puede cerrar el casino, poner límites de apuesta o bloquear a alguien (`/casinoban`).\n"
-               "• Cada juego se habilita en un canal y para ciertos roles con `/perms-canal` y `/perms-comando`. Los invitados no tienen acceso al casino salvo que se les habilite.\n"
+               "• Cada juego funciona solo en ciertos canales y para ciertos roles. Los invitados no tienen acceso al casino salvo que se les habilite.\n"
+               "• Si el casino está cerrado o te bloquearon, no podés jugar.\n"
                "• Jugá con responsabilidad: es solo moneda del servidor."),
     "economia": ("💰 Sistema de economía",
                  "La moneda del servidor son los **Wuju Coins**.\n\n"
@@ -87,7 +87,33 @@ INFO_TEXTS = {
                  "• `/top coach` — los coaches que más devoluciones dan."),
 }
 
-
+INFO_STAFF = {
+    "invitados": ("• `/invitados` — lista todos los invitados activos con quién los invitó, cuándo y el motivo.\n"
+                  "• Al invitar, el bot registra al invitado como si hubiera usado `/registrar`, le saca el rol **Public** y le pone **Invitado**.\n"
+                  "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n"
+                  "• Quien invita queda como responsable: si hay problemas, revisá `/quien-invito` o la lista para saber a quién consultar."),
+    "warnings": ("• `/warning usuario razon` — pone un warning. Queda guardado quién lo puso, cuándo y por qué. La respuesta la ve solo quien ejecuta el comando.\n"
+                 "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). Es el único comando que se muestra en el canal.\n"
+                 "• `/warning-top` — quién acumula más warnings (privado).\n"
+                 "• Los puede usar **Staff** y **Council**. Escribí un motivo claro: es el único registro que queda."),
+    "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/dados`, `/coinflip` y `/1v1`.\n"
+               "• `/limite juego cantidad` (Council) — apuesta máxima de dados, coinflip o 1v1; 0 quita el límite. Aplica a partidas nuevas.\n"
+               "• `/casinoban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
+               "• `/perms-canal` y `/perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
+               "• `/apuesta enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
+               "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/stats-winrate`.\n"
+               "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
+    "economia": ("• `/addmoney` y `/remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
+                 "• `/set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco-stats` (Staff) — total de monedas en el servidor. `/historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
+                 "• **Splits** (Council / Admin): `/transparencia` (con looters) y `/transparencia-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
+                 "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"
+                 "• **Cambio de moneda**: `/panel cambiomoneda` publica los tickets de venta y compra de Wuju Coins; el Council acepta y retira el balance."),
+    "zvz-vods": ("• `/coaching-panel` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
+                 "• Cada VOD genera una tarea para el rol **Coaching** indicando con qué rol juega la persona. Pueden tomarla Coaching, Staff, Opinólogo y Council. No tiene hilo; el recordatorio es cada 12 h.\n"
+                 "• La tarea se completa sola cuando alguien del equipo responde en el post, o con el botón **Terminada**.\n"
+                 "• `/coaching-reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
+                 "• `/top coach` — quién cierra más devoluciones."),
+}
 def _roles(m) -> set:
     return {r.id for r in getattr(m, "roles", [])}
 
@@ -328,16 +354,34 @@ class InvitadosCog(commands.Cog):
         for c in chunks[1:]:
             await _say(interaction, c)
 
-    # ---------- /info ----------
-    @app_commands.command(name="info", description="Explica cómo funciona un sistema del servidor")
+    # ---------- /info (usuarios) y /info-staff (usuarios + equipo) ----------
+    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("invitados", "warnings", "casino", "economia", "zvz-vods")]
+
+    @staticmethod
+    def info_embed(value: str, staff: bool) -> discord.Embed:
+        title, text = INFO_TEXTS[value]
+        if staff:
+            title = f"{title} · Staff"
+            text = f"{text}\n\n**🛡️ Para el equipo (Staff / Council)**\n{INFO_STAFF[value]}"
+        return discord.Embed(title=title, description=text[:4000], color=discord.Color.gold() if staff else discord.Color.blurple())
+
+    @app_commands.command(name="info", description="Explica cómo funciona un sistema del servidor (para usuarios)")
     @app_commands.describe(tema="Qué sistema querés conocer")
-    @app_commands.choices(tema=[app_commands.Choice(name="invitados", value="invitados"), app_commands.Choice(name="warnings", value="warnings"),
-                                app_commands.Choice(name="casino", value="casino"), app_commands.Choice(name="economia", value="economia"),
-                                app_commands.Choice(name="zvz-vods", value="zvz-vods")])
+    @app_commands.choices(tema=INFO_CHOICES)
     async def info(self, interaction: discord.Interaction, tema: app_commands.Choice[str]):
         value = getattr(tema, "value", tema)
-        title, text = INFO_TEXTS[value]
-        await interaction.response.send_message(embed=discord.Embed(title=title, description=text, color=discord.Color.blurple()), ephemeral=True)
+        await interaction.response.send_message(embed=self.info_embed(value, False), ephemeral=True)
+
+    @app_commands.command(name="info-staff", description="(Staff) Lo mismo que /info más la parte del equipo, con más detalle")
+    @app_commands.describe(tema="Qué sistema querés conocer")
+    @app_commands.choices(tema=INFO_CHOICES)
+    @app_commands.guild_only()
+    async def info_staff(self, interaction: discord.Interaction, tema: app_commands.Choice[str]):
+        me = interaction.user
+        if not (can_manage(me) or STAFF_ROLE_ID in _roles(me)):
+            return await _say(interaction, "🔒 Solo el Staff y el Council pueden usar `/info-staff`.")
+        value = getattr(tema, "value", tema)
+        await interaction.response.send_message(embed=self.info_embed(value, True), ephemeral=True)
 
     # ---------- si pierde el rol Invitado (p. ej. lo hacen miembro) el registro queda como histórico ----------
     @commands.Cog.listener()

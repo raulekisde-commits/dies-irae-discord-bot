@@ -294,18 +294,24 @@ class GamesCog(commands.Cog):
                 target = found
         dice = await self.run(stats_db.get_winrate, "dice", target.id)
         coin = await self.run(stats_db.get_winrate, "coinflip", target.id)
-        emb = discord.Embed(title=f"📊 Winrate de {getattr(target, 'display_name', target.id)}", color=GREEN)
-        emb.description = f"<@{target.id}>"
+        st = await self.run(stats_db.get_user_stats, target.id)
+        banned = await self.run(cdb.is_banned, ctx.guild.id, target.id)
+        emb = discord.Embed(title=f"📊 Stats de {getattr(target, 'display_name', target.id)}", color=GREEN)
+        emb.description = f"<@{target.id}>" + ("\n🚫 **En la lista negra del casino**" if banned else "")
         for icon, name, w in (("🎲", "Dados", dice), ("🪙", "Coinflip", coin)):
-            emb.add_field(name=f"{icon} {name}", value=f"**{w.percent}**\n{w.wins} ganadas de {w.played} partidas", inline=True)
-        emb.set_footer(text="Solo cuentan partidas terminadas con rival (las devueltas no suman).")
+            emb.add_field(name=f"{icon} Winrate {name}", value=f"**{w.percent}**\n{w.wins} ganadas de {w.played} partidas", inline=True)
+        emb.add_field(name="🎰 Total apostado", value=f"**{self.money(st.wagered)}**\nen {st.games} apuestas", inline=False)
+        emb.add_field(name="🏆 Total ganado", value=self.money(max(st.net, 0)), inline=True)
+        emb.add_field(name="📉 Total perdido", value=self.money(max(-st.net, 0)), inline=True)
+        emb.add_field(name="⚖️ Resultado neto", value=self.money(st.net), inline=True)
+        emb.set_footer(text="Winrate: solo partidas terminadas con rival (las devueltas no suman). Ganado/perdido es el neto, igual que en el panel de apuestas.")
         try:
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
             pass
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="winrate", description="Mirá el winrate en dados y coinflip de una persona (por defecto, el tuyo)")
+    @app_commands.command(name="stats-winrate", description="Winrate, total apostado, ganado/perdido y lista negra de una persona (por defecto, vos)")
     @app_commands.describe(usuario="Persona a consultar")
     @app_commands.guild_only()
     async def winrate_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
