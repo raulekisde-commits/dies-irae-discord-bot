@@ -64,12 +64,27 @@ class Task:
     source: Optional[str]
     link: Optional[str]
     events: List[Tuple[str, str, Optional[int]]] = field(default_factory=list)      # (cuándo, tipo, quién)
+    ping_roles: List[int] = field(default_factory=list)       # roles a etiquetar además (o en vez) del Staff
+    ping_users: List[int] = field(default_factory=list)       # personas a etiquetar
+    ping_staff: bool = True                                    # False: no se etiqueta al Staff (p. ej. la tarea del split va al Council)
+
+
+def _ids(text) -> List[int]:
+    return [int(x) for x in str(text or "").split(",") if x.strip().isdigit()]
+
+
+def _csv(ids) -> str:
+    return ",".join(str(int(i)) for i in dict.fromkeys(ids or []))
 
 
 def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        for col, ddl in (("ping_roles", "TEXT"), ("ping_users", "TEXT"), ("ping_staff", "INTEGER")):
+            if col not in have:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
         with write_tx(conn):                    # si el bot se cayó justo mientras publicaba, se reintenta
             conn.execute("UPDATE tasks SET status = 'scheduled' WHERE status = 'publishing' AND message_id IS NULL")
     finally:
@@ -82,7 +97,8 @@ def _load(conn, task_id: int) -> Optional[Task]:
         return None
     ev = [(e["at"], e["kind"], e["actor_id"]) for e in conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))]
     return Task(int(r["id"]), int(r["guild_id"]), int(r["channel_id"]), r["message_id"], r["text"], int(r["created_by"]), r["created_at"],
-                r["publish_at"], r["status"], r["taker_id"], r["done_by"], r["done_at"], r["source"], r["link"], ev)
+                r["publish_at"], r["status"], r["taker_id"], r["done_by"], r["done_at"], r["source"], r["link"], ev,
+                _ids(r["ping_roles"]), _ids(r["ping_users"]), r["ping_staff"] is None or bool(r["ping_staff"]))
 
 
 def get_task(db_path: str, task_id: int) -> Optional[Task]:
@@ -140,7 +156,8 @@ def parse_when(text: str, now: Optional[datetime] = None) -> float:
 
 
 def create_task(db_path: str, *, guild_id: int, channel_id: int, text: str, created_by: int, publish_at: Optional[float] = None,
-                source: Optional[str] = None, link: Optional[str] = None, now: Optional[float] = None) -> Task:
+                source: Optional[str] = None, link: Optional[str] = None, now: Optional[float] = None,
+                ping_roles=(), ping_users=(), ping_staff: bool = True) -> Task:
     text = " ".join((text or "").split())
     if not text:
         raise TaskError("La tarea no puede estar vacía.")
@@ -155,9 +172,10 @@ def create_task(db_path: str, *, guild_id: int, channel_id: int, text: str, crea
                 dup = conn.execute("SELECT id FROM tasks WHERE source = ?", (source,)).fetchone()
                 if dup:                                                    # tareas automáticas: una sola por origen
                     return _load(conn, int(dup["id"]))
-            cur = conn.execute("INSERT INTO tasks(guild_id, channel_id, text, created_by, created_at, publish_at, status, source, link) "
-                               "VALUES (?,?,?,?,?,?,?,?,?)",
-                               (guild_id, channel_id, text, created_by, utcnow_iso(), publish_at if publish_at else now, status, source, link))
+            cur = conn.execute("INSERT INTO tasks(guild_id, channel_id, text, created_by, created_at, publish_at, status, source, link, "
+                               "ping_roles, ping_users, ping_staff) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                               (guild_id, channel_id, text, created_by, utcnow_iso(), publish_at if publish_at else now, status, source, link,
+                                _csv(ping_roles), _csv(ping_users), 1 if ping_staff else 0))
             tid = int(cur.lastrowid)
             conn.execute("INSERT INTO task_events(task_id, at, kind, actor_id) VALUES (?,?,?,?)", (tid, utcnow_iso(), "created", created_by))
             return _load(conn, tid)

@@ -9,6 +9,8 @@ from dbutil import connect, write_tx, utcnow_iso
 CTA_CHANNEL_ID = 1559574169593716776
 CTA_VOICE_ID = 1257910727843250177
 STATS_CHANNEL_ID = 1565980248133345300
+BOMB_CHANNEL_ID = 1561077720069447680        # canal donde se publica el panel (con su hilo) para anotar a los Bomb de una CTA
+BOMB_ROLE_ID = 1565982191945519194           # rol Bomb: los únicos que pueden anotarse ahí
 SCHEDULE_GRACE_SECONDS = 120          # si el bot estuvo caído más que esto a la hora de publicar, la CTA programada se descarta
 
 # Los 11 roles de juego: cada posición pide exactamente uno de ellos.
@@ -179,8 +181,63 @@ def init_positions(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(POSITIONS_SCHEMA)
+        conn.executescript(BOMBS_SCHEMA)
     finally:
         conn.close()
+
+
+# ---------- Bomb: gente que se anota aparte (no ocupa posición de la compo) ----------
+BOMBS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cta_bombs (
+    cta_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (cta_id, user_id)
+);
+"""
+
+
+def bomb_add(db_path: str, cta_id: int, user_id: int) -> str:
+    """Anota a alguien como Bomb. Cuenta como anotado y entra al historial con el rol Bomb.
+    Devuelve 'new' · 'exists' · 'regular' (ya tiene una posición de la compo) · 'final' (la CTA terminó o se canceló) · 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            run = conn.execute("SELECT final_state, status FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None:
+                return "missing"
+            if run["final_state"] is not None or run["status"] == "cancelled":
+                return "final"
+            if conn.execute("SELECT 1 FROM cta_bombs WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
+                return "exists"
+            if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
+                return "regular"
+            conn.execute("INSERT INTO cta_bombs(cta_id, user_id, added_at) VALUES (?,?,?)", (cta_id, user_id, utcnow_iso()))
+            conn.execute("INSERT OR REPLACE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,0)",
+                         (cta_id, user_id, "bomb", BOMB_ROLE_ID, "Bomb"))
+            return "new"
+    except sqlite3.OperationalError:
+        return "missing"
+    finally:
+        conn.close()
+
+
+def bomb_list(db_path: str, cta_id: int) -> List[int]:
+    conn = connect(db_path)
+    try:
+        return [int(r["user_id"]) for r in conn.execute("SELECT user_id FROM cta_bombs WHERE cta_id=? ORDER BY added_at, user_id", (cta_id,))]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+BOMB_JOIN_WORDS = {"+", "bomb", "anotar", "anotarme", "anotame", "me anoto", "yo", "presente"}
+
+
+def is_bomb_join_text(text: Optional[str]) -> bool:
+    """Mensaje del hilo de Bomb que equivale a apretar «Anotarme»."""
+    return (text or "").strip().lower().strip(".!¡ ") in BOMB_JOIN_WORDS or (text or "").strip() == "+"
 
 
 def number_slots(slots):
