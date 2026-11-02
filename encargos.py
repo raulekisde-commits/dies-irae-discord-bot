@@ -166,6 +166,22 @@ class EncargosCog(commands.Cog):
         await _say(interaction, f"✅ Tarea #{t.id} publicada en <#{t.channel_id}>." if t.status != "scheduled"
                    else f"⚠️ Tarea #{t.id} guardada, pero no pude publicarla ahora; se reintenta sola.")
 
+    async def send_top_coach(self, interaction: discord.Interaction):
+        """Lo usa `/top coach`: quiénes dan más devoluciones (cierran más tareas de coaching)."""
+        from coaching_db import week_start
+        since = week_start().isoformat()
+        total = await self.run(edb.top_coaches, 10)
+        week = await self.run(edb.top_coaches, 10, since)
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+        def lines(rows):
+            return "\n".join(f"{medals.get(i, f'`{i}.`')} <@{u}> — **{n}**" for i, (u, n) in enumerate(rows, start=1)) or "Todavía no hay datos."
+        emb = discord.Embed(title="🎓 Top coaches", color=discord.Color.gold(),
+                            description="Quienes más devoluciones dan: tareas de coaching cerradas (a mano o respondiendo en el post del jugador).")
+        emb.add_field(name="🏆 Total", value=lines(total), inline=True)
+        emb.add_field(name="📅 Esta semana", value=lines(week), inline=True)
+        await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
+
     async def send_top(self, interaction: discord.Interaction):
         """Lo usa `/top tareas`: quién aceptó y quién cerró más tareas del staff."""
         if not can_take(interaction.user):
@@ -277,7 +293,8 @@ class EncargosCog(commands.Cog):
     async def on_done(self, interaction: discord.Interaction):
         t = await self._task(interaction)
         if t:
-            override = is_staff_or_council(interaction.user)
+            # las devoluciones de coaching las puede cerrar cualquiera que pueda tomarlas (Coaching, Opinólogo, Staff, Council)
+            override = is_staff_or_council(interaction.user) or ((t.source or "").startswith("coach:") and can_take(interaction.user))
             await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
 
     async def log_done(self, t: edb.Task) -> bool:

@@ -650,7 +650,8 @@ class EconomyCog(commands.Cog):
     TOP_CHOICES = ([app_commands.Choice(name="💰 Wuju Coins (por defecto)", value="wuju")]
                    + [app_commands.Choice(name=v[0], value=k) for k, v in kb.TOP_KEYS.items()]
                    + [app_commands.Choice(name="🎲 Winrate (dados y coinflip)", value="winrate"),
-                      app_commands.Choice(name="🛠️ Tareas del staff", value="tareas")])
+                      app_commands.Choice(name="🛠️ Tareas del staff", value="tareas"),
+                      app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach")])
 
     @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
     @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
@@ -677,6 +678,11 @@ class EconomyCog(commands.Cog):
             if other is None:
                 return await self._ephemeral(interaction, "❌ El ranking de tareas no está disponible ahora.")
             return await other.send_top(interaction)
+        if key == "coach":
+            other = self.bot.get_cog("EncargosCog")
+            if other is None:
+                return await self._ephemeral(interaction, "❌ El ranking de coaches no está disponible ahora.")
+            return await other.send_top_coach(interaction)
         await self._ephemeral(interaction, "❌ Tipo de top desconocido.")
 
     @app_commands.command(name="addmoney", description="Agrega Wuju Coins a una persona")

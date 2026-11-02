@@ -47,6 +47,8 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        if "done" not in {r["name"] for r in conn.execute("PRAGMA table_info(coaching_msgs)")}:
+            conn.execute("ALTER TABLE coaching_msgs ADD COLUMN done INTEGER NOT NULL DEFAULT 0")
     finally:
         conn.close()
 
@@ -187,6 +189,25 @@ def set_role(db_path: str, message_id: int, label: str) -> None:
     try:
         with write_tx(conn):
             conn.execute("UPDATE coaching_msgs SET role_label=? WHERE message_id=?", (label, message_id))
+    finally:
+        conn.close()
+
+
+def pending_msgs(db_path: str, thread_id: int) -> List[int]:
+    """Mensajes con VODs de un post cuya devolución todavía no se dio (del más viejo al más nuevo)."""
+    conn = connect(db_path)
+    try:
+        return [int(r["message_id"]) for r in conn.execute(
+            "SELECT message_id FROM coaching_msgs WHERE thread_id=? AND done=0 ORDER BY message_id", (thread_id,))]
+    finally:
+        conn.close()
+
+
+def mark_done(db_path: str, message_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE coaching_msgs SET done=1 WHERE message_id=?", (message_id,))
     finally:
         conn.close()
 
