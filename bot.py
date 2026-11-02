@@ -5454,6 +5454,7 @@ async def compo_importar(interaction: discord.Interaction, nombre: str, link: st
     except sqlite3.IntegrityError:
         return await interaction.followup.send("Ya existe una composición con ese nombre.", ephemeral=True)
     await asyncio.to_thread(compoweb.save_link, DB_PATH, cid, web_id, url)
+    await asyncio.to_thread(compoweb.save_parsed, DB_PATH, cid, parsed)
     cta_audit(interaction.guild_id, interaction.user.id, "composition_import", details=f"{name} <- {web_id}")
     restricted = sum(1 for d in defs if d["role_ids"])
     text = (f"✅ Composición **{name}** importada de AlbionZvZ: **{len(defs)}** posiciones en **{len(parsed['parties'])}** parties "
@@ -5463,9 +5464,9 @@ async def compo_importar(interaction: discord.Interaction, nombre: str, link: st
 
 
 class CTAWebUpdateView(discord.ui.View):
-    def __init__(self, comp_id: int, defs: list, web_id: str, url: str, actor_id: int):
+    def __init__(self, comp_id: int, defs: list, web_id: str, url: str, actor_id: int, parsed: Optional[dict] = None):
         super().__init__(timeout=180)
-        self.comp_id, self.defs, self.web_id, self.url, self.actor_id = comp_id, defs, web_id, url, actor_id
+        self.comp_id, self.defs, self.web_id, self.url, self.actor_id, self.parsed = comp_id, defs, web_id, url, actor_id, parsed
         ok = discord.ui.Button(label="Aplicar cambios", style=discord.ButtonStyle.success)
         no = discord.ui.Button(label="Cancelar", style=discord.ButtonStyle.secondary)
         ok.callback, no.callback = self.apply, self.cancel
@@ -5476,6 +5477,8 @@ class CTAWebUpdateView(discord.ui.View):
             return await interaction.response.send_message("Solo quien ejecutó el comando puede aplicarlo.", ephemeral=True)
         await asyncio.to_thread(compoweb.apply_update, DB_PATH, self.comp_id, self.defs, cta_now_iso())
         await asyncio.to_thread(compoweb.save_link, DB_PATH, self.comp_id, self.web_id, self.url)
+        if self.parsed is not None:
+            await asyncio.to_thread(compoweb.save_parsed, DB_PATH, self.comp_id, self.parsed)
         cta_audit(interaction.guild_id, interaction.user.id, "composition_web_update", details=f"comp {self.comp_id} <- {self.web_id}")
         await interaction.response.edit_message(content="✅ Composición actualizada desde AlbionZvZ." + cta_active_notice(self.comp_id), view=None)
 
@@ -5522,12 +5525,95 @@ async def compo_actualizar(interaction: discord.Interaction, nombre: str):
         lines.append("\n" + extra)
     if not (d["changed"] or d["added"] or d["removed"]):
         await asyncio.to_thread(compoweb.save_link, DB_PATH, comp["id"], link["web_id"], link["url"])
+        await asyncio.to_thread(compoweb.save_parsed, DB_PATH, comp["id"], parsed)
         return await interaction.followup.send("\n".join(lines)[:1990] + "\nNo hay nada que cambiar.", ephemeral=True)
     lines.append("Las posiciones que editaste a mano se pisan con lo de la web." + cta_active_notice(comp["id"]))
-    await interaction.followup.send("\n".join(lines)[:1990], view=CTAWebUpdateView(comp["id"], defs, link["web_id"], link["url"], interaction.user.id), ephemeral=True)
+    await interaction.followup.send("\n".join(lines)[:1990], view=CTAWebUpdateView(comp["id"], defs, link["web_id"], link["url"], interaction.user.id, parsed), ephemeral=True)
 
 
 compo_actualizar.autocomplete("nombre")(cta_name_autocomplete)
+
+
+async def cta_comp_parsed(comp: dict):
+    """Datos de la compo importada, guardados la primera vez (así ver las builds no vuelve a consultar el sitio). None si no viene de la web."""
+    link = await asyncio.to_thread(compoweb.link_for, DB_PATH, comp["id"])
+    if not link:
+        return None
+    parsed = await asyncio.to_thread(compoweb.load_parsed, DB_PATH, comp["id"])
+    if parsed is None:
+        parsed = await asyncio.to_thread(compoweb.fetch_comp, link["web_id"])
+        await asyncio.to_thread(compoweb.save_parsed, DB_PATH, comp["id"], parsed)
+    return parsed
+
+
+async def cta_build_autocomplete(interaction: discord.Interaction, current: str):
+    name = getattr(getattr(interaction, "namespace", None), "nombre", None)
+    if compoweb is None or not name:
+        return []
+    comp = cta_get_composition(interaction.guild_id, str(name))
+    parsed = await asyncio.to_thread(compoweb.load_parsed, DB_PATH, comp["id"]) if comp else None
+    if not parsed:
+        return []
+    cur = (current or "").strip().casefold()
+    return [app_commands.Choice(name=f"{b['name']} ({len(b['positions'])})"[:100], value=b["id"])
+            for b in compoweb.build_list(parsed) if cur in b["name"].casefold()][:25]
+
+
+@compo_group.command(name="ver-builds", description="Ver las builds de una composición (arma, armadura, habilidades)")
+@app_commands.describe(nombre="Composición", build="Una build en particular (si no elegís, ves la lista de todas)")
+async def compo_ver_builds(interaction: discord.Interaction, nombre: str, build: Optional[str] = None):
+    comp = cta_get_composition(interaction.guild_id, nombre)
+    if not comp:
+        return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+    url = comp.get("builds_url")
+    if compoweb is None:
+        return await interaction.response.send_message("Las builds no están disponibles ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        parsed = await cta_comp_parsed(comp)
+    except Exception as exc:
+        print(f"/compo ver-builds: {exc!r}")
+        return await interaction.followup.send("❌ No pude leer las builds ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+    if parsed is None:
+        return await interaction.followup.send(f"**{comp['name']}** no tiene builds detalladas (no viene de AlbionZvZ)." + (f"\n🔗 Builds: {url}" if url else "\nMirá sus posiciones con `/compo ver`."),
+                                               ephemeral=True, suppress_embeds=True)
+    names = _armas.weapon_names(DB_PATH, interaction.guild_id)
+    builds = compoweb.build_list(parsed, lambda w: names.get(w))
+    if build:
+        meta = next((b for b in builds if b["id"] == build), None)
+        if meta is None:
+            return await interaction.followup.send("No encontré esa build en la composición. Elegila de la lista del comando.", ephemeral=True)
+        try:
+            data = await asyncio.to_thread(compoweb.fetch_build_any_age, DB_PATH, build)
+        except Exception as exc:
+            print(f"/compo ver-builds {build}: {exc!r}")
+            return await interaction.followup.send(f"❌ No pude leer el detalle de **{meta['name']}** ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+        bname, play, desc = compoweb.build_summary(data)
+        emb = discord.Embed(title=f"🧩 {bname}", color=discord.Color.blurple(),
+                            description=(f"**{compoweb.PLAYSTYLE_ES.get(play, play.upper() or 'Build')}**" + (f" · {desc[:300]}" if desc else "")
+                                         + f"\nUsada en: {', '.join(meta['positions'][:20])}" + (" …" if len(meta['positions']) > 20 else "")))
+        for label, text in compoweb.build_detail_lines(data):
+            emb.add_field(name=label, value=text[:1000], inline=True)
+        draft = (data.get("build") or data)
+        draft = draft.get("draft") or draft
+        if draft.get("mainHand"):
+            emb.set_thumbnail(url=f"https://render.albiononline.com/v1/item/{compoweb.item_type(draft['mainHand'])}.png")
+        emb.set_footer(text=f"Composición: {comp['name']}")
+        return await interaction.followup.send(embed=emb, ephemeral=True)
+    lines = []
+    for b in builds:
+        pos = ", ".join(b["positions"][:6]) + (f" +{len(b['positions']) - 6}" if len(b["positions"]) > 6 else "")
+        lines.append(f"• **{b['name']}**" + (f" · {b['weapon']}" if b["weapon"] else "") + f" — {pos}")
+    emb = discord.Embed(title=f"🧩 Builds de {comp['name']}", color=discord.Color.blurple(),
+                        description=("\n".join(lines) or "Esta composición no tiene builds.")[:4000])
+    emb.set_footer(text="Para ver una en detalle: /compo ver-builds nombre:… build:…")
+    if url:
+        emb.add_field(name="🔗 Web", value=url[:1000], inline=False)
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+
+compo_ver_builds.autocomplete("nombre")(cta_name_autocomplete)
+compo_ver_builds.autocomplete("build")(cta_build_autocomplete)
 
 
 async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_override: Optional[str], creator_id: int, *, scheduled: bool = False):
@@ -5951,6 +6037,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 # (sección, [(comando, quién puede usarlo, explicación breve)])
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
+        ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: sin `build` la lista con las posiciones donde se usa cada una; con `build` el detalle (arma, armadura, comida, poción y habilidades). Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo de transparencia y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),

@@ -29,6 +29,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS compoweb_links (
     composition_id INTEGER PRIMARY KEY, web_id TEXT NOT NULL, url TEXT NOT NULL, last_sync_at TEXT NOT NULL, last_sync_ts REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS compoweb_parsed (
+    composition_id INTEGER PRIMARY KEY, json TEXT NOT NULL, fetched_ts REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS compoweb_builds (
     build_id TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_ts REAL NOT NULL
 );
@@ -144,6 +147,12 @@ def fetch_build(db_path: str, build_id: str, force: bool = False) -> dict:
     finally:
         conn.close()
     return data
+
+
+def fetch_build_any_age(db_path: str, build_id: str) -> dict:
+    """Para VER una build: sirve lo guardado aunque sea viejo (no vuelve a consultar el sitio); solo lo pide si nunca se bajó."""
+    c = cached_build(db_path, build_id, max_age=float("inf"))
+    return c if c is not None else fetch_build(db_path, build_id)
 
 
 def fetch_builds(db_path: str, ids: List[str], force: bool = False) -> Tuple[Dict[str, dict], List[str]]:
@@ -275,3 +284,94 @@ def apply_update(db_path: str, composition_id: int, defs: List[dict], now_iso: s
             conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (now_iso, composition_id))
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------- ver las builds (sin volver a consultar el sitio)
+SLOT_LABELS = [("mainHand", "⚔️ Arma"), ("offHand", "🛡️ Mano secundaria"), ("head", "🪖 Cabeza"), ("chest", "🥋 Pecho"), ("shoes", "👢 Botas"),
+               ("cape", "🧣 Capa"), ("mount", "🐎 Montura"), ("food", "🍖 Comida"), ("potion", "🧪 Poción")]
+PLAYSTYLE_ES = {"dtank": "Tank", "tank": "Tank", "healer": "Healer", "dps": "DPS", "support": "Soporte"}
+
+
+def save_parsed(db_path: str, composition_id: int, parsed: dict) -> None:
+    conn = connect(db_path)
+    try:
+        conn.execute("INSERT INTO compoweb_parsed(composition_id,json,fetched_ts) VALUES (?,?,?) "
+                     "ON CONFLICT(composition_id) DO UPDATE SET json=excluded.json, fetched_ts=excluded.fetched_ts",
+                     (composition_id, json.dumps(parsed), time.time()))
+    finally:
+        conn.close()
+
+
+def load_parsed(db_path: str, composition_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT json FROM compoweb_parsed WHERE composition_id=?", (composition_id,)).fetchone()
+        return json.loads(r["json"]) if r else None
+    finally:
+        conn.close()
+
+
+def build_usage(parsed: dict) -> Dict[str, List[str]]:
+    """{id de build: ['P1-1', 'P1-2', ...]} en el orden de la compo."""
+    out: Dict[str, List[str]] = {}
+    for pn, party in enumerate(parsed.get("parties", []), start=1):
+        for pos, slot in enumerate(party.get("slots", []), start=1):
+            for bid in slot or []:
+                out.setdefault(bid, []).append(f"P{pn}-{pos}")
+    return out
+
+
+def build_list(parsed: dict, weapon_name=None) -> List[dict]:
+    """Builds distintas de la compo: [{id, name, playstyle, weapon, positions}] (sin la plaza «Fill — Battlemount»)."""
+    usage = build_usage(parsed)
+    weapons = parsed.get("weapons", {})
+    out = []
+    for bid, meta in parsed.get("builds", {}).items():
+        if bid == FILL_BATTLEMOUNT_ID or bid not in usage:
+            continue
+        w = weapons.get(bid, "")
+        out.append({"id": bid, "name": meta.get("name") or "Build", "playstyle": meta.get("playstyle") or "",
+                    "weapon": (weapon_name(w) if weapon_name and w else None) or w, "positions": usage[bid]})
+    out.sort(key=lambda b: (b["positions"][0].split("-")[0], int(b["positions"][0].split("-")[1])))
+    return out
+
+
+def item_type(it: dict) -> str:
+    """itemId de AlbionZvZ -> id de ítem de Albion para el render (T8_MAIN_MACE, T7_MEAL_X@2)."""
+    iid = it.get("itemId") or ""
+    tier = (it.get("tier") or "").upper()
+    m = re.match(r"^(.*)__T(\d)$", iid)
+    if m:
+        iid, tier = m.group(1), f"T{m.group(2)}"
+    return f"{tier or 'T8'}_{iid}" + (f"@{it['enchantment']}" if it.get("enchantment") else "")
+
+
+def build_detail_lines(build: dict) -> List[Tuple[str, str]]:
+    """[(etiqueta, texto)] de cada ítem de la build, con sus habilidades."""
+    b = (build or {}).get("build") or build or {}
+    draft = b.get("draft") or b
+    out = []
+    for key, label in SLOT_LABELS:
+        it = draft.get(key)
+        if not it:
+            continue
+        tier = (it.get("tier") or "").upper()
+        text = (f"{tier}" + (f".{it['enchantment']}" if it.get("enchantment") else "") + " " if tier else "") + (it.get("itemName") or it.get("itemId") or "?")
+        abil = []
+        for a in it.get("abilities") or []:
+            name = a.get("abilityName") or ""
+            if not name or name == a.get("abilityId"):
+                name = re.sub(r"^PASSIVE_", "", a.get("abilityId") or "").replace("_", " ").title()
+            slot = str(a.get("slot") or "")
+            abil.append(f"{slot[:1].upper() + slot[1:] + ': ' if slot else ''}{name}")
+        if abil:
+            text += "\n" + " · ".join(abil)
+        out.append((label, text))
+    return out
+
+
+def build_summary(build: dict) -> Tuple[str, str, str]:
+    """(nombre, playstyle, descripción) de una build."""
+    b = (build or {}).get("build") or build or {}
+    draft = b.get("draft") or b
+    return draft.get("name") or "Build", (draft.get("playstyle") or "").lower(), draft.get("description") or ""
