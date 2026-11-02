@@ -3247,6 +3247,9 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "stats_channel_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "stats_message_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "stats_thread_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "combatlog_channel_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "combatlog_message_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "combatlog_thread_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "stats_state", "INTEGER")        # NULL = sin crear; -1 = creándose; 1 = creado
         # Cada posición pide exactamente UN rol de juego: si tenía varios queda el primero (las que no tienen ninguno se marcan en /compo ver).
         for row in conn.execute("SELECT id, role_ids_json FROM cta_slots").fetchall():
@@ -3897,9 +3900,6 @@ async def cta_close_run(run_id: int, reason="timeout"):
     task2 = asyncio.create_task(cta_create_combatlog_task(run))
     cta_role_tasks.add(task2)
     task2.add_done_callback(cta_role_tasks.discard)
-    task3 = asyncio.create_task(cta_create_split_task(run))
-    cta_role_tasks.add(task3)
-    task3.add_done_callback(cta_role_tasks.discard)
     task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
     cta_role_tasks.add(task4)
     task4.add_done_callback(cta_role_tasks.discard)
@@ -3919,18 +3919,76 @@ async def cta_create_split_task(run: dict):
         print(f"CTA #{run['id']}: no pude crear la tarea del split: {exc!r}")
 
 
+COMBATLOG_CHANNEL_ID = int(os.getenv("COMBATLOG_CHANNEL_ID", "1562975589756043364"))
+COMBATLOG_LINK_RE = re.compile(r"https?://\S+")
+
+
+def cta_combatlog_has_log(message: discord.Message) -> bool:
+    """Un combatlog enviado = un archivo adjunto o un link."""
+    return bool(message.attachments) or bool(COMBATLOG_LINK_RE.search(message.content or ""))
+
+
+async def cta_create_combatlog_panel(run: dict) -> Optional[str]:
+    """Panel + hilo donde se envían los combatlog de la CTA. Devuelve el link del panel (None si no se pudo)."""
+    run_id = int(run["id"])
+    guild = bot.get_guild(int(run["guild_id"]))
+    if guild is None:
+        return None
+    ch = guild.get_channel(COMBATLOG_CHANNEL_ID)
+    if ch is None:
+        try:
+            ch = await bot.fetch_channel(COMBATLOG_CHANNEL_ID)
+        except Exception:
+            print(f"CTA #{run_id}: no encuentro el canal de combatlog ({COMBATLOG_CHANNEL_ID}).")
+            return None
+    title = cta_run_title(run)
+    cta_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}"
+    emb = discord.Embed(title=f"🧾 Combatlog — {title}", color=discord.Color(0xE67E22),
+                        description="Activá el combatlog en el juego y **enviá el archivo (o el link) en el hilo de este mensaje**.\n"
+                                    "Con que se suba uno, la tarea del Staff se da por hecha.")
+    emb.add_field(name="🔗 CTA", value=f"[Hilo de la CTA]({cta_url})", inline=False)
+    emb.set_footer(text=f"CTA #{run_id}")
+    try:
+        msg = await ch.send(embed=emb, allowed_mentions=CTA_NO_PINGS)
+        thread = await msg.create_thread(name=f"Combatlog {title}"[:100], auto_archive_duration=10080)
+        await thread.send("📎 Enviá acá el combatlog (archivo o link). Con el primero que llegue, la tarea queda terminada.", allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude crear el panel de combatlog: {exc!r}")
+        return None
+    db_execute("UPDATE cta_runs SET combatlog_channel_id=?, combatlog_message_id=?, combatlog_thread_id=? WHERE id=?",
+               (ch.id, msg.id, thread.id, run_id))
+    return f"https://discord.com/channels/{run['guild_id']}/{thread.id}"
+
+
 async def cta_create_combatlog_task(run: dict):
-    """Al terminar la inscripción: tarea para el Staff (con mención) de activar el combatlog, para que no sea free loot."""
+    """Al terminar la inscripción: panel + hilo para enviar el combatlog y tarea para el Staff (con mención) de activarlo y enviarlo."""
     cog = bot.get_cog("EncargosCog")
     if cog is None:
         print(f"CTA #{run['id']}: no hay módulo de encargos, no se creó la tarea del combatlog.")
         return
-    link = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}" + (f"/{run['message_id']}" if not run.get("thread_id") and run.get("message_id") else "")
+    link = await cta_create_combatlog_panel(run) or (
+        f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}" + (f"/{run['message_id']}" if not run.get("thread_id") and run.get("message_id") else ""))
     try:
-        await cog.create(text=f"Activar el combatlog de {cta_run_title(run)}", created_by=int(run["created_by"]),
+        await cog.create(text=f"Activar y enviar el combatlog de {cta_run_title(run)} (hilo del panel de combatlog)", created_by=int(run["created_by"]),
                          source=f"cta:{run['id']}:combatlog", link=link)
     except Exception as exc:
         print(f"CTA #{run['id']}: no pude crear la tarea del combatlog: {exc!r}")
+
+
+async def cta_handle_combatlog_message(message: discord.Message) -> bool:
+    """Mensaje en el hilo de combatlog de una CTA: el primer archivo/link da por hecha la tarea. True si el hilo es de combatlog."""
+    rows = db_fetchall("SELECT id FROM cta_runs WHERE combatlog_thread_id=?", (message.channel.id,))
+    if not rows:
+        return False
+    if cta_combatlog_has_log(message):
+        cog = bot.get_cog("EncargosCog")
+        if cog is not None:
+            try:
+                if await cog.complete_by_source(f"cta:{int(rows[0]['id'])}:combatlog", message.author.id):
+                    await message.add_reaction("✅")
+            except Exception as exc:
+                print(f"CTA #{rows[0]['id']}: no pude terminar la tarea del combatlog: {exc!r}")
+    return True
 
 
 cta_role_tasks: set = set()
@@ -4119,6 +4177,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
             await thread.send(f"🏁 <@{actor_id}> cerró la CTA. Ya no se aceptan más anotados.", allowed_mentions=CTA_NO_PINGS)
         except Exception:
             pass
+    await cta_create_split_task(run)                      # tarea del Staff: repartir el split (recién ahora que la CTA terminó)
     cog = bot.get_cog("EncargosCog")
     if cog is not None:                                   # tarea para el staff: revisar el combat log de esta CTA
         try:
@@ -6075,7 +6134,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 # (sección, [(comando, quién puede usarlo, explicación breve)])
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
-        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo de transparencia y se crea la tarea del combatlog."),
+        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo de transparencia y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
         ("/cta_cancelar_programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
@@ -6357,6 +6416,8 @@ async def on_message(message: discord.Message):
     # ✅ CTA: inscripción escribiendo el número de la posición en el hilo de la CTA
     if isinstance(message.channel, discord.Thread):
         try:
+            if await cta_handle_combatlog_message(message):
+                return
             if await cta_handle_thread_message(message):
                 return
         except Exception as exc:
