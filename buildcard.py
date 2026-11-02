@@ -10,6 +10,36 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 RENDER = "https://render.albiononline.com/v1"
 UA = {"User-Agent": "SmoggGuildBot/1.0"}
 ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_iconos")
+_dir_ok = None
+_dir_lock = __import__("threading").Lock()
+
+
+def cache_dir() -> str:
+    """Carpeta donde guardar íconos e imágenes: la del bot si se puede escribir; si no (p. ej. el servicio corre sin permiso en /opt), la carpeta temporal.
+    También se puede forzar con BUILDCARD_CACHE. Si ninguna sirve, devuelve la primera igual: los íconos se bajan en cada imagen pero nada falla."""
+    global _dir_ok
+    with _dir_lock:
+        return _cache_dir_locked()
+
+
+def _cache_dir_locked() -> str:
+    global _dir_ok
+    if _dir_ok is not None and os.path.isdir(_dir_ok):
+        return _dir_ok
+    import tempfile
+    cands = [os.getenv("BUILDCARD_CACHE", ""), ICON_DIR, os.path.join(tempfile.gettempdir(), "dies_irae_iconos")]
+    for c in [c for c in cands if c]:
+        try:
+            os.makedirs(c, exist_ok=True)
+            probe = os.path.join(c, ".probe")
+            with open(probe, "w") as f:
+                f.write("1")
+            os.remove(probe)
+            _dir_ok = c
+            return c
+        except Exception:
+            continue
+    return ICON_DIR                      # ninguna sirve: no se recuerda (se vuelve a probar) y nada se guarda
 
 W, M = 1280, 36
 BG, PANEL, BORDER = (13, 13, 16), (24, 25, 30), (52, 54, 64)
@@ -94,11 +124,7 @@ def _variants(item_type: str):
 
 
 def item_icon(item_type: str):
-    try:
-        os.makedirs(ICON_DIR, exist_ok=True)
-    except Exception:
-        pass
-    path = os.path.join(ICON_DIR, item_type.replace("@", "_e") + ".png")
+    path = os.path.join(cache_dir(), item_type.replace("@", "_e") + ".png")
     if os.path.exists(path):
         return path
     for v in _variants(item_type):
@@ -111,8 +137,7 @@ def item_icon(item_type: str):
 def spell_icon(spell_id: str):
     if not spell_id:
         return None
-    os.makedirs(ICON_DIR, exist_ok=True)
-    path = os.path.join(ICON_DIR, f"spell_{spell_id}.png")
+    path = os.path.join(cache_dir(), f"spell_{spell_id}.png")
     if os.path.exists(path):
         return path
     data = _download(f"{RENDER}/spell/{spell_id}.png?size=64")
@@ -206,7 +231,7 @@ def render(data: dict, title: str = "") -> bytes:
     import hashlib
     import json
     key = hashlib.sha1(json.dumps([data, title], sort_keys=True, default=str).encode()).hexdigest()[:20]
-    path = os.path.join(ICON_DIR, f"card_{key}.png")
+    path = os.path.join(cache_dir(), f"card_{key}.png")
     try:
         with open(path, "rb") as f:
             return f.read()
@@ -214,7 +239,6 @@ def render(data: dict, title: str = "") -> bytes:
         pass
     png = _render(data, title)
     try:
-        os.makedirs(ICON_DIR, exist_ok=True)
         with open(path, "wb") as f:
             f.write(png)
     except Exception:
@@ -226,6 +250,7 @@ def _render(data: dict, title: str = "") -> bytes:
     """PNG de la build. `title` = nombre tal cual lo escribió quien armó la compo (si no, el de la propia build)."""
     b = data.get("build") or data
     draft = b.get("draft") or b
+    cache_dir()                           # se decide la carpeta antes de bajar íconos en paralelo
     prefetch(draft)
     name = draft.get("name") or title or "Build"
     img = Image.new("RGBA", (W, 3000), BG + (255,))
