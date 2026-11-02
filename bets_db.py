@@ -445,7 +445,7 @@ def resolve_bet(db_path: str, bet_id: int, actor_id: int, option_idx: int) -> Re
             if bet.status == "cancelled":
                 return Result(False, "state", "Esa apuesta fue cancelada.")
             if bet.status == "open":
-                return Result(False, "state", "Primero tenés que cerrar la apuesta (`/cerrarapuesta`).")
+                return Result(False, "state", "Primero tenés que cerrar la apuesta (`/apuesta cerrar`).")
             if not (0 <= option_idx < len(bet.options)):
                 return Result(False, "option", "Esa opción no existe.")
 
