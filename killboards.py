@@ -4,7 +4,7 @@ import os
 import re
 import time
 import traceback
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
@@ -14,6 +14,7 @@ import ctautil as cu
 import ctavoice as cv
 import killboard_db as kb
 import registration_db as rdb
+import splits_db as sdb
 from dbutil import connect
 from guildshop import can_manage
 
@@ -330,6 +331,7 @@ class KillboardCog(commands.Cog):
 
     async def after_cta_load(self, interaction: discord.Interaction, cta_id: int):
         await self.refresh_stats_panel(cta_id)
+        await self.sync_split_suggestions(cta_id)
         enc = self.bot.get_cog("EncargosCog")
         if enc is not None:
             try:
@@ -374,6 +376,32 @@ class KillboardCog(commands.Cog):
         in_compo = [r.char_name for r in regs if int(r.discord_id) in signed]
         return await self.run(kb.recompute_skips, cta_id, in_compo)
 
+    async def sync_split_suggestions(self, cta_id: int) -> None:
+        """Cruza conectados y killboard con la lista del split de la CTA y deja las preguntas en el hilo del split:
+        · anotados (con personaje registrado) que no estaban conectados ni salen en el killboard → ¿sacarlos?
+        · gente del killboard que no estaba en la lista → ¿sumarla?"""
+        splits_cog = self.bot.get_cog("SplitsCog")
+        if splits_cog is None:
+            return
+        try:
+            s = await self.run(sdb.find_by_cta, cta_id)
+            if s is None or s.status != "open":
+                return
+            regs = await self.run(rdb.all_registrations)
+            chars: Dict[int, set] = {}
+            for r in regs:
+                chars.setdefault(int(r.discord_id), set()).add(kb.norm(r.char_name))
+            name2id = {kb.norm(r.char_name): int(r.discord_id) for r in regs}
+            online = await self.run(kb.online_of_cta, cta_id)
+            kb_names = await self.run(kb.names_in_cta, cta_id)
+            kb_ids = {name2id[n] for n in kb_names if n in name2id}
+            remove = []
+            if online:
+                remove = [u for u in s.people if u in chars and not (chars[u] & set(online)) and u not in kb_ids]
+            await splits_cog.apply_suggestions(cta_id, remove, sorted(kb_ids - set(s.people)))
+        except Exception:
+            traceback.print_exc()
+
     async def process_online(self, cta_id: int, raw: bytes, actor_id: int) -> str:
         """Procesa el bloc de notas con los conectados. Devuelve el texto para responder."""
         names, total = kb.parse_online_file(raw)
@@ -383,6 +411,7 @@ class KillboardCog(commands.Cog):
             return f"⚠️ El archivo tiene {total} jugadores pero ninguno figura como **Online**. No se guardó."
         await self.run(kb.save_online, cta_id, names)
         await self.refresh_stats_panel(cta_id)
+        await self.sync_split_suggestions(cta_id)
         enc = self.bot.get_cog("EncargosCog")
         if enc is not None:
             try:

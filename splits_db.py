@@ -82,6 +82,17 @@ CREATE TABLE IF NOT EXISTS split_requests (            -- anotados después del 
     PRIMARY KEY (split_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_split_requests_msg ON split_requests(message_id);
+CREATE TABLE IF NOT EXISTS split_suggestions (          -- el bot sugiere sacar (anotado sin conectarse) o sumar (estuvo en el killboard sin anotarse)
+    split_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT NOT NULL,                           -- remove | add
+    status     TEXT NOT NULL DEFAULT 'pending',         -- pending | accepted | rejected | void
+    message_id INTEGER,
+    created_at TEXT NOT NULL,
+    decided_by INTEGER,
+    PRIMARY KEY (split_id, user_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_split_suggestions_msg ON split_suggestions(message_id);
 CREATE TABLE IF NOT EXISTS split_people (
     split_id INTEGER NOT NULL,
     user_id  INTEGER NOT NULL,
@@ -722,6 +733,104 @@ def pending_requests(db_path: str, split_id: int) -> List[int]:
     conn = connect(db_path)
     try:
         return [int(r["user_id"]) for r in conn.execute("SELECT user_id FROM split_requests WHERE split_id=? AND status='pending' ORDER BY created_at", (split_id,))]
+    finally:
+        conn.close()
+
+
+# ---------- sugerencias del bot (conectados / killboard) ----------
+@dataclass
+class Suggestion:
+    split_id: int
+    user_id: int
+    kind: str
+    status: str
+    message_id: Optional[int]
+
+
+def _sug(r) -> Optional[Suggestion]:
+    return Suggestion(int(r["split_id"]), int(r["user_id"]), r["kind"], r["status"], r["message_id"]) if r else None
+
+
+def suggestions_of(db_path: str, split_id: int, kind: str) -> Dict[int, Suggestion]:
+    conn = connect(db_path)
+    try:
+        return {int(r["user_id"]): _sug(r) for r in conn.execute("SELECT * FROM split_suggestions WHERE split_id=? AND kind=?", (split_id, kind))}
+    finally:
+        conn.close()
+
+
+def add_suggestion(db_path: str, split_id: int, user_id: int, kind: str) -> bool:
+    """Registra una sugerencia pendiente. False si ya había una (en cualquier estado): no se vuelve a preguntar."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("INSERT OR IGNORE INTO split_suggestions(split_id, user_id, kind, status, created_at) VALUES (?,?,?, 'pending', ?)",
+                                (split_id, user_id, kind, utcnow_iso())).rowcount > 0
+    finally:
+        conn.close()
+
+
+def set_suggestion_message(db_path: str, split_id: int, user_id: int, kind: str, message_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE split_suggestions SET message_id=? WHERE split_id=? AND user_id=? AND kind=?", (message_id, split_id, user_id, kind))
+    finally:
+        conn.close()
+
+
+def get_suggestion_by_message(db_path: str, message_id: int) -> Optional[Suggestion]:
+    conn = connect(db_path)
+    try:
+        return _sug(conn.execute("SELECT * FROM split_suggestions WHERE message_id=?", (message_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def void_suggestion(db_path: str, split_id: int, user_id: int, kind: str) -> Optional[int]:
+    """Una sugerencia pendiente que ya no aplica. Devuelve el id de su mensaje (para limpiarlo) o None si no estaba pendiente."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT message_id FROM split_suggestions WHERE split_id=? AND user_id=? AND kind=? AND status='pending'",
+                             (split_id, user_id, kind)).fetchone()
+            if r is None:
+                return None
+            conn.execute("UPDATE split_suggestions SET status='void' WHERE split_id=? AND user_id=? AND kind=?", (split_id, user_id, kind))
+            return int(r["message_id"] or 0)
+    finally:
+        conn.close()
+
+
+def decide_suggestion(db_path: str, split_id: int, user_id: int, kind: str, accept: bool, actor_id: int) -> Tuple[str, List[int]]:
+    """Aplica la decisión. Devuelve (estado, looters_quitados): 'accepted' | 'rejected' | 'decided' (ya estaba decidida o no aplica) |
+    'closed' (el split no está abierto) | 'missing'. Aceptar un 'remove' saca a la persona de la lista; un 'add' la suma."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT status FROM split_suggestions WHERE split_id=? AND user_id=? AND kind=?", (split_id, user_id, kind)).fetchone()
+            if r is None:
+                return "missing", []
+            if r["status"] != "pending":
+                return "decided", []
+            st = conn.execute("SELECT status FROM splits WHERE id=?", (split_id,)).fetchone()
+            if st is None or st["status"] != "open":
+                return "closed", []
+            lost: List[int] = []
+            if accept and kind == "remove":
+                conn.execute("DELETE FROM split_people WHERE split_id=? AND user_id=?", (split_id, user_id))
+                conn.execute("DELETE FROM split_half WHERE split_id=? AND user_id=?", (split_id, user_id))
+                if conn.execute("DELETE FROM split_looters WHERE split_id=? AND user_id=?", (split_id, user_id)).rowcount:
+                    lost.append(user_id)
+            elif accept and kind == "add":
+                if not conn.execute("SELECT 1 FROM split_people WHERE split_id=? AND user_id=?", (split_id, user_id)).fetchone():
+                    n = conn.execute("SELECT COUNT(*) AS n FROM split_people WHERE split_id=?", (split_id,)).fetchone()["n"]
+                    if n >= MAX_PEOPLE:
+                        raise SplitError(f"La lista ya tiene el máximo de {MAX_PEOPLE} personas.")
+                    conn.execute("INSERT INTO split_people(split_id, user_id, pos) VALUES (?,?,?)", (split_id, user_id, _next_pos(conn, "split_people", split_id)))
+            conn.execute("UPDATE split_suggestions SET status=?, decided_by=? WHERE split_id=? AND user_id=? AND kind=?",
+                         ("accepted" if accept else "rejected", actor_id, split_id, user_id, kind))
+            return ("accepted" if accept else "rejected"), lost
     finally:
         conn.close()
 

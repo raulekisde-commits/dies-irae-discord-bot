@@ -633,6 +633,74 @@ class SplitDiscordTests(DiscordBase):
         self.assertEqual(run(self.cog.register_late_request(cta_id=7, user_id=self.robot.id, slot_no=1)), "closed")
 
 
+    def _split_cta7(self, users):
+        split, _m, _e = run(self.cog.create_from_cta(cta_id=7, title="CTA #7", tab="T", city="C", user_ids=users, creator_id=self.admin.id))
+        thread = self.panelch.sent[0].thread
+        self.bot.channels[thread.id] = thread
+        return split, thread
+
+    def test_sugerencia_sacar_anotado_que_no_se_conecto(self):
+        split, thread = self._split_cta7([self.alice.id, self.bob.id])
+        self.assertEqual(run(self.cog.apply_suggestions(7, [self.bob.id, self.outsider.id], [])), (1, 0))   # outsider no está en la lista: se ignora
+        qs = [m for m in thread.sent if m.view is not None and "no estaba conectado" in m.content]
+        self.assertEqual(len(qs), 1)
+        self.assertEqual(run(self.cog.apply_suggestions(7, [self.bob.id], [])), (0, 0))                     # no se vuelve a preguntar
+        i = self.inter(self.alice, thread, message=qs[0])                                                   # sin permiso
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertIn("Solo el Council", i.text)
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.alice.id, self.bob.id])
+        i = self.inter(self.council, thread, message=qs[0])
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.alice.id])
+        self.assertIn("Sacado", i.response.edits[0]["content"])
+        i = self.inter(self.council, thread, message=qs[0])                                                 # decidir dos veces
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertIn("ya estaba decidido", i.text)
+
+    def test_sugerencia_sumar_del_killboard_y_dejarlo(self):
+        split, thread = self._split_cta7([self.alice.id])
+        self.assertEqual(run(self.cog.apply_suggestions(7, [], [self.bob.id, self.alice.id])), (0, 1))      # alice ya está
+        qs = [m for m in thread.sent if m.view is not None and "no estaba anotado" in m.content]
+        self.assertEqual(len(qs), 1)
+        i = self.inter(self.council, thread, message=qs[0])
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.alice.id, self.bob.id])
+        self.assertIn("Sumado", i.response.edits[0]["content"])
+        split2, thread2 = split, thread
+        self.assertEqual(run(self.cog.apply_suggestions(7, [], [self.outsider.id])), (0, 1))
+        q2 = [m for m in thread2.sent if m.view is not None and "no estaba anotado" in m.content][-1]
+        i = self.inter(self.council, thread2, message=q2)
+        run(self.cog.on_suggestion_decision(i, False))
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.alice.id, self.bob.id])
+        self.assertIn("se queda", i.response.edits[0]["content"].lower())
+        self.assertEqual(run(self.cog.apply_suggestions(7, [], [self.outsider.id])), (0, 0))                # dijeron que no: no insiste
+
+    def test_sugerencia_se_anula_si_ya_no_aplica_y_no_hay_con_split_cerrado(self):
+        split, thread = self._split_cta7([self.alice.id, self.bob.id])
+        run(self.cog.apply_suggestions(7, [self.bob.id], []))
+        q = [m for m in thread.sent if m.view is not None and "no estaba conectado" in m.content][0]
+        run(self.cog.apply_suggestions(7, [], []))                                                          # cargaron algo que lo corrige
+        self.assertIn("Ya no aplica", q.content)
+        i = self.inter(self.council, thread, message=q)
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertIn("ya estaba decidido", i.text)
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.alice.id, self.bob.id])
+        sdb.cancel_split(self.db, split.id, 1)
+        self.assertEqual(run(self.cog.apply_suggestions(7, [self.alice.id], [self.outsider.id])), (0, 0))
+        self.assertEqual(run(self.cog.apply_suggestions(99, [self.alice.id], [])), (0, 0))                  # esa CTA no tiene split
+
+    def test_sugerencia_sacar_looter_lo_saca_tambien_de_looters(self):
+        split, thread = self._split_cta7([self.alice.id, self.bob.id])
+        sdb.add_looters(self.db, split.id, [self.bob.id])
+        run(self.cog.apply_suggestions(7, [self.bob.id], []))
+        q = [m for m in thread.sent if m.view is not None and "no estaba conectado" in m.content][0]
+        i = self.inter(self.council, thread, message=q)
+        run(self.cog.on_suggestion_decision(i, True))
+        s = sdb.get_split(self.db, split.id)
+        self.assertEqual(s.people, [self.alice.id])
+        self.assertNotIn(self.bob.id, [getattr(l, 'user_id', l) for l in s.looters])
+        self.assertIn("looter", i.response.edits[0]["content"])
+
     def create_ava(self, user=None, **kw):
         i = self.inter(user or self.council)
         args = dict(titulo="Ava", tab=None, city=None, rol=None, total=None, reparacion=None, bolsitas=None, scouts=None, pago_scout=None)

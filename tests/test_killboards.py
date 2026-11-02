@@ -97,6 +97,51 @@ class LoadTests(KBBase):
         self.assertIn("<@103>", i.text)                                                          # Bob: en killboard, no estuvo en voz
 
 
+class SplitSuggestionsTests(KBBase):
+    """Cruce conectados / killboard con la lista del split: lo que se le pregunta al organizador."""
+
+    def setUp(self):
+        super().setUp()
+        import splits_db as sdb
+        sdb.init_schema(self.db)
+        self.sdb = sdb
+        self.sid = sdb.create_split(self.db, guild_id=1, creator_id=9, title="CTA", people=[101, 102, 103, 105], source_cta_id=5)
+        rdb.admin_link(self.db, 101, "Ana", 1); rdb.admin_link(self.db, 102, "Zoe", 1)
+        rdb.admin_link(self.db, 103, "Bob", 1); rdb.admin_link(self.db, 104, "Gus", 1)       # 105: sin personaje registrado
+        self.got = []
+
+        class Fake:
+            async def apply_suggestions(s_, cta_id, remove, add):
+                self.got.append((cta_id, sorted(remove), sorted(add)))
+        self.bot.cogs["SplitsCog"] = Fake()
+
+    def test_anotados_sin_conectarse_y_killboard_sin_anotarse(self):
+        kb.save_online(self.db, 5, ["Ana"])                                    # Zoe y Bob no estaban conectados
+        run(self.cog.sync_split_suggestions(5))
+        self.assertEqual(self.got[-1], (5, [102, 103], []))                    # 105 no tiene personaje: no se puede comparar
+        c = connect(self.db)
+        c.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES ('b1', 5, 1, 'x')")
+        for n in ("bob", "gus"):
+            c.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES ('b1', ?, ?)", (n, n.title()))
+        c.close()
+        run(self.cog.sync_split_suggestions(5))
+        self.assertEqual(self.got[-1], (5, [102], [104]))                      # Bob estuvo en el killboard: no se saca; Gus no estaba anotado
+
+    def test_sin_lista_de_conectados_no_hay_sugerencias_de_sacar(self):
+        c = connect(self.db)
+        c.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES ('b1', 5, 1, 'x')")
+        c.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES ('b1', 'gus', 'Gus')")
+        c.close()
+        run(self.cog.sync_split_suggestions(5))
+        self.assertEqual(self.got[-1], (5, [], [104]))
+
+    def test_cta_sin_split_no_hace_nada(self):
+        c = connect(self.db); c.execute("UPDATE splits SET source_cta_id=NULL"); c.close()
+        kb.save_online(self.db, 5, ["Ana"])
+        run(self.cog.sync_split_suggestions(5))
+        self.assertEqual(self.got, [])
+
+
 class OpinologoTests(KBBase):
     def test_opinologo_can_load_in_cta_thread_but_not_loose_killboards(self):
         r_opi = discord.Role(kc.OPINOLOGO_ROLE_ID, "Opinólogo", self.guild)
