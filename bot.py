@@ -151,6 +151,13 @@ except Exception:
     async def setup_roulette(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar roulette.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from nodesync import setup_nodesync
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_nodesync(*_a, _imp_err=_imp_err, **_k):
+        raise RuntimeError('No se pudo importar nodesync.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from diagnostico import setup_diagnostico
 except Exception:
     import traceback as _tb
@@ -303,6 +310,10 @@ init_database()
 
 # ================== CONFIG ==================
 GUILD_ID = 1257878770841288724
+NODES_SOURCE_GUILD_ID = 1086080340587712584      # servidor del otro bot (solo se LEE ese canal; no se escucha nada más de ese servidor)
+NODES_SOURCE_CHANNEL_ID = 1546326872097427516    # canal donde el otro bot mantiene su panel de timers
+NODES_SOURCE_BOT_ID = 1546325145503928431
+NODES_SOURCE_OWNER_ID = 542775576461705218       # los timers copiados quedan a nombre de la persona dueña de ese bot
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
 
@@ -495,6 +506,13 @@ async def _setup_registration(bot, db_path, guild_id):
 
 
 class MyBot(commands.Bot):
+    async def _setup_nodesync(self):
+        """Copia los timers de nodos/vortex del panel de otro bot (en otro servidor) al panel de este servidor."""
+        await setup_nodesync(
+            self, DB_PATH, source_channel_id=NODES_SOURCE_CHANNEL_ID, source_bot_id=NODES_SOURCE_BOT_ID, owner_id=NODES_SOURCE_OWNER_ID,
+            target_guild_id=GUILD_ID, find_entries=timer_find_entries, add_entry=timer_add_entry, category_of=timer_category,
+            refresh=timer_panel_refresh)
+
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
         # Wuju Coins: se carga ANTES del sync para que sus comandos slash se registren
@@ -524,6 +542,7 @@ class MyBot(commands.Bot):
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
             await _safe_setup("registration", _setup_registration, self, DB_PATH, GUILD_ID)
             await _safe_setup("diagnostico", setup_diagnostico, self, DB_PATH, GUILD_ID)
+            await _safe_setup("nodesync", self._setup_nodesync)
             self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
