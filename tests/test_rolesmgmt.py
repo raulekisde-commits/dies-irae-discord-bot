@@ -79,10 +79,15 @@ class RolesTests(DiscordBase):
         run(self.cog.rol_historial.callback(self.cog, i, None))
         self.assertIn("No tenés permiso", i.text)
 
+    def test_es_un_solo_comando_raiz(self):
+        # el servidor admite 100 comandos: /rol cuenta como UNO (dar, quitar e historial son subcomandos)
+        self.assertEqual(self.cog.rol.name, "rol")
+        self.assertEqual(sorted(self.cog.rol.commands), ["dar", "historial", "quitar"])
+
     def test_info(self):
         self.assertIn("roles", [c.value for c in iv.InvitadosCog.INFO_CHOICES])
         self.assertIn("queda registrado", iv.InvitadosCog.info_embed("roles", False).description)
-        self.assertIn("/rol-dar", iv.InvitadosCog.info_embed("roles", True).description)
+        self.assertIn("/rol dar", iv.InvitadosCog.info_embed("roles", True).description)
 
 
 if __name__ == "__main__":
