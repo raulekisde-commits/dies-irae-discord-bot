@@ -23,6 +23,14 @@ class SinPrefijoTests(unittest.TestCase):
         code = "\n".join(l for l in ast.get_source_segment(src, fn).splitlines() if not l.strip().startswith("#"))
         self.assertNotIn("process_commands", code)
 
+    def test_solo_bal_sigue_con_prefijo(self):
+        src = source("bot.py")
+        self.assertIn('PREFIX_COMMANDS_ON = {"bal"}', src)
+        fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_message")
+        code = ast.get_source_segment(src, fn)
+        self.assertIn("ctx.command.name in PREFIX_COMMANDS_ON", code)
+        self.assertIn("bot.invoke(ctx)", code)
+
     def test_los_dos_comandos_que_solo_existian_con_prefijo_tienen_slash(self):
         bot_src = source("bot.py")
         self.assertIn('name="addroll-list", description=', bot_src)
