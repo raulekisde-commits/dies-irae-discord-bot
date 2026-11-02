@@ -340,11 +340,6 @@ class GamesCog(commands.Cog):
         emb.set_footer(text=f"Mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas terminadas con rival para entrar al top.")
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="topwinrate", description="Ranking de winrate en dados y coinflip de todo el servidor")
-    @app_commands.guild_only()
-    async def topwinrate_slash(self, interaction: discord.Interaction):
-        await self.topwinrate.callback(self, SlashContext(interaction))
-
     @commands.command(name="totalapostado")
     @guard
     async def totalapostado(self, ctx: commands.Context):
