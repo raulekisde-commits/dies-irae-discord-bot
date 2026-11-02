@@ -136,6 +136,8 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        if "extra_role_ids" not in {r["name"] for r in conn.execute("PRAGMA table_info(recruit_pending)")}:
+            conn.execute("ALTER TABLE recruit_pending ADD COLUMN extra_role_ids TEXT")
     finally:
         conn.close()
 
@@ -480,19 +482,25 @@ class PendingRecruit:
     role_name: str
     recruiter_id: Optional[int]
     created_at: str
+    extra_role_ids: tuple = ()
 
 
 def _pend(r) -> PendingRecruit:
-    return PendingRecruit(int(r["discord_id"]), r["char_name"], r["char_id"], int(r["role_id"]), r["role_name"], r["recruiter_id"], r["created_at"])
+    try:
+        extra = tuple(int(x) for x in json.loads(r["extra_role_ids"] or "[]"))
+    except Exception:
+        extra = ()
+    return PendingRecruit(int(r["discord_id"]), r["char_name"], r["char_id"], int(r["role_id"]), r["role_name"], r["recruiter_id"], r["created_at"], extra)
 
 
 def add_pending_recruit(db_path: str, discord_id: int, char_name: str, char_id: Optional[str], role_id: int, role_name: str,
-                        recruiter_id: Optional[int]) -> None:
+                        recruiter_id: Optional[int], extra_role_ids=()) -> None:
     conn = connect(db_path)
     try:
         with _tx(conn):
-            conn.execute("INSERT OR REPLACE INTO recruit_pending(discord_id, char_name, char_id, role_id, role_name, recruiter_id, created_at) "
-                         "VALUES (?,?,?,?,?,?,?)", (discord_id, char_name, char_id, role_id, role_name, recruiter_id, utcnow_iso()))
+            conn.execute("INSERT OR REPLACE INTO recruit_pending(discord_id, char_name, char_id, role_id, role_name, recruiter_id, created_at, extra_role_ids) "
+                         "VALUES (?,?,?,?,?,?,?,?)", (discord_id, char_name, char_id, role_id, role_name, recruiter_id, utcnow_iso(),
+                                                      json.dumps([int(x) for x in extra_role_ids])))
             _audit(conn, recruiter_id, "recruit_pending", discord_id, None, f"personaje={char_name} rol={role_name}")
     finally:
         conn.close()

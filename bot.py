@@ -1549,12 +1549,13 @@ class RecruitView(discord.ui.View):
                 member = None
         return member
 
-    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str):
+    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str, extra_role_ids=()):
         member = await self._get_applicant(interaction)
         if member is None:
             return await respond_ephemeral(interaction, "❌ No encontré al postulante (se fue del servidor o su ID no es válido).")
 
         role = interaction.guild.get_role(role_id)
+        extra_roles = [r for r in (interaction.guild.get_role(int(x)) for x in extra_role_ids) if r is not None]
         member_role = interaction.guild.get_role(MIEMBRO_ROLE_ID)
         public_role = interaction.guild.get_role(PUBLIC_ROLE_ID)
 
@@ -1566,7 +1567,7 @@ class RecruitView(discord.ui.View):
         reg_cog = interaction.client.get_cog("RegistrationCog") if nick else None
         roles_pending = False
         if nick and reg_cog is not None:
-            ok, reg_text, granted_now = await reg_cog.accept_recruit(member, nick, role_id, role_name, interaction.user)
+            ok, reg_text, granted_now = await reg_cog.accept_recruit(member, nick, role_id, role_name, interaction.user, tuple(extra_role_ids))
             if not ok:
                 return await respond_ephemeral(interaction, f"❌ No se aceptó: {reg_text}")
             roles_pending = not granted_now
@@ -1581,7 +1582,7 @@ class RecruitView(discord.ui.View):
                 pass
         else:
             try:
-                await member.add_roles(member_role, role, reason=f"Aceptado como {role_name}")
+                await member.add_roles(*dict.fromkeys([member_role, role, *extra_roles]), reason=f"Aceptado como {role_name}")
                 if public_role and public_role in member.roles:
                     await member.remove_roles(public_role, reason="Aceptado: se quita rol Public")
             except discord.Forbidden:
@@ -1773,6 +1774,65 @@ def recruit_role_for_main(main_text: str) -> tuple:
     return MIEMBRO_ROLE_ID, "Miembro"
 
 
+import ctautil as _cu_recruit
+RECRUIT_CTA_ROLES = {rid: name for rid, name in _cu_recruit.PLAYED_ROLES.items() if name != "Bomb"}
+OBSERVACION_ROLE_ID = int(os.getenv("OBSERVACION_ROLE_ID", "1559680220800360519"))
+
+
+class RecruitRolesView(discord.ui.View):
+    """Paso al aceptar (efímero, solo para el reclutador): roles de CTA que se le dan + si lleva el rol Observación."""
+    def __init__(self, ticket_view, origin: discord.Interaction, default_role_id: int):
+        super().__init__(timeout=300)
+        self.ticket_view = ticket_view
+        self.origin = origin
+        self.observacion = False
+        opts = [discord.SelectOption(label=name, value=str(rid), default=(rid == default_role_id)) for rid, name in RECRUIT_CTA_ROLES.items()]
+        self.select = discord.ui.Select(placeholder="Roles de CTA a dar", min_values=0, max_values=len(opts), options=opts)
+        self.select.callback = self.picked
+        self.add_item(self.select)
+        self.chosen = [default_role_id] if default_role_id in RECRUIT_CTA_ROLES else []
+        self.obs_btn = discord.ui.Button(label="Observación: No", emoji="👁️", style=discord.ButtonStyle.secondary)
+        self.obs_btn.callback = self.toggle_obs
+        self.add_item(self.obs_btn)
+        ok = discord.ui.Button(label="Confirmar y aceptar", emoji="✅", style=discord.ButtonStyle.success)
+        ok.callback = self.confirm
+        self.add_item(ok)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.origin.user.id:
+            await interaction.response.send_message("Esto lo decide quien apretó Aceptar.", ephemeral=True)
+            return False
+        return True
+
+    async def picked(self, interaction: discord.Interaction):
+        self.chosen = [int(v) for v in self.select.values]
+        for o in self.select.options:
+            o.default = o.value in self.select.values
+        await interaction.response.edit_message(view=self)
+
+    async def toggle_obs(self, interaction: discord.Interaction):
+        self.observacion = not self.observacion
+        self.obs_btn.label = "Observación: Sí" if self.observacion else "Observación: No"
+        self.obs_btn.style = discord.ButtonStyle.primary if self.observacion else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view=self)
+
+    async def confirm(self, interaction: discord.Interaction):
+        ids = list(self.chosen)
+        names = [RECRUIT_CTA_ROLES[i] for i in ids]
+        extra = ids[1:]
+        if self.observacion:
+            extra.append(OBSERVACION_ROLE_ID)
+            names.append("Observación")
+        primary = ids[0] if ids else MIEMBRO_ROLE_ID
+        label = ", ".join(names) or "Miembro"
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        await interaction.response.edit_message(content=f"⏳ Aceptando con: **{label}**…", view=self)
+        # accept_player responde con followups sobre la interacción del botón original
+        await self.ticket_view.accept_player(self.origin, primary, label, extra)
+
+
 class RecruitTicketView(discord.ui.View):
     """Botones del ticket de reclutamiento: SOLO aceptar, rechazar o cerrar."""
     interaction_check = RecruitView.interaction_check
@@ -1786,14 +1846,15 @@ class RecruitTicketView(discord.ui.View):
 
     @discord.ui.button(label="✔ Aceptar", style=discord.ButtonStyle.success, custom_id="recruit2_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
         main = ""
         for emb in (getattr(interaction.message, "embeds", None) or []):
             for f in emb.fields:
                 if f.name == RECRUIT_MAIN_FIELD:
                     main = f.value
-        role_id, role_name = recruit_role_for_main(main)
-        await self.accept_player(interaction, role_id, role_name)
+        role_id, _name = recruit_role_for_main(main)
+        view = RecruitRolesView(self, interaction, role_id)
+        await interaction.response.send_message("🎭 **¿Qué roles de CTA le vas a dar?** Elegí uno o más y confirmá.\n"
+                                                f"👁️ Rol Observación: **No** (cambialo con el botón).", view=view, ephemeral=True)
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):

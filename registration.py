@@ -589,7 +589,7 @@ class RegistrationCog(commands.Cog):
         await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**")
 
     # ---------- reclutamiento: registro al aceptar y roles recién cuando entra a la guild ----------
-    async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter) -> tuple:
+    async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter, extra_role_ids=()) -> tuple:
         """Registra al postulante con su nick de Albion. Devuelve (ok, texto, roles_dados_ya).
         Si el personaje ya figura en la guild, se dan los roles en el momento; si no, quedan PENDIENTES hasta que aparezca en la lista."""
         look = await self.lookup_character(nick, any_guild=True)
@@ -606,9 +606,9 @@ class RegistrationCog(commands.Cog):
             return False, f"{exc}", False
         in_guild = (bool(self.required_guild) and c.guild.casefold() == self.required_guild.casefold()) or c.name.casefold() in self.roster
         await self.audit_log(f"🧾 <@{recruiter.id}> aceptó y registró a <@{member.id}> como **{discord.utils.escape_markdown(c.name)}**.")
-        if in_guild and await self.grant_recruit_roles(member, role_id, role_name, c.name, recruiter.id):
+        if in_guild and await self.grant_recruit_roles(member, role_id, role_name, c.name, recruiter.id, extra_role_ids):
             return True, f"Registrado como **{discord.utils.escape_markdown(c.name)}** y ya está en la guild: roles entregados.", True
-        await self.run(rdb.add_pending_recruit, member.id, c.name, c.char_id, role_id, role_name, recruiter.id)
+        await self.run(rdb.add_pending_recruit, member.id, c.name, c.char_id, role_id, role_name, recruiter.id, tuple(extra_role_ids))
         try:
             await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}**. Entrá a la guild en el juego con tu personaje "
                               f"**{c.name}**: apenas el bot te vea adentro, te da los roles automáticamente (puede tardar hasta unos 10 minutos).")
@@ -617,9 +617,14 @@ class RegistrationCog(commands.Cog):
         return True, (f"Registrado como **{discord.utils.escape_markdown(c.name)}**. ⏳ **Todavía no está en la guild**: los roles se le dan solos cuando "
                       "aparezca adentro (se revisa cada 10 min)."), False
 
-    async def grant_recruit_roles(self, member: discord.Member, role_id: int, role_name: str, char_name: str, recruiter_id=None) -> bool:
+    async def grant_recruit_roles(self, member: discord.Member, role_id: int, role_name: str, char_name: str, recruiter_id=None, extra_role_ids=()) -> bool:
         guild = member.guild
-        roles = [r for r in (guild.get_role(self.member_role_id), guild.get_role(role_id)) if r is not None]
+        ids = [self.member_role_id, role_id] + [int(x) for x in extra_role_ids]
+        roles = []
+        for rid in dict.fromkeys(ids):
+            r = guild.get_role(rid) if rid else None
+            if r is not None:
+                roles.append(r)
         if not roles:
             print("⚠️ Reclutamiento: no encuentro los roles a asignar")
             return False
@@ -654,7 +659,7 @@ class RegistrationCog(commands.Cog):
                 await self.run(rdb.remove_pending_recruit, p.discord_id, None, "la persona ya no está en el servidor")
                 continue
             if p.char_name.casefold() in self.roster:
-                if await self.grant_recruit_roles(member, p.role_id, p.role_name, p.char_name, p.recruiter_id):
+                if await self.grant_recruit_roles(member, p.role_id, p.role_name, p.char_name, p.recruiter_id, p.extra_role_ids):
                     await self.run(rdb.remove_pending_recruit, p.discord_id, None, "ingresó a la guild: roles entregados")
                     try:
                         await member.send(f"🎉 Ya te vimos dentro de la guild: te di los roles de **{p.role_name}**. ¡Bienvenido!")
