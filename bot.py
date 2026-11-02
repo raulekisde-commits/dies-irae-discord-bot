@@ -5491,6 +5491,9 @@ async def compo_ver_builds(interaction: discord.Interaction, nombre: str, build:
     for b in builds:
         pos = ", ".join(b["positions"][:6]) + (f" +{len(b['positions']) - 6}" if len(b["positions"]) > 6 else "")
         lines.append(f"• **{b['name']}**" + (f" · {b['weapon']}" if b["weapon"] else "") + f" — {pos}")
+        short = await asyncio.to_thread(compoweb.list_description, DB_PATH, b["id"])      # descripción de la build (si ya se bajó)
+        if short:
+            lines.append(f"   ↳ _{short}_")
     emb = discord.Embed(title=f"🧩 Builds de {comp['name']}", color=discord.Color.blurple(),
                         description=("\n".join(lines) or "Esta composición no tiene builds.")[:4000])
     emb.set_footer(text="Elegí una build abajo para ver su imagen con las habilidades.")
@@ -5519,16 +5522,17 @@ async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dic
         return await interaction.followup.send(f"❌ No pude leer el detalle de **{meta['name']}** ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
     where = f"Usada en: {', '.join(meta['positions'][:20])}" + (" …" if len(meta["positions"]) > 20 else "")
     reason = buildcard_error
+    bname, play, desc = compoweb.build_summary(data)
     if buildcard is not None:
         try:
             png = await asyncio.to_thread(buildcard.render, data, meta["name"])
-            return await interaction.followup.send(content=f"🧩 **{meta['name']}** · {comp['name']}\n{where}", file=discord.File(io.BytesIO(png), filename="build.png"), ephemeral=True)
+            return await interaction.followup.send(content=compoweb.build_caption(comp["name"], meta["name"], where, desc),
+                                                   file=discord.File(io.BytesIO(png), filename="build.png"), ephemeral=True)
         except Exception as exc:
             print(f"/compo ver-builds: no pude dibujar la imagen de {meta['id']}: {exc!r}")
             reason = f"error al dibujar: {exc.__class__.__name__}: {exc}"[:90]
-    bname, play, desc = compoweb.build_summary(data)
     emb = discord.Embed(title=f"🧩 {meta['name']}", color=discord.Color.blurple(),
-                        description=f"**{compoweb.PLAYSTYLE_ES.get(play, play.upper() or 'Build')}**" + (f" · {desc[:300]}" if desc else "") + f"\n{where}")
+                        description=f"**{compoweb.PLAYSTYLE_ES.get(play, play.upper() or 'Build')}**" + (f" · {desc[:1000]}" if desc else "") + f"\n{where}")
     for label, text in compoweb.build_detail_lines(data):
         emb.add_field(name=label, value=text[:1000], inline=True)
     draft = data.get("build") or data
