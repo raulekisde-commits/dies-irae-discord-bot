@@ -51,7 +51,7 @@ ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h au
 ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
-EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "completar-registros",
+EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "sincronizar-registros",
                    "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
 
 
@@ -916,21 +916,21 @@ class RegistrationCog(commands.Cog):
             verdict = ("⚠️ La búsqueda responde, pero **la lista de la guild no se puede bajar** (suele ser el servidor de Américas con errores 502 de Albion). "
                        + ("El registro sigue funcionando con la lista guardada" + (f" ({len(self.roster)} jugadores)" if self.roster else "")
                           + ": cualquiera que figure ahí se registra igual. Quien entró hace poco a la guild no figura hasta que vuelva la API: usá `/admin_vincular`."
-                          if self.roster else "Como no hay lista guardada, usá `/admin_vincular` y después `/completar-registros` cuando vuelva."))
+                          if self.roster else "Como no hay lista guardada, usá `/admin_vincular` y después `/sincronizar-registros` cuando vuelva."))
         elif any_ok:
             verdict = ("✅ La API responde: si el registro falla, el problema es otro (nick mal escrito, personaje fuera de la guild, etc.).")
         else:
             verdict = ("❌ La API de Albion no está respondiendo en ninguna región: por eso no se registra a nadie. Es un problema de ellos; "
-                        "el bot reintenta solo. Mientras tanto usá `/admin_vincular` y después `/completar-registros` cuando vuelva.")
+                        "el bot reintenta solo. Mientras tanto usá `/admin_vincular` y después `/sincronizar-registros` cuando vuelva.")
         await interaction.followup.send(
             "🛰️ **Estado de la API de Albion**\n" + "\n".join(lines)
             + f"\n\n📋 Lista de la guild guardada en el bot: {roster}\n"
               f"⏳ Reclutas esperando entrar a la guild: {len(pending)} · Registros sin ID: {len(incomplete)}\n\n{verdict}",
             ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="completar-registros", description="(Staff) Completa el ID de los registros sin ID y lista los que no pudo verificar")
+    @app_commands.command(name="sincronizar-registros", description="(Staff) Vuelve a buscar en Albion los registros sin ID (vínculos a mano o con la API caída) y los completa")
     @app_commands.guild_only()
-    async def completar_registros(self, interaction: discord.Interaction):
+    async def sincronizar_registros(self, interaction: discord.Interaction):
         if not can_admin_registro(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         await interaction.response.defer(ephemeral=True)
@@ -952,6 +952,12 @@ class RegistrationCog(commands.Cog):
                 c = look.character
                 try:
                     await self.run(rdb.fill_registration, reg.id, c.char_id, c.region, c.guild or None, interaction.user.id)
+                    member = interaction.guild.get_member(reg.discord_id)
+                    if member is not None:                      # de paso deja el apodo igual al personaje
+                        try:
+                            await self.apply_nickname(member, reg.char_name)
+                        except Exception:
+                            traceback.print_exc()
                     done.append(f"• {who}: {c.region}" + (f" · {discord.utils.escape_markdown(c.guild)}" if c.guild else "")
                                 + (" ⚠️ no está en la guild" if look.kind == "wrong_guild" else ""))
                 except rdb.RegError as exc:
@@ -972,7 +978,7 @@ class RegistrationCog(commands.Cog):
         for chunk in self._chunks(lines):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
         if done:
-            await self.audit_log(f"🔎 <@{interaction.user.id}> completó el ID de **{len(done)}** registro(s) con `/completar-registros`.")
+            await self.audit_log(f"🔎 <@{interaction.user.id}> completó el ID de **{len(done)}** registro(s) con `/sincronizar-registros`.")
 
     @app_commands.command(name="sin-discord", description="(Staff) Jugadores de la guild de Albion que todavía no tienen Discord vinculado")
     @app_commands.guild_only()
