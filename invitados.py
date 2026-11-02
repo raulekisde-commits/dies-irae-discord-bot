@@ -101,12 +101,12 @@ INFO_STAFF = {
     "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/dados`, `/coinflip` y `/1v1`.\n"
                "• `/limite juego cantidad` (Council) — apuesta máxima de dados, coinflip o 1v1; 0 quita el límite. Aplica a partidas nuevas.\n"
                "• `/casinoban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
-               "• `/perms-canal` y `/perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
+               "• `/eco perms-canal` y `/eco perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
                "• `/apuesta enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
                "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/stats-winrate`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
-    "economia": ("• `/addmoney` y `/remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
-                 "• `/set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco-stats` (Staff) — total de monedas en el servidor. `/historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
+    "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
+                 "• `/eco set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco eco-stats` (Staff) — total de monedas en el servidor. `/eco historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
                  "• **Splits** (Council / Admin): `/split` (con looters) y `/split-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
                  "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"
                  "• **Cambio de moneda**: `/panel cambiomoneda` publica los tickets de venta y compra de Wuju Coins; el Council acepta y retira el balance."),

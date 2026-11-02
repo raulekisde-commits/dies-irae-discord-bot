@@ -145,7 +145,7 @@ class RankingsCog(commands.Cog):
         try:
             eco_cog = self.economy
             if interaction.guild is None or eco_cog is None or not await eco_cog.has_command_permission(interaction.user, COMMAND_PERMISSION):
-                return await self._say(interaction, "❌ Solo los administradores o un rol autorizado con `/perms-comando` pueden usar este comando.")
+                return await self._say(interaction, "❌ Solo los administradores o un rol autorizado con `/eco perms-comando` pueden usar este comando.")
             channel = interaction.channel
             if channel is None or not hasattr(channel, "send"):
                 return await self._say(interaction, "❌ No puedo publicar en este canal.")
