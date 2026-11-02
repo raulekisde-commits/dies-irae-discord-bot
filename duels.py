@@ -1,4 +1,4 @@
-"""/1v1 usuario cantidad — duelo entre dos personas (capa de Discord)."""
+"""/casino 1v1 usuario cantidad — duelo entre dos personas (capa de Discord)."""
 import asyncio
 import traceback
 from typing import Optional
@@ -170,9 +170,6 @@ class DuelsCog(commands.Cog):
             traceback.print_exc()
             await say("❌ Ocurrió un error. Revisá tu saldo con `/bal` antes de reintentar.")
 
-    @app_commands.command(name="1v1", description="Retá a alguien a un duelo de cara o cruz: el que sale se queda con todo")
-    @app_commands.describe(usuario="A quién retás", cantidad="Lo que apostás (sin tope: hasta tu balance total)")
-    @app_commands.guild_only()
     async def duel(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
         async def say(text):
             await _say(interaction, text)

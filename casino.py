@@ -1,4 +1,5 @@
-"""/casino abrir|cerrar y /casinoban (solo Council): cierran el casino y bloquean personas."""
+"""Grupo /casino: abrir/cerrar el casino, límite, ban, y los juegos (dados, coinflip, 1v1, ruleta) y sus estadísticas.
+Un solo comando raíz para no pasar el límite de 100 comandos de Discord; cada juego sigue validando sus permisos en su módulo."""
 import asyncio
 import traceback
 from typing import Optional
@@ -42,10 +43,6 @@ class CasinoCog(commands.Cog):
             except Exception:
                 traceback.print_exc()
 
-    @app_commands.command(name="casino", description="(Council) Abre o cierra el casino: dados, coinflip y 1v1")
-    @app_commands.describe(accion="Abrir o cerrar")
-    @app_commands.choices(accion=[app_commands.Choice(name="abrir", value="abrir"), app_commands.Choice(name="cerrar", value="cerrar")])
-    @app_commands.guild_only()
     async def casino(self, interaction: discord.Interaction, accion: app_commands.Choice[str]):
         try:
             if interaction.guild is None or not can_manage(interaction.user):
@@ -63,10 +60,6 @@ class CasinoCog(commands.Cog):
             traceback.print_exc()
             await _reply(interaction, "❌ No pude completar el comando.")
 
-    @app_commands.command(name="limite", description="(Council) Pone la apuesta máxima de dados, coinflip o 1v1 (0 = sin límite propio)")
-    @app_commands.describe(juego="Juego", cantidad="Apuesta máxima, por ejemplo 1.000.000 o 1m (0 para quitar el límite)")
-    @app_commands.choices(juego=[app_commands.Choice(name=n, value=n) for n in eco.GAME_COMMANDS])
-    @app_commands.guild_only()
     async def limite(self, interaction: discord.Interaction, juego: app_commands.Choice[str], cantidad: str):
         try:
             if interaction.guild is None or not can_manage(interaction.user):
@@ -84,9 +77,6 @@ class CasinoCog(commands.Cog):
             traceback.print_exc()
             await _reply(interaction, "❌ No pude completar el comando.")
 
-    @app_commands.command(name="casinoban", description="(Council) Bloquea o desbloquea a una persona del casino (repetirlo la saca de la lista)")
-    @app_commands.describe(usuario="Persona")
-    @app_commands.guild_only()
     async def casinoban(self, interaction: discord.Interaction, usuario: discord.Member):
         try:
             if interaction.guild is None or not can_manage(interaction.user):
@@ -95,13 +85,91 @@ class CasinoCog(commands.Cog):
                 return await _reply(interaction, "❌ No se puede bloquear a un bot.")
             banned = await self.run(cdb.toggle_ban, interaction.guild.id, usuario.id, interaction.user.id)
             if banned:
-                await _reply(interaction, f"🚫 {usuario.mention} fue **bloqueado** del casino. Vuelve a usar `/casinoban` para sacarlo de la lista.")
+                await _reply(interaction, f"🚫 {usuario.mention} fue **bloqueado** del casino. Vuelve a usar `/casino ban` para sacarlo de la lista.")
             else:
                 await _reply(interaction, f"✅ {usuario.mention} fue **sacado** de la lista de bloqueados del casino.")
             await self._refresh_panels()
         except Exception:
             traceback.print_exc()
             await _reply(interaction, "❌ No pude completar el comando.")
+
+    # ---------- /casino ...: subcomandos (la lógica vive en cada módulo; acá solo se delega) ----------
+    casino_g = app_commands.Group(name="casino", description="Casino: abrir/cerrar, límites, juegos y estadísticas", guild_only=True)
+
+    async def _delegate(self, interaction: discord.Interaction, cog_name: str, method: str, label: str, *args):
+        cog = self.bot.get_cog(cog_name)
+        if cog is None:
+            return await _reply(interaction, f"❌ El módulo de {label} no está cargado.")
+        await getattr(cog, method)(interaction, *args)
+
+    @casino_g.command(name="abrir", description="(Council) Abre el casino: dados, coinflip y 1v1")
+    async def casino_abrir(self, interaction: discord.Interaction):
+        await self.casino(interaction, app_commands.Choice(name="abrir", value="abrir"))
+
+    @casino_g.command(name="cerrar", description="(Council) Cierra el casino: dados, coinflip y 1v1")
+    async def casino_cerrar(self, interaction: discord.Interaction):
+        await self.casino(interaction, app_commands.Choice(name="cerrar", value="cerrar"))
+
+    @casino_g.command(name="limite", description="(Council) Pone la apuesta máxima de dados, coinflip o 1v1 (0 = sin límite propio)")
+    @app_commands.describe(juego="Juego", cantidad="Apuesta máxima, por ejemplo 1.000.000 o 1m (0 para quitar el límite)")
+    @app_commands.choices(juego=[app_commands.Choice(name=n, value=n) for n in eco.GAME_COMMANDS])
+    async def casino_limite(self, interaction: discord.Interaction, juego: app_commands.Choice[str], cantidad: str):
+        await self.limite(interaction, juego, cantidad)
+
+    @casino_g.command(name="ban", description="(Council) Bloquea o desbloquea a una persona del casino (repetirlo la saca de la lista)")
+    @app_commands.describe(usuario="Persona")
+    async def casino_ban(self, interaction: discord.Interaction, usuario: discord.Member):
+        await self.casinoban(interaction, usuario)
+
+    @casino_g.command(name="dados", description="Crea una partida de dados (5 minutos). Gana el número más alto y se lleva el pozo")
+    @app_commands.describe(cantidad="Lo que ponés para entrar")
+    async def casino_dados(self, interaction: discord.Interaction, cantidad: str):
+        await self._delegate(interaction, "GamesCog", "dados_slash", "juegos", cantidad)
+
+    @casino_g.command(name="coinflip", description="Desafía a alguien a cara o cruz (dura 5 minutos). El que sale se queda con todo")
+    @app_commands.describe(cantidad="Lo que apostás", lado="Lado que elegís (opcional; si no, cara). Quien acepte toma el otro")
+    @app_commands.choices(lado=[app_commands.Choice(name="Cara", value="cara"), app_commands.Choice(name="Cruz", value="cruz")])
+    async def casino_coinflip(self, interaction: discord.Interaction, cantidad: str, lado: Optional[app_commands.Choice[str]] = None):
+        await self._delegate(interaction, "GamesCog", "coinflip_slash", "juegos", cantidad, lado)
+
+    @casino_g.command(name="1v1", description="Retá a alguien a un duelo de cara o cruz: el que sale se queda con todo")
+    @app_commands.describe(usuario="A quién retás", cantidad="Lo que apostás (sin tope: hasta tu balance total)")
+    async def casino_1v1(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
+        await self._delegate(interaction, "DuelsCog", "duel", "duelos", usuario, cantidad)
+
+    @casino_g.command(name="winrate", description="Winrate, total apostado, ganado/perdido y lista negra de una persona (por defecto, vos)")
+    @app_commands.describe(usuario="Persona a consultar")
+    async def casino_winrate(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        await self._delegate(interaction, "GamesCog", "winrate_slash", "juegos", usuario)
+
+    @casino_g.command(name="total", description="Todo lo que se apostó en el servidor (apuestas, dados, coinflip y duelos)")
+    async def casino_total(self, interaction: discord.Interaction):
+        await self._delegate(interaction, "GamesCog", "totalapostado_slash", "juegos")
+
+    @casino_g.command(name="ruleta", description="Abre la ruleta del casino (solo staff; hay una única ruleta en todo el servidor)")
+    async def casino_ruleta(self, interaction: discord.Interaction):
+        await self._delegate(interaction, "RouletteCog", "ruleta", "ruleta")
+
+    @casino_g.command(name="ruleta-editar", description="Edita la configuración de la ruleta (solo staff)")
+    @app_commands.describe(capital_inicial="Capital inicial (no cambia el balance actual)", balance_casa="Nuevo balance de la casa (ajuste auditado; requiere motivo)",
+                           motivo="Motivo del ajuste de balance", apuesta_min="Apuesta mínima", apuesta_max="Apuesta máxima",
+                           reserva="Reserva de seguridad", segundos="Duración de la ronda en segundos (15-600)",
+                           pagos_editables="Habilitar/deshabilitar la edición de pagos", pago_color="Multiplicador rojo/negro",
+                           pago_paridad="Multiplicador par/impar", pago_falta_pasa="Multiplicador falta/pasa", pago_docena="Multiplicador docenas",
+                           pago_columna="Multiplicador columnas", pago_numero="Multiplicador número exacto")
+    async def casino_ruleta_editar(self, interaction: discord.Interaction, capital_inicial: Optional[str] = None, balance_casa: Optional[str] = None,
+                                   motivo: Optional[str] = None, apuesta_min: Optional[str] = None, apuesta_max: Optional[str] = None,
+                                   reserva: Optional[str] = None, segundos: Optional[app_commands.Range[int, 15, 600]] = None,
+                                   pagos_editables: Optional[bool] = None, pago_color: Optional[app_commands.Range[int, 1, 1000]] = None,
+                                   pago_paridad: Optional[app_commands.Range[int, 1, 1000]] = None, pago_falta_pasa: Optional[app_commands.Range[int, 1, 1000]] = None,
+                                   pago_docena: Optional[app_commands.Range[int, 1, 1000]] = None, pago_columna: Optional[app_commands.Range[int, 1, 1000]] = None,
+                                   pago_numero: Optional[app_commands.Range[int, 1, 1000]] = None):
+        await self._delegate(interaction, "RouletteCog", "ruleta_editar", "ruleta", capital_inicial, balance_casa, motivo, apuesta_min, apuesta_max,
+                             reserva, segundos, pagos_editables, pago_color, pago_paridad, pago_falta_pasa, pago_docena, pago_columna, pago_numero)
+
+    @casino_g.command(name="ruleta-stats", description="Estadísticas de la ruleta (solo staff)")
+    async def casino_ruleta_stats(self, interaction: discord.Interaction):
+        await self._delegate(interaction, "RouletteCog", "ruleta_stats", "ruleta")
 
 
 async def setup_casino(bot: commands.Bot, db_path: str, guild_id: int) -> CasinoCog:
