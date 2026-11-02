@@ -72,6 +72,19 @@ INFO_TEXTS = {
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
                  "**Cambiar tu balance**\n"
                  "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
+    "zvz-vods": ("🎥 ZvZ y VODs (coaching)",
+                 "Subís tus VODs de ZvZ y el equipo de coaching te da una devolución para que mejores.\n\n"
+                 "**Cómo funciona**\n"
+                 "• Buscá el panel de coaching y apretá **Abrir mi post de VODs**: se crea **tu post** en <#1566695879656607924> (uno solo por persona; si ya lo tenés, el botón te lleva a él).\n"
+                 "• En tu post pegá el link (YouTube, Twitch, Medal…) o subí el video. Cada link o video cuenta como un VOD.\n"
+                 "• Decí con qué rol jugás (por ejemplo «voy de healer»). Si no lo escribís, el bot te lo pregunta con un menú.\n"
+                 "• Un coach, Opinólogo, Staff o Council toma tu VOD y te responde en el mismo post: esa es tu devolución.\n\n"
+                 "**Rol Observación**\n"
+                 "• Si tenés el rol <@&1559680220800360519>, tenés que subir **mínimo 3 VODs por semana** (la semana va de lunes a domingo, hora UTC).\n"
+                 "• Los miembros sin ese rol también pueden subir VODs para pedir devolución, pero no tienen mínimo.\n\n"
+                 "**Comandos**\n"
+                 "• `/mis-vods` — cuántos VODs subiste esta semana y cuántos te faltan.\n"
+                 "• `/top coach` — los coaches que más devoluciones dan."),
 }
 
 
@@ -319,7 +332,8 @@ class InvitadosCog(commands.Cog):
     @app_commands.command(name="info", description="Explica cómo funciona un sistema del servidor")
     @app_commands.describe(tema="Qué sistema querés conocer")
     @app_commands.choices(tema=[app_commands.Choice(name="invitados", value="invitados"), app_commands.Choice(name="warnings", value="warnings"),
-                                app_commands.Choice(name="casino", value="casino"), app_commands.Choice(name="economia", value="economia")])
+                                app_commands.Choice(name="casino", value="casino"), app_commands.Choice(name="economia", value="economia"),
+                                app_commands.Choice(name="zvz-vods", value="zvz-vods")])
     async def info(self, interaction: discord.Interaction, tema: app_commands.Choice[str]):
         value = getattr(tema, "value", tema)
         title, text = INFO_TEXTS[value]
