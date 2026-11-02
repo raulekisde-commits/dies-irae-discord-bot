@@ -245,7 +245,7 @@ class DuelDiscordTests(DiscordBase):
         super().setUp()
         self.cog = run(du.setup_duels(self.bot, self.db, GUILD_ID))
         run(cs.setup_casino(self.bot, self.db, GUILD_ID))
-        eco.set_command_channel(self.db, "1v1", PANEL_CH)                 # /1v1 se habilita con /perms-canal como dados y coinflip
+        eco.set_command_channel(self.db, "1v1", PANEL_CH)                 # /1v1 se habilita con /eco perms-canal como dados y coinflip
         self.fund(self.alice, 10000)
         self.fund(self.bob, 6000)
 
@@ -262,7 +262,7 @@ class DuelDiscordTests(DiscordBase):
     def test_1v1_needs_perms_canal_and_only_works_in_that_channel(self):
         eco.clear_command_channel(self.db, "1v1")
         i = self.challenge(self.alice, self.bob, "100")
-        self.assertIn("/perms-canal", i.text)                              # sin canal configurado está deshabilitado
+        self.assertIn("/eco perms-canal", i.text)                              # sin canal configurado está deshabilitado
         self.assertEqual(self.panelch.sent, [])
         other = discord.TextChannel(PANEL_CH + 1, self.guild, "otro")
         self.guild._channels[other.id] = other
@@ -273,7 +273,7 @@ class DuelDiscordTests(DiscordBase):
         eco.set_command_channel(self.db, "1v1", PANEL_CH)
         self.challenge(self.alice, self.bob, "100")
         self.assertEqual(self.bal(self.alice), 9900)
-        # y se puede deshabilitar repitiendo /perms-canal en el mismo canal
+        # y se puede deshabilitar repitiendo /eco perms-canal en el mismo canal
         cmd = economy.EconomyCog.perms_canal
         inter = self.inter(self.admin, self.panelch)
         run(cmd.callback(self.ecog, inter, discord.app_commands.Choice("1v1", "1v1")))
@@ -433,7 +433,7 @@ class CambioMonedaTests(DiscordBase):
     # ---- /panel group ----
     def test_panel_group_has_both_subcommands(self):
         self.assertEqual(pn.PanelsCog.panel.name, "panel")
-        self.assertEqual(set(pn.PanelsCog.panel.commands), {"apuestas", "cambiomoneda"})
+        self.assertEqual(set(pn.PanelsCog.panel.commands), {"apuestas", "cambiomoneda", "reclutamiento", "foco", "shop", "coaching"})
 
     def test_panel_command_delegates_and_reports_missing_modules(self):
         cog = run(pn.setup_panels(self.bot, GUILD_ID))

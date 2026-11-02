@@ -52,7 +52,7 @@ INFO_TEXTS = {
                "• **Dados** (`/dados`): partida abierta de 5 minutos; se anota quien quiere y gana el número más alto, que se lleva el pozo.\n"
                "• **Coinflip** (`/coinflip`): desafío de cara o cruz; lo acepta una persona y el ganador se queda con todo.\n"
                "• **1v1** (`/1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
-               "• **Apuestas** (`/apostar`, `/apostartodo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
+               "• **Apuestas** (`/apuesta apostar`, `/apuesta todo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
                "• **Ruleta**: una sola para todo el servidor.\n\n"
                "**Tus estadísticas**\n"
                "• `/stats-winrate [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
@@ -85,7 +85,7 @@ INFO_TEXTS = {
                  "• Si tenés el rol <@&1559680220800360519>, tenés que subir **mínimo 3 VODs por semana** (la semana va de lunes a domingo, hora UTC).\n"
                  "• Los miembros sin ese rol también pueden subir VODs para pedir devolución, pero no tienen mínimo.\n\n"
                  "**Comandos**\n"
-                 "• `/mis-vods` — cuántos VODs subiste esta semana y cuántos te faltan.\n"
+                 "• `/coaching mis-vods` — cuántos VODs subiste esta semana y cuántos te faltan.\n"
                  "• `/top coach` — los coaches que más devoluciones dan."),
 }
 
@@ -101,19 +101,19 @@ INFO_STAFF = {
     "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/dados`, `/coinflip` y `/1v1`.\n"
                "• `/limite juego cantidad` (Council) — apuesta máxima de dados, coinflip o 1v1; 0 quita el límite. Aplica a partidas nuevas.\n"
                "• `/casinoban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
-               "• `/perms-canal` y `/perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
-               "• `/apuesta enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
+               "• `/eco perms-canal` y `/eco perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
+               "• `/apuesta crear enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
                "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/stats-winrate`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
-    "economia": ("• `/addmoney` y `/remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
-                 "• `/set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco-stats` (Staff) — total de monedas en el servidor. `/historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
+    "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
+                 "• `/eco set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco eco-stats` (Staff) — total de monedas en el servidor. `/eco historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
                  "• **Splits** (Council / Admin): `/split` (con looters) y `/split-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
                  "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"
                  "• **Cambio de moneda**: `/panel cambiomoneda` publica los tickets de venta y compra de Wuju Coins; el Council acepta y retira el balance."),
-    "zvz-vods": ("• `/coaching-panel` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
+    "zvz-vods": ("• `/panel coaching` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
                  "• Cada VOD genera una tarea para el rol **Coaching** indicando con qué rol juega la persona. Pueden tomarla Coaching, Staff, Opinólogo y Council. No tiene hilo; el recordatorio es cada 12 h.\n"
                  "• La tarea se completa sola cuando alguien del equipo responde en el post, o con el botón **Terminada**.\n"
-                 "• `/coaching-reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
+                 "• `/coaching reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
                  "• `/top coach` — quién cierra más devoluciones."),
 }
 
@@ -170,7 +170,7 @@ INFO_TEXTS.update({
               "**`/stats-winrate [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
               "**Rankings**\n"
               "• `/top` — Wuju Coins, kills, muertes, asistencia, skippers, IP, winrate, tareas del staff y coaches.\n"
-              "• `/mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
+              "• `/coaching mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
     "registro": ("📝 Registro de tu personaje",
                  "El registro vincula tu cuenta de Discord con tu personaje de Albion. Sin registro no podés usar varios comandos de miembros (si el registro es obligatorio).\n\n"
                  "**Comandos**\n"
@@ -218,17 +218,17 @@ INFO_STAFF.update({
             "• Crea el panel con las parties y el hilo de inscripción. La gente se anota escribiendo el número de posición.\n"
             "• Las composiciones se administran con `/compo` (Council / Admin). `/compo builds nombre link` pone el link de «Builds».\n\n"
             "**Gestionar una CTA**\n"
-            "• `/cta_activas` y `/cta_historial` — ver CTAs activas y las últimas cerradas.\n"
-            "• `/cta_programadas` y `/cta_cancelar_programada` — las que esperan su hora.\n"
-            "• `/cta_cerrar` — cierra la inscripción antes de tiempo.\n"
-            "• `/cta_asignar` y `/cta_liberar` — poner o sacar a un jugador de una posición a mano.\n\n"
+            "• `/cta-admin activas` y `/cta-admin historial` — ver CTAs activas y las últimas cerradas.\n"
+            "• `/cta-admin programadas` y `/cta-admin cancelar-programada` — las que esperan su hora.\n"
+            "• `/cta-admin cerrar` — cierra la inscripción antes de tiempo.\n"
+            "• `/cta-admin asignar` y `/cta-admin liberar` — poner o sacar a un jugador de una posición a mano.\n\n"
             "**Bomb**\n"
             "• **Agregar Bomb** crea un panel e hilo aparte en el canal de Bomb. Puede haber varios por CTA. Solo el rol Bomb se anota (`+` o botón) y cuentan en el split.\n\n"
             "**Cerrar**\n"
             "• **Cerrar CTA** crea el panel y el hilo de stats (`/info-staff stats`) y deja de aceptar anotados. Si la composición es «track», genera el split (`/info-staff splits`).\n"
             "• Durante los primeros 5 min la Party 1 es solo Legacy si la composición lo tiene activado."),
     "reclutamiento": ("**Montaje**\n"
-                      "• `/panel-reclutamiento` (Admin) publica el panel con el botón de postulación en el canal donde lo uses.\n"
+                      "• `/panel reclutamiento` (Admin) publica el panel con el botón de postulación en el canal donde lo uses.\n"
                       "• Cada postulación abre un canal privado visible para el postulante y el rol **Reclutador**. Arriba queda el resumen con todos los datos y el nick de Albion.\n\n"
                       "**Cómo reclutar paso a paso**\n"
                       "1. Leé el resumen: nick, rol main, otros roles, horarios, gremio anterior, si graba CTAs, idioma y **amigos en la guild** (para vouch). Hablá con la persona en el canal.\n"
@@ -281,7 +281,7 @@ INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuar
                        "• **Roles de CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb): dar = Staff, Council, Admin y Coaching · quitar = Staff, Council y Admin.\n"
                        "• `/rol historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
                        "• No te podés cambiar roles a vos mismo, y el rol del bot tiene que estar por encima del rol que se cambia.")
-INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/guild-shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
+INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
 
 def _roles(m) -> set:

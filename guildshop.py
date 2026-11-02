@@ -276,9 +276,6 @@ class GuildShopCog(commands.Cog):
             print(f"⚠️ Guild Shop: no pude actualizar el Top Vendedores: {exc!r}")
 
     # ---------- comandos ----------
-    @app_commands.command(name="guild-shop", description="(Council) Publica el Top Vendedores y el panel de compra del shop de la guild")
-    @app_commands.describe(canal="Canal donde publicar los dos paneles (por defecto, este canal)")
-    @app_commands.guild_only()
     async def guild_shop(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
         try:
             if interaction.guild is None or not can_manage(interaction.user):
