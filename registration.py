@@ -49,7 +49,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "completar-registros",
-                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "recuperar-lista", "recuperar", "estado-api"}
+                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
 
 
 class RegistrationRequired(commands.CheckFailure):
