@@ -10,13 +10,14 @@ import io
 import re
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional, Tuple
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import audit_db
 import economy_db as eco
 import killboard_db as kb
 from slashctx import SlashContext
@@ -147,6 +148,37 @@ class ConfirmActionView(discord.ui.View):
         self.done = True
         self.stop()
         await interaction.response.edit_message(content="Cancelado. No se modificó nada.", view=None)
+
+
+class GiveConfirmView(discord.ui.View):
+    """Confirmación previa de /give-money: solo quien ejecutó el comando, una sola vez."""
+
+    def __init__(self, owner_id: int, on_confirm: Callable):
+        super().__init__(timeout=180.0)
+        self.owner_id, self.on_confirm, self.done = owner_id, on_confirm, False
+        ok = discord.ui.Button(label="Confirmar y enviar", style=discord.ButtonStyle.success)
+        no = discord.ui.Button(label="Cancelar", style=discord.ButtonStyle.secondary)
+        ok.callback, no.callback = self._ok, self._no
+        self.add_item(ok)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Este mensaje no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    async def _ok(self, interaction):
+        if self.done:
+            return await interaction.response.send_message("Ya fue procesado.", ephemeral=True)
+        self.done = True
+        self.stop()
+        await self.on_confirm(interaction)
+
+    async def _no(self, interaction):
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content="Cancelado. No se movió nada.", view=None)
 
 
 class EconomyCog(commands.Cog):
@@ -771,7 +803,7 @@ class EconomyCog(commands.Cog):
             return "`/1v1`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
-        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
+        return f"`/{command}`" if command in ("verhistorial", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
 
     @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando en ESTE canal; si ya estaba habilitado acá, lo deshabilita")
     @app_commands.describe(comando="Comando a habilitar en este canal (si ya está acá, se deshabilita)")
@@ -1019,7 +1051,7 @@ class EconomyCog(commands.Cog):
     async def set_balance_cmd(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
         try:
             member = interaction.user
-            if interaction.guild is None or not await self.has_command_permission(member, "set-balance"):
+            if interaction.guild is None or not is_admin_member(member):   # solo propietario/Administrator: no es delegable
                 return await self._ephemeral(interaction, "❌ Este comando es solo para el propietario del servidor o administradores.")
             if usuario.bot:
                 return await self._ephemeral(interaction, "❌ No se puede operar sobre bots.")
@@ -1099,8 +1131,7 @@ class EconomyCog(commands.Cog):
             member = interaction.user
             if interaction.guild is None or not isinstance(member, discord.Member):
                 return await self._ephemeral(interaction, "❌ Solo disponible en el servidor.")
-            allowed = bool({self.member_role_id, self.guest_role_id} & {r.id for r in member.roles}) or await self.has_command_permission(member, "give-money", staff_ok=True)
-            if not allowed:
+            if not await self._can_give(member):
                 return await self._ephemeral(interaction, "❌ No tenés permiso para usar este comando.")
             if usuario.bot:
                 return await self._ephemeral(interaction, "❌ No se puede dar Wuju Coins a un bot.")
@@ -1113,30 +1144,107 @@ class EconomyCog(commands.Cog):
             reason = eco.clean_reason(motivo, eco.GIVE_DEFAULT_REASON)
             if await self._db(eco.is_frozen, member.id):
                 return await self._ephemeral(interaction, eco.FROZEN_TEXT)
-            try:
-                status, after_from, after_to = await self._db(
-                    eco.transfer, from_id=member.id, to_id=usuario.id, amount=amount,
-                    request_key=f"give:{interaction.id}", reason=reason)
-            except eco.InsufficientFunds:
-                balance = await self._db(eco.get_balance, member.id)
-                return await self._ephemeral(interaction, f"❌ No tenés saldo suficiente. Tu saldo: {self.money(balance)}.")
-            except OverflowError:
-                return await self._ephemeral(interaction, "❌ El balance de esa persona superaría el límite permitido. No se movió nada.")
-            if status == "repeated":
-                return await self._ephemeral(interaction, "ℹ️ Esta solicitud ya había sido procesada; no se repitió.")
-            text = f"💸 {member.mention} le dio **{self.money(amount)}** a {usuario.mention}."
-            if reason != eco.GIVE_DEFAULT_REASON:
-                text += f"\nMotivo: {reason}"
-            await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions(users=[usuario]))
-            emb = discord.Embed(title="💸 Transferencia entre usuarios", color=discord.Color.blurple())
-            emb.add_field(name="De", value=f"{member.mention} → saldo {self.money(after_from)}", inline=True)
-            emb.add_field(name="Para", value=f"{usuario.mention} → saldo {self.money(after_to)}", inline=True)
-            emb.add_field(name="Cantidad", value=self.money(amount), inline=True)
-            emb.add_field(name="Motivo", value=reason, inline=False)
-            await self._audit_note(emb)
+
+            async def go(inter):
+                try:
+                    # Se revalida al confirmar: pudo cambiar el permiso o congelarse la cuenta mientras tanto.
+                    if not await self._can_give(member):
+                        return await inter.response.edit_message(content="❌ No tenés permiso para usar este comando.", view=None)
+                    if await self._db(eco.is_frozen, member.id):
+                        return await inter.response.edit_message(content=eco.FROZEN_TEXT, view=None)
+                    try:
+                        status, after_from, after_to = await self._db(
+                            eco.transfer, from_id=member.id, to_id=usuario.id, amount=amount,
+                            request_key=f"give:{interaction.id}", reason=reason)
+                    except eco.InsufficientFunds:
+                        balance = await self._db(eco.get_balance, member.id)
+                        return await inter.response.edit_message(content=f"❌ No tenés saldo suficiente. Tu saldo: {self.money(balance)}.", view=None)
+                    except OverflowError:
+                        return await inter.response.edit_message(content="❌ El balance de esa persona superaría el límite permitido. No se movió nada.", view=None)
+                    if status == "repeated":
+                        return await inter.response.edit_message(content="ℹ️ Esta solicitud ya había sido procesada; no se repitió.", view=None)
+                    await inter.response.edit_message(
+                        content=f"✅ Enviaste **{self.money(amount)}** a {usuario.mention}. Tu nuevo saldo: **{self.money(after_from)}**.", view=None)
+                    text = f"💸 {member.mention} le dio **{self.money(amount)}** a {usuario.mention}."
+                    if reason != eco.GIVE_DEFAULT_REASON:
+                        text += f"\nMotivo: {reason}"
+                    await inter.followup.send(text, ephemeral=False, allowed_mentions=discord.AllowedMentions(users=[usuario]))
+                    emb = discord.Embed(title="💸 Transferencia entre usuarios", color=discord.Color.blurple())
+                    emb.add_field(name="De", value=f"{member.mention} → saldo {self.money(after_from)}", inline=True)
+                    emb.add_field(name="Para", value=f"{usuario.mention} → saldo {self.money(after_to)}", inline=True)
+                    emb.add_field(name="Cantidad", value=self.money(amount), inline=True)
+                    emb.add_field(name="Motivo", value=reason, inline=False)
+                    await self._audit_note(emb)
+                    await self._alert_if_suspicious(inter, member, usuario, amount, f"give:{interaction.id}")
+                except Exception:
+                    traceback.print_exc()
+                    await self._ephemeral(inter, "❌ No se pudo completar la transferencia. Revisá tu saldo antes de reintentar.")
+
+            await interaction.response.send_message(
+                f"¿Confirmás enviar **{self.money(amount)}** a {usuario.mention}?"
+                + (f"\nMotivo: {reason}" if reason != eco.GIVE_DEFAULT_REASON else "")
+                + "\nNo se mueve nada hasta que confirmes.",
+                view=GiveConfirmView(member.id, go), ephemeral=True, allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No se pudo completar la transferencia. No se movió nada.")
+
+    async def _can_give(self, member) -> bool:
+        return bool({self.member_role_id, self.guest_role_id} & {r.id for r in member.roles}) or await self.has_command_permission(
+            member, "give-money", staff_ok=True)
+
+    # ---------------- alertas privadas de transferencias sospechosas ----------------
+    ALERT_WINDOW_DAYS = 7              # ventana de transferencias que se analiza
+    ALERT_REPEAT_SECONDS = 12 * 3600   # un aviso por caso cada 12 h (en memoria; si el bot reinicia puede repetirse)
+
+    async def _alert_if_suspicious(self, interaction, sender, receiver, amount: int, ref: str):
+        """Avisa por DM a Council y administradores si esta transferencia encaja en un patrón de audit_db. NUNCA bloquea ni modifica nada."""
+        try:
+            since = (datetime.now(timezone.utc) - timedelta(days=self.ALERT_WINDOW_DAYS)).isoformat()
+            transfers = await self._db(audit_db.collect_transfers, since)
+            pairs, collectors = audit_db.transfer_report(transfers)
+            findings = []
+            for r in pairs:
+                if r.sender == sender.id and r.receiver == receiver.id:
+                    findings.append((("pair", r.sender, r.receiver),
+                                     f"**Envíos casi siempre en un solo sentido:** {r.count} transferencias de {sender.mention} a {receiver.mention} "
+                                     f"en {self.ALERT_WINDOW_DAYS} días, por {self.money(r.total)} (devuelto: {self.money(r.back_total)})."))
+            for c in collectors:
+                if c.user_id == receiver.id:
+                    findings.append((("collector", c.user_id),
+                                     f"**Recibe de muchas cuentas:** {receiver.mention} recibió de {c.senders} personas distintas "
+                                     f"en {self.ALERT_WINDOW_DAYS} días, por {self.money(c.total)} en total."))
+            if not findings:
+                return
+            import time
+            now = time.monotonic()
+            sent = getattr(self, "_alert_sent", None)
+            if sent is None:
+                sent = self._alert_sent = {}
+            fresh = [(k, t) for k, t in findings if now - sent.get(k, -1e12) >= self.ALERT_REPEAT_SECONDS]
+            if not fresh:
+                return
+            for k, _ in fresh:
+                sent[k] = now
+            emb = discord.Embed(title="⚠️ Posible patrón sospechoso en /give-money", color=discord.Color.orange())
+            emb.add_field(name="Operación", value=(f"De {sender.mention} a {receiver.mention}\nMonto: **{self.money(amount)}**\n"
+                                                  f"Referencia: `{ref}`\nCanal: <#{getattr(interaction.channel, 'id', 0)}>"), inline=False)
+            emb.add_field(name="Qué se detectó", value="\n".join(t for _, t in fresh)[:1000], inline=False)
+            emb.set_footer(text="Es un aviso para revisar a mano, no una prueba: la transferencia ya se completó y no se bloqueó.")
+            from guildshop import can_manage
+            guild = interaction.guild
+            reached = 0
+            for m in list(getattr(guild, "members", [])):
+                if getattr(m, "bot", False) or not can_manage(m):
+                    continue
+                try:
+                    await m.send(embed=emb)
+                    reached += 1
+                except Exception:
+                    pass                       # DM cerrado o rechazado: se sigue con el resto
+            print(f"⚠️ Alerta de transferencia {ref}: avisada a {reached} persona(s) de Admin/Council.")
+        except Exception:
+            traceback.print_exc()              # la alerta es de mejor esfuerzo: nunca afecta a la transferencia ya hecha
 
     # ============================================================
     # Historial de movimientos

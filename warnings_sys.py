@@ -114,7 +114,7 @@ class WarningsCog(commands.Cog):
         wid, total = await self.run(add_warning, interaction.guild.id, usuario.id, razon.strip(), interaction.user.id)
         await self._say(interaction, f"⚠️ Warning **#{wid}** cargado a {usuario.mention} (lleva **{total}**).\n**Motivo:** {discord.utils.escape_markdown(razon.strip())}")
 
-    @app_commands.command(name="warnings", description="(Staff/Council) Lista los warnings de alguien (lo ve todo el canal)")
+    @app_commands.command(name="warnings", description="(Staff/Council) Lista los warnings de alguien (respuesta privada)")
     @app_commands.describe(usuario="De quién")
     @app_commands.guild_only()
     async def warnings(self, interaction: discord.Interaction, usuario: discord.Member):
@@ -132,7 +132,7 @@ class WarningsCog(commands.Cog):
                 emb.description = emb.description[:3990] + "…"
             if len(rows) > LIST_MAX:
                 emb.set_footer(text=f"Se muestran los últimos {LIST_MAX} de {len(rows)}.")
-        await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
+        await interaction.response.send_message(embed=emb, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="warning-top", description="(Staff/Council) Quién tiene más warnings")
     @app_commands.guild_only()

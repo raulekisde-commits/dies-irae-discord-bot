@@ -388,9 +388,9 @@ class BetsDiscordTests(unittest.TestCase):
         i = self.inter(self.alice, thread)
         run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
         self.assertIn("Solo quien creó", i.text)
-        i = self.inter(self.admin, thread)
+        i = self.inter(self.staff, thread)
         run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
-        self.assertIn("Solo quien creó", i.text)                 # ni el admin (la regla es del creador)
+        self.assertIn("Solo quien creó", i.text)                 # el rol Staff solo no alcanza (Council y Admin sí: ver más abajo)
         i = self.inter(self.creator, thread)
         run(self.cog.cerrarapuesta.callback(self.cog, i, None))  # inferida desde el hilo
         self.assertIn("cerrada", i.text)
@@ -398,6 +398,74 @@ class BetsDiscordTests(unittest.TestCase):
         ctx = self.bet_cmd(bet, self.alice, "Empate 10")
         self.assertIn("cerrada", ctx.text)
         self.assertEqual(self.bal(self.alice), 1000)
+
+    # ---------- Council y Admin cierran y resuelven apuestas ajenas ----------
+    def mk_council(self):
+        from guildshop import COUNCIL_ROLE_ID
+        role = discord.Role(COUNCIL_ROLE_ID, "Council", self.guild)
+        self.guild.roles.append(role)
+        m = DMMember(32 + 100000000000000000, "Consejero", roles=[role], guild=self.guild, administrator=False)
+        self.guild.members.append(m)
+        return m
+
+    def test_council_and_admin_can_close_others_bets(self):
+        council = self.mk_council()
+        for who in (council, self.admin):
+            bet, _ = self.create()
+            thread = self.thread_of(bet)
+            i = self.inter(who, thread)
+            run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
+            self.assertIn("cerrada", i.text)
+            self.assertEqual(bdb.get_bet(self.db, bet.id).status, "closed")
+
+    def test_other_users_still_cannot_close_or_resolve(self):
+        bet = self.full_example()
+        thread = self.thread_of(bet)
+        for who in (self.alice, self.staff, self.plain):
+            i = self.inter(who, thread)
+            run(self.cog.cerrarapuesta.callback(self.cog, i, bet.id))
+            self.assertIn("Solo quien creó", i.text)
+        self.assertEqual(bdb.get_bet(self.db, bet.id).status, "open")
+        run(self.cog.cerrarapuesta.callback(self.cog, self.inter(self.creator, thread), None))
+        for who in (self.alice, self.staff, self.plain):
+            i = self.inter(who, thread)
+            run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+            self.assertIn("Solo quien creó", i.text)
+        self.assertEqual(bdb.get_bet(self.db, bet.id).status, "closed")
+
+    def test_council_and_admin_resolve_others_bets_with_same_payouts(self):
+        results = []
+        council = self.mk_council()
+        for who in (self.creator, council, self.admin):
+            for u in (self.alice, self.bob, self.carol):
+                eco.apply_operation(self.db, kind="remove", actor_id=1, user_ids=[u.id], amount=self.bal(u), request_key=f"z:{who.id}:{u.id}") if self.bal(u) else None
+            bet = self.full_example()
+            thread = self.thread_of(bet)
+            run(self.cog.cerrarapuesta.callback(self.cog, self.inter(who, thread), None))
+            i = self.inter(who, thread)
+            run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+            run(i.views[0]._ok(self.inter(who, thread)))
+            self.assertEqual(bdb.get_bet(self.db, bet.id).status, "resolved")
+            results.append((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)))
+            i = self.inter(who, thread)
+            run(self.cog.resolverapuesta.callback(self.cog, i, "Gana Smogg", None))
+            self.assertIn("ya fue resuelta", i.text)                  # no se paga dos veces
+            self.assertEqual((self.bal(self.alice), self.bal(self.bob), self.bal(self.carol)), results[-1])
+        self.assertEqual(len(set(results)), 1)                        # mismos pagos que si resuelve el creador
+
+    def test_creator_can_still_bet_on_own_bet(self):
+        self.fund(self.creator, 1000)
+        bet, _ = self.create()
+        self.bet_cmd(bet, self.creator, "Empate 100")
+        self.assertEqual(self.bal(self.creator), 900)
+
+    def test_cancel_rule_is_unchanged(self):
+        council = self.mk_council()
+        bet, _ = self.create()
+        thread = self.thread_of(bet)
+        i = self.inter(council, thread)
+        run(self.cog.cancelarapuesta.callback(self.cog, i, bet.id))
+        self.assertIn("Solo quien creó", i.text)                      # cancelar sigue siendo del creador o de un administrador
 
     def full_example(self):
         for u, a in ((self.alice, 5000), (self.bob, 15000), (self.carol, 80000)):
