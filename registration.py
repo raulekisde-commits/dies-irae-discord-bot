@@ -608,11 +608,11 @@ class RegistrationCog(commands.Cog):
         """Registra al postulante con su nick de Albion. Devuelve (ok, texto, roles_dados_ya).
         Si el personaje ya figura en la guild, se dan los roles en el momento; si no, quedan PENDIENTES hasta que aparezca en la lista."""
         look = await self.lookup_character(nick, any_guild=True)
-        if look.kind == "ambiguous":
-            return False, "Hay varios personajes con ese nombre en distintos servidores de Albion. Vinculalo con `/admin_vincular` y dale los roles a mano.", False
-        # Si la API no responde o no encuentra el personaje, no se frena la aceptación: se vincula a mano con el nick del ticket,
-        # igual que /admin_vincular (queda marcado como vínculo administrativo y auditado). /sincronizar-registros completa el ID después.
-        manual = {"error": "la API de Albion no respondió", "none": "no encontré ese personaje en la API de Albion"}.get(look.kind)
+        # Si la API no responde, no encuentra el personaje o no puede saber cuál de varios homónimos es, no se frena la aceptación: se vincula
+        # a mano con el nick del ticket, igual que /admin_vincular (queda marcado como vínculo administrativo y auditado).
+        # /sincronizar-registros completa el ID después.
+        manual = {"error": "la API de Albion no respondió", "none": "no encontré ese personaje en la API de Albion",
+                  "ambiguous": "hay varios personajes con ese nombre en distintos servidores de Albion"}.get(look.kind)
         c = None if manual else look.character
         name = c.name if c else _clean_name(nick)
         try:

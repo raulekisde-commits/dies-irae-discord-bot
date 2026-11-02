@@ -393,6 +393,19 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertEqual(rdb.get_registration(self.db, self.newbie.id).method, "admin_override")
         self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)                                # los roles esperan a que aparezca en la lista
 
+    def test_recruit_with_homonyms_is_linked_by_hand(self):
+        self._recruit_setup()
+        ambiguo = rg.Lookup("ambiguous", options=[rg.Character("a", "Gemelo", "Américas", "Otra", "", 0, 0), rg.Character("b", "Gemelo", "Europa", "Otra2", "", 0, 0)])
+
+        async def fake_lookup(name, any_guild=False, live=False):
+            return ambiguo
+        self.cog.lookup_character = fake_lookup
+        ok, text, granted = run(self.cog.accept_recruit(self.newbie, "Gemelo", self.r_main.id, "Tank", self.council))
+        self.assertEqual((ok, granted), (True, False))
+        self.assertIn("varios personajes", text)
+        reg = rdb.get_registration(self.db, self.newbie.id)
+        self.assertEqual((reg.char_name, reg.method, reg.char_id), ("Gemelo", "admin_override", None))
+
     def test_recruit_with_taken_nick_is_not_accepted(self):
         self._recruit_setup()
         rdb.admin_link(self.db, self.alice.id, "Cazador", 1, char_id="id-cazador")
