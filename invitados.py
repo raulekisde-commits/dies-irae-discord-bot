@@ -56,7 +56,7 @@ INFO_TEXTS = {
                "• **1v1** (`/1v1 usuario cantidad`): duelo de cara o cruz contra alguien en particular, que debe aceptar.\n"
                "• **Apuestas** (`/apostar`, `/apostartodo`): se apuesta a una de las opciones de una apuesta abierta por el staff; el pozo se reparte entre quienes acertaron.\n"
                "• **Ruleta**: la abre el staff y es una sola para todo el servidor.\n"
-               "• Estadísticas: `/winrate`, `/topwinrate` y `/totalapostado`.\n\n"
+               "• Estadísticas: `/winrate`, `/top winrate` y `/totalapostado`.\n\n"
                "**Reglas**\n"
                "• Las apuestas se descuentan al instante y no hay devolución si perdés.\n"
                "• El Council puede cerrar el casino, poner límites de apuesta o bloquear a alguien (`/casinoban`).\n"
