@@ -123,6 +123,13 @@ except Exception:
     async def setup_invitados(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar invitados.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from alters import setup_alters
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_alters(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar alters.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from rolesmgmt import setup_rolesmgmt
 except Exception:
     import traceback as _tb
@@ -512,6 +519,7 @@ class MyBot(commands.Bot):
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("coaching", setup_coaching, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
+            await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
             await _safe_setup("rolesmgmt", setup_rolesmgmt, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
