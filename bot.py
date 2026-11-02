@@ -3743,7 +3743,7 @@ def cta_set_party_roles(composition_id: int, party_no: int, role_ids: list):
 
 
 def cta_is_organizer(member) -> bool:
-    """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta_asignar)."""
+    """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta-admin asignar)."""
     perms = getattr(member, "guild_permissions", None)
     return is_cta_manager(member)
 
@@ -6100,7 +6100,11 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
 cta_command.autocomplete("nombre")(cta_name_autocomplete)
 
 
-@bot.tree.command(name="cta_activas", description="Consultar las CTA activas", guild=GUILD_OBJ)
+cta_admin_group = app_commands.Group(name="cta-admin", description="Consultar y administrar las CTA (activas, programadas, cerrar, asignar, liberar)", guild_only=True)
+bot.tree.add_command(cta_admin_group, guild=GUILD_OBJ)
+
+
+@cta_admin_group.command(name="activas", description="Consultar las CTA activas")
 async def cta_activas(interaction: discord.Interaction):
     rows = db_fetchall("SELECT id, composition_name, closes_at, channel_id, thread_id FROM cta_runs WHERE guild_id=? AND status='open' ORDER BY closes_at", (interaction.guild_id,))
     if not rows:
@@ -6119,14 +6123,14 @@ def _sched_line(r: dict) -> str:
     return f"**#{r['id']}** · {r['composition_name']}{title} · <t:{at}:f> (<t:{at}:R>) · {r['minutes']} min · por <@{r['created_by']}>"
 
 
-@bot.tree.command(name="cta_programadas", description="Lista las CTA programadas que todavía no se publicaron", guild=GUILD_OBJ)
+@cta_admin_group.command(name="programadas", description="Lista las CTA programadas que todavía no se publicaron")
 async def cta_programadas(interaction: discord.Interaction):
     if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para ver las CTA programadas (solo Staff, Caller y Council).", ephemeral=True)
     rows = await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)
     if not rows:
         return await interaction.response.send_message("No hay CTA programadas.", ephemeral=True)
-    text = "⏰ **CTA programadas** (se cancelan con `/cta_cancelar_programada`)\n" + "\n".join(_sched_line(r) for r in rows)
+    text = "⏰ **CTA programadas** (se cancelan con `/cta-admin cancelar-programada`)\n" + "\n".join(_sched_line(r) for r in rows)
     await interaction.response.send_message(text[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -6141,7 +6145,7 @@ async def cta_scheduled_autocomplete(interaction: discord.Interaction, current: 
     return out[:25]
 
 
-@bot.tree.command(name="cta_cancelar_programada", description="Cancela una CTA programada antes de que se publique", guild=GUILD_OBJ)
+@cta_admin_group.command(name="cancelar-programada", description="Cancela una CTA programada antes de que se publique")
 @app_commands.describe(programada="La CTA programada a cancelar (elegila de la lista o escribí su número)")
 @app_commands.autocomplete(programada=cta_scheduled_autocomplete)
 async def cta_cancelar_programada(interaction: discord.Interaction, programada: int):
@@ -6150,7 +6154,7 @@ async def cta_cancelar_programada(interaction: discord.Interaction, programada: 
     rows = {int(r["id"]): r for r in await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)}
     row = rows.get(int(programada))
     if row is None or not await asyncio.to_thread(cu.cancel_scheduled, DB_PATH, int(programada), interaction.guild_id):
-        return await interaction.response.send_message("❌ No encontré una CTA programada pendiente con ese número (quizás ya se publicó o ya se canceló). Mirá `/cta_programadas`.", ephemeral=True)
+        return await interaction.response.send_message("❌ No encontré una CTA programada pendiente con ese número (quizás ya se publicó o ya se canceló). Mirá `/cta-admin programadas`.", ephemeral=True)
     cta_audit(interaction.guild_id, interaction.user.id, "cta_scheduled_cancelled", None, f"id={programada} comp={row['composition_name']} at={row['publish_at']} by={row['created_by']}")
     await interaction.response.send_message(f"🗑️ Cancelé la CTA programada **#{programada}**:\n{_sched_line(row)}", ephemeral=True,
                                             allowed_mentions=discord.AllowedMentions.none())
@@ -6161,8 +6165,8 @@ async def cta_cancelar_programada(interaction: discord.Interaction, programada: 
         pass
 
 
-@bot.tree.command(name="cta_cerrar", description="Cerrar la inscripción de una CTA antes de tiempo", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta_activas)")
+@cta_admin_group.command(name="cerrar", description="Cerrar la inscripción de una CTA antes de tiempo")
+@app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta-admin activas)")
 async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
     if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para cerrar CTA.", ephemeral=True)
@@ -6173,7 +6177,7 @@ async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
     await cta_close_run(cta_id, reason=f"closed_by:{interaction.user.id}")
 
 
-@bot.tree.command(name="cta_asignar", description="Asignar a un jugador a una posición de una CTA", guild=discord.Object(id=GUILD_ID))
+@cta_admin_group.command(name="asignar", description="Asignar a un jugador a una posición de una CTA")
 @app_commands.describe(cta_id="Número de la CTA", miembro="Jugador", numero="Número de posición (el mismo que se usa en el hilo)", excepcion="Asignar aunque no cumpla los roles pedidos", motivo="Motivo (obligatorio si usás excepción)")
 async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member, numero: app_commands.Range[int, 1, CTA_MAX_SLOTS], excepcion: bool = False, motivo: Optional[str] = None):
     if not is_cta_manager(interaction.user):
@@ -6194,9 +6198,9 @@ async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: di
     try:
         with db_immediate() as conn:
             if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND slot_key=?", (cta_id, key)).fetchone():
-                return await interaction.response.send_message(f"La posición {numero} ya está ocupada. Liberala primero con `/cta_liberar`.", ephemeral=True)
+                return await interaction.response.send_message(f"La posición {numero} ya está ocupada. Liberala primero con `/cta-admin liberar`.", ephemeral=True)
             if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, miembro.id)).fetchone():
-                return await interaction.response.send_message(f"{miembro.mention} ya está anotado en esta CTA. Liberalo primero con `/cta_liberar`.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+                return await interaction.response.send_message(f"{miembro.mention} ya está anotado en esta CTA. Liberalo primero con `/cta-admin liberar`.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
             conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,assigned_by,override_reason,signed_at) VALUES (?,?,?,?,?,?)", (cta_id, key, miembro.id, interaction.user.id, motivo.strip() if excepcion and motivo else None, cta_now_iso()))
     except sqlite3.IntegrityError:
         return await interaction.response.send_message("La posición se ocupó justo ahora. Probá de nuevo.", ephemeral=True)
@@ -6205,7 +6209,7 @@ async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: di
     await interaction.response.send_message(f"✅ {miembro.mention} quedó asignado a la posición {numero} ({slot['role_name']}, Party {slot['party_no']}).", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
-@bot.tree.command(name="cta_liberar", description="Liberar la posición de un jugador en una CTA", guild=discord.Object(id=GUILD_ID))
+@cta_admin_group.command(name="liberar", description="Liberar la posición de un jugador en una CTA")
 @app_commands.describe(cta_id="Número de la CTA", miembro="Jugador")
 async def cta_liberar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member):
     if not is_cta_manager(interaction.user):
@@ -6222,7 +6226,7 @@ async def cta_liberar(interaction: discord.Interaction, cta_id: int, miembro: di
     await interaction.response.send_message(f"Liberé la posición de {miembro.mention}.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
-@bot.tree.command(name="cta_historial", description="Ver las últimas CTA cerradas", guild=discord.Object(id=GUILD_ID))
+@cta_admin_group.command(name="historial", description="Ver las últimas CTA cerradas")
 async def cta_historial(interaction: discord.Interaction):
     rows = db_fetchall("SELECT id, composition_name, created_at, closed_at, status FROM cta_runs WHERE guild_id=? AND status IN ('closed','error') ORDER BY id DESC LIMIT 10", (interaction.guild_id,))
     if not rows:
@@ -6399,12 +6403,12 @@ HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
-        ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
-        ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
-        ("/cta_cancelar_programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
-        ("/cta_cerrar cta_id", "Staff, Caller, Council", "Cierra una CTA antes de tiempo."),
-        ("/cta_asignar · /cta_liberar", "Staff, Caller, Council", "Pone o saca a un jugador de una posición."),
-        ("/cta_historial", "Todos", "Últimas CTA cerradas."),
+        ("/cta-admin activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
+        ("/cta-admin programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
+        ("/cta-admin cancelar-programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
+        ("/cta-admin cerrar cta_id", "Staff, Caller, Council", "Cierra una CTA antes de tiempo."),
+        ("/cta-admin asignar · /cta-admin liberar", "Staff, Caller, Council", "Pone o saca a un jugador de una posición."),
+        ("/cta-admin historial", "Todos", "Últimas CTA cerradas."),
         ("/compo crear · listar · ver · editar", "Council / Admin", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
