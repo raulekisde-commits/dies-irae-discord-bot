@@ -259,6 +259,38 @@ class DuelDiscordTests(DiscordBase):
         run(getattr(self.cog, f"on_{kind}")(i))
         return i
 
+    def prefix_challenge(self, a, b, amount):
+        """!1v1 @persona cantidad (el ctx de prueba publica el mensaje en el canal, como lo hace Discord)."""
+        ch = self.panelch
+
+        class Ctx:
+            guild, channel, author = self.guild, ch, a
+            out = []
+
+            async def reply(self_, content=None, **kw):
+                self_.out.append(content)
+
+            async def send(self_, content=None, **kw):
+                return await ch.send(content, embed=kw.get("embed"), view=kw.get("view"))
+        ctx = Ctx()
+        ctx.out = []
+        run(self.cog.duel_prefix.callback(self.cog, ctx, b, cantidad=amount))
+        return ctx
+
+    def test_prefix_1v1_hace_lo_mismo_que_el_slash(self):
+        ctx = self.prefix_challenge(self.alice, self.bob, "100")
+        self.assertEqual(ctx.out, [])
+        self.assertEqual(self.bal(self.alice), 9900)                           # se descontó la apuesta de quien reta
+        self.assertEqual(len(self.panelch.sent), 1)                            # y el panel quedó publicado
+        ctx = self.prefix_challenge(self.alice, self.alice, "100")
+        self.assertIn("a vos mismo", ctx.out[0])
+        ctx = self.prefix_challenge(self.alice, self.bob, "")
+        self.assertIn("Uso: `!1v1", ctx.out[0])
+        eco.clear_command_channel(self.db, "1v1")
+        ctx = self.prefix_challenge(self.alice, self.bob, "100")
+        self.assertIn("/eco perms-canal", ctx.out[0])                          # mismas reglas de permisos que /1v1
+        self.assertEqual(self.bal(self.alice), 9900)
+
     def test_1v1_needs_perms_canal_and_only_works_in_that_channel(self):
         eco.clear_command_channel(self.db, "1v1")
         i = self.challenge(self.alice, self.bob, "100")
