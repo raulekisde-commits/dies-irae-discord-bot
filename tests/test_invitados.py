@@ -128,7 +128,7 @@ class Tests(InvBase):
         self.assertNotIn(iv.GUEST_ROLE_ID, self.ecog.default_roles.get("1v1", set()))
         import memberguard
         self.inv(self.leg, self.newbie)
-        self.assertIsNone(run(memberguard.button_block_reason(self.bot, self.newbie)))        # el casino se habilita aparte con /perms-comando
+        self.assertIsNone(run(memberguard.button_block_reason(self.bot, self.newbie)))        # el casino se habilita aparte con /eco perms-comando
         self.assertIn("miembros", run(memberguard.button_block_reason(self.bot, self.outsider)))
 
     def test_info(self):
@@ -139,7 +139,7 @@ class Tests(InvBase):
     def test_info_is_user_only_and_info_staff_adds_team_part(self):
         for topic in iv.INFO_TEXTS:
             user_txt = iv.INFO_TEXTS[topic][1]
-            for staff_only in ("/casinoban", "/perms-canal", "/warning ", "/invitados`", "/coaching-panel", "/addmoney"):
+            for staff_only in ("/casinoban", "/eco perms-canal", "/warning ", "/invitados`", "/coaching-panel", "/eco addmoney"):
                 self.assertNotIn(staff_only, user_txt, f"{topic}: {staff_only} no va en /info")
             self.assertIn(topic, iv.INFO_STAFF)
         self.assertIn("/stats-winrate", iv.INFO_TEXTS["casino"][1])
