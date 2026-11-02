@@ -61,6 +61,31 @@ class T(unittest.TestCase):
         self.assertEqual(by[(1, 4)]["access_mode"], "any")                 # plaza vacía
         self.assertIn("2H_SHAPESHIFTER_SET1", notes["sin_regla"])
 
+    def test_icono_de_la_posicion_es_el_de_su_rol_de_permiso(self):
+        import types
+        p = cw.parse_comp_html(fake_html(LAYOUT, OPTIONS))
+        roles = {111: types.SimpleNamespace(unicode_emoji="🛡️", name="Tank"), 222: types.SimpleNamespace(unicode_emoji=None, name="🌿 Healer")}
+        defs, _ = cw.build_slot_defs(p, BUILDS, lambda w: ar.role_for(self.db, 1, w), lambda l: ar.discord_role_for(self.db, 1, l), None,
+                                     lambda rid: cw.icon_of_role(roles.get(rid)))
+        by = {(d["party_no"], d["position_no"]): d for d in defs}
+        self.assertEqual(by[(1, 1)]["emoji"], "🛡️")                         # emoji de rol de Discord
+        self.assertEqual(by[(1, 2)]["emoji"], "🌿")                         # emoji al comienzo del nombre del rol
+        self.assertEqual(by[(1, 4)]["emoji"], "")                          # plaza vacía: sin rol, sin ícono
+
+    def test_sin_icono_en_el_rol_queda_el_de_siempre(self):
+        import types
+        p = cw.parse_comp_html(fake_html(LAYOUT, OPTIONS))
+        sin = types.SimpleNamespace(unicode_emoji=None, name="Tank")
+        defs, _ = cw.build_slot_defs(p, BUILDS, lambda w: ar.role_for(self.db, 1, w), lambda l: ar.discord_role_for(self.db, 1, l), None, lambda rid: cw.icon_of_role(sin))
+        self.assertEqual({(d["party_no"], d["position_no"]): d for d in defs}[(1, 1)]["emoji"], cw.LABEL_EMOJI["tank"])
+
+    def test_icon_of_role(self):
+        import types
+        self.assertEqual(cw.icon_of_role(types.SimpleNamespace(unicode_emoji="💚", name="x")), "💚")
+        self.assertEqual(cw.icon_of_role(types.SimpleNamespace(unicode_emoji=None, name="Tank")), "")
+        self.assertEqual(cw.icon_of_role(types.SimpleNamespace(unicode_emoji=None, name="⚔️ DPS")), "⚔️")
+        self.assertEqual(cw.icon_of_role(None), "")
+
     def test_crear_diff_y_actualizar(self):
         p = cw.parse_comp_html(fake_html(LAYOUT, OPTIONS))
         f = lambda w: ar.role_for(self.db, 1, w); g = lambda l: ar.discord_role_for(self.db, 1, l)

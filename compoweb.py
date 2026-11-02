@@ -178,9 +178,10 @@ def weapon_of(build: Optional[dict]) -> str:
 
 
 # ---------------------------------------------------------------- de la web a posiciones del bot
-def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_role_for, name_for=None) -> Tuple[List[dict], dict]:
+def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_role_for, name_for=None, role_icon_for=None) -> Tuple[List[dict], dict]:
     """Arma las posiciones: el ROL sale del arma real de cada build, y el NOMBRE es el que le puso quien armó la compo.
-    role_for(weapon_id) -> rol de combate o None · discord_role_for(label) -> id de rol de Discord o None · name_for(weapon_id) -> nombre del arma.
+    role_for(weapon_id) -> rol de combate o None · discord_role_for(label) -> id de rol de Discord o None · name_for(weapon_id) -> nombre del arma ·
+    role_icon_for(role_id) -> ícono (emoji) del rol de Discord o "": la posición lleva el MISMO ícono que su rol de permiso; si el rol no tiene, el de siempre por rol de combate.
     Devuelve (posiciones, avisos) con avisos = {"sin_regla": [arma], "sin_discord": [rol], "sin_datos": [build]}."""
     notes = {"sin_regla": set(), "sin_discord": set(), "sin_datos": set()}
     weapons = parsed.get("weapons", {})
@@ -211,7 +212,8 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
                     role_ids.append(rid)
                 label_seen = label_seen or label
             name = (" / ".join(dict.fromkeys(names)) or "Libre")[:ROLE_NAME_MAX]
-            defs.append({"party_no": pn, "position_no": pos, "role_name": name, "emoji": LABEL_EMOJI.get(label_seen, ""),
+            icon = next((i for i in ((role_icon_for(r) if role_icon_for else "") for r in role_ids) if i), "")
+            defs.append({"party_no": pn, "position_no": pos, "role_name": name, "emoji": icon or LABEL_EMOJI.get(label_seen, ""),
                          "role_ids": role_ids, "access_mode": "roles" if role_ids else "any"})
     return defs, {k: sorted(v) for k, v in notes.items()}
 
@@ -396,3 +398,18 @@ def list_description(db_path: str, build_id: str, size: int = 90) -> str:
         return ""
     desc = " ".join((build_summary(data)[2] or "").split())
     return desc if len(desc) <= size else desc[:size - 1].rstrip() + "…"
+
+
+_NAME_ICON_RE = re.compile(r"^\s*(\S+)\s")
+
+
+def icon_of_role(role) -> str:
+    """Ícono de un rol de Discord para usar en texto: su emoji de rol (unicode_emoji) o, si no tiene, el emoji con que empieza su nombre ('🛡️ Tank').
+    Los íconos de imagen de un rol no se pueden escribir en un mensaje, así que no cuentan. Vacío si no hay."""
+    uni = (getattr(role, "unicode_emoji", None) or "").strip()
+    if uni:
+        return uni
+    m = _NAME_ICON_RE.match(getattr(role, "name", "") or "")
+    if m and not re.search(r"\w", m.group(1)) and len(m.group(1)) <= 8:
+        return m.group(1)
+    return ""

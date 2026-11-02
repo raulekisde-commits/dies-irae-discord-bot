@@ -5393,8 +5393,10 @@ def cta_web_load(guild_id: int, web_id: str, force: bool):
            if bid != compoweb.FILL_BATTLEMOUNT_ID and bid not in parsed.get("weapons", {})]
     builds, failed = compoweb.fetch_builds(DB_PATH, ids, force=force) if ids else ({}, [])
     names = _armas.weapon_names(DB_PATH, guild_id)
+    guild = bot.get_guild(guild_id)
+    role_icon = (lambda rid: compoweb.icon_of_role(guild.get_role(int(rid)))) if guild is not None else None      # la posición lleva el ícono de su rol de permiso
     defs, notes = compoweb.build_slot_defs(parsed, builds, lambda w: _armas.role_for(DB_PATH, guild_id, w),
-                                           lambda l: _armas.discord_role_for(DB_PATH, guild_id, l), lambda w: names.get(w))
+                                           lambda l: _armas.discord_role_for(DB_PATH, guild_id, l), lambda w: names.get(w), role_icon)
     return parsed, defs, notes, failed, len(parsed.get("weapons", {}))
 
 
