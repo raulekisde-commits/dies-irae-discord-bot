@@ -5560,7 +5560,7 @@ async def cta_build_autocomplete(interaction: discord.Interaction, current: str)
 
 
 @compo_group.command(name="ver-builds", description="Ver las builds de una composición (arma, armadura, habilidades)")
-@app_commands.describe(nombre="Composición", build="Una build en particular (si no elegís, ves la lista de todas)")
+@app_commands.describe(nombre="Composición", build="Una build en particular (si no elegís, ves la lista y elegís una)")
 async def compo_ver_builds(interaction: discord.Interaction, nombre: str, build: Optional[str] = None):
     comp = cta_get_composition(interaction.guild_id, nombre)
     if not comp:
@@ -5583,33 +5583,75 @@ async def compo_ver_builds(interaction: discord.Interaction, nombre: str, build:
         meta = next((b for b in builds if b["id"] == build), None)
         if meta is None:
             return await interaction.followup.send("No encontré esa build en la composición. Elegila de la lista del comando.", ephemeral=True)
-        try:
-            data = await asyncio.to_thread(compoweb.fetch_build_any_age, DB_PATH, build)
-        except Exception as exc:
-            print(f"/compo ver-builds {build}: {exc!r}")
-            return await interaction.followup.send(f"❌ No pude leer el detalle de **{meta['name']}** ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
-        bname, play, desc = compoweb.build_summary(data)
-        emb = discord.Embed(title=f"🧩 {bname}", color=discord.Color.blurple(),
-                            description=(f"**{compoweb.PLAYSTYLE_ES.get(play, play.upper() or 'Build')}**" + (f" · {desc[:300]}" if desc else "")
-                                         + f"\nUsada en: {', '.join(meta['positions'][:20])}" + (" …" if len(meta['positions']) > 20 else "")))
-        for label, text in compoweb.build_detail_lines(data):
-            emb.add_field(name=label, value=text[:1000], inline=True)
-        draft = (data.get("build") or data)
-        draft = draft.get("draft") or draft
-        if draft.get("mainHand"):
-            emb.set_thumbnail(url=f"https://render.albiononline.com/v1/item/{compoweb.item_type(draft['mainHand'])}.png")
-        emb.set_footer(text=f"Composición: {comp['name']}")
-        return await interaction.followup.send(embed=emb, ephemeral=True)
+        return await cta_send_build(interaction, comp, meta)
     lines = []
     for b in builds:
         pos = ", ".join(b["positions"][:6]) + (f" +{len(b['positions']) - 6}" if len(b["positions"]) > 6 else "")
         lines.append(f"• **{b['name']}**" + (f" · {b['weapon']}" if b["weapon"] else "") + f" — {pos}")
     emb = discord.Embed(title=f"🧩 Builds de {comp['name']}", color=discord.Color.blurple(),
                         description=("\n".join(lines) or "Esta composición no tiene builds.")[:4000])
-    emb.set_footer(text="Para ver una en detalle: /compo ver-builds nombre:… build:…")
+    emb.set_footer(text="Elegí una build abajo para ver su imagen con las habilidades.")
     if url:
         emb.add_field(name="🔗 Web", value=url[:1000], inline=False)
+    view = CTABuildPickView(comp, builds) if builds else None
+    await interaction.followup.send(embed=emb, view=view, ephemeral=True)
+
+
+try:
+    import buildcard
+except Exception:
+    buildcard = None
+    print("Sin imagen de builds (falta Pillow: pip install -r requirements.txt).")
+
+
+async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dict):
+    """Imagen de la build (con habilidades) con el nombre que le puso quien armó la compo; si no se puede dibujar, el detalle en texto."""
+    url = comp.get("builds_url")
+    try:
+        data = await asyncio.to_thread(compoweb.fetch_build_any_age, DB_PATH, meta["id"])
+    except Exception as exc:
+        print(f"/compo ver-builds {meta['id']}: {exc!r}")
+        return await interaction.followup.send(f"❌ No pude leer el detalle de **{meta['name']}** ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+    where = f"Usada en: {', '.join(meta['positions'][:20])}" + (" …" if len(meta["positions"]) > 20 else "")
+    if buildcard is not None:
+        try:
+            png = await asyncio.to_thread(buildcard.render, data, meta["name"])
+            return await interaction.followup.send(content=f"🧩 **{meta['name']}** · {comp['name']}\n{where}", file=discord.File(io.BytesIO(png), filename="build.png"), ephemeral=True)
+        except Exception as exc:
+            print(f"/compo ver-builds: no pude dibujar la imagen de {meta['id']}: {exc!r}")
+    bname, play, desc = compoweb.build_summary(data)
+    emb = discord.Embed(title=f"🧩 {meta['name']}", color=discord.Color.blurple(),
+                        description=f"**{compoweb.PLAYSTYLE_ES.get(play, play.upper() or 'Build')}**" + (f" · {desc[:300]}" if desc else "") + f"\n{where}")
+    for label, text in compoweb.build_detail_lines(data):
+        emb.add_field(name=label, value=text[:1000], inline=True)
+    draft = data.get("build") or data
+    draft = draft.get("draft") or draft
+    if draft.get("mainHand"):
+        emb.set_thumbnail(url=f"https://render.albiononline.com/v1/item/{compoweb.item_type(draft['mainHand'])}.png")
+    emb.set_footer(text=f"Composición: {comp['name']}")
     await interaction.followup.send(embed=emb, ephemeral=True)
+
+
+class CTABuildPickView(discord.ui.View):
+    """Menús para elegir una build de la lista (de a 25 por menú) y ver su imagen."""
+    def __init__(self, comp: dict, builds: list):
+        super().__init__(timeout=900)
+        self.comp = comp
+        self.by_id = {b["id"]: b for b in builds}
+        for n in range(0, min(len(builds), 100), 25):
+            chunk = builds[n:n + 25]
+            sel = discord.ui.Select(placeholder=f"Ver una build ({n + 1}-{n + len(chunk)})",
+                                    options=[discord.SelectOption(label=b["name"][:100], value=b["id"], description=", ".join(b["positions"][:4])[:100]) for b in chunk])
+            sel.callback = self.picked
+            self.add_item(sel)
+
+    async def picked(self, interaction: discord.Interaction):
+        bid = interaction.data["values"][0]
+        meta = self.by_id.get(bid)
+        if meta is None:
+            return await interaction.response.send_message("No encontré esa build.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await cta_send_build(interaction, self.comp, meta)
 
 
 compo_ver_builds.autocomplete("nombre")(cta_name_autocomplete)
@@ -6037,7 +6079,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 # (sección, [(comando, quién puede usarlo, explicación breve)])
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
-        ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: sin `build` la lista con las posiciones donde se usa cada una; con `build` el detalle (arma, armadura, comida, poción y habilidades). Usa lo ya guardado: no consulta el sitio."),
+        ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo de transparencia y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split."),
         ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),

@@ -179,7 +179,7 @@ def weapon_of(build: Optional[dict]) -> str:
 
 # ---------------------------------------------------------------- de la web a posiciones del bot
 def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_role_for, name_for=None) -> Tuple[List[dict], dict]:
-    """Arma las posiciones según el ARMA real de cada build (no según el nombre que le puso quien armó la compo).
+    """Arma las posiciones: el ROL sale del arma real de cada build, y el NOMBRE es el que le puso quien armó la compo.
     role_for(weapon_id) -> rol de combate o None · discord_role_for(label) -> id de rol de Discord o None · name_for(weapon_id) -> nombre del arma.
     Devuelve (posiciones, avisos) con avisos = {"sin_regla": [arma], "sin_discord": [rol], "sin_datos": [build]}."""
     notes = {"sin_regla": set(), "sin_discord": set(), "sin_datos": set()}
@@ -197,7 +197,7 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
                     weapon = weapons.get(bid) or weapon_of(builds.get(bid))
                     label = ""
                     if weapon:
-                        names.append((name_for(weapon) if name_for else None) or meta["name"])
+                        names.append(meta["name"])                    # en el panel va el nombre que le puso quien armó la compo
                         label = role_for(weapon) or ""
                         if not label:
                             notes["sin_regla"].add(weapon)
