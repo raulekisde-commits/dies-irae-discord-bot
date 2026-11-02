@@ -771,7 +771,7 @@ class EconomyCog(commands.Cog):
             return "`/1v1`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
-        return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
+        return f"`/{command}`" if command in ("verhistorial", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
 
     @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando en ESTE canal; si ya estaba habilitado acá, lo deshabilita")
     @app_commands.describe(comando="Comando a habilitar en este canal (si ya está acá, se deshabilita)")
@@ -1019,7 +1019,7 @@ class EconomyCog(commands.Cog):
     async def set_balance_cmd(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
         try:
             member = interaction.user
-            if interaction.guild is None or not await self.has_command_permission(member, "set-balance"):
+            if interaction.guild is None or not is_admin_member(member):   # solo propietario/Administrator: no es delegable
                 return await self._ephemeral(interaction, "❌ Este comando es solo para el propietario del servidor o administradores.")
             if usuario.bot:
                 return await self._ephemeral(interaction, "❌ No se puede operar sobre bots.")
