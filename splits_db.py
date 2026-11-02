@@ -1,4 +1,4 @@
-"""Splits (/transparencia): datos, cálculo y cierre. Sin Discord: solo SQLite y matemática.
+"""Splits (/split): datos, cálculo y cierre. Sin Discord: solo SQLite y matemática.
 
 Cálculo (todo en enteros de silver, redondeando siempre hacia abajo):
     bruto           = total + Σ looteado de los looters
@@ -455,7 +455,7 @@ def add_half(db_path: str, split_id: int, user_ids: Iterable[int]) -> Tuple[int,
             _require_open(conn, split_id)
             s = _load(conn, split_id)
             if not s.is_ava:
-                raise SplitError("La lista mitad solo existe en los splits AVA (/transparencia-ava).")
+                raise SplitError("La lista mitad solo existe en los splits AVA (/split-ava).")
             have = set(s.half)
             for uid in dict.fromkeys(int(u) for u in user_ids):
                 if uid in have:

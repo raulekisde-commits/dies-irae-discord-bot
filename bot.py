@@ -2868,7 +2868,7 @@ async def rolalbion(
 
 async def albion_participantes_para_split(guild: discord.Guild, texto: str, guild_name: str) -> dict:
     """Misma búsqueda que /rolalbion (AlbionBB + coincidencia exacta de nombre/apodo), pero solo devuelve el resultado.
-    Lo usa el botón «Agregar killboard» del panel de edición de /transparencia."""
+    Lo usa el botón «Agregar killboard» del panel de edición de /split."""
     battle_ids = extraer_ids(texto)
     if not battle_ids:
         return {"error": "No encontré ningún ID de batalla en ese link."}
@@ -3394,7 +3394,7 @@ def cta_db_init():
         db_ensure_column(conn, "cta_compositions", "legacy_first", "INTEGER NOT NULL DEFAULT 0")
         # Rol creado al cerrar la CTA: NULL = pendiente, -1 = en proceso, 0 = no se pudo, otro = id del rol.
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
-        # Composiciones «track»: al cerrar la inscripción generan un split (/transparencia) en vez de crear un rol.
+        # Composiciones «track»: al cerrar la inscripción generan un split (/split) en vez de crear un rol.
         db_ensure_column(conn, "cta_compositions", "track", "INTEGER NOT NULL DEFAULT 0")
         db_ensure_column(conn, "cta_runs", "track", "INTEGER NOT NULL DEFAULT 0")
         db_ensure_column(conn, "cta_runs", "tab", "TEXT")
@@ -4176,7 +4176,7 @@ cta_role_tasks: set = set()
 
 
 async def cta_create_track_split(run_id: int):
-    """Al cerrar una CTA con track: crea el split con la gente anotada (misma lógica que /transparencia).
+    """Al cerrar una CTA con track: crea el split con la gente anotada (misma lógica que /split).
 
     Se reclama de forma atómica (split_state -1) para que nunca se cree dos veces; el split además guarda
     source_cta_id, así que aunque se reintente no se duplica."""
@@ -4211,7 +4211,7 @@ async def cta_create_track_split(run_id: int):
         split, msg, error = None, None, "❌ Falló la creación del split."
     if split is None:
         db_execute("UPDATE cta_runs SET split_state=0 WHERE id=?", (run_id,))
-        await say(f"⚠️ No pude generar el split de esta CTA. {error or ''} Podés crearlo a mano con `/transparencia`.".strip())
+        await say(f"⚠️ No pude generar el split de esta CTA. {error or ''} Podés crearlo a mano con `/split`.".strip())
         return
     db_execute("UPDATE cta_runs SET split_state=?  WHERE id=?", (int(split.id), run_id))
     cta_audit(int(run["guild_id"]), int(run["created_by"]), "cta_split_created", run_id, f"split={split.id}; anotados={len(user_ids)}")
@@ -6429,8 +6429,8 @@ HELP_SECTIONS = [
         ("/canal dados canal", "Council / Admin", "Define el canal donde se publican los paneles de `!dados`."),
         ("/panel apuestas", "Admin / rol autorizado", "Publica los paneles de apuestas: Top apostado, Top ganado (solo positivos), Top perdido (solo negativos) y la lista negra del casino. Solo aparece gente que sigue en el servidor; al salir se reinician sus datos."),
         ("/addhorautc [categoria]", "Council / Admin", "Crea un canal de voz «🕒 HH:MM UTC» (solo para mirar) que se renombra cada 10 minutos, el máximo que permite Discord de forma segura."),
-        ("/transparencia titulo [tab] [city] [rol] [total] [reparacion] [bolsitas] [looters]", "Council / Admin", "Crea un split: panel con botón Cerrar split + hilo con la lista de personas y el cálculo (taxes, total por persona). Al cerrar (solo Council) se acredita a cada persona su parte y a cada looter su tax."),
-        ("/transparencia-ava titulo [tab] [city] [rol] [total] [reparacion] [bolsitas] [scouts] [pago_scout]", "Council / Admin", "Igual que /transparencia pero sin looters: cada scout cobra un monto fijo (pago_scout) que se descuenta del total a repartir. Las bolsitas se suman al total. Con `!agregarlistamitad @personas` en el hilo, esas personas cobran la mitad de la parte."),
+        ("/split titulo [tab] [city] [rol] [total] [reparacion] [bolsitas] [looters]", "Council / Admin", "Crea un split: panel con botón Cerrar split + hilo con la lista de personas y el cálculo (taxes, total por persona). Al cerrar (solo Council) se acredita a cada persona su parte y a cada looter su tax."),
+        ("/split-ava titulo [tab] [city] [rol] [total] [reparacion] [bolsitas] [scouts] [pago_scout]", "Council / Admin", "Igual que /split pero sin looters: cada scout cobra un monto fijo (pago_scout) que se descuenta del total a repartir. Las bolsitas se suman al total. Con `!agregarlistamitad @personas` en el hilo, esas personas cobran la mitad de la parte."),
         ("/editar [id]", "Council / Admin / creador", "(Alternativa al botón «Editar» del panel del split.) Edita un split abierto (usalo dentro de su hilo): datos, montos y taxes, looters (agregar/editar/quitar) y personas o roles. El hilo se actualiza al instante. Si el split ya está cerrado, el Council puede reabrirlo: al «Confirmar edición» se resta a cada persona lo que cobró antes (puede quedar en negativo) y se reparte de nuevo con los datos nuevos."),
         ("/panel cambiomoneda [canal]", "Council / Admin", "Publica dos paneles con tickets: vender Wuju Coins por silver (el Council acepta y retira el balance) y comprar Wuju Coins (depósito + foto; el Council los agrega con doble confirmación)."),
         ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /dados, /coinflip y /1v1."),

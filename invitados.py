@@ -70,6 +70,8 @@ INFO_TEXTS = {
                  "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
                  "**Splits**\n"
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
+                 "**Guild Shop**\n"
+                 "• Podés comprar ítems en el **Guild Shop** con un **10% de descuento**: creás un ticket desde el panel del shop y un Seller te atiende.\n\n"
                  "**Cambiar tu balance**\n"
                  "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
     "zvz-vods": ("🎥 ZvZ y VODs (coaching)",
@@ -105,7 +107,7 @@ INFO_STAFF = {
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/addmoney` y `/remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
                  "• `/set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco-stats` (Staff) — total de monedas en el servidor. `/historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
-                 "• **Splits** (Council / Admin): `/transparencia` (con looters) y `/transparencia-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
+                 "• **Splits** (Council / Admin): `/split` (con looters) y `/split-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
                  "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"
                  "• **Cambio de moneda**: `/panel cambiomoneda` publica los tickets de venta y compra de Wuju Coins; el Council acepta y retira el balance."),
     "zvz-vods": ("• `/coaching-panel` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
@@ -114,6 +116,163 @@ INFO_STAFF = {
                  "• `/coaching-reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
                  "• `/top coach` — quién cierra más devoluciones."),
 }
+
+INFO_TEXTS.update({
+    "splits": ("💸 Splits (reparto de las CTA)",
+               "El split es el reparto de lo que se gana en una CTA. Se publican en <#1558630638066602094> (canal de splits): ahí podés ver **todos los detalles** de cada reparto, quiénes participaron y cuánto cobró cada uno.\n\n"
+               "**Quién cobra**\n"
+               "• Solo recibe split la gente que se **anotó en la CTA** (`/info zvz`).\n"
+               "• Si llegaste tarde, igual podés anotarte: el **Staff decide** si entrás al split o no.\n\n"
+               "**Cómo se calcula**\n"
+               "• La guild se queda el **5%** de las tabs.\n"
+               "• Al vender las tabs, el precio baja un **20% en HO** y un **15% en city**.\n"
+               "• El **looter** se lleva el **10%** de lo que looteó, menos la reparación, y además cuenta como uno más en el split general.\n"
+               "• Lo que queda se divide en partes iguales entre todos los anotados y se te acredita directo en tu balance (`/bal`).\n\n"
+               "Cada split queda registrado en el canal, así que siempre podés revisar cómo se hizo el cálculo."),
+    "zvz": ("⚔️ ZvZ: cómo anotarte a una CTA",
+            "**Anotarte**\n"
+            "• Cuando sale una CTA se publica un panel con la composición y un hilo. Las inscripciones tienen un **tiempo seteado por el caller** (el panel muestra cuándo cierran).\n"
+            "• Para anotarte, escribí en el hilo el **número de la posición** que querés ocupar. Ej: `5`.\n"
+            "• A veces la Party 1 es solo para Legacy durante los primeros minutos; el panel lo avisa.\n"
+            "• Si tenés el rol **Bomb**, te anotás con `+` en el hilo de Bomb o con su botón.\n\n"
+            "**Tu build**\n"
+            "• En el panel de la CTA tocá **🧩 Ver mi build**: te muestra la build del slot en el que te anotaste.\n\n"
+            "**Loot**\n"
+            "• Tenés que **depositar todo lo looteado** de la CTA en la **tab que elija el caller**. Después se vende y se reparte: mirá `/info splits`.\n\n"
+            "**Después de la CTA**\n"
+            "• El Staff carga los killboards y te cuenta para `/stats` (`/info stats`).\n"
+            "• Para pedir feedback de tus VODs: `/info zvz-vods`."),
+    "reclutamiento": ("🧾 Cómo unirte a la guild",
+                      "• Buscá el panel de reclutamiento y tocá el botón para postularte.\n"
+                      "• Completás un formulario: tu nick exacto en Albion, rol main, otros roles que sabés jugar, horarios UTC, gremio anterior, si podés grabar tus CTAs, idioma y si tenés amigos en la guild que te puedan vouchear.\n"
+                      "• Se abre un canal privado donde solo vos y los reclutadores ven tu postulación. Pueden hacerte preguntas ahí.\n"
+                      "• Si te aceptan, tu cuenta queda **registrada** con ese personaje y recibís los roles apenas aparezcas dentro de la guild en el juego, así que acordate de pedir la invitación en Albion.\n"
+                      "• Si te rechazan, te llega un mensaje privado y podés volver a aplicar más adelante."),
+    "timers": ("⏱️ Timers de recursos",
+               "Los timers avisan cuándo sale un recurso en un mapa.\n\n"
+               "**Cargar un timer**\n"
+               "• `/timeradd material mapa tiempo [tier]` — lo pueden usar los **miembros registrados**.\n"
+               "• `tiempo` es el horario UTC en que sale, formato `HH:MM` (ej: `16:10`).\n"
+               "• Tier: 4.4 a 8.4 para fibra, cuero, mineral y madera; Common a Legendary para vortex y core. **Dragon** no lleva tier.\n"
+               "• El bot no deja subir **duplicados**: si ya existe el mismo material, mapa, tier y hora, te avisa quién lo cargó.\n\n"
+               "**Dónde ver los timers**\n"
+               "• Los timers aparecen en los paneles de <#1462516135361777875>, ordenados por categoría, con el tiempo que falta.\n"
+               "• **60 minutos antes** de que salga, el bot avisa en <#1462184630835740732>.\n\n"
+               "Eliminar un timer lo hace el Staff."),
+    "stats": ("📊 Estadísticas",
+              "**`/stats [usuario]`** (sin nombre, ves las tuyas). Necesitás tener tu personaje de Albion registrado. Muestra:\n"
+              "• ⚔️ Kills, 💀 muertes y 🛡️ asistencia (peleas en las que apareciste).\n"
+              "• 💥 Muertes en el primer engage (porcentaje y cantidad).\n"
+              "• 🚫 CTAs skipeadas: estabas conectado en la CTA y no apareciste en el killboard ni anotado.\n"
+              "• 🎭 Tus roles más jugados.\n"
+              "• 📈 IP promedio, máxima y mínima.\n"
+              "Solo cuentan los killboards que cargó el staff.\n\n"
+              "**`/stats-winrate [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
+              "**Rankings**\n"
+              "• `/top` — Wuju Coins, kills, muertes, asistencia, skippers, IP, winrate, tareas del staff y coaches.\n"
+              "• `/mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
+    "registro": ("📝 Registro de tu personaje",
+                 "El registro vincula tu cuenta de Discord con tu personaje de Albion. Sin registro no podés usar varios comandos de miembros (si el registro es obligatorio).\n\n"
+                 "**Comandos**\n"
+                 "• `/registrar usuario_de_albion` — escribí tu nick y el bot busca el personaje. Tiene que estar en la guild.\n"
+                 "• `/mi_registro` — ver qué personaje tenés vinculado.\n\n"
+                 "**Reglas**\n"
+                 "• Un personaje solo puede estar vinculado a **una** cuenta de Discord. Una cuenta de Discord puede tener varios personajes.\n"
+                 "• El nombre se toma exacto desde Albion, así que escribilo tal cual está en el juego.\n"
+                 "• Si alguien más te registra, tenés que **aceptar vos** desde tu cuenta: nadie se registra por otro sin permiso.\n"
+                 "• Si cambiaste de personaje o hay un error, pedile ayuda al Staff.\n"
+                 "• Tu apodo en el servidor se ajusta al nombre de tu personaje."),
+})
+
+INFO_STAFF.update({
+    "splits": ("**Crear**\n"
+               "• `/split titulo [tab] [city] [rol] [total] [reparacion] [bolsitas] [looters]` (Council / Admin) — crea el panel con botones **Editar**, **Cerrar split** y **Cancelar split**, más el hilo con la lista y el cálculo.\n"
+               "• Si la composición de la CTA es «track», el split se crea solo al cerrar la CTA con la gente anotada. Si falla, se arma a mano con `/split`.\n"
+               "• Anotados tarde: aparecen con botones **Agregar al split** / **Descartar**. Deciden Council, Staff, Caller o quien creó el split.\n\n"
+               "**Editar** (botón **Editar** o `/editar [id]`; el panel es solo tuyo y vence a los 15 min)\n"
+               "• 📝 Datos (título, tab, city) · 💰 Montos y taxes (total, reparación, tax de venta y de guild) · 👜 Bolsitas.\n"
+               "• 🪙 Agregar / ✏️ editar / ➖ quitar looters (máx. 25; cada looter tiene su looteado, reparación y tax propio).\n"
+               "• 👥 Agregar / 🧹 quitar personas · 🎭 Agregar rol (suma a todos los del rol) · ⚔️ Agregar killboard (links de AlbionBB y guild: suma a quienes pelearon).\n"
+               "• En el hilo: `/agregarlista` o `!agregarlista @a @b`.\n\n"
+               "**Cálculo**\n"
+               "• Por defecto: tax de venta **20%** (HO; en city poné **15%** en Montos y taxes), tax de guild **5%**, tax looter **10%**.\n"
+               "• Neto = total + looteado − reparación. A eso se le descuentan tax de venta, de guild y la parte de los looters.\n"
+               "• Las **bolsitas** se suman al final y no pagan taxes. El resto se divide en partes iguales; lo que sobra por redondeo no se reparte.\n\n"
+               "**Cerrar y pagar**\n"
+               "• **Cerrar split** pide confirmación y acredita el balance a cada persona. El pago es **idempotente**: no se duplica aunque se repita.\n"
+               "• Si te equivocaste, **Reabrir para editar** y luego **Confirmar edición**: el bot resta lo ya pagado y paga de nuevo con los datos corregidos.\n\n"
+               "**`/split-ava`** (Council / Admin) — para AVA: sin looters. Los **scouts** cobran un monto fijo (`pago_scout`) que se descuenta antes de repartir. Se cargan con `scouts` o desde Editar.\n"
+               "• **Lista mitad**: gente que cobra la mitad de una parte. Se agrega con `!agregarlistamitad @persona` o con el botón **Agregar lista mitad** (quitar: **Quitar lista mitad**). Solo existe en los split AVA."),
+    "zvz": ("**Quién puede qué**\n"
+            "• Iniciar y administrar CTA: **Staff, Caller y Council / Admin**.\n"
+            "• Botones **Cerrar CTA**, **Cancelar CTA** y **Agregar Bomb**: solo **Council y Caller**.\n"
+            "• **Ver mi build**: cualquier miembro.\n\n"
+            "**Publicar**\n"
+            "• `/cta nombre [tiempo] [titulo] [programar]` — `nombre` es una composición guardada. `tiempo` es la duración de las inscripciones (`HH:MM` o minutos; mínimo 10, por defecto 40). `programar` es una hora UTC `HH:MM` para publicarla más tarde con @everyone y @here.\n"
+            "• Crea el panel con las parties y el hilo de inscripción. La gente se anota escribiendo el número de posición.\n"
+            "• Las composiciones se administran con `/compo` (Council / Admin). `/compo builds nombre link` pone el link de «Builds».\n\n"
+            "**Gestionar una CTA**\n"
+            "• `/cta_activas` y `/cta_historial` — ver CTAs activas y las últimas cerradas.\n"
+            "• `/cta_programadas` y `/cta_cancelar_programada` — las que esperan su hora.\n"
+            "• `/cta_cerrar` — cierra la inscripción antes de tiempo.\n"
+            "• `/cta_asignar` y `/cta_liberar` — poner o sacar a un jugador de una posición a mano.\n\n"
+            "**Bomb**\n"
+            "• **Agregar Bomb** crea un panel e hilo aparte en el canal de Bomb. Puede haber varios por CTA. Solo el rol Bomb se anota (`+` o botón) y cuentan en el split.\n\n"
+            "**Cerrar**\n"
+            "• **Cerrar CTA** crea el panel y el hilo de stats (`/info-staff stats`) y deja de aceptar anotados. Si la composición es «track», genera el split (`/info-staff splits`).\n"
+            "• Durante los primeros 5 min la Party 1 es solo Legacy si la composición lo tiene activado."),
+    "reclutamiento": ("**Montaje**\n"
+                      "• `/panel-reclutamiento` (Admin) publica el panel con el botón de postulación en el canal donde lo uses.\n"
+                      "• Cada postulación abre un canal privado visible para el postulante y el rol **Reclutador**. Arriba queda el resumen con todos los datos y el nick de Albion.\n\n"
+                      "**Cómo reclutar paso a paso**\n"
+                      "1. Leé el resumen: nick, rol main, otros roles, horarios, gremio anterior, si graba CTAs, idioma y **amigos en la guild** (para vouch). Hablá con la persona en el canal.\n"
+                      "2. Tocá **✔ Aceptar**. El bot te pregunta qué **roles de CTA** darle (el main viene preseleccionado) y si le das el rol **Observación**. Confirmá.\n"
+                      "3. El bot **registra** al postulante con su nick de Albion (`/info-staff registro`).\n"
+                      "4. Si ya está en la guild, recibe al instante **Miembro** + los roles elegidos y se le saca **Public**. Si todavía no, los recibe **automáticamente** cuando aparezca dentro de la guild. Si pasan 14 días sin entrar, se cancela la espera.\n"
+                      "5. Revisá los pendientes con `/reclutas-pendientes`.\n\n"
+                      "**Rechazar / Cerrar**\n"
+                      "• **❌ Rechazar** manda un mensaje privado al postulante, deja registro en el canal de logs y borra el canal.\n"
+                      "• **🔒 Cerrar** cierra el ticket sin aceptar ni rechazar.\n"
+                      "• Cada aceptación y rechazo queda en el canal de logs con quién lo hizo.\n\n"
+                      "Solo los reclutadores pueden usar Aceptar, Rechazar y Cerrar. Quien apretó Aceptar es quien confirma los roles."),
+    "timers": ("• **Cargar**: lo hacen los miembros registrados con `/timeradd`.\n"
+               "• **Eliminar**: solo **Staff**, con `/deltimer` (completando los mismos datos con que se cargó) o con el botón **Eliminar** del panel. Los miembros no pueden borrar.\n"
+               "• Antes de guardar, el bot revisa duplicados (mismo material, mapa, tier y hora UTC) y no sube el repetido.\n"
+               "• Al agregar o borrar, el panel de esa categoría se actualiza solo; si falta, se vuelve a crear.\n"
+               "• Si el bot no puede escribir en el canal de timers, avisa que guardó el timer pero no pudo actualizar los paneles: revisá sus permisos.\n"
+               "• Si hay un timer mal cargado, borralo y pedí que lo vuelvan a subir con el dato correcto."),
+    "stats": ("**Cargar killboards (estadísticas de la CTA)**\n"
+              "• Al cerrar la CTA el bot crea el **hilo de stats** en <#1565980248133345300>. Ahí hay dos botones: **🗡️ Cargar killboard** y **📋 Cargar conectados**.\n"
+              "• Los pueden usar **Staff, Council, Caller y Opinólogo**.\n"
+              "• **Killboard**: pegá links o IDs de AlbionBB (varios separados por coma o espacio; hay un máximo por carga). También con `/killboard cargar enlaces` dentro del hilo. Fuera de un hilo de CTA solo Staff y Council.\n"
+              "• **Conectados**: subí el `.txt` del bloc de notas con *Character Name / Last Seen / Roles* (botón o `/killboard conectados archivo`).\n\n"
+              "**Qué hace con eso**\n"
+              "• Suma kills, muertes, asistencia, primer engage, roles jugados e IP a cada jugador registrado.\n"
+              "• Con el killboard **y** la lista de conectados calcula los **skippers**: gente conectada que no aparece en el killboard ni anotada. Si falta uno de los dos, el bot avisa.\n"
+              "• Sin los dos datos cargados, las stats y el `/top` no cuentan esa CTA.\n\n"
+              "**Administrar**\n"
+              "• `/killboard borrar batalla` (Staff / Council) — saca un killboard para que deje de contar.\n"
+              "• `/killboard probar batalla` (Staff / Council) — muestra qué datos trae AlbionBB sin guardar nada.\n"
+              "• Los jugadores sin personaje registrado no suman: usá `/sin-albion`.\n"
+              "• Las stats del casino (`/stats-winrate`) salen del historial de apuestas y no dependen de killboards."),
+    "registro": ("• `/admin_registro usuario` — ver los personajes vinculados a un miembro.\n"
+                 "• `/admin_desvincular usuario` — quitar un personaje vinculado. También sirve si dos personas reclaman el mismo.\n"
+                 "• `/admin_vincular` (excepcional) — vincula a mano sin que la persona acepte.\n"
+                 "• `/sin-albion` — miembros de Discord sin personaje (con `mencionar:true` los etiqueta). `/sin-discord` — jugadores de la guild sin Discord vinculado.\n"
+                 "• `/completar-registros` — completa el ID de los registros que no lo tienen y lista los que no pudo verificar.\n"
+                 "• `/sincronizar-apodos` — revisa que cada apodo sea el personaje y corrige los que no.\n"
+                 "• `/reclutas-pendientes` — aceptados que todavía no entraron a la guild.\n"
+                 "• `/recuperar-lista` y `/recuperar @persona` — los últimos 5 registrados que se fueron del servidor; si vuelve, devuelve registro, roles y apodo.\n"
+                 "• `/estado-api` (Admin) — revisa si la API de Albion responde. Si no registra a nadie, empezá por acá.\n"
+                 "• `/registro_canal` y `/registro_obligatorio` (Admin) — canal de avisos y exigir (o no) estar registrado.\n"
+                 "• `/desvincular` (Council) — quita el personaje de tu propia cuenta.\n\n"
+                 "**Qué garantiza y qué no**\n"
+                 "• La API de Albion no tiene login: prueba que el personaje existe y su guild, pero **no quién lo controla**.\n"
+                 "• El nombre sale exacto de la API, un personaje solo puede ir con una cuenta y nadie registra a otro sin que acepte."),
+})
+INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/guild-shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
+
+
 def _roles(m) -> set:
     return {r.id for r in getattr(m, "roles", [])}
 
@@ -355,7 +514,7 @@ class InvitadosCog(commands.Cog):
             await _say(interaction, c)
 
     # ---------- /info (usuarios) y /info-staff (usuarios + equipo) ----------
-    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("invitados", "warnings", "casino", "economia", "zvz-vods")]
+    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("splits", "zvz", "reclutamiento", "registro", "timers", "stats", "economia", "casino", "zvz-vods", "invitados", "warnings")]
 
     @staticmethod
     def info_embed(value: str, staff: bool) -> discord.Embed:

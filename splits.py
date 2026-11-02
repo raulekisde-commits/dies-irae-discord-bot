@@ -1,4 +1,4 @@
-"""/transparencia y /editar — splits con panel, hilo y pago al cerrar (capa de Discord)."""
+"""/split y /editar — splits con panel, hilo y pago al cerrar (capa de Discord)."""
 import asyncio
 import re
 import traceback
@@ -678,7 +678,7 @@ class SplitsCog(commands.Cog):
             except Exception as exc:
                 print(f"⚠️ Split #{split_id}: no pude actualizar {col}: {exc!r}")
 
-    # ---------- /transparencia y /transparencia-ava ----------
+    # ---------- /split y /split-ava ----------
     async def _parse_mentions(self, interaction, text: Optional[str], what: str):
         """Devuelve (ids, error). Las menciones tienen que ser de gente del servidor y no bots."""
         guild = interaction.guild
@@ -724,7 +724,7 @@ class SplitsCog(commands.Cog):
             f"✅ Split **{split.title}** creado: {getattr(msg, 'jump_url', '')}\n"
             f"Con el botón **Editar** del panel cargás {what}.", ephemeral=True)
 
-    @app_commands.command(name="transparencia", description="Crea un split: panel + hilo con la lista de personas y el cálculo")
+    @app_commands.command(name="split", description="Crea un split: panel + hilo con la lista de personas y el cálculo")
     @app_commands.describe(
         titulo="Título del split",
         tab="Tab (opcional)", city="City (opcional)",
@@ -739,7 +739,7 @@ class SplitsCog(commands.Cog):
         await self._create_command(interaction, ava=False, titulo=titulo, tab=tab, city=city, rol=rol, total=total,
                                    reparacion=reparacion, bolsitas=bolsitas, extra=looters)
 
-    @app_commands.command(name="transparencia-ava", description="Como /transparencia, pero sin looters: los scouts cobran un monto fijo")
+    @app_commands.command(name="split-ava", description="Como /split, pero sin looters: los scouts cobran un monto fijo")
     @app_commands.describe(
         titulo="Título del split",
         tab="Tab (opcional)", city="City (opcional)",
@@ -1272,7 +1272,7 @@ class SplitsCog(commands.Cog):
         if not (can_manage(actor) or actor.id == s.creator_id):
             return "🔒 Solo el Council, un administrador o quien creó el split puede agregar gente."
         if not s.is_ava:
-            return "❌ La lista mitad solo existe en los splits de `/transparencia-ava`."
+            return "❌ La lista mitad solo existe en los splits de `/split-ava`."
         if not s.is_open:
             return "❌ Ese split ya está cerrado: no se puede modificar."
         ids = [m.id for m in members if not getattr(m, "bot", False)]
