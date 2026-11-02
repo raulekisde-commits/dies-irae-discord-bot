@@ -247,6 +247,12 @@ class BetsCog(commands.Cog):
         from economy import is_admin_member
         return is_admin_member(member)
 
+    @staticmethod
+    def can_override(member) -> bool:
+        """Council, propietario o Administrator: pueden cerrar y resolver apuestas ajenas (la cancelación sigue como estaba)."""
+        from guildshop import can_manage
+        return can_manage(member)
+
     async def can_create(self, member) -> bool:
         eco_cog = self.economy
         if eco_cog is not None:
@@ -471,16 +477,17 @@ class BetsCog(commands.Cog):
             await self.reply(interaction, "❌ No encuentro la apuesta. Usá el comando dentro de su hilo o indicá el `id`.")
         return bet
 
-    @apuesta_g.command(name="cerrar", description="Cierra una apuesta: ya no se aceptan más apuestas (solo quien la creó)")
+    @apuesta_g.command(name="cerrar", description="Cierra una apuesta: ya no se aceptan más apuestas (quien la creó, Council o administradores)")
     @app_commands.describe(id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
     @safe
     async def cerrarapuesta(self, interaction: discord.Interaction, id: Optional[int] = None):
         bet = await self._target_bet(interaction, id)
         if bet is None:
             return
-        if interaction.user.id != bet.creator_id:
-            return await self.reply(interaction, "❌ Solo quien creó la apuesta puede cerrarla.")
-        res = await self.run(bdb.close_bet, bet.id, interaction.user.id)
+        override = self.can_override(interaction.user)
+        if interaction.user.id != bet.creator_id and not override:
+            return await self.reply(interaction, "❌ Solo quien creó la apuesta (o el Council y los administradores) puede cerrarla.")
+        res = await self.run(bdb.close_bet, bet.id, interaction.user.id, can_override=override)
         if not res.ok:
             return await self.reply(interaction, f"❌ {res.message}")
         await self.reply(interaction, f"🔒 Apuesta #{bet.id} cerrada. Elegí el resultado con `/apuesta resolver`.")
@@ -499,15 +506,16 @@ class BetsCog(commands.Cog):
         cur = bdb.normalize(current)
         return [app_commands.Choice(name=o[:100], value=o) for o in bet.options if cur in bdb.normalize(o)][:25]
 
-    @apuesta_g.command(name="resolver", description="Define la opción ganadora y reparte el pozo (solo quien la creó)")
+    @apuesta_g.command(name="resolver", description="Define la opción ganadora y reparte el pozo (quien la creó, Council o administradores)")
     @app_commands.describe(opcion="Opción ganadora", id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
     @safe
     async def resolverapuesta(self, interaction: discord.Interaction, opcion: str, id: Optional[int] = None):
         bet = await self._target_bet(interaction, id)
         if bet is None:
             return
-        if interaction.user.id != bet.creator_id:
-            return await self.reply(interaction, "❌ Solo quien creó la apuesta puede resolverla.")
+        override = self.can_override(interaction.user)
+        if interaction.user.id != bet.creator_id and not override:
+            return await self.reply(interaction, "❌ Solo quien creó la apuesta (o el Council y los administradores) puede resolverla.")
         if bet.status == "open":
             return await self.reply(interaction, "❌ Primero cerrá la apuesta con `/apuesta cerrar`.")
         if bet.status != "closed":
@@ -523,7 +531,7 @@ class BetsCog(commands.Cog):
             warn = "⚠️ **Nadie apostó a esa opción**: la apuesta se cancelará y se devolverá todo."
 
         async def go(inter):
-            res = await self.run(bdb.resolve_bet, bet.id, interaction.user.id, idx)
+            res = await self.run(bdb.resolve_bet, bet.id, interaction.user.id, idx, can_override=override)
             if not res.ok and res.code != "no_winner":
                 return await inter.response.edit_message(content=f"❌ {res.message}", view=None)
             text = "🏆 Apuesta resuelta y pagada." if res.ok else f"ℹ️ {res.message}"

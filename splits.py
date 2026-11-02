@@ -279,7 +279,7 @@ class ConfirmCloseView(discord.ui.View):
         self.add_item(no)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id or not is_council(interaction.user):
+        if interaction.user.id != self.owner_id or not can_manage(interaction.user):
             await _say(interaction, "❌ Este mensaje no es tuyo.")
             return False
         return True
@@ -923,8 +923,8 @@ class SplitsCog(commands.Cog):
         if not (can_manage(interaction.user) or interaction.user.id == s.creator_id):
             return await _say(interaction, "🔒 Solo el Council, un administrador o quien creó el split puede editarlo.")
         if s.status == "closed":
-            if not is_council(interaction.user):
-                return await _say(interaction, "🔒 Solo el Council puede reabrir un split ya pagado para editarlo.")
+            if not can_manage(interaction.user):
+                return await _say(interaction, "🔒 Solo el Council o un administrador puede reabrir un split ya pagado para editarlo.")
             return await _say(interaction,
                               f"**Split {s.title}** (#{s.id}) ya está cerrado y pagado.\n"
                               f"Si lo reabrís podés cambiar lo que quieras; al **confirmar la edición** se resta a cada persona lo que "
@@ -986,7 +986,7 @@ class SplitsCog(commands.Cog):
         await self._done(interaction, split_id, "✅ Bolsitas actualizadas.")
 
     async def apply_killboard(self, interaction, split_id, text, guild_name):
-        """Lista a la gente de la guild que participó en las batallas (igual que /rolalbion) y la suma a la lista del split."""
+        """Lista a la gente de la guild que participó en las batallas y la suma a la lista del split."""
         s = await self._guard(interaction, split_id)
         if not s:
             return
@@ -1083,8 +1083,8 @@ class SplitsCog(commands.Cog):
 
     # ---------- cerrar el split ----------
     async def on_close_pressed(self, interaction: discord.Interaction):
-        if not is_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council puede cerrar un split.")
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o un administrador puede cerrar un split.")
         msg = getattr(interaction, "message", None)
         s = await self.run(sdb.find_by_message, msg.id) if msg is not None else None
         if s is None:
@@ -1113,8 +1113,8 @@ class SplitsCog(commands.Cog):
                    view=ConfirmCloseView(self, s.id, interaction.user.id))
 
     async def close_split(self, interaction: discord.Interaction, split_id: int):
-        if not is_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council puede cerrar un split.")
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o un administrador puede cerrar un split.")
         await interaction.response.defer(ephemeral=True)
         async with self._lock(split_id):
             state, s = await self.run(sdb.begin_close, split_id, interaction.user.id)
@@ -1141,8 +1141,8 @@ class SplitsCog(commands.Cog):
 
     # ---------- reajuste: reabrir un split pagado ----------
     async def reopen_split(self, interaction: discord.Interaction, split_id: int):
-        if not is_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council puede reabrir un split ya pagado.")
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o un administrador puede reabrir un split ya pagado.")
         async with self._lock(split_id):
             res = await self.run(sdb.reopen, split_id, interaction.user.id)
         if res == "missing" or res == "not_closed":
@@ -1165,8 +1165,8 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.find_by_message, msg.id) if msg is not None else None
         if s is None or not s.is_editing:
             return await _say(interaction, "ℹ️ Este split no está en edición.")
-        if not is_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council puede cancelar la edición.")
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o un administrador puede cancelar la edición.")
         async with self._lock(s.id):
             res = await self.run(sdb.cancel_edit, s.id)
         if res != "restored":

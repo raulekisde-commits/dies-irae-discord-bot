@@ -201,12 +201,21 @@ class DiscordBase(unittest.TestCase):
         return eco.get_balance(self.db, user.id)
 
 
-class GiveMoneyTests(DiscordBase):
-    def give(self, giver, target, amount, reason=None):
+class GiveHelper:
+    def give(self, giver, target, amount, reason=None, confirm=True):
+        """Ejecuta /give-money. Si el comando pide confirmación, la acepta (confirm=True) y devuelve la interacción del botón."""
         i = self.inter(giver)
         run(self.ecog.give_money.callback(self.ecog, i, target, amount, reason))
-        return i
+        view = i.response.sent[0][1].get("view") if i.response.sent else None
+        if view is None or not confirm:
+            return i
+        j = self.inter(giver)
+        run(view._ok(j))
+        j.prompt = i
+        return j
 
+
+class GiveMoneyTests(GiveHelper, DiscordBase):
     def test_registered_and_grantable(self):
         self.assertEqual(economy.EconomyCog.give_money.name, "give-money")
         self.assertIn("give-money", eco.GRANTABLE_COMMANDS)
@@ -216,7 +225,7 @@ class GiveMoneyTests(DiscordBase):
         i = self.give(self.alice, self.bob, "1.500", "gracias")
         self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (3500, 1500))
         content, kw = i.response.sent[0]
-        self.assertFalse(kw.get("ephemeral"))                                  # lo ve todo el canal
+        self.assertFalse(kw.get("ephemeral"))                                  # lo ve todo el canal (el mensaje de la transferencia)
         self.assertIn("1,500", content)
         self.assertIn("gracias", content)
         self.assertIn(str(self.bob.id), content)
@@ -225,7 +234,7 @@ class GiveMoneyTests(DiscordBase):
         self.fund(self.alice, 100)
         i = self.give(self.alice, self.bob, "101")
         self.assertIn("saldo suficiente", i.text)
-        self.assertTrue(i.response.sent[0][1].get("ephemeral"))
+        self.assertEqual(i.response.sent, [])                                  # nada público: el error va en la respuesta privada
         self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (100, 0))
 
     def test_invalid_cases(self):
@@ -257,6 +266,148 @@ class GiveMoneyTests(DiscordBase):
         self.fund(self.alice, 2000)
         self.give(self.alice, self.bob, "700")
         self.assertTrue(any("Transferencia" in (m.embeds[0].title or "") for m in self.logch.sent if m.embeds))
+
+
+
+class GiveConfirmTests(GiveHelper, DiscordBase):
+    """Confirmación previa de /give-money."""
+
+    def test_nothing_moves_until_confirmed_and_prompt_is_private(self):
+        self.fund(self.alice, 1000)
+        i = self.give(self.alice, self.bob, "300", "gracias", confirm=False)
+        content, kw = i.response.sent[0]
+        self.assertTrue(kw.get("ephemeral"))
+        self.assertIn("¿Confirmás enviar", content)
+        self.assertIn("300", content)
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (1000, 0))
+
+    def test_cancel_moves_nothing(self):
+        self.fund(self.alice, 1000)
+        i = self.give(self.alice, self.bob, "300", confirm=False)
+        j = self.inter(self.alice)
+        run(i.response.sent[0][1]["view"]._no(j))
+        self.assertIn("Cancelado", j.text)
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (1000, 0))
+
+    def test_only_the_sender_can_confirm(self):
+        self.fund(self.alice, 1000)
+        i = self.give(self.alice, self.bob, "300", confirm=False)
+        view = i.response.sent[0][1]["view"]
+        j = self.inter(self.bob)
+        self.assertFalse(run(view.interaction_check(j)))
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (1000, 0))
+        self.assertTrue(run(view.interaction_check(self.inter(self.alice))))
+
+    def test_double_confirmation_transfers_once(self):
+        self.fund(self.alice, 1000)
+        i = self.give(self.alice, self.bob, "300", confirm=False)
+        view = i.response.sent[0][1]["view"]
+        run(view._ok(self.inter(self.alice)))
+        k = self.inter(self.alice)
+        run(view._ok(k))
+        self.assertIn("Ya fue procesado", k.text)
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (700, 300))
+
+    def test_confirmation_message_shows_new_balance_privately(self):
+        self.fund(self.alice, 1000)
+        j = self.give(self.alice, self.bob, "300")
+        edit = j.response.edits[0]["content"]
+        self.assertIn("Enviaste", edit)
+        self.assertIn("700", edit)
+
+    def test_frozen_account_is_rechecked_on_confirm(self):
+        import deposits_db as ddb
+        ddb.init_schema(self.db)
+        self.fund(self.alice, 1000)
+        i = self.give(self.alice, self.bob, "300", confirm=False)
+        ddb.create_ticket(self.db, 1, 777, self.alice.id, "sell", 0)          # se abre un ticket de cobro: el balance se congela
+        self.assertTrue(eco.is_frozen(self.db, self.alice.id))
+        j = self.inter(self.alice)
+        run(i.response.sent[0][1]["view"]._ok(j))
+        self.assertIn("congelado", j.text)
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (1000, 0))
+
+    def test_validation_errors_do_not_ask_for_confirmation(self):
+        self.fund(self.alice, 1000)
+        for target, amount in ((self.alice, "10"), (self.robot, "10"), (self.bob, "abc")):
+            i = self.give(self.alice, target, amount, confirm=False)
+            self.assertIsNone(i.response.sent[0][1].get("view"))
+            self.assertIn("❌", i.text)
+
+
+class GiveAlertTests(GiveHelper, DiscordBase):
+    """Alertas privadas (DM) a Admin y Council por patrones sospechosos; nunca bloquean la transferencia."""
+
+    def setUp(self):
+        super().setUp()
+        self.dms = {}
+        for m in (self.admin, self.council, self.alice, self.bob):
+            self.dms[m.id] = []
+
+            async def send(content=None, *, embed=None, _m=m, **kw):
+                if getattr(_m, "block_dms", False):
+                    raise discord.Forbidden("DM cerrado")
+                self.dms[_m.id].append(embed)
+            m.send = send
+        self.fund(self.alice, 100000)
+
+    def alerts(self, m):
+        return [e for e in self.dms[m.id] if e is not None and "patrón sospechoso" in (e.title or "")]
+
+    def test_normal_transfer_does_not_alert(self):
+        self.give(self.alice, self.bob, "100")
+        self.give(self.alice, self.bob, "100")
+        self.assertEqual((self.alerts(self.admin), self.alerts(self.council)), ([], []))
+
+    def test_three_one_way_transfers_alert_admin_and_council_only(self):
+        for _ in range(3):
+            self.give(self.alice, self.bob, "100")
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (99700, 300))       # nada se bloqueó
+        for m in (self.admin, self.council):
+            self.assertEqual(len(self.alerts(m)), 1)
+        self.assertEqual((self.alerts(self.alice), self.alerts(self.bob)), ([], []))
+        emb = self.alerts(self.admin)[0]
+        text = " ".join(f"{n} {v}" for n, v, _ in emb.fields)
+        self.assertIn(str(self.alice.id), text)
+        self.assertIn(str(self.bob.id), text)
+        self.assertIn("give:", text)                                                    # identifica la operación
+
+    def test_alert_is_not_repeated_within_the_period(self):
+        for _ in range(6):
+            self.give(self.alice, self.bob, "100")
+        self.assertEqual(len(self.alerts(self.admin)), 1)
+
+    def test_closed_dms_do_not_break_the_transfer_nor_the_other_recipients(self):
+        self.admin.block_dms = True
+        for _ in range(3):
+            self.give(self.alice, self.bob, "100")
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (99700, 300))
+        self.assertEqual(self.alerts(self.admin), [])
+        self.assertEqual(len(self.alerts(self.council)), 1)
+
+    def test_many_senders_to_one_receiver_alerts(self):
+        cls = self.alice.__class__
+        extra = [cls(33 + i + 100000000000000000, f"Extra{i}", roles=[self.r_member], guild=self.guild) for i in range(3)]
+        self.guild.members += extra
+        for u in extra:
+            self.fund(u, 1000)
+        for u in [self.alice] + extra:                      # 4 cuentas distintas le pasan a la misma persona
+            self.give(u, self.bob, "10")
+        self.assertEqual(len(self.alerts(self.admin)), 1)
+        self.assertIn("muchas cuentas", " ".join(v for _, v, _ in self.alerts(self.admin)[0].fields))
+
+    def test_alert_failure_never_affects_the_transfer(self):
+        orig = economy.audit_db.collect_transfers
+
+        def boom(*a, **kw):
+            raise RuntimeError("falla de prueba")
+        economy.audit_db.collect_transfers = boom
+        try:
+            j = self.give(self.alice, self.bob, "100")
+        finally:
+            economy.audit_db.collect_transfers = orig
+        self.assertEqual((self.bal(self.alice), self.bal(self.bob)), (99900, 100))
+        self.assertIn("Enviaste", j.response.edits[0]["content"])
 
 
 if __name__ == "__main__":
