@@ -60,13 +60,28 @@ def to_type(it: dict) -> str:
 
 
 def _download(url: str):
+    last = None
+    for u in (url, url.split("?")[0]):                         # con tamaño y, si no, sin parámetros
+        try:
+            req = urllib.request.Request(u, headers=UA)
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = r.read()
+            if len(data) > 300:
+                return data
+        except Exception as exc:
+            last = exc
+    print(f"[buildcard] no pude bajar {url}: {last!r}")
+    return None
+
+
+def _save(path: str, data: bytes) -> bool:
     try:
-        req = urllib.request.Request(url, headers=UA)
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = r.read()
-        return data if len(data) > 300 else None
-    except Exception:
-        return None
+        with open(path, "wb") as f:
+            f.write(data)
+        return True
+    except Exception as exc:
+        print(f"[buildcard] no pude guardar {path}: {exc!r}")
+        return False
 
 
 def _variants(item_type: str):
@@ -79,15 +94,16 @@ def _variants(item_type: str):
 
 
 def item_icon(item_type: str):
-    os.makedirs(ICON_DIR, exist_ok=True)
+    try:
+        os.makedirs(ICON_DIR, exist_ok=True)
+    except Exception:
+        pass
     path = os.path.join(ICON_DIR, item_type.replace("@", "_e") + ".png")
     if os.path.exists(path):
         return path
     for v in _variants(item_type):
         data = _download(f"{RENDER}/item/{v}.png?size=217")
-        if data:
-            with open(path, "wb") as f:
-                f.write(data)
+        if data and _save(path, data):
             return path
     return None
 
@@ -100,9 +116,7 @@ def spell_icon(spell_id: str):
     if os.path.exists(path):
         return path
     data = _download(f"{RENDER}/spell/{spell_id}.png?size=64")
-    if data:
-        with open(path, "wb") as f:
-            f.write(data)
+    if data and _save(path, data):
         return path
     return None
 
@@ -113,8 +127,14 @@ def prefetch(draft: dict) -> None:
     items += [s for it in list(items) for s in (it.get("swaps") or [])]
     jobs = {("i", to_type(it)) for it in items}
     jobs |= {("s", a.get("abilityId")) for it in items for a in (it.get("abilities") or []) if a.get("abilityId")}
+    def one(j):
+        try:
+            return item_icon(j[1]) if j[0] == "i" else spell_icon(j[1])
+        except Exception as exc:
+            print(f"[buildcard] ícono {j}: {exc!r}")
+            return None
     with ThreadPoolExecutor(8) as ex:
-        list(ex.map(lambda j: item_icon(j[1]) if j[0] == "i" else spell_icon(j[1]), jobs))
+        list(ex.map(one, jobs))
 
 
 def card(img, box, radius=16, outline=BORDER, fill=PANEL, width=2):
@@ -182,7 +202,7 @@ def render(data: dict, title: str = "") -> bytes:
     b = data.get("build") or data
     draft = b.get("draft") or b
     prefetch(draft)
-    name = title or draft.get("name") or "Build"
+    name = draft.get("name") or title or "Build"
     img = Image.new("RGBA", (W, 3000), BG + (255,))
     d = ImageDraw.Draw(img)
     d.rectangle((0, 0, W, 6), fill=GOLD)
@@ -259,7 +279,9 @@ def render(data: dict, title: str = "") -> bytes:
             yy += 60
         y += h
     end = max(top + lh, top + dh) + 14
-    d.text((M, end), "Datos de AlbionZvZ", font=font(12), fill=DIM)
+    rv = b.get("regearValueSilver")
+    d.text((M, end), f"Valor de regear: {rv:,}".replace(",", ".") if rv else "Valor de regear: no disponible", font=font(15), fill=MUTED)
+    d.text((M, end + 26), "Datos de AlbionZvZ · el sitio no informa el encantamiento de armas y armaduras", font=font(12), fill=DIM)
     buf = io.BytesIO()
-    img.crop((0, 0, W, end + 30)).convert("RGB").save(buf, "PNG", optimize=True)
+    img.crop((0, 0, W, end + 58)).convert("RGB").save(buf, "PNG", optimize=True)
     return buf.getvalue()
