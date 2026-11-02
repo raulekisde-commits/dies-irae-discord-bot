@@ -49,7 +49,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "completar-registros",
-                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "recuperar-lista", "recuperar"}
+                   "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "recuperar-lista", "recuperar", "estado-api"}
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -859,6 +859,50 @@ class RegistrationCog(commands.Cog):
         await self.run(rdb.delete_left_member, uid)
         await self.audit_log(f"♻️ <@{interaction.user.id}> recuperó a <@{uid}> con `/recuperar`.")
         await interaction.followup.send("\n".join(results), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="estado-api", description="(Admin) Revisa si la API de Albion está respondiendo (la que usa el registro)")
+    @app_commands.guild_only()
+    async def estado_api(self, interaction: discord.Interaction):
+        perms = getattr(interaction.user, "guild_permissions", None)
+        is_admin = bool(perms and perms.administrator) or getattr(interaction.guild, "owner_id", None) == interaction.user.id
+        if not is_admin:
+            return await _say(interaction, "🔒 Solo los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        import time
+
+        async def probe(url, params=None):
+            t0 = time.monotonic()
+            try:
+                data = await asyncio.wait_for(self.fetch_json(url, params), HTTP_TIMEOUT + 5)
+                return True, time.monotonic() - t0, data, ""
+            except asyncio.TimeoutError:
+                return False, time.monotonic() - t0, None, f"sin respuesta en {HTTP_TIMEOUT + 5} s"
+            except Exception as exc:
+                return False, time.monotonic() - t0, None, f"{type(exc).__name__} {exc}".strip()[:120]
+
+        lines, any_ok = [], False
+        for region, base in GAMEINFO_BASES:
+            ok, secs, data, err = await probe(f"{base}/api/gameinfo/search", {"q": "a"})
+            any_ok = any_ok or ok
+            lines.append(f"{'🟢' if ok else '🔴'} **{region}** · búsqueda de jugadores: " + (f"OK ({secs:.1f} s)" if ok else f"FALLA ({err})"))
+            if self.albion_guild_id:
+                ok2, secs2, data2, err2 = await probe(f"{base}/api/gameinfo/guilds/{self.albion_guild_id}/members")
+                n = len(data2) if isinstance(data2, list) else 0
+                lines.append(f"   {'🟢' if ok2 and n else ('🟡' if ok2 else '🔴')} lista de la guild: "
+                             + (f"{n} miembros ({secs2:.1f} s)" if ok2 else f"FALLA ({err2})"))
+        age = time.time() - self.roster_at if self.roster_at else None
+        roster = (f"{len(self.roster)} jugadores, actualizada hace {int(age // 60)} min" + (" ✅" if self.roster_fresh() else " ⚠️ vieja (más de 24 h)")
+                  if self.roster else "vacía ⚠️")
+        pending = await self.run(rdb.list_pending_recruits)
+        incomplete = await self.run(rdb.incomplete_registrations)
+        verdict = ("✅ La API responde: si el registro falla, el problema es otro (nick mal escrito, personaje fuera de la guild, etc.)." if any_ok
+                   else "❌ La API de Albion no está respondiendo en ninguna región: por eso no se registra a nadie. Es un problema de ellos; "
+                        "el bot reintenta solo. Mientras tanto usá `/admin_vincular` y después `/completar-registros` cuando vuelva.")
+        await interaction.followup.send(
+            "🛰️ **Estado de la API de Albion**\n" + "\n".join(lines)
+            + f"\n\n📋 Lista de la guild guardada en el bot: {roster}\n"
+              f"⏳ Reclutas esperando entrar a la guild: {len(pending)} · Registros sin ID: {len(incomplete)}\n\n{verdict}",
+            ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="completar-registros", description="(Staff) Completa el ID de los registros sin ID y lista los que no pudo verificar")
     @app_commands.guild_only()

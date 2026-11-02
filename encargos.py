@@ -193,6 +193,7 @@ class EncargosCog(commands.Cog):
         if res.status != "ok":
             return await _say(interaction, messages.get(res.status, "❌ No se pudo."))
         if res.task.status == "done" and await self.log_done(res.task):
+            await self.drop_thread(res.task)
             try:
                 await interaction.response.send_message("✅ Tarea terminada. Quedó registrada en el canal de logs.", ephemeral=True)
                 await interaction.message.delete()
@@ -211,7 +212,59 @@ class EncargosCog(commands.Cog):
             return await _say(interaction, "🔒 Solo el Staff, el Council y el rol Opinólogo pueden tomar tareas.")
         t = await self._task(interaction)
         if t:
-            await self._after(interaction, await self.run(edb.take, t.id, interaction.user.id), "✅ Tomaste la tarea.")
+            res = await self.run(edb.take, t.id, interaction.user.id)
+            await self._after(interaction, res, "✅ Tomaste la tarea.")
+            if res.status == "ok":
+                await self.open_thread(res.task, interaction.message)
+
+    # ---------- hilo de coordinación + aviso cada hora ----------
+    async def open_thread(self, t: edb.Task, msg) -> None:
+        """Crea (o reutiliza) el hilo de la tarea y etiqueta a quien la tomó. Si no se puede crear, la tarea sigue igual."""
+        try:
+            thread = await self._channel(t.thread_id) if t.thread_id else None
+            if thread is None and msg is not None:
+                thread = await msg.create_thread(name=f"Tarea #{t.id}"[:100], auto_archive_duration=1440)
+                await self.run(edb.set_thread, t.id, thread.id)
+            if thread is not None:
+                await thread.send(f"✋ <@{t.taker_id}> tomó la **tarea #{t.id}**. Coordinen por acá. "
+                                  "Les aviso cada hora hasta que la cierren con el botón **Tarea terminada**.",
+                                  allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=t.taker_id)], roles=False, everyone=False))
+        except Exception as exc:
+            print(f"Tarea {t.id}: no pude crear el hilo de coordinación: {exc!r}")
+
+    async def drop_thread(self, t: edb.Task) -> None:
+        """Al cerrar la tarea el hilo ya no hace falta (el registro queda en el canal de logs)."""
+        if not t.thread_id:
+            return
+        try:
+            th = await self._channel(t.thread_id)
+            if th is not None:
+                await th.delete()
+        except Exception as exc:
+            print(f"Tarea {t.id}: no pude borrar el hilo: {exc!r}")
+
+    async def remind_taken(self, now: Optional[float] = None) -> int:
+        """Cada hora etiqueta a quien tiene la tarea tomada y le recuerda cerrarla si ya terminó."""
+        n = 0
+        for tid in await self.run(edb.due_reminders, now):
+            t = await self.run(edb.get_task, tid)
+            if t is None or t.status != "taken" or not t.taker_id:
+                continue
+            target = await self._channel(t.thread_id) if t.thread_id else None
+            if target is None:
+                target = await self._channel(t.channel_id)
+            if target is None:
+                continue
+            try:
+                link = f"https://discord.com/channels/{t.guild_id}/{t.channel_id}/{t.message_id}" if t.message_id else ""
+                await target.send(f"⏰ <@{t.taker_id}> la **tarea #{t.id}** sigue abierta. Si ya terminaron, cerrala con el botón "
+                                  f"**Tarea terminada**{' (' + link + ')' if link else ''}.\n> {t.text[:200]}",
+                                  allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=t.taker_id)], roles=False, everyone=False))
+                n += 1
+            except Exception as exc:
+                print(f"Tarea {tid}: no pude mandar el recordatorio: {exc!r}")
+            await self.run(edb.mark_reminded, tid, now)             # aunque falle, no insistir cada 10 s
+        return n
 
     async def on_release(self, interaction: discord.Interaction):
         t = await self._task(interaction)
@@ -248,6 +301,7 @@ class EncargosCog(commands.Cog):
             ch = self.bot.get_channel(res.task.channel_id) or await self.bot.fetch_channel(res.task.channel_id)
             msg = await ch.fetch_message(res.task.message_id)
             if await self.log_done(res.task):
+                await self.drop_thread(res.task)
                 await msg.delete()
                 return True
             await msg.edit(embed=self.embed(res.task), view=None, allowed_mentions=NO_MENTIONS)
@@ -260,6 +314,10 @@ class EncargosCog(commands.Cog):
     async def ticker(self):
         try:
             await self.process_due()
+        except Exception:
+            traceback.print_exc()
+        try:
+            await self.remind_taken()
         except Exception:
             traceback.print_exc()
 

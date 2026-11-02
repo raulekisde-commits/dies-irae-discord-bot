@@ -67,6 +67,9 @@ class Task:
     ping_roles: List[int] = field(default_factory=list)       # roles a etiquetar además (o en vez) del Staff
     ping_users: List[int] = field(default_factory=list)       # personas a etiquetar
     ping_staff: bool = True                                    # False: no se etiqueta al Staff (p. ej. la tarea del split va al Council)
+    thread_id: Optional[int] = None                            # hilo para que quien tomó la tarea se coordine
+    taken_at: Optional[float] = None
+    last_reminder: Optional[float] = None
 
 
 def _ids(text) -> List[int]:
@@ -82,9 +85,12 @@ def init_schema(db_path: str) -> None:
     try:
         conn.executescript(SCHEMA)
         have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
-        for col, ddl in (("ping_roles", "TEXT"), ("ping_users", "TEXT"), ("ping_staff", "INTEGER")):
+        for col, ddl in (("ping_roles", "TEXT"), ("ping_users", "TEXT"), ("ping_staff", "INTEGER"),
+                         ("thread_id", "INTEGER"), ("taken_at", "REAL"), ("last_reminder", "REAL")):
             if col not in have:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
+        with write_tx(conn):
+            conn.execute("UPDATE tasks SET taken_at = ? WHERE status = 'taken' AND taken_at IS NULL", (time.time(),))    # tareas tomadas antes del recordatorio
         with write_tx(conn):                    # si el bot se cayó justo mientras publicaba, se reintenta
             conn.execute("UPDATE tasks SET status = 'scheduled' WHERE status = 'publishing' AND message_id IS NULL")
     finally:
@@ -98,7 +104,8 @@ def _load(conn, task_id: int) -> Optional[Task]:
     ev = [(e["at"], e["kind"], e["actor_id"]) for e in conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))]
     return Task(int(r["id"]), int(r["guild_id"]), int(r["channel_id"]), r["message_id"], r["text"], int(r["created_by"]), r["created_at"],
                 r["publish_at"], r["status"], r["taker_id"], r["done_by"], r["done_at"], r["source"], r["link"], ev,
-                _ids(r["ping_roles"]), _ids(r["ping_users"]), r["ping_staff"] is None or bool(r["ping_staff"]))
+                _ids(r["ping_roles"]), _ids(r["ping_users"]), r["ping_staff"] is None or bool(r["ping_staff"]),
+                r["thread_id"], r["taken_at"], r["last_reminder"])
 
 
 def get_task(db_path: str, task_id: int) -> Optional[Task]:
@@ -243,7 +250,8 @@ def take(db_path: str, task_id: int, user_id: int) -> Change:
                 return Change("taken", t)
             if t.status != "open":
                 return Change("notopen", t)
-            conn.execute("UPDATE tasks SET status = 'taken', taker_id = ? WHERE id = ? AND status = 'open'", (user_id, task_id))
+            conn.execute("UPDATE tasks SET status = 'taken', taker_id = ?, taken_at = ?, last_reminder = NULL WHERE id = ? AND status = 'open'",
+                         (user_id, time.time(), task_id))
             _event(conn, task_id, "taken", user_id)
             return Change("ok", _load(conn, task_id))
     finally:
@@ -301,5 +309,39 @@ def top_users(db_path: str, size: int = 10):
         done = [(int(r[0]), int(r[1])) for r in conn.execute(
             "SELECT done_by, COUNT(*) AS n FROM tasks WHERE status='done' AND done_by IS NOT NULL GROUP BY done_by ORDER BY n DESC, done_by LIMIT ?", (size,))]
         return taken, done
+    finally:
+        conn.close()
+
+
+# ---------- hilo de coordinación y recordatorio horario ----------
+REMIND_EVERY = 3600          # segundos entre avisos mientras la tarea siga tomada y sin cerrar
+
+
+def set_thread(db_path: str, task_id: int, thread_id: Optional[int]) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE tasks SET thread_id = ? WHERE id = ?", (thread_id, task_id))
+    finally:
+        conn.close()
+
+
+def due_reminders(db_path: str, now: Optional[float] = None) -> List[int]:
+    """Tareas tomadas y sin cerrar a las que ya les toca el aviso (pasó 1 h desde que se tomó o desde el último aviso)."""
+    now = time.time() if now is None else now
+    conn = connect(db_path)
+    try:
+        return [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM tasks WHERE status = 'taken' AND taker_id IS NOT NULL AND COALESCE(last_reminder, taken_at, 0) <= ? ORDER BY id",
+            (now - REMIND_EVERY,))]
+    finally:
+        conn.close()
+
+
+def mark_reminded(db_path: str, task_id: int, now: Optional[float] = None) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE tasks SET last_reminder = ? WHERE id = ?", (time.time() if now is None else now, task_id))
     finally:
         conn.close()
