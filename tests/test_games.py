@@ -1,4 +1,4 @@
-"""Pruebas de /dados y /coinflip (lógica con SQLite real + capa de Discord con el stub, sin red).
+"""Pruebas de /casino dados y /casino coinflip (lógica con SQLite real + capa de Discord con el stub, sin red).
 
 NO prueban que la API real de Discord acepte los mensajes ni el comportamiento real de los botones.
 """
@@ -22,6 +22,7 @@ import discord  # noqa: E402
 import economy as economy  # noqa: E402
 import economy_db as eco  # noqa: E402
 import games as gm  # noqa: E402
+import casino as cs  # noqa: E402
 import casino_db as cdb  # noqa: E402
 import games_db as gdb  # noqa: E402
 import stats_db  # noqa: E402
@@ -473,7 +474,7 @@ class GamesDiscordTests(unittest.TestCase):
         pref = {getattr(gm.GamesCog, n).name for n in dir(gm.GamesCog) if isinstance(getattr(gm.GamesCog, n, None), discord_stub.Command)}
         slash = {getattr(gm.GamesCog, n).name for n in dir(gm.GamesCog) if isinstance(getattr(gm.GamesCog, n, None), discord_stub.AppCommand)}
         self.assertEqual(pref, {"dados", "coinflip", "winrate", "topwinrate", "totalapostado"})
-        self.assertEqual(slash, {"dados", "coinflip", "stats-winrate", "totalapostado"})
+        self.assertEqual(slash, set())              # los slash viven en /casino (casino.py)
         kinds = {type(v).__name__ for v in self.bot.persistent_views}
         self.assertTrue({"DiceJoinView", "CoinAcceptView"} <= kinds)
 
@@ -547,7 +548,7 @@ class GamesDiscordTests(unittest.TestCase):
         c.commit()
         c.close()
         self.fund(self.admin, 1000)
-        self.assertIn("/perms-canal", self.cmd("coinflip", self.admin, "100").text)
+        self.assertIn("/eco perms-canal", self.cmd("coinflip", self.admin, "100").text)
 
     # ---- dados ----
     def test_dice_panel_lists_creator_pool_and_countdown(self):
@@ -593,7 +594,7 @@ class GamesDiscordTests(unittest.TestCase):
         self.assertTrue(ctx.message.deleted)
         # con "/" es efímero
         i = FakeInteraction(self.guild, self.admin, self.ch)
-        run(self.cog.coinflip_slash.callback(self.cog, i, "100"))
+        run(self.cog.coinflip_slash(i, "100"))
         self.assertIn("Ya hay un coinflip en curso", i.text)
         self.assertTrue(i.response.sent[0][1].get("ephemeral"))
 
@@ -635,7 +636,7 @@ class GamesDiscordTests(unittest.TestCase):
         ctx3.message.mentions = [self.gamer]
         run(self.cog.winrate.callback(self.cog, ctx3, objetivo=self.gamer.mention))
         self.assertIn("lista negra", ctx3.out[0][1].description)
-        self.assertEqual(gm.GamesCog.winrate_slash.name, "stats-winrate")
+        self.assertEqual(cs.CasinoCog.casino_winrate.name, "winrate")
 
     def play_dice_db(self, a, b, win, t=0):
         for u in (a, b):
@@ -861,41 +862,41 @@ class GamesDiscordTests(unittest.TestCase):
         eco.set_bet_limit(self.db, "dados", 2_000)
         eco.set_bet_limit(self.db, "coinflip", 500)
         i = self.inter(self.gamer)
-        run(self.cog.dados_slash.callback(self.cog, i, "2.001"))
+        run(self.cog.dados_slash(i, "2.001"))
         self.assertIn("máxima en dados es 2,000", i.text)
         self.assertIsNone(gdb.live_game(self.db, GUILD_ID, "dice"))
         self.assertEqual(self.bal(self.gamer), 50_000)
         i = self.inter(self.gamer)
-        run(self.cog.coinflip_slash.callback(self.cog, i, "501"))
+        run(self.cog.coinflip_slash(i, "501"))
         self.assertIn("máxima en coinflip es 500", i.text)
         i = self.inter(self.gamer)
-        run(self.cog.dados_slash.callback(self.cog, i, "2.000"))                 # justo en el límite sí
+        run(self.cog.dados_slash(i, "2.000"))                 # justo en el límite sí
         self.assertIsNotNone(gdb.live_game(self.db, GUILD_ID, "dice"))
         eco.set_bet_limit(self.db, "coinflip", None)                              # sin límite propio vuelve el tope general
         i = self.inter(self.gamer)
-        run(self.cog.coinflip_slash.callback(self.cog, i, "501"))
+        run(self.cog.coinflip_slash(i, "501"))
         self.assertIsNotNone(gdb.live_game(self.db, GUILD_ID, "coinflip"))
 
     # ---- "/" de nuevo disponible ----
     def test_slash_versions_exist_again_and_create_panels(self):
         slash = {getattr(gm.GamesCog, n).name for n in dir(gm.GamesCog) if isinstance(getattr(gm.GamesCog, n, None), discord_stub.AppCommand)}
-        self.assertEqual(slash, {"dados", "coinflip", "stats-winrate", "totalapostado"})
+        self.assertEqual(slash, set())              # los slash viven en /casino (casino.py)
         self.fund(self.gamer, 5000)
         i = self.inter(self.gamer)
-        run(self.cog.dados_slash.callback(self.cog, i, "1.000"))
+        run(self.cog.dados_slash(i, "1.000"))
         self.assertIsNotNone(gdb.live_game(self.db, GUILD_ID, "dice"))
         self.assertEqual(len(self.dice_ch.sent), 1)                           # el panel va al canal de dados
         self.assertIn(self.dice_ch.mention, i.text)
         self.assertTrue(i.ephemeral_all)
         i = self.inter(self.gamer)
-        run(self.cog.dados_slash.callback(self.cog, i, "1.000"))
+        run(self.cog.dados_slash(i, "1.000"))
         self.assertIn("Ya hay unos dados", i.text)
         self.assertTrue(i.ephemeral_all)
         i = self.inter(self.plain)
-        run(self.cog.coinflip_slash.callback(self.cog, i, "100"))
+        run(self.cog.coinflip_slash(i, "100"))
         self.assertIn("permiso", i.text)
         i = self.inter(self.gamer)
-        run(self.cog.coinflip_slash.callback(self.cog, i, "500"))
+        run(self.cog.coinflip_slash(i, "500"))
         self.assertTrue(i.ephemeral_all)                                       # siempre se responde la interacción
         self.assertIsNotNone(gdb.live_game(self.db, GUILD_ID, "coinflip"))
         self.assertEqual(len(self.ch.sent), 1)
@@ -903,7 +904,7 @@ class GamesDiscordTests(unittest.TestCase):
     def test_slash_respects_channel_and_role_rules_like_prefix(self):
         self.fund(self.gamer, 5000)
         i = self.inter(self.gamer, self.other)
-        run(self.cog.coinflip_slash.callback(self.cog, i, "500"))
+        run(self.cog.coinflip_slash(i, "500"))
         self.assertIn(f"<#{GAME_CH}>", i.text)
         self.assertIsNone(gdb.live_game(self.db, GUILD_ID, "coinflip"))
 
@@ -989,7 +990,7 @@ class EconomySlashTests(unittest.TestCase):
     def test_bal_and_top_slash_need_their_channel_like_before(self):
         i = self.inter(self.alice)
         run(self.ecog.bal_slash.callback(self.ecog, i, None))
-        self.assertIn("/perms-canal", i.text)
+        self.assertIn("/eco perms-canal", i.text)
         eco.set_command_channel(self.db, "bal", GAME_CH)
         eco.set_command_channel(self.db, "top", GAME_CH)
         eco.apply_operation(self.db, kind="add", actor_id=1, user_ids=[self.bob.id], amount=777, request_key="s2")

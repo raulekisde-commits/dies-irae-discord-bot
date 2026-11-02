@@ -1,5 +1,5 @@
 """Coaching: panel con botón que abre un post por persona en el foro de VODs, tareas de devolución para el rol Coaching
-y control de los 3 VODs semanales del rol Observación (/coaching-reporte, /mis-vods)."""
+y control de los 3 VODs semanales del rol Observación (/coaching reporte, /coaching mis-vods)."""
 import asyncio
 import os
 import traceback
@@ -65,7 +65,7 @@ class CoachPanelView(discord.ui.View):
 
 
 class CreateMissingView(discord.ui.View):
-    """Botón de /coaching-verificar-posts: crea los posts faltantes (solo quien corrió el comando, una vez)."""
+    """Botón de /coaching verificar-posts: crea los posts faltantes (solo quien corrió el comando, una vez)."""
     def __init__(self, cog, owner_id: int, members: list):
         super().__init__(timeout=300)
         self.cog, self.owner_id, self.members = cog, owner_id, members
@@ -118,8 +118,6 @@ class CoachingCog(commands.Cog):
             return None
 
     # ---------- panel y post ----------
-    @app_commands.command(name="coaching-panel", description="(Council) Publica el panel para abrir el post de VODs del coaching")
-    @app_commands.guild_only()
     async def coaching_panel(self, interaction: discord.Interaction):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden publicar este panel.")
@@ -130,7 +128,7 @@ class CoachingCog(commands.Cog):
                          f"• Quienes tienen el rol <@&{OBSERVACION_ROLE_ID}> tienen que subir **mínimo {cdb.WEEKLY_MIN} VODs por semana** "
                          f"(la semana va de lunes a domingo, hora UTC).\n"
                          f"• Los miembros también pueden subir VODs para pedir devolución; a ellos no se les exige el mínimo.\n"
-                         f"• Con `/mis-vods` ves cuántos llevás y cuántos te faltan."),
+                         f"• Con `/coaching mis-vods` ves cuántos llevás y cuántos te faltan."),
             color=discord.Color.blurple())
         await interaction.channel.send(embed=emb, view=CoachPanelView(self), allowed_mentions=NO_MENTIONS)
         await _say(interaction, "✅ Panel publicado.")
@@ -190,7 +188,7 @@ class CoachingCog(commands.Cog):
     CREATE_DELAY = 1.5          # segundos entre post y post al crearlos en lote (límite de Discord)
 
     async def create_missing(self, interaction: discord.Interaction, members: list):
-        """Crea los posts faltantes (botón de /coaching-verificar-posts). Se vuelve a chequear cada uno antes de crearlo."""
+        """Crea los posts faltantes (botón de /coaching verificar-posts). Se vuelve a chequear cada uno antes de crearlo."""
         if not can_report(interaction.user):
             return await interaction.response.send_message("🔒 No tenés permiso para crear posts.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
@@ -354,10 +352,11 @@ class CoachingCog(commands.Cog):
             out.append(cur)
         return out
 
-    @app_commands.command(name="coaching-reporte", description="(Staff/Coaching) Quién cumplió los 3 VODs semanales y cuántos subió cada uno")
+    coaching_g = app_commands.Group(name="coaching", description="Coaching: reporte semanal, verificación de posts y tus VODs", guild_only=True)
+
+    @coaching_g.command(name="reporte", description="(Staff/Coaching) Quién cumplió los 3 VODs semanales y cuántos subió cada uno")
     @app_commands.describe(semana="Semana en curso o la anterior (lunes a domingo, hora UTC)")
     @app_commands.choices(semana=[app_commands.Choice(name="En curso", value="actual"), app_commands.Choice(name="Anterior", value="anterior")])
-    @app_commands.guild_only()
     async def coaching_reporte(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None):
         if not can_report(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council, Coaching y Opinólogo pueden ver el reporte.")
@@ -394,8 +393,7 @@ class CoachingCog(commands.Cog):
                                             description=chunk, color=discord.Color.blurple()))
         await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="coaching-verificar-posts", description="(Staff/Coaching) Verifica que todos los de Observación tengan su post de VODs")
-    @app_commands.guild_only()
+    @coaching_g.command(name="verificar-posts", description="(Staff/Coaching) Verifica que todos los de Observación tengan su post de VODs")
     async def coaching_verificar_posts(self, interaction: discord.Interaction):
         if not can_report(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council, Coaching y Opinólogo pueden verificar los posts.")
@@ -431,8 +429,7 @@ class CoachingCog(commands.Cog):
         extra = {"view": CreateMissingView(self, interaction.user.id, todo)} if todo else {}
         await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS, **extra)
 
-    @app_commands.command(name="mis-vods", description="Cuántos VODs subiste esta semana y cuántos te faltan")
-    @app_commands.guild_only()
+    @coaching_g.command(name="mis-vods", description="Cuántos VODs subiste esta semana y cuántos te faltan")
     async def mis_vods(self, interaction: discord.Interaction):
         user = interaction.user
         start = cdb.week_start()

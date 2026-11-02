@@ -276,9 +276,6 @@ class GuildShopCog(commands.Cog):
             print(f"⚠️ Guild Shop: no pude actualizar el Top Vendedores: {exc!r}")
 
     # ---------- comandos ----------
-    @app_commands.command(name="guild-shop", description="(Council) Publica el Top Vendedores y el panel de compra del shop de la guild")
-    @app_commands.describe(canal="Canal donde publicar los dos paneles (por defecto, este canal)")
-    @app_commands.guild_only()
     async def guild_shop(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
         try:
             if interaction.guild is None or not can_manage(interaction.user):
@@ -315,6 +312,33 @@ class GuildShopCog(commands.Cog):
 
     canal = app_commands.Group(name="canal", description="Configuración de canales", guild_only=True)
     canal_logs = app_commands.Group(name="logs", description="Canales de registro", parent=canal)
+
+    # Estos canales se configuran con /canal ...; la lógica y la validación de permisos siguen en cada módulo.
+    async def _canal_delegate(self, interaction: discord.Interaction, cog_name: str, method: str, label: str, *args):
+        cog = self.bot.get_cog(cog_name)
+        if cog is None:
+            return await _reply(interaction, f"❌ El módulo de {label} no está cargado.")
+        await getattr(cog, method)(interaction, *args)
+
+    @canal.command(name="entradas", description="(Council/Admin) Canal donde se menciona a quien entra al servidor")
+    @app_commands.describe(canal="Canal (por defecto, este)", desactivar="Apagar este registro")
+    async def canal_entradas_cmd(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
+        await self._canal_delegate(interaction, "MemberLogCog", "canal_entradas", "entradas y salidas", canal, desactivar)
+
+    @canal.command(name="salidas", description="(Council/Admin) Canal donde se registra quién se fue, sus roles y su cuenta de Albion")
+    @app_commands.describe(canal="Canal (por defecto, este)", desactivar="Apagar este registro")
+    async def canal_salidas_cmd(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
+        await self._canal_delegate(interaction, "MemberLogCog", "canal_salidas", "entradas y salidas", canal, desactivar)
+
+    @canal.command(name="registro", description="(Council/Admin) Canal donde el bot avisa los registros y desvinculaciones")
+    @app_commands.describe(canal="Canal de texto")
+    async def canal_registro_cmd(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        await self._canal_delegate(interaction, "RegistrationCog", "registro_canal", "registro", canal)
+
+    @canal.command(name="economia", description="(Admin) Canal donde se publican los movimientos de Wuju Coins")
+    @app_commands.describe(canal="Canal de auditoría económica")
+    async def canal_economia_cmd(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        await self._canal_delegate(interaction, "EconomyCog", "registro_bal", "economía", canal)
 
     # /canal dados vive acá porque el grupo "/canal" es único en el bot (Discord no permite repetirlo en otro módulo)
     @canal.command(name="dados", description="(Council) Canal donde se publican los paneles de !dados")

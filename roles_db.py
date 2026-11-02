@@ -1,4 +1,4 @@
-"""Registro de cambios de roles hechos con /rol-dar y /rol-quitar (quién, a quién, qué rol, cuándo)."""
+"""Registro de cambios de roles hechos con /rol dar y /rol quitar (quién, a quién, qué rol, cuándo)."""
 from typing import List, Optional
 
 from dbutil import connect, utcnow_iso, write_tx

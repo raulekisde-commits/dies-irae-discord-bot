@@ -1,4 +1,4 @@
-"""Gestión de roles de Observación y de CTA: /rol-dar, /rol-quitar, /rol-historial.
+"""Gestión de roles de Observación y de CTA: /rol dar, /rol quitar, /rol historial.
 
 Quién puede qué (se valida siempre acá, no solo con permisos de Discord):
   • Observación — dar: Staff, Council, Admin, Coaching y Opinólogo · quitar: Staff, Council, Admin y Coaching.
@@ -122,23 +122,22 @@ class RolesMgmtCog(commands.Cog):
         else:
             await _say(interaction, f"✅ A {usuario.mention} se le quitó el rol **{name}**. Lo hizo {actor.mention}.")
 
-    @app_commands.command(name="rol-dar", description="(Staff/Council/Coaching/Opinólogo) Da el rol de Observación o de CTA a una persona")
+    rol = app_commands.Group(name="rol", description="Dar o quitar roles de Observación y CTA (queda registrado)", guild_only=True)
+
+    @rol.command(name="dar", description="(Staff/Council/Coaching/Opinólogo) Da el rol de Observación o de CTA a una persona")
     @app_commands.describe(usuario="Persona", rol="Rol a dar", motivo="Motivo (opcional, queda en el registro)")
     @app_commands.choices(rol=CHOICES)
-    @app_commands.guild_only()
     async def rol_dar(self, interaction: discord.Interaction, usuario: discord.Member, rol: app_commands.Choice[str], motivo: Optional[str] = None):
         await self._change(interaction, usuario, rol, motivo, "dar")
 
-    @app_commands.command(name="rol-quitar", description="(Staff/Council/Coaching) Quita el rol de Observación o de CTA a una persona")
+    @rol.command(name="quitar", description="(Staff/Council/Coaching) Quita el rol de Observación o de CTA a una persona")
     @app_commands.describe(usuario="Persona", rol="Rol a quitar", motivo="Motivo (opcional, queda en el registro)")
     @app_commands.choices(rol=CHOICES)
-    @app_commands.guild_only()
     async def rol_quitar(self, interaction: discord.Interaction, usuario: discord.Member, rol: app_commands.Choice[str], motivo: Optional[str] = None):
         await self._change(interaction, usuario, rol, motivo, "quitar")
 
-    @app_commands.command(name="rol-historial", description="(Staff/Council/Coaching/Opinólogo) Quién dio o quitó roles")
+    @rol.command(name="historial", description="(Staff/Council/Coaching/Opinólogo) Quién dio o quitó roles")
     @app_commands.describe(usuario="Persona (si no, se muestran los últimos movimientos)")
-    @app_commands.guild_only()
     async def rol_historial(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
         if not can_use_any(interaction.user):
             return await _say(interaction, "🔒 No tenés permiso para ver el historial de roles.")

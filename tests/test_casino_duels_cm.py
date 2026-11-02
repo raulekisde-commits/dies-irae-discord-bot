@@ -1,4 +1,4 @@
-"""Pruebas de /casino, /casinoban, /1v1 y de los paneles /panel cambiomoneda (venta y compra de Wuju Coins).
+"""Pruebas de /casino, /casino ban, /casino 1v1 y de los paneles /panel cambiomoneda (venta y compra de Wuju Coins).
 
 Lógica con SQLite real y capa de Discord con el stub (sin red). NO prueban la API real de Discord.
 """
@@ -70,12 +70,12 @@ class CasinoDiscordTests(DiscordBase):
 
     def casino(self, user, accion):
         i = self.inter(user)
-        run(self.cog.casino.callback(self.cog, i, discord.app_commands.Choice(accion, accion)))
+        run(self.cog.casino(i, discord.app_commands.Choice(accion, accion)))
         return i
 
     def ban(self, user, target):
         i = self.inter(user)
-        run(self.cog.casinoban.callback(self.cog, i, target))
+        run(self.cog.casinoban(i, target))
         return i
 
     def test_only_council_can_open_and_close(self):
@@ -92,7 +92,7 @@ class CasinoDiscordTests(DiscordBase):
 
     def limite(self, user, juego, cantidad):
         i = self.inter(user)
-        run(self.cog.limite.callback(self.cog, i, discord.app_commands.Choice(juego, juego), cantidad))
+        run(self.cog.limite(i, discord.app_commands.Choice(juego, juego), cantidad))
         return i
 
     def test_limite_is_council_only_validates_and_can_be_removed(self):
@@ -116,14 +116,14 @@ class CasinoDiscordTests(DiscordBase):
         self.assertIn("sacado", self.ban(self.council, self.bob).text)     # repetir lo saca
         self.assertFalse(cdb.is_banned(self.db, GUILD_ID, self.bob.id))
         self.assertIn("bot", self.ban(self.council, self.robot).text)
-        self.assertEqual(cs.CasinoCog.casinoban.name, "casinoban")
+        self.assertEqual(cs.CasinoCog.casino_ban.name, "ban")
 
 
 # ============================================================
 # 1v1
 # ============================================================
 class DuelInter(FakeInteraction):
-    """Interacción de /1v1: el mensaje que se envía queda disponible como respuesta original."""
+    """Interacción de /casino 1v1: el mensaje que se envía queda disponible como respuesta original."""
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -245,13 +245,13 @@ class DuelDiscordTests(DiscordBase):
         super().setUp()
         self.cog = run(du.setup_duels(self.bot, self.db, GUILD_ID))
         run(cs.setup_casino(self.bot, self.db, GUILD_ID))
-        eco.set_command_channel(self.db, "1v1", PANEL_CH)                 # /1v1 se habilita con /perms-canal como dados y coinflip
+        eco.set_command_channel(self.db, "1v1", PANEL_CH)                 # /casino 1v1 se habilita con /eco perms-canal como dados y coinflip
         self.fund(self.alice, 10000)
         self.fund(self.bob, 6000)
 
     def challenge(self, a, b, amount):
         i = DuelInter(self.guild, a, self.panelch)
-        run(self.cog.duel.callback(self.cog, i, b, amount))
+        run(self.cog.duel(i, b, amount))
         return i
 
     def press(self, user, kind, msg):
@@ -262,7 +262,7 @@ class DuelDiscordTests(DiscordBase):
     def test_1v1_needs_perms_canal_and_only_works_in_that_channel(self):
         eco.clear_command_channel(self.db, "1v1")
         i = self.challenge(self.alice, self.bob, "100")
-        self.assertIn("/perms-canal", i.text)                              # sin canal configurado está deshabilitado
+        self.assertIn("/eco perms-canal", i.text)                              # sin canal configurado está deshabilitado
         self.assertEqual(self.panelch.sent, [])
         other = discord.TextChannel(PANEL_CH + 1, self.guild, "otro")
         self.guild._channels[other.id] = other
@@ -273,7 +273,7 @@ class DuelDiscordTests(DiscordBase):
         eco.set_command_channel(self.db, "1v1", PANEL_CH)
         self.challenge(self.alice, self.bob, "100")
         self.assertEqual(self.bal(self.alice), 9900)
-        # y se puede deshabilitar repitiendo /perms-canal en el mismo canal
+        # y se puede deshabilitar repitiendo /eco perms-canal en el mismo canal
         cmd = economy.EconomyCog.perms_canal
         inter = self.inter(self.admin, self.panelch)
         run(cmd.callback(self.ecog, inter, discord.app_commands.Choice("1v1", "1v1")))
@@ -290,7 +290,7 @@ class DuelDiscordTests(DiscordBase):
         self.assertEqual(self.bal(self.alice), 9000)
 
     def test_registered_as_1v1(self):
-        self.assertEqual(du.DuelsCog.duel.name, "1v1")
+        self.assertEqual(cs.CasinoCog.casino_1v1.name, "1v1")
         self.assertIn("DuelView", {type(v).__name__ for v in self.bot.persistent_views})
 
     def test_challenge_publishes_panel_pinging_the_challenged_with_two_buttons(self):
@@ -433,7 +433,7 @@ class CambioMonedaTests(DiscordBase):
     # ---- /panel group ----
     def test_panel_group_has_both_subcommands(self):
         self.assertEqual(pn.PanelsCog.panel.name, "panel")
-        self.assertEqual(set(pn.PanelsCog.panel.commands), {"apuestas", "cambiomoneda"})
+        self.assertEqual(set(pn.PanelsCog.panel.commands), {"apuestas", "cambiomoneda", "reclutamiento", "foco", "shop", "coaching"})
 
     def test_panel_command_delegates_and_reports_missing_modules(self):
         cog = run(pn.setup_panels(self.bot, GUILD_ID))

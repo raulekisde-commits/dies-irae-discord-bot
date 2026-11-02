@@ -18,11 +18,11 @@ MAX_BALANCE_ABS = 10 ** 18     # protección contra desbordar el entero de 64 bi
 ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 # Comandos de administración de saldo: funcionan en cualquier canal (solo se exige el rol/permiso).
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money", "top")
-# Permisos que se otorgan con /perms-comando pero no son comandos de prefijo restringidos por canal
-GAME_COMMANDS = ("dados", "coinflip", "1v1")          # juegos con apuesta: se habilitan con /perms-canal y /perms-comando
+# Permisos que se otorgan con /eco perms-comando pero no son comandos de prefijo restringidos por canal
+GAME_COMMANDS = ("dados", "coinflip", "1v1")          # juegos con apuesta: se habilitan con /eco perms-canal y /eco perms-comando
 EXTRA_PERMISSION_COMMANDS = ("stats", "apuesta", "apuestas", "verhistorial", "set-balance", "eco-stats", "give-money", "ruleta", "ruleta-editar", "ruleta-stats") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
-# Por defecto funcionan en CUALQUIER canal; si un admin les fija uno con /perms-canal, pasan a funcionar solo ahí.
+# Por defecto funcionan en CUALQUIER canal; si un admin les fija uno con /eco perms-canal, pasan a funcionar solo ahí.
 DEFAULT_ANY_CHANNEL = ("stats",)
 CHANNEL_COMMANDS = tuple(c for c in ECON_COMMANDS if c not in ANY_CHANNEL_COMMANDS) + ("stats",) + GAME_COMMANDS   # bal, top, dados, coinflip, 1v1
 
@@ -766,7 +766,7 @@ def get_setting(db_path: str, key: str) -> Optional[str]:
 
 
 def get_bet_limit(db_path: str, game: str) -> Optional[int]:
-    """Apuesta máxima configurada con /limite para dados, coinflip o 1v1 (None = sin límite propio)."""
+    """Apuesta máxima configurada con /casino limite para dados, coinflip o 1v1 (None = sin límite propio)."""
     raw = get_setting(db_path, f"bet_limit:{game}")
     try:
         v = int(raw) if raw else 0
@@ -905,7 +905,7 @@ def authorize(
     Excepción: addmoney, addmoney-role y remove-money se pueden usar en cualquier canal.
 
     El canal se exige SIEMPRE, también a los administradores. Si el comando no tiene canal configurado
-    queda deshabilitado para todos hasta que un administrador use /perms-canal.
+    queda deshabilitado para todos hasta que un administrador use /eco perms-canal.
     """
     if not (is_admin or (member_role_ids & allowed_role_ids)):
         return AuthResult(False, "No tenés permiso para usar este comando.")
@@ -914,7 +914,7 @@ def authorize(
     if configured_channel_id is None and command in DEFAULT_ANY_CHANNEL:
         return AuthResult(True)
     if configured_channel_id is None:
-        return AuthResult(False, f"`{command}` todavía no está habilitado en ningún canal. Un administrador debe usar `/perms-canal`.")
+        return AuthResult(False, f"`{command}` todavía no está habilitado en ningún canal. Un administrador debe usar `/eco perms-canal`.")
     if channel_id != configured_channel_id:
         return AuthResult(False, f"Este comando solo se puede usar en <#{configured_channel_id}>.")
     return AuthResult(True)

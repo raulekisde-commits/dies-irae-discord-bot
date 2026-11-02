@@ -461,7 +461,7 @@ class RouletteCogTests(RouletteDbBase):
 
     def open(self, user=None, channel=None):
         i = self.inter(user or self.admin, channel)
-        run(self.cog.ruleta.callback(self.cog, i))
+        run(self.cog.ruleta(i))
         return i
 
     def test_only_admin_opens_and_only_one(self):
