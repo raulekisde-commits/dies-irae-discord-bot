@@ -110,7 +110,7 @@ INFO_STAFF = {
                  "• **Splits** (Council / Admin): `/split` (con looters) y `/split-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
                  "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"
                  "• **Cambio de moneda**: `/panel cambiomoneda` publica los tickets de venta y compra de Wuju Coins; el Council acepta y retira el balance."),
-    "zvz-vods": ("• `/coaching-panel` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
+    "zvz-vods": ("• `/panel coaching` (Council / Admin) — publica el panel con el botón que abre el post de cada persona en el foro. Pueden usarlo Observación y Miembros.\n"
                  "• Cada VOD genera una tarea para el rol **Coaching** indicando con qué rol juega la persona. Pueden tomarla Coaching, Staff, Opinólogo y Council. No tiene hilo; el recordatorio es cada 12 h.\n"
                  "• La tarea se completa sola cuando alguien del equipo responde en el post, o con el botón **Terminada**.\n"
                  "• `/coaching-reporte [semana]` (Council / Staff / Coaching / Opinólogo) — quién cumplió los 3 VODs semanales (en curso o anterior), quién no y cuántos subió cada uno. Los miembros sin Observación aparecen aparte y no cuentan para el mínimo.\n"
@@ -228,7 +228,7 @@ INFO_STAFF.update({
             "• **Cerrar CTA** crea el panel y el hilo de stats (`/info-staff stats`) y deja de aceptar anotados. Si la composición es «track», genera el split (`/info-staff splits`).\n"
             "• Durante los primeros 5 min la Party 1 es solo Legacy si la composición lo tiene activado."),
     "reclutamiento": ("**Montaje**\n"
-                      "• `/panel-reclutamiento` (Admin) publica el panel con el botón de postulación en el canal donde lo uses.\n"
+                      "• `/panel reclutamiento` (Admin) publica el panel con el botón de postulación en el canal donde lo uses.\n"
                       "• Cada postulación abre un canal privado visible para el postulante y el rol **Reclutador**. Arriba queda el resumen con todos los datos y el nick de Albion.\n\n"
                       "**Cómo reclutar paso a paso**\n"
                       "1. Leé el resumen: nick, rol main, otros roles, horarios, gremio anterior, si graba CTAs, idioma y **amigos en la guild** (para vouch). Hablá con la persona en el canal.\n"
@@ -281,7 +281,7 @@ INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuar
                        "• **Roles de CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb): dar = Staff, Council, Admin y Coaching · quitar = Staff, Council y Admin.\n"
                        "• `/rol historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
                        "• No te podés cambiar roles a vos mismo, y el rol del bot tiene que estar por encima del rol que se cambia.")
-INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/guild-shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
+INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
 
 def _roles(m) -> set:

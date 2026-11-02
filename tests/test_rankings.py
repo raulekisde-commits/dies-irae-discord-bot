@@ -280,7 +280,7 @@ class RankingsDiscordTests(unittest.TestCase):
     def test_command_registered(self):
         import panels as pn
         self.assertEqual(pn.PanelsCog.panel.name, "panel")
-        self.assertEqual({c.name for c in pn.PanelsCog.panel.commands.values()} if isinstance(pn.PanelsCog.panel.commands, dict) else set(), {"apuestas", "cambiomoneda"})
+        self.assertEqual({c.name for c in pn.PanelsCog.panel.commands.values()} if isinstance(pn.PanelsCog.panel.commands, dict) else set(), {"apuestas", "cambiomoneda", "reclutamiento", "foco", "shop", "coaching"})
         self.assertIn("apuestas", eco.GRANTABLE_COMMANDS)
         kinds = {type(v).__name__ for v in self.bot.persistent_views}
         self.assertIn("RankPanelView", kinds)
