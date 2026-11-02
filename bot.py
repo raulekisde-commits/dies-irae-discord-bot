@@ -359,19 +359,6 @@ ALBIONBB_BASE_URL = f"https://api.albionbb.com/{ALBIONBB_REGION}"
 # Plantel de la guild en Albion (API oficial del juego). El ID es el mismo que aparece en la URL de AlbionBB.
 ALBION_GUILD_NAME = os.getenv("ALBION_GUILD_NAME", "Smogg")
 ALBION_GUILD_ID = os.getenv("ALBION_GUILD_ID", "FkCFeONGTeqETPtZhJEubg")
-_ALBION_GAMEINFO_BY_REGION = {
-    "eu": "https://gameinfo-ams.albiononline.com",
-    "west": "https://gameinfo.albiononline.com", "us": "https://gameinfo.albiononline.com",
-    "east": "https://gameinfo-sgp.albiononline.com", "asia": "https://gameinfo-sgp.albiononline.com",
-}
-# Smogg figura en el servidor de Américas (Europa y Asia devuelven la guild vacía/inexistente).
-ALBION_GAMEINFO_BASE = os.getenv("ALBION_GAMEINFO_BASE", "https://gameinfo.albiononline.com")
-ALBION_TIMEOUT_SECONDS = 45
-ALBION_RETRIES = 2
-ALBION_GAMEINFO_ALL = ["https://gameinfo.albiononline.com", "https://gameinfo-ams.albiononline.com",
-                       "https://gameinfo-sgp.albiononline.com"]
-ALBION_ROSTER_CACHE_SECONDS = 120
-_albion_roster_cache: dict = {"at": 0.0, "names": set()}
 ALBIONBB_BATTLE_URL = f"{ALBIONBB_BASE_URL}/battles"
 ALBIONBB_KILLS_URL = f"{ALBIONBB_BASE_URL}/battles/kills"
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
