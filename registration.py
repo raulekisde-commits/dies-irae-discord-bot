@@ -608,29 +608,35 @@ class RegistrationCog(commands.Cog):
         """Registra al postulante con su nick de Albion. Devuelve (ok, texto, roles_dados_ya).
         Si el personaje ya figura en la guild, se dan los roles en el momento; si no, quedan PENDIENTES hasta que aparezca en la lista."""
         look = await self.lookup_character(nick, any_guild=True)
-        if look.kind == "error":
-            return False, "No pude consultar la API de Albion para validar el nick. Probá de nuevo en unos minutos.", False
-        if look.kind == "none":
-            return False, f"No existe ningún personaje llamado **{discord.utils.escape_markdown(_clean_name(nick))}** en Albion. Pedile al postulante que corrija su nick.", False
         if look.kind == "ambiguous":
             return False, "Hay varios personajes con ese nombre en distintos servidores de Albion. Vinculalo con `/admin_vincular` y dale los roles a mano.", False
-        c = look.character
+        # Si la API no responde o no encuentra el personaje, no se frena la aceptación: se vincula a mano con el nick del ticket,
+        # igual que /admin_vincular (queda marcado como vínculo administrativo y auditado). /sincronizar-registros completa el ID después.
+        manual = {"error": "la API de Albion no respondió", "none": "no encontré ese personaje en la API de Albion"}.get(look.kind)
+        c = None if manual else look.character
+        name = c.name if c else _clean_name(nick)
         try:
-            await self.run(rdb.admin_link, member.id, c.name, recruiter.id, char_id=c.char_id, region=c.region, guild_name=c.guild or None, method="recruitment")
+            await self.run(rdb.admin_link, member.id, name, recruiter.id, char_id=c.char_id if c else None, region=c.region if c else None,
+                           guild_name=(c.guild or None) if c else None, method="recruitment" if c else "admin_override")
         except rdb.RegError as exc:
             return False, f"{exc}", False
-        in_guild = (bool(self.required_guild) and c.guild.casefold() == self.required_guild.casefold()) or c.name.casefold() in self.roster
-        await self.audit_log(f"🧾 <@{recruiter.id}> aceptó y registró a <@{member.id}> como **{discord.utils.escape_markdown(c.name)}**.")
-        if in_guild and await self.grant_recruit_roles(member, role_id, role_name, c.name, recruiter.id, extra_role_ids):
-            return True, f"Registrado como **{discord.utils.escape_markdown(c.name)}** y ya está en la guild: roles entregados.", True
-        await self.run(rdb.add_pending_recruit, member.id, c.name, c.char_id, role_id, role_name, recruiter.id, tuple(extra_role_ids))
+        in_guild = ((bool(self.required_guild) and c.guild.casefold() == self.required_guild.casefold()) if c else False) or name.casefold() in self.roster
+        safe = discord.utils.escape_markdown(name)
+        if manual:
+            await self.audit_log(f"⚠️ <@{recruiter.id}> aceptó a <@{member.id}> y lo vinculó **a mano** como **{safe}** ({manual}).")
+        else:
+            await self.audit_log(f"🧾 <@{recruiter.id}> aceptó y registró a <@{member.id}> como **{safe}**.")
+        warn = f"\n⚠️ {manual[0].upper() + manual[1:]}: quedó vinculado **a mano** (como `/admin_vincular`) con el nick del ticket. Revisá que esté bien escrito." if manual else ""
+        if in_guild and await self.grant_recruit_roles(member, role_id, role_name, name, recruiter.id, extra_role_ids):
+            return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
+        await self.run(rdb.add_pending_recruit, member.id, name, c.char_id if c else None, role_id, role_name, recruiter.id, tuple(extra_role_ids))
         try:
             await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}**. Entrá a la guild en el juego con tu personaje "
-                              f"**{c.name}**: apenas el bot te vea adentro, te da los roles automáticamente (puede tardar hasta unos 10 minutos).")
+                              f"**{name}**: apenas el bot te vea adentro, te da los roles automáticamente (puede tardar hasta unos 10 minutos).")
         except Exception:
             pass
-        return True, (f"Registrado como **{discord.utils.escape_markdown(c.name)}**. ⏳ **Todavía no está en la guild**: los roles se le dan solos cuando "
-                      "aparezca adentro (se revisa cada 10 min)."), False
+        return True, (f"Registrado como **{safe}**. ⏳ **Todavía no está en la guild**: los roles se le dan solos cuando "
+                      f"aparezca adentro (se revisa cada 10 min).{warn}"), False
 
     async def grant_recruit_roles(self, member: discord.Member, role_id: int, role_name: str, char_name: str, recruiter_id=None, extra_role_ids=()) -> bool:
         guild = member.guild

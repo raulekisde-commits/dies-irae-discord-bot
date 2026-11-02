@@ -370,12 +370,31 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertIn(self.r_member, self.newbie.roles)
         self.assertEqual(rdb.list_pending_recruits(self.db), [])
 
-    def test_recruit_with_unknown_or_taken_nick_is_not_accepted(self):
+    def test_recruit_with_unknown_nick_is_linked_by_hand(self):
         self._recruit_setup()
-        ok, text, _ = run(self.cog.accept_recruit(self.newbie, "NoExiste", self.r_main.id, "Tank", self.council))
-        self.assertFalse(ok)
-        self.assertIn("No existe", text)
-        self.assertIsNone(rdb.get_registration(self.db, self.newbie.id))
+        ok, text, granted = run(self.cog.accept_recruit(self.newbie, "NoExiste", self.r_main.id, "Tank", self.council))
+        self.assertEqual((ok, granted), (True, False))
+        self.assertIn("a mano", text)
+        reg = rdb.get_registration(self.db, self.newbie.id)
+        self.assertEqual((reg.char_name, reg.method, reg.char_id), ("NoExiste", "admin_override", None))   # como /admin_vincular, sin ID
+        self.assertNotIn(self.r_member, self.newbie.roles)                                                  # los roles esperan a que entre
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)
+
+    def test_recruit_with_api_down_is_linked_by_hand(self):
+        self._recruit_setup()
+
+        async def caida(url, params=None):
+            raise RuntimeError("API caída")
+        self.cog.fetch_json = caida
+        self.cog.roster = {}
+        ok, text, granted = run(self.cog.accept_recruit(self.newbie, "Forastero", self.r_main.id, "Tank", self.council))
+        self.assertEqual((ok, granted), (True, False))
+        self.assertIn("no respondió", text)
+        self.assertEqual(rdb.get_registration(self.db, self.newbie.id).method, "admin_override")
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)                                # los roles esperan a que aparezca en la lista
+
+    def test_recruit_with_taken_nick_is_not_accepted(self):
+        self._recruit_setup()
         rdb.admin_link(self.db, self.alice.id, "Cazador", 1, char_id="id-cazador")
         ok, _text, _ = run(self.cog.accept_recruit(self.newbie, "Cazador", self.r_main.id, "Tank", self.council))
         self.assertFalse(ok)                                                                       # ya es de otra cuenta
