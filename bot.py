@@ -1418,12 +1418,21 @@ def staff_only_slash():
     return app_commands.check(predicate)
 
 
+def staff_council_admin_slash():
+    """Staff, Council, propietario o Administrator (se evalúa en cada ejecución; no depende de ocultar el comando)."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return False
+        return is_staff_or_council(interaction.user)
+    return app_commands.check(predicate)
+
+
 @bot.tree.command(
     name="list_role",
-    description="(Staff) Lista los miembros (apodo del server) que tienen un rol",
+    description="(Staff, Council y Admin) Lista los miembros (apodo del server) que tienen un rol",
     guild=discord.Object(id=GUILD_ID)
 )
-@staff_only_slash()
+@staff_council_admin_slash()
 @app_commands.describe(rol="Rol del que querés listar miembros")
 async def list_role_slash(interaction: discord.Interaction, rol: discord.Role):
     if interaction.guild is None:
@@ -1462,7 +1471,7 @@ async def list_role_slash(interaction: discord.Interaction, rol: discord.Role):
 @list_role_slash.error
 async def list_role_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        return await respond_ephemeral(interaction, "❌ Solo **Staff** puede usar `/list_role`.")
+        return await respond_ephemeral(interaction, "❌ Solo el **Staff**, el **Council** y los administradores pueden usar `/list_role`.")
     return await respond_ephemeral(interaction, "❌ Error ejecutando el comando.")
 
 # ---------- COMANDOS STAFF ----------
@@ -6219,7 +6228,7 @@ HELP_SECTIONS = [
     ]),
     ("🎁 Sorteos y roles", [
         ("/sorteo premio tiempo [ganadores]", "Staff / Council", "Crea un sorteo con botón para anotarse; elige ganadores reales y sin repetir."),
-        ("/list_role rol", "Staff", "Lista los miembros que tienen un rol."),
+        ("/list_role rol", "Staff / Council / Admin", "Lista los miembros que tienen un rol."),
         ("!addroll-list NombreRol @u1 @u2 …", "Council / Admin", "Crea un rol y se lo da a las personas mencionadas."),
     ]),
     ("⚙️ Administración", [
