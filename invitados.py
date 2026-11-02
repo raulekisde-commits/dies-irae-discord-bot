@@ -276,10 +276,10 @@ INFO_STAFF.update({
                  "• La API de Albion no tiene login: prueba que el personaje existe y su guild, pero **no quién lo controla**.\n"
                  "• El nombre sale exacto de la API, un personaje solo puede ir con una cuenta y nadie registra a otro sin que acepte."),
 })
-INFO_STAFF["roles"] = ("• `/rol-dar usuario rol [motivo]` y `/rol-quitar usuario rol [motivo]` — el bot cambia el rol y lo registra con quién lo hizo.\n"
+INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuario rol [motivo]` — el bot cambia el rol y lo registra con quién lo hizo.\n"
                        "• **Observación:** dar = Staff, Council, Admin, Coaching y Opinólogo · quitar = Staff, Council, Admin y Coaching.\n"
                        "• **Roles de CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb): dar = Staff, Council, Admin y Coaching · quitar = Staff, Council y Admin.\n"
-                       "• `/rol-historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
+                       "• `/rol historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
                        "• No te podés cambiar roles a vos mismo, y el rol del bot tiene que estar por encima del rol que se cambia.")
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/guild-shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
