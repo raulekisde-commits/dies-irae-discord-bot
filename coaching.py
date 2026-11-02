@@ -12,6 +12,8 @@ from discord.ext import commands
 
 import coaching_db as cdb
 import ctautil as cu
+import encargos_db as edb
+from encargos import can_take
 from guildshop import can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -165,7 +167,11 @@ class CoachingCog(commands.Cog):
         if getattr(message.author, "bot", False) or getattr(message.channel, "parent_id", None) != FORUM_CHANNEL_ID:
             return
         post = await self.run(cdb.post_by_thread, message.channel.id)
-        if post is None or int(post["user_id"]) != message.author.id:          # solo cuentan los videos que sube el dueño del post
+        if post is None:
+            return
+        if int(post["user_id"]) != message.author.id:          # solo cuentan los videos que sube el dueño del post
+            if not edited:
+                await self.complete_on_reply(message)            # pero si responde alguien del equipo, la devolución queda dada
             return
         vods = cdb.extract_vods(message.content, getattr(message, "attachments", []))
         if not vods:
@@ -200,6 +206,35 @@ class CoachingCog(commands.Cog):
                                     mention_author=False, allowed_mentions=NO_MENTIONS)
             except Exception as exc:
                 print(f"coaching: no pude preguntar el rol: {exc!r}")
+
+    async def complete_on_reply(self, message: discord.Message):
+        """Un coach/opinólogo/staff/council responde en el post: se completa la tarea del VOD al que responde, o todas las pendientes del post."""
+        if not can_take(message.author):
+            return
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is None:
+            return
+        pending = await self.run(cdb.pending_msgs, message.channel.id)
+        ref = getattr(getattr(message, "reference", None), "message_id", None)
+        if ref in pending:
+            pending = [ref]
+        done = 0
+        for mid in pending:
+            try:
+                if await enc.complete_by_source(f"coach:{mid}", message.author.id):
+                    done += 1
+                    await self.run(cdb.mark_done, mid)
+                else:
+                    t = await enc.run(edb.find_by_source, f"coach:{mid}")
+                    if t is None or t.status == "done":              # ya la habían cerrado con el botón
+                        await self.run(cdb.mark_done, mid)
+            except Exception as exc:
+                print(f"coaching: no pude completar la tarea del VOD {mid}: {exc!r}")
+        if done:
+            try:
+                await message.add_reaction("✅")
+            except Exception:
+                pass
 
     async def on_role_pick(self, interaction: discord.Interaction, label: str):
         ref = getattr(getattr(interaction, "message", None), "reference", None)

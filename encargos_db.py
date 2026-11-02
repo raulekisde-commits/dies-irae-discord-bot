@@ -300,6 +300,20 @@ def finish(db_path: str, task_id: int, user_id: int, override: bool) -> Change:
         conn.close()
 
 
+def top_coaches(db_path: str, size: int = 10, since: Optional[str] = None):
+    """[(user_id, devoluciones de coaching cerradas)] de más a menos. `since` (ISO UTC) limita a lo cerrado desde esa fecha."""
+    sql = "SELECT done_by, COUNT(*) AS n FROM tasks WHERE status='done' AND done_by IS NOT NULL AND source LIKE 'coach:%'"
+    args: list = []
+    if since:
+        sql += " AND done_at >= ?"
+        args.append(since)
+    conn = connect(db_path)
+    try:
+        return [(int(r[0]), int(r[1])) for r in conn.execute(sql + " GROUP BY done_by ORDER BY n DESC, done_by LIMIT ?", (*args, size))]
+    finally:
+        conn.close()
+
+
 def top_users(db_path: str, size: int = 10):
     """(más tareas aceptadas, más tareas cerradas): listas de (user_id, cantidad). «Aceptadas» = veces que alguien tomó una tarea."""
     conn = connect(db_path)
