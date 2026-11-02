@@ -5510,6 +5510,12 @@ except Exception as _exc:
     buildcard = None
     buildcard_error = "falta instalar Pillow en el servidor" if "PIL" in repr(_exc) else repr(_exc)[:80]
     print(f"Sin imagen de builds ({buildcard_error}): pip install -r requirements.txt")
+else:
+    try:
+        _ok, _txt = buildcard.cache_summary()
+        print(("✅ " if _ok else "⚠️ ") + _txt.replace("`", ""))
+    except Exception as _exc:
+        print(f"⚠️ No pude revisar la caché de builds: {_exc!r}")
 
 
 async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dict):
@@ -5524,10 +5530,19 @@ async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dic
     reason = buildcard_error
     bname, play, desc = compoweb.build_summary(data)
     if buildcard is not None:
+        waited = False
+
+        async def _avisar():                 # solo si la imagen no estaba guardada y hay que dibujarla
+            nonlocal waited
+            await interaction.edit_original_response(content="⏳ Preparando tu build, un momento…")
+            waited = True
+
         try:
-            png = await asyncio.to_thread(buildcard.render, data, meta["name"])
-            return await interaction.followup.send(content=compoweb.build_caption(comp["name"], meta["name"], where, desc),
-                                                   file=discord.File(io.BytesIO(png), filename="build.png"), ephemeral=True)
+            png = await buildcard.render_async(data, meta["name"], on_wait=_avisar)
+            caption = compoweb.build_caption(comp["name"], meta["name"], where, desc)
+            if waited:
+                return await interaction.edit_original_response(content=caption, attachments=[discord.File(io.BytesIO(png), filename="build.png")])
+            return await interaction.followup.send(content=caption, file=discord.File(io.BytesIO(png), filename="build.png"), ephemeral=True)
         except Exception as exc:
             print(f"/compo ver-builds: no pude dibujar la imagen de {meta['id']}: {exc!r}")
             reason = f"error al dibujar: {exc.__class__.__name__}: {exc}"[:90]
