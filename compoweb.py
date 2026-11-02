@@ -375,3 +375,24 @@ def build_summary(build: dict) -> Tuple[str, str, str]:
     b = (build or {}).get("build") or build or {}
     draft = b.get("draft") or b
     return draft.get("name") or "Build", (draft.get("playstyle") or "").lower(), draft.get("description") or ""
+
+
+def build_caption(comp_name: str, build_name: str, where: str, description: Optional[str], limit: int = 1900) -> str:
+    """Texto que acompaña la imagen de una build: nombre, composición, dónde se usa y la descripción que escribió quien armó la build."""
+    text = f"🧩 **{build_name}** · {comp_name}\n{where}"
+    desc = (description or "").strip()
+    if desc:
+        text += "\n📝 " + desc
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def list_description(db_path: str, build_id: str, size: int = 90) -> str:
+    """Descripción corta (una línea) de una build ya guardada; vacío si no hay o nunca se bajó. No consulta el sitio."""
+    try:
+        data = cached_build(db_path, build_id, max_age=float("inf"))
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    desc = " ".join((build_summary(data)[2] or "").split())
+    return desc if len(desc) <= size else desc[:size - 1].rstrip() + "…"

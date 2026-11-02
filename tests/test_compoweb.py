@@ -155,6 +155,19 @@ class VerBuildsTests(unittest.TestCase):
         self.assertEqual(cw.item_type(self.BUILD["build"]["draft"]["food"]), "T7_MEAL_OMELETTE@2")
         self.assertEqual(cw.build_summary(self.BUILD)[:2], ("Heavy Mace", "dtank"))
 
+    def test_caption_con_descripcion(self):
+        import compoweb as cw
+        t = cw.build_caption("Comp X", "Heavy Mace", "Usada en: P1-1", "Tanque de frontline")
+        self.assertIn("📝 Tanque de frontline", t)
+        self.assertNotIn("📝", cw.build_caption("Comp X", "Heavy Mace", "Usada en: P1-1", ""))
+        self.assertLessEqual(len(cw.build_caption("C", "B", "W", "x" * 5000)), 1900)
+
+    def test_descripcion_corta_de_lista(self):
+        import compoweb as cw, tempfile, os
+        db = os.path.join(tempfile.mkdtemp(), "t.db")
+        cw.init_schema(db)
+        self.assertEqual(cw.list_description(db, "nope"), "")
+
     def test_guardado(self):
         import compoweb as cw, tempfile, os
         db = os.path.join(tempfile.mkdtemp(), "t.db")
