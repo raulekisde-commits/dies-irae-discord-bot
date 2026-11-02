@@ -62,6 +62,9 @@ def people_embed(s: sdb.Split, names=None) -> discord.Embed:
     emb.description = "\n".join(lines)[:4000] if lines else "*Todavía no hay nadie en la lista.*"
     if looters:
         emb.set_footer(text="🪙 = looter")
+    if s.is_ava and s.half:
+        emb.add_field(name=f"½ Lista mitad ({len(s.half)}) · cobran la mitad de la parte",
+                      value="\n".join(f"• {_nm(names, u)}" for u in s.half)[:1000], inline=False)
     return emb
 
 
@@ -101,10 +104,12 @@ def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
         + mid +
         f"**Total a splitear:** {fmt(c.to_split)}\n"
         f"**Cantidad de personas:** {c.people}\n"
-        f"**Total por persona:** {fmt(c.per_person)}")
+        f"**Total por persona:** {fmt(c.per_person)}"
+        + (f"\n**Lista mitad:** {c.half} persona(s) × {fmt(c.per_half)}" if c.half else ""))
     if c.leftover:
         pass
-    note = "💡 Para agregar gente a la lista: !agregarlista @Ana @Beto @Caro"
+    note = "💡 Para agregar gente a la lista: !agregarlista @Ana @Beto @Caro" + (
+        "\n💡 Para la lista mitad (cobran la mitad): !agregarlistamitad @Ana @Beto" if s.is_ava else "")
     summary.set_footer(text=(f"Sobran {fmt(c.leftover)} que no se reparten (no alcanzan para una unidad más por persona).\n" if c.leftover else "") + note)
     out.append(summary)
     return out
@@ -125,7 +130,7 @@ def panel_embed(s: sdb.Split, names=None) -> discord.Embed:
         extra.append(f"**Rol:** <@&{s.role_id}>")
     lines = extra + [
         f"**Total:** {fmt(s.total)} · **Bolsitas:** {fmt(s.bolsitas)} · **Reparación:** {fmt(s.repair)}",
-        (f"**Personas:** {c.people} · **Scouts:** {len(s.scouts)} (AVA)" if s.is_ava
+        (f"**Personas:** {c.people}" + (f" · **Mitad:** {c.half}" if c.half else "") + f" · **Scouts:** {len(s.scouts)} (AVA)" if s.is_ava
          else f"**Personas:** {c.people} · **Looters:** {len(s.looters)}"),
         f"**Total a splitear:** {fmt(c.to_split)}",
         f"**Total por persona:** {fmt(c.per_person)}",
@@ -321,6 +326,8 @@ class EditView(_OwnedView):
         if ava:
             self.add_button("Agregar scouts", self._add_scouts, style=discord.ButtonStyle.success, emoji="🔭", row=1)
             self.add_button("Quitar scouts", self._rm_scouts, style=discord.ButtonStyle.danger, emoji="➖", row=1)
+            self.add_button("Agregar lista mitad", self._add_half, emoji="½", row=1)
+            self.add_button("Quitar lista mitad", self._rm_half, emoji="➖", row=1)
         else:
             self.add_button("Agregar looters", self._add_looters, style=discord.ButtonStyle.success, emoji="🪙", row=1)
             self.add_button("Editar looter", self._edit_looter, emoji="✏️", row=1)
@@ -360,6 +367,16 @@ class EditView(_OwnedView):
         if await self._split(interaction):
             await _say(interaction, "Elegí a los scouts (cobran el pago fijo; no entran a la lista general):",
                        view=UserPickView(self.cog, self.split_id, self.owner_id, "add_scouts"))
+
+    async def _add_half(self, interaction):
+        if await self._split(interaction):
+            await _say(interaction, "Elegí a quienes cobran la **mitad** de la parte (si estaban en la lista general, pasan a la mitad):",
+                       view=UserPickView(self.cog, self.split_id, self.owner_id, "add_half"))
+
+    async def _rm_half(self, interaction):
+        if await self._split(interaction):
+            await _say(interaction, "Elegí a quién quitar de la lista mitad (no vuelven a la lista general):",
+                       view=UserPickView(self.cog, self.split_id, self.owner_id, "rm_half"))
 
     async def _rm_scouts(self, interaction):
         if await self._split(interaction):
@@ -599,7 +616,7 @@ class SplitsCog(commands.Cog):
         return e.money(amount) if e is not None else f"{eco.format_amount(amount)} {eco.CURRENCY_NAME}"
 
     async def names_of(self, s: sdb.Split) -> dict:
-        ids = list(s.people) + [l.user_id for l in s.looters] + [s.creator_id]
+        ids = list(s.people) + list(s.half) + [l.user_id for l in s.looters] + [s.creator_id]
         return await resolve_names(self.bot.get_guild(self.guild_id), ids)
 
     def _lock(self, split_id: int) -> asyncio.Lock:
@@ -1030,6 +1047,12 @@ class SplitsCog(commands.Cog):
             elif action == "add_scouts":
                 n = await self.run(sdb.add_scouts, split_id, ids)
                 text = f"✅ {n} scout(s) agregado(s)." if n else "ℹ️ Ya eran scouts."
+            elif action == "add_half":
+                n, moved = await self.run(sdb.add_half, split_id, ids)
+                text = (f"✅ {n} persona(s) en la lista mitad." + (f" ({moved} salieron de la lista general.)" if moved else "")) if n else "ℹ️ Ya estaban en la lista mitad."
+            elif action == "rm_half":
+                n = await self.run(sdb.remove_half, split_id, ids)
+                text = f"✅ {n} persona(s) quitada(s) de la lista mitad." if n else "ℹ️ No estaban en la lista mitad."
             elif action == "rm_scouts":
                 n = await self.run(sdb.remove_scouts, split_id, ids)
                 text = f"✅ {n} scout(s) quitado(s)." if n else "ℹ️ No eran scouts."
@@ -1069,7 +1092,7 @@ class SplitsCog(commands.Cog):
         if s.status in ("closed", "cancelled"):
             return await _say(interaction, "ℹ️ Este split ya está cerrado.")
         c = sdb.compute(s)
-        if not s.people:
+        if not s.people and not s.half:
             return await _say(interaction, "❌ El split no tiene personas en la lista. Agregalas con el botón **Editar** del panel.")
         if s.is_editing:
             old = await self.run(sdb.get_payouts, s.id, s.pay_round)
@@ -1084,6 +1107,7 @@ class SplitsCog(commands.Cog):
         await _say(interaction,
                    f"¿Cerrar **Split {s.title}** y pagar?\n"
                    f"• {c.people} persona(s) × {self.money(c.per_person)}\n"
+                   + (f"• Lista mitad: {c.half} persona(s) × {self.money(c.per_half)}\n" if c.half else "") +
                    f"• Tax looters: {self.money(c.looter_tax_total)} en total\n"
                    f"Esto **mueve Wuju Coins** y no se puede deshacer.",
                    view=ConfirmCloseView(self, s.id, interaction.user.id))
@@ -1240,6 +1264,39 @@ class SplitsCog(commands.Cog):
         ya = len(set(ids)) - n
         return f"✅ Agregué {n} persona(s) a la lista de **Split {s.title}**." + (f" ({ya} ya estaba(n).)" if ya else "")
 
+    async def _add_to_half(self, actor, channel_id: Optional[int], explicit_id: Optional[int], members) -> str:
+        """Lógica de !agregarlistamitad: gente que cobra la mitad de la parte (solo splits AVA)."""
+        s = await self.run(sdb.get_split, explicit_id) if explicit_id is not None else await self.run(sdb.find_by_thread, channel_id or 0)
+        if s is None:
+            return "❌ Usalo dentro del hilo de un split AVA (o poné el número del split antes de las menciones: `!agregarlistamitad 3 @Ana @Beto`)."
+        if not (can_manage(actor) or actor.id == s.creator_id):
+            return "🔒 Solo el Council, un administrador o quien creó el split puede agregar gente."
+        if not s.is_ava:
+            return "❌ La lista mitad solo existe en los splits de `/transparencia-ava`."
+        if not s.is_open:
+            return "❌ Ese split ya está cerrado: no se puede modificar."
+        ids = [m.id for m in members if not getattr(m, "bot", False)]
+        if not ids:
+            return "❌ Mencioná a las personas que querés agregar. Ej: `!agregarlistamitad @Ana @Beto`"
+        try:
+            n, moved = await self.run(sdb.add_half, s.id, ids)
+        except sdb.SplitError as exc:
+            return f"❌ {exc}"
+        await self.sync_split(s.id)
+        if n == 0:
+            return "ℹ️ Todas esas personas ya estaban en la lista mitad."
+        return (f"✅ Agregué {n} persona(s) a la **lista mitad** de **Split {s.title}** (cobran la mitad de la parte)."
+                + (f" ({moved} salieron de la lista general.)" if moved else ""))
+
+    @commands.command(name="agregarlistamitad")
+    async def agregarlistamitad(self, ctx: commands.Context, *, texto: str = ""):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        first = (texto or "").split()[:1]
+        explicit = int(first[0]) if first and first[0].isdigit() else None
+        reply = await self._add_to_half(ctx.author, getattr(ctx.channel, "id", None), explicit, list(getattr(ctx.message, "mentions", [])))
+        await ctx.reply(reply, mention_author=False, allowed_mentions=NO_MENTIONS)
+
     @commands.command(name="agregarlista")
     async def agregarlista(self, ctx: commands.Context, *, texto: str = ""):
         if ctx.guild is None or getattr(ctx.author, "bot", False):
@@ -1280,7 +1337,9 @@ class SplitsCog(commands.Cog):
             if s.is_ava and u in s.scouts:
                 extra = f" (parte {fmt(calc.per_person)} + pago de scout {fmt(s.scout_pay)})"
             lines.append(f"• <@{u}> → +{self.money(amount)}{extra}")
-        for u in ([x for x in s.scouts if x not in s.people] if s.is_ava else []):
+        for u in s.half:
+            lines.append(f"• <@{u}> → +{self.money(paid.get(u, 0))} (mitad de la parte)")
+        for u in ([x for x in s.scouts if x not in s.people and x not in s.half] if s.is_ava else []):
             if paid.get(u):
                 lines.append(f"• <@{u}> → +{self.money(paid[u])} (pago de scout {fmt(s.scout_pay)})")
         for u in looters - set(s.people):                      # looter sacado de la lista general: igual cobra su tax
