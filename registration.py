@@ -42,6 +42,9 @@ GAMEINFO_BASES = [
     ("Asia", "https://gameinfo-sgp.albiononline.com"),
 ]
 HTTP_TIMEOUT = 20
+HTTP_RETRIES = 2                          # reintentos ante errores temporales del servidor de Albion
+HTTP_RETRY_DELAY = 1.5
+RETRY_STATUS = {429, 500, 502, 503, 504}
 RECRUIT_PENDING_DAYS = 14                # si no entra a la guild en este tiempo, se cancela la espera
 ROSTER_REFRESH_MINUTES = 30            # cada cuánto se vuelve a bajar la lista de miembros de la guild
 ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h aunque la API falle; recién después se vuelve a consultar en vivo
@@ -256,11 +259,16 @@ class RegistrationCog(commands.Cog):
         if own:
             session = aiohttp.ClientSession()
         try:
-            async with session.get(url, params=params, headers={"User-Agent": "SmoggBot/1.0", "Accept": "application/json"},
-                                   timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT)) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status}")
-                return await resp.json(content_type=None)
+            for attempt in range(HTTP_RETRIES + 1):
+                async with session.get(url, params=params, headers={"User-Agent": "SmoggBot/1.0", "Accept": "application/json"},
+                                       timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT)) as resp:
+                    if resp.status == 200:
+                        return await resp.json(content_type=None)
+                    if resp.status in RETRY_STATUS and attempt < HTTP_RETRIES:      # 502/503/504/429: el servidor de Albion se cae seguido, se reintenta
+                        pass
+                    else:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                await asyncio.sleep(HTTP_RETRY_DELAY * (attempt + 1))
         finally:
             if own:
                 await session.close()
@@ -309,10 +317,12 @@ class RegistrationCog(commands.Cog):
                 import time
                 if time.time() - self.roster_miss_at >= ROSTER_MISS_REFRESH_SECONDS:
                     self.roster_miss_at = time.time()
-                    await self.refresh_roster()
+                    refreshed = await self.refresh_roster()
                     hit = self.roster.get(name.casefold())
                     if hit is not None:
                         return Lookup("ok", character=hit)
+                    if not refreshed:                  # la API no respondió: no se puede afirmar que no esté en la guild
+                        return Lookup("error", detail="No pude actualizar la lista de la guild (la API de Albion está fallando).")
                 return Lookup("not_in_roster", detail=self.required_guild)
 
         async def one(region, base):
@@ -330,6 +340,11 @@ class RegistrationCog(commands.Cog):
             else:
                 exact.extend(res)
         if not exact:
+            if errors and self.roster:                # la API falla: sirve la lista guardada aunque sea vieja (mejor eso que bloquear el registro)
+                hit = self.roster.get(name.casefold())
+                if hit is not None:
+                    print(f"⚠️ Registro: API caída ({' | '.join(errors)[:150]}); uso la lista guardada de hace {int((__import__('time').time() - self.roster_at) // 60)} min.")
+                    return Lookup("ok", character=hit)
             if errors:
                 return Lookup("error", detail=" | ".join(errors)[:400])
             return Lookup("none")
@@ -880,7 +895,7 @@ class RegistrationCog(commands.Cog):
             except Exception as exc:
                 return False, time.monotonic() - t0, None, f"{type(exc).__name__} {exc}".strip()[:120]
 
-        lines, any_ok = [], False
+        lines, any_ok, guild_list_ok = [], False, False
         for region, base in GAMEINFO_BASES:
             ok, secs, data, err = await probe(f"{base}/api/gameinfo/search", {"q": "a"})
             any_ok = any_ok or ok
@@ -888,15 +903,24 @@ class RegistrationCog(commands.Cog):
             if self.albion_guild_id:
                 ok2, secs2, data2, err2 = await probe(f"{base}/api/gameinfo/guilds/{self.albion_guild_id}/members")
                 n = len(data2) if isinstance(data2, list) else 0
+                guild_list_ok = guild_list_ok or (ok2 and n > 0)
                 lines.append(f"   {'🟢' if ok2 and n else ('🟡' if ok2 else '🔴')} lista de la guild: "
                              + (f"{n} miembros ({secs2:.1f} s)" if ok2 else f"FALLA ({err2})"))
         age = time.time() - self.roster_at if self.roster_at else None
-        roster = (f"{len(self.roster)} jugadores, actualizada hace {int(age // 60)} min" + (" ✅" if self.roster_fresh() else " ⚠️ vieja (más de 24 h)")
+        roster = (f"{len(self.roster)} jugadores, actualizada hace {int(age // 60)} min" + (" ✅" if self.roster_fresh() else " ⚠️ vieja (más de 24 h; se sigue usando si la API falla)")
                   if self.roster else "vacía ⚠️")
         pending = await self.run(rdb.list_pending_recruits)
         incomplete = await self.run(rdb.incomplete_registrations)
-        verdict = ("✅ La API responde: si el registro falla, el problema es otro (nick mal escrito, personaje fuera de la guild, etc.)." if any_ok
-                   else "❌ La API de Albion no está respondiendo en ninguna región: por eso no se registra a nadie. Es un problema de ellos; "
+        guild_ok = bool(self.albion_guild_id) and guild_list_ok
+        if any_ok and self.albion_guild_id and not guild_ok:
+            verdict = ("⚠️ La búsqueda responde, pero **la lista de la guild no se puede bajar** (suele ser el servidor de Américas con errores 502 de Albion). "
+                       + ("El registro sigue funcionando con la lista guardada" + (f" ({len(self.roster)} jugadores)" if self.roster else "")
+                          + ": cualquiera que figure ahí se registra igual. Quien entró hace poco a la guild no figura hasta que vuelva la API: usá `/admin_vincular`."
+                          if self.roster else "Como no hay lista guardada, usá `/admin_vincular` y después `/completar-registros` cuando vuelva."))
+        elif any_ok:
+            verdict = ("✅ La API responde: si el registro falla, el problema es otro (nick mal escrito, personaje fuera de la guild, etc.).")
+        else:
+            verdict = ("❌ La API de Albion no está respondiendo en ninguna región: por eso no se registra a nadie. Es un problema de ellos; "
                         "el bot reintenta solo. Mientras tanto usá `/admin_vincular` y después `/completar-registros` cuando vuelva.")
         await interaction.followup.send(
             "🛰️ **Estado de la API de Albion**\n" + "\n".join(lines)
