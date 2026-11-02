@@ -23,6 +23,7 @@ REGION = os.getenv("ALBIONBB_REGION", "eu")
 BASE_URL = f"https://api.albionbb.com/{REGION}"
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 CALLER_ROLE_ID = int(os.getenv("CALLER_ROLE_ID", "1559711827422617720"))
+OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 MAX_BATTLES_PER_LOAD = 15
 USER_COOLDOWN = 10
@@ -72,7 +73,8 @@ def is_staff_or_council(m) -> bool:
 
 
 def is_loader_in_cta(m) -> bool:
-    return is_staff_or_council(m) or CALLER_ROLE_ID in _roles(m)
+    """Pueden cargar el killboard y la lista de conectados de una CTA (botones del hilo de stats): Staff, Council, Caller y Opinólogo."""
+    return is_staff_or_council(m) or bool({CALLER_ROLE_ID, OPINOLOGO_ROLE_ID} & _roles(m))
 
 
 def is_member(m) -> bool:
@@ -198,7 +200,7 @@ class KillboardModal(discord.ui.Modal, title="Cargar killboard"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not is_loader_in_cta(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden cargar killboards.")
+            return await _say(interaction, "🔒 Solo el Staff, el Council, el Caller y el Opinólogo pueden cargar killboards.")
         await self.cog.do_load(interaction, self.cta_id, str(self.links.value))
 
 
@@ -210,7 +212,7 @@ class StatsPanelView(discord.ui.View):
 
     async def _cta(self, interaction: discord.Interaction) -> Optional[dict]:
         if not is_loader_in_cta(interaction.user):
-            await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden usar estos botones.")
+            await _say(interaction, "🔒 Solo el Staff, el Council, el Caller y el Opinólogo pueden usar estos botones.")
             return None
         cta = await self.cog.run(cta_of_panel_message, interaction.message.id) if interaction.message else None
         if cta is None:
@@ -283,7 +285,7 @@ class KillboardCog(commands.Cog):
         cta = await self.run(find_cta_by_stats_thread, interaction.channel.id) if interaction.channel else None
         if cta is not None:
             if not is_loader_in_cta(me):
-                return await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden cargar killboards.")
+                return await _say(interaction, "🔒 Solo el Staff, el Council, el Caller y el Opinólogo pueden cargar killboards.")
         elif not is_staff_or_council(me):
             return await _say(interaction, "🔒 Solo el Staff y el Council pueden cargar killboards sueltos. Para el de una CTA, usá el hilo de stats de esa CTA.")
         await self.do_load(interaction, int(cta["id"]) if cta else None, enlaces, me)
@@ -432,7 +434,7 @@ class KillboardCog(commands.Cog):
         if cta is None:
             return await _say(interaction, "❌ Usalo dentro del hilo de stats de una CTA.")
         if not is_loader_in_cta(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, el Council y el Caller pueden cargar la lista de conectados.")
+            return await _say(interaction, "🔒 Solo el Staff, el Council, el Caller y el Opinólogo pueden cargar la lista de conectados.")
         if archivo.size > 1_000_000:
             return await _say(interaction, "❌ El archivo es demasiado grande.")
         await interaction.response.defer(ephemeral=True)
