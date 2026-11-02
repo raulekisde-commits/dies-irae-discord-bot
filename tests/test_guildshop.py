@@ -322,7 +322,7 @@ class ShopDiscordTests(unittest.TestCase):
 
     def publish_panels(self):
         i = self.inter(self.council)
-        run(self.cog.guild_shop.callback(self.cog, i, None))
+        run(self.cog.guild_shop(i, None))
         return i
 
     def open_ticket(self, user=None, items="2x Espada T8\n1x Capa T7", payment="wuju"):
@@ -359,13 +359,13 @@ class ShopDiscordTests(unittest.TestCase):
     def test_command_names_registered(self):
         names = {getattr(gs.GuildShopCog, n).name for n in dir(gs.GuildShopCog)
                  if isinstance(getattr(gs.GuildShopCog, n, None), discord_stub.AppCommand)}
-        self.assertEqual(names, {"guild-shop", "guildshop", "dados"})
+        self.assertEqual(names, {"guildshop", "dados"})
         self.assertEqual(gs.GuildShopCog.canal.name, "canal")
         self.assertEqual(gs.GuildShopCog.canal_logs.name, "logs")
 
     def test_guild_shop_requires_council_or_admin_and_publishes_two_panels(self):
         i = self.inter(self.seller)
-        run(self.cog.guild_shop.callback(self.cog, i, None))
+        run(self.cog.guild_shop(i, None))
         self.assertIn("Council", i.text)
         self.assertEqual(self.shopch.sent, [])
         i = self.publish_panels()
@@ -378,7 +378,7 @@ class ShopDiscordTests(unittest.TestCase):
         self.assertEqual([c.label for c in shop.view.children], ["Comprar"])
         i = self.inter(self.admin)                                       # el administrador también puede
         other = discord.TextChannel(3000000000000000009, self.guild, "otro")
-        run(self.cog.guild_shop.callback(self.cog, i, other))
+        run(self.cog.guild_shop(i, other))
         self.assertEqual(len(other.sent), 2)
         self.assertTrue(all(m.deleted for m in self.shopch.sent))        # reemplazó a los viejos
 

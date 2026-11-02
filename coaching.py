@@ -118,8 +118,6 @@ class CoachingCog(commands.Cog):
             return None
 
     # ---------- panel y post ----------
-    @app_commands.command(name="coaching-panel", description="(Council) Publica el panel para abrir el post de VODs del coaching")
-    @app_commands.guild_only()
     async def coaching_panel(self, interaction: discord.Interaction):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden publicar este panel.")
