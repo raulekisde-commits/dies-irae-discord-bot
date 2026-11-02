@@ -8,6 +8,7 @@ import re
 import traceback
 import io
 import aiohttp
+import guildfilter
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -303,6 +304,7 @@ init_database()
 
 # ================== CONFIG ==================
 GUILD_ID = 1257878770841288724
+EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
 
@@ -495,6 +497,13 @@ async def _setup_registration(bot, db_path, guild_id):
 
 
 class MyBot(commands.Bot):
+    def dispatch(self, event_name, /, *args, **kwargs):
+        # Solo se atienden los eventos del servidor propio: si el bot está invitado a otro, nada de eso toca la lógica de acá
+        # (incluye los comandos con prefijo, que viven en on_message).
+        if not guildfilter.event_allowed(args, EVENT_GUILD_IDS):
+            return
+        return super().dispatch(event_name, *args, **kwargs)
+
     async def setup_hook(self):
         self.http_session = aiohttp.ClientSession()
         # Wuju Coins: se carga ANTES del sync para que sus comandos slash se registren
