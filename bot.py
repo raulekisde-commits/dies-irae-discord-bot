@@ -2177,11 +2177,37 @@ class RecruitFormModal(discord.ui.Modal, title="Postulación a Smogg"):
             "horarios": str(self.horarios).strip(), "gremio": str(self.gremio).strip(),
         }
         await interaction.response.send_message(
-            "🎥 Última pregunta: **¿podés grabar tus CTAs en la guild?**", view=RecruitRecordView(answers), ephemeral=True)
+            "🌎 **¿En qué idioma hablás?** (por defecto: Español)", view=RecruitLangView(answers), ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         traceback.print_exc()
         await respond_ephemeral(interaction, "❌ No pude procesar tu postulación. Probá de nuevo.")
+
+
+class RecruitLangView(discord.ui.View):
+    """Paso del formulario (efímero): idioma del postulante. Por defecto, Español."""
+    def __init__(self, answers: dict):
+        super().__init__(timeout=300)
+        self.answers = answers
+
+    async def _next(self, interaction: discord.Interaction, lang: str):
+        self.answers["idioma"] = lang
+        for b in self.children:
+            b.disabled = True
+        self.stop()
+        try:
+            await interaction.response.edit_message(content="🎥 Última pregunta: **¿podés grabar tus CTAs en la guild?**",
+                                                    view=RecruitRecordView(self.answers))
+        except Exception:
+            pass
+
+    @discord.ui.button(label="Español (por defecto)", style=discord.ButtonStyle.success, emoji="🇦🇷")
+    async def es(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._next(interaction, "Español")
+
+    @discord.ui.button(label="Português", style=discord.ButtonStyle.secondary, emoji="🇧🇷")
+    async def pt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._next(interaction, "Portugués")
 
 
 class RecruitRecordView(discord.ui.View):
@@ -2296,6 +2322,7 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
     data.add_field(name="🕒 Horarios (UTC)", value=answers["horarios"][:1000] or "—", inline=False)
     data.add_field(name="📜 Gremio anterior", value=answers["gremio"][:1000] or "—", inline=False)
     data.add_field(name="🎥 ¿Puede grabar sus CTAs?", value="✅ Sí" if can_record else "🚫 No", inline=True)
+    data.add_field(name="🌎 Idioma", value=(answers.get("idioma") or "Español")[:100], inline=True)
     data.add_field(name="👥 Amigos en la guild", value=(answers.get("amigos") or "No")[:1000], inline=True)
     data.set_footer(text=f"Postulante: {user} · Aceptar / Rechazar / Cerrar: solo reclutadores")
 
