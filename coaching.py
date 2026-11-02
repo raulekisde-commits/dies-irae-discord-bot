@@ -339,6 +339,39 @@ class CoachingCog(commands.Cog):
                                             description=chunk, color=discord.Color.blurple()))
         await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    @app_commands.command(name="coaching-verificar-posts", description="(Staff/Coaching) Verifica que todos los de Observación tengan su post de VODs")
+    @app_commands.guild_only()
+    async def coaching_verificar_posts(self, interaction: discord.Interaction):
+        if not can_report(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council, Coaching y Opinólogo pueden verificar los posts.")
+        await interaction.response.defer(ephemeral=True)
+        role = interaction.guild.get_role(OBSERVACION_ROLE_ID)
+        if role is None:
+            return await interaction.followup.send("⚠️ No encuentro el rol Observación en este servidor.", ephemeral=True)
+        observers = sorted((m for m in role.members if not m.bot), key=lambda x: x.display_name.casefold())
+        missing, broken, ok = [], [], 0
+        for m in observers:
+            post = await self.run(cdb.get_post, m.id)
+            if not post:
+                missing.append(f"{m.mention} — no tiene post")
+                continue
+            th = await self._channel(post["thread_id"])
+            if th is None or getattr(th, "parent_id", FORUM_CHANNEL_ID) != FORUM_CHANNEL_ID:
+                broken.append(f"{m.mention} — el post guardado ya no existe")
+            else:
+                ok += 1
+        head = (f"🔎 **Posts de VODs · Observación** ({len(observers)})\n"
+                f"✅ Con post: **{ok}** · ❌ Sin post: **{len(missing)}** · ⚠️ Post borrado: **{len(broken)}**")
+        embeds = []
+        for title, lines, color in (("❌ Sin post", missing, discord.Color.red()), ("⚠️ Post borrado", broken, discord.Color.orange())):
+            for i, chunk in enumerate(self._chunks(lines)):
+                embeds.append(discord.Embed(title=title if i == 0 else f"{title} (cont.)", description=chunk, color=color))
+        if not embeds:
+            head += "\n🎉 Todos tienen su post."
+        else:
+            head += "\nEstos tienen que tocar el botón del panel para crear su post; al abrirlo el bot los menciona en el primer mensaje."
+        await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     @app_commands.command(name="mis-vods", description="Cuántos VODs subiste esta semana y cuántos te faltan")
     @app_commands.guild_only()
     async def mis_vods(self, interaction: discord.Interaction):
