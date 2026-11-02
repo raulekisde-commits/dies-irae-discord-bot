@@ -1165,8 +1165,8 @@ class TimerDeleteView(discord.ui.View):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
-        if not (is_timers_member(interaction.user) or is_staff_member(interaction.user)):
-            return await respond_ephemeral(interaction, "❌ No tenés permiso para eliminar este timer.")
+        if not is_staff_member(interaction.user):
+            return await respond_ephemeral(interaction, "❌ Solo el Staff puede eliminar timers.")
 
         try:
             await interaction.message.delete()
@@ -1368,8 +1368,8 @@ async def deltimer_slash(
 ):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
-    if not (is_timers_member(interaction.user) or is_staff_member(interaction.user)):
-        return await respond_ephemeral(interaction, "❌ Solo los miembros registrados o el Staff pueden usar este comando.")
+    if not is_staff_member(interaction.user):
+        return await respond_ephemeral(interaction, "❌ Solo el Staff puede eliminar timers.")
     clock = parse_clock_hhmm(tiempo)
     if clock is None:
         return await respond_ephemeral(interaction, "❌ Tiempo inválido. Usá el horario UTC en formato `HH:MM` (00:00 a 23:59), ej: `16:10`.")
@@ -6412,7 +6412,7 @@ HELP_SECTIONS = [
     ("💰 Economía y timers", [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),
-        ("/deltimer material mapa tiempo [tier]", "Miembros registrados, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
+        ("/deltimer material mapa tiempo [tier]", "Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
         ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
         ("/apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
         ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
