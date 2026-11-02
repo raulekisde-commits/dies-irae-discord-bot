@@ -321,10 +321,11 @@ class BetsCog(commands.Cog):
         except Exception as exc:                      # hilo archivado/borrado, sin permisos...
             print(f"⚠️ No pude escribir en el hilo de la apuesta #{bet.id}: {exc!r}")
 
-    # ---------- /apuesta ----------
-    @app_commands.command(name="apuesta", description="Crea una apuesta con Wuju Coins")
+    # ---------- /apuesta crear ----------
+    apuesta_g = app_commands.Group(name="apuesta", description="Crear, cerrar y resolver apuestas con Wuju Coins", guild_only=True)
+
+    @apuesta_g.command(name="crear", description="Crea una apuesta con Wuju Coins")
     @app_commands.describe(enunciado="Qué se apuesta", opciones="Opciones separadas por comas (ej: Gana Smogg, Pierde Smogg, Empate)")
-    @app_commands.guild_only()
     @safe
     async def apuesta(self, interaction: discord.Interaction, enunciado: str, opciones: str):
         member = interaction.user
@@ -442,15 +443,13 @@ class BetsCog(commands.Cog):
                         view=ConfirmView(author_id, go, "Sí, apostar todo"), mention_author=False, allowed_mentions=NO_MENTIONS)
 
     # ---------- versiones slash ----------
-    @app_commands.command(name="apostar", description="Apostá Wuju Coins a una opción (dentro del hilo de la apuesta)")
+    @apuesta_g.command(name="apostar", description="Apostá Wuju Coins a una opción (dentro del hilo de la apuesta)")
     @app_commands.describe(opcion="Opción a la que apostás", cantidad="Cantidad (ej: 5,000)")
-    @app_commands.guild_only()
     async def apostar_slash(self, interaction: discord.Interaction, opcion: str, cantidad: str):
         await self.apostar.callback(self, SlashContext(interaction), args=f"{opcion} {cantidad}")
 
-    @app_commands.command(name="apostartodo", description="Apostá TODO tu saldo a una opción (pide confirmación)")
+    @apuesta_g.command(name="todo", description="Apostá TODO tu saldo a una opción (pide confirmación)")
     @app_commands.describe(opcion="Opción a la que apostás todo")
-    @app_commands.guild_only()
     async def apostartodo_slash(self, interaction: discord.Interaction, opcion: str):
         await self.apostartodo.callback(self, SlashContext(interaction), opcion=opcion)
 
@@ -472,9 +471,8 @@ class BetsCog(commands.Cog):
             await self.reply(interaction, "❌ No encuentro la apuesta. Usá el comando dentro de su hilo o indicá el `id`.")
         return bet
 
-    @app_commands.command(name="cerrarapuesta", description="Cierra una apuesta: ya no se aceptan más apuestas (solo quien la creó)")
+    @apuesta_g.command(name="cerrar", description="Cierra una apuesta: ya no se aceptan más apuestas (solo quien la creó)")
     @app_commands.describe(id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
-    @app_commands.guild_only()
     @safe
     async def cerrarapuesta(self, interaction: discord.Interaction, id: Optional[int] = None):
         bet = await self._target_bet(interaction, id)
@@ -485,7 +483,7 @@ class BetsCog(commands.Cog):
         res = await self.run(bdb.close_bet, bet.id, interaction.user.id)
         if not res.ok:
             return await self.reply(interaction, f"❌ {res.message}")
-        await self.reply(interaction, f"🔒 Apuesta #{bet.id} cerrada. Elegí el resultado con `/resolverapuesta`.")
+        await self.reply(interaction, f"🔒 Apuesta #{bet.id} cerrada. Elegí el resultado con `/apuesta resolver`.")
         await self.sync_panel(bet.id)
         await self.thread_say(bet, "🔒 La apuesta se cerró: ya no se aceptan más apuestas.")
 
@@ -501,9 +499,8 @@ class BetsCog(commands.Cog):
         cur = bdb.normalize(current)
         return [app_commands.Choice(name=o[:100], value=o) for o in bet.options if cur in bdb.normalize(o)][:25]
 
-    @app_commands.command(name="resolverapuesta", description="Define la opción ganadora y reparte el pozo (solo quien la creó)")
+    @apuesta_g.command(name="resolver", description="Define la opción ganadora y reparte el pozo (solo quien la creó)")
     @app_commands.describe(opcion="Opción ganadora", id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
-    @app_commands.guild_only()
     @safe
     async def resolverapuesta(self, interaction: discord.Interaction, opcion: str, id: Optional[int] = None):
         bet = await self._target_bet(interaction, id)
@@ -512,7 +509,7 @@ class BetsCog(commands.Cog):
         if interaction.user.id != bet.creator_id:
             return await self.reply(interaction, "❌ Solo quien creó la apuesta puede resolverla.")
         if bet.status == "open":
-            return await self.reply(interaction, "❌ Primero cerrá la apuesta con `/cerrarapuesta`.")
+            return await self.reply(interaction, "❌ Primero cerrá la apuesta con `/apuesta cerrar`.")
         if bet.status != "closed":
             return await self.reply(interaction, "❌ Esa apuesta ya fue resuelta o cancelada.")
         idx = bet.find_option(opcion)
@@ -547,9 +544,8 @@ class BetsCog(commands.Cog):
     async def _ac_opcion(self, interaction, current: str):
         return await self.option_autocomplete(interaction, current)
 
-    @app_commands.command(name="cancelarapuesta", description="Cancela una apuesta y devuelve todo lo apostado (creador o administrador)")
+    @apuesta_g.command(name="cancelar", description="Cancela una apuesta y devuelve todo lo apostado (creador o administrador)")
     @app_commands.describe(id="Número de la apuesta (opcional si lo usás dentro de su hilo)")
-    @app_commands.guild_only()
     @safe
     async def cancelarapuesta(self, interaction: discord.Interaction, id: Optional[int] = None):
         bet = await self._target_bet(interaction, id)
