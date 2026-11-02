@@ -48,7 +48,7 @@ ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h au
 ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
-EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos",
+EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "completar-registros",
                    "registro_canal", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info"}
 
 
@@ -795,6 +795,52 @@ class RegistrationCog(commands.Cog):
             lines += ["", "**No se pudieron cambiar:**"] + failed
         for chunk in self._chunks(lines):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    @app_commands.command(name="completar-registros", description="(Staff) Completa el ID de los registros sin ID y lista los que no pudo verificar")
+    @app_commands.guild_only()
+    async def completar_registros(self, interaction: discord.Interaction):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        pending = await self.run(rdb.incomplete_registrations)
+        if not pending:
+            return await interaction.followup.send("✅ Todos los registros ya tienen su ID de Albion.", ephemeral=True)
+        done, failed, errors_in_a_row = [], [], 0
+        for n, reg in enumerate(pending):
+            who = f"<@{reg.discord_id}> (**{discord.utils.escape_markdown(reg.char_name)}**)"
+            if errors_in_a_row >= 3:                        # la API sigue caída: no seguir golpeándola
+                failed.append(f"• {who}: no se consultó (la API de Albion sigue sin responder)")
+                continue
+            look = await self.lookup_character(reg.char_name, live=True)
+            if look.kind == "error":
+                errors_in_a_row += 1
+                failed.append(f"• {who}: la API de Albion no respondió")
+            elif look.kind in ("ok", "wrong_guild") and look.character is not None:
+                errors_in_a_row = 0
+                c = look.character
+                try:
+                    await self.run(rdb.fill_registration, reg.id, c.char_id, c.region, c.guild or None, interaction.user.id)
+                    done.append(f"• {who}: {c.region}" + (f" · {discord.utils.escape_markdown(c.guild)}" if c.guild else "")
+                                + (" ⚠️ no está en la guild" if look.kind == "wrong_guild" else ""))
+                except rdb.RegError as exc:
+                    failed.append(f"• {who}: {exc}")
+            elif look.kind == "ambiguous":
+                errors_in_a_row = 0
+                failed.append(f"• {who}: hay varios personajes con ese nombre en distintos servidores ({', '.join(sorted({o.region for o in look.options}))})")
+            else:
+                errors_in_a_row = 0
+                failed.append(f"• {who}: no existe un personaje con ese nombre (¿mal escrito o renombrado?)")
+            await asyncio.sleep(0.4)
+        head = f"🔎 **Registros sin ID:** {len(pending)} · completados: **{len(done)}** · sin verificar: **{len(failed)}**"
+        lines = [head]
+        if done:
+            lines += ["", "**✅ Completados:**"] + done
+        if failed:
+            lines += ["", "**❌ No pude verificar:**"] + failed
+        for chunk in self._chunks(lines):
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+        if done:
+            await self.audit_log(f"🔎 <@{interaction.user.id}> completó el ID de **{len(done)}** registro(s) con `/completar-registros`.")
 
     @app_commands.command(name="sin-discord", description="(Staff) Jugadores de la guild de Albion que todavía no tienen Discord vinculado")
     @app_commands.guild_only()
