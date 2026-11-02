@@ -62,6 +62,16 @@ INFO_TEXTS = {
                "• El Council puede cerrar el casino, poner límites de apuesta o bloquear a alguien (`/casinoban`).\n"
                "• Cada juego se habilita en un canal y para ciertos roles con `/perms-canal` y `/perms-comando`. Los invitados no tienen acceso al casino salvo que se les habilite.\n"
                "• Jugá con responsabilidad: es solo moneda del servidor."),
+    "economia": ("💰 Sistema de economía",
+                 "La moneda del servidor son los **Wuju Coins**.\n\n"
+                 "**Comandos**\n"
+                 "• `/bal` — ver tu saldo (o el de otra persona).\n"
+                 "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo.\n"
+                 "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
+                 "**Splits**\n"
+                 "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de transparencias): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
+                 "**Cambiar tu balance**\n"
+                 "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
 }
 
 
@@ -309,7 +319,7 @@ class InvitadosCog(commands.Cog):
     @app_commands.command(name="info", description="Explica cómo funciona un sistema del servidor")
     @app_commands.describe(tema="Qué sistema querés conocer")
     @app_commands.choices(tema=[app_commands.Choice(name="invitados", value="invitados"), app_commands.Choice(name="warnings", value="warnings"),
-                                app_commands.Choice(name="casino", value="casino")])
+                                app_commands.Choice(name="casino", value="casino"), app_commands.Choice(name="economia", value="economia")])
     async def info(self, interaction: discord.Interaction, tema: app_commands.Choice[str]):
         value = getattr(tema, "value", tema)
         title, text = INFO_TEXTS[value]

@@ -3321,6 +3321,7 @@ def cta_db_init():
         conn.commit()
     cu.init_schedule(DB_PATH)
     cu.init_positions(DB_PATH)
+    cu.bomb_migrate_old(DB_PATH)
 
 
 cta_db_init()
@@ -4116,9 +4117,9 @@ BOMB_ROLE_ID = int(os.getenv("BOMB_ROLE_ID", str(cu.BOMB_ROLE_ID)))
 
 
 # ---------- Bomb: panel + hilo para anotar gente del rol Bomb a una CTA ----------
-def cta_bomb_embed(run: dict, bombs: list) -> discord.Embed:
+def cta_bomb_embed(run: dict, bombs: list, n: int = 1) -> discord.Embed:
     title = cta_run_title(run)
-    emb = discord.Embed(title=f"💣 Bomb · {title}", color=discord.Color.dark_orange(),
+    emb = discord.Embed(title=f"💣 Bomb {n} · {title}", color=discord.Color.dark_orange(),
                         description=(f"Si tenés el rol <@&{BOMB_ROLE_ID}>, anotate con el botón de abajo o escribiendo `+` en el hilo.\n"
                                      "Quienes se anotan acá van al split y cuentan como anotados en la CTA (aparte de las posiciones de la compo)."))
     emb.add_field(name=f"Anotados ({len(bombs)})", value=("\n".join(f"• <@{u}>" for u in bombs)[:1000] or "Todavía nadie."), inline=False)
@@ -4129,22 +4130,26 @@ def cta_bomb_embed(run: dict, bombs: list) -> discord.Embed:
 
 
 async def cta_bomb_refresh_panel(run_id: int):
+    """Actualiza todos los paneles de Bomb de la CTA."""
     run = cta_run_get(run_id)
-    if not run or not run.get("bomb_message_id") or not run.get("bomb_channel_id"):
+    if not run:
         return
-    try:
-        ch = bot.get_channel(int(run["bomb_channel_id"])) or await bot.fetch_channel(int(run["bomb_channel_id"]))
-        msg = ch.get_partial_message(int(run["bomb_message_id"]))
-        await msg.edit(embed=cta_bomb_embed(run, cu.bomb_list(DB_PATH, run_id)), allowed_mentions=CTA_NO_PINGS)
-    except Exception as exc:
-        print(f"CTA #{run_id}: no pude actualizar el panel de Bomb: {exc!r}")
+    for p in await asyncio.to_thread(cu.bomb_panels, DB_PATH, run_id):
+        if not p.get("message_id") or not p.get("channel_id"):
+            continue
+        try:
+            ch = bot.get_channel(int(p["channel_id"])) or await bot.fetch_channel(int(p["channel_id"]))
+            msg = ch.get_partial_message(int(p["message_id"]))
+            await msg.edit(embed=cta_bomb_embed(run, cu.bomb_list(DB_PATH, run_id, int(p["id"])), int(p["n"])), allowed_mentions=CTA_NO_PINGS)
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude actualizar el panel de Bomb {p.get('n')}: {exc!r}")
 
 
-async def cta_bomb_join(user, run_id: int) -> str:
+async def cta_bomb_join(user, run_id: int, panel_id: Optional[int] = None) -> str:
     """Anota a un Bomb. Devuelve el texto para mostrarle a quien lo pidió."""
     if not isinstance(user, discord.Member) or BOMB_ROLE_ID not in {r.id for r in user.roles}:
         return f"🔒 Solo quienes tienen el rol <@&{BOMB_ROLE_ID}> pueden anotarse acá."
-    res = await asyncio.to_thread(cu.bomb_add, DB_PATH, run_id, user.id)
+    res = await asyncio.to_thread(cu.bomb_add, DB_PATH, run_id, user.id, panel_id)
     if res == "final":
         return "🏁 Esta CTA ya terminó: no se aceptan más anotados."
     if res == "missing":
@@ -4170,8 +4175,11 @@ async def cta_bomb_join(user, run_id: int) -> str:
     return f"💣 Quedaste anotado como Bomb en **{cta_run_title(run)}**.{note}"
 
 
+_bomb_creating: set = set()
+
+
 async def cta_open_bomb_panel(interaction: discord.Interaction, run_id: Optional[int]):
-    """Botón «Agregar Bomb» (solo Council y Caller): publica el panel con su hilo en el canal de Bomb. Una vez por CTA."""
+    """Botón «Agregar Bomb» (solo Council y Caller): publica un panel nuevo con su hilo en el canal de Bomb. Puede haber varios por CTA."""
     if not is_council_or_caller(interaction.user):
         return await interaction.response.send_message("🔒 Solo el Council y el Caller pueden usar este botón.", ephemeral=True)
     run = cta_run_get(run_id) if run_id else None
@@ -4179,33 +4187,32 @@ async def cta_open_bomb_panel(interaction: discord.Interaction, run_id: Optional
         return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
     if run.get("final_state") is not None or run["status"] == "cancelled":
         return await interaction.response.send_message("Esta CTA ya fue cerrada o cancelada.", ephemeral=True)
-    if run.get("bomb_thread_id"):
-        return await interaction.response.send_message(f"💣 Ya está el panel de Bomb de esta CTA: <#{run['bomb_thread_id']}>", ephemeral=True)
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:                 # se reclama de forma atómica: un solo panel por CTA
-        got = conn.execute("UPDATE cta_runs SET bomb_thread_id=0 WHERE id=? AND bomb_thread_id IS NULL", (run_id,)).rowcount
-        conn.commit()
-    if not got:
-        return await interaction.response.send_message("⏳ El panel de Bomb ya se está creando.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-    ch = guild.get_channel(BOMB_CHANNEL_ID) if guild else None
-    if ch is None:
-        try:
-            ch = await bot.fetch_channel(BOMB_CHANNEL_ID)
-        except Exception:
-            return await interaction.followup.send(f"❌ No encuentro el canal de Bomb (<#{BOMB_CHANNEL_ID}>).", ephemeral=True)
+    if run_id in _bomb_creating:
+        return await interaction.response.send_message("⏳ Ya se está creando un panel de Bomb para esta CTA.", ephemeral=True)
+    _bomb_creating.add(run_id)
     try:
-        msg = await ch.send(content=f"<@&{BOMB_ROLE_ID}>", embed=cta_bomb_embed(run, cu.bomb_list(DB_PATH, run_id)), view=BombPanelView(),
-                            allowed_mentions=discord.AllowedMentions(roles=[discord.Object(id=BOMB_ROLE_ID)], users=False, everyone=False))
-        thread = await msg.create_thread(name=f"Bomb {cta_run_title(run)}"[:100], auto_archive_duration=1440)
-        await thread.send(f"💣 Anotate acá escribiendo `+` (o con el botón del panel). Solo el rol <@&{BOMB_ROLE_ID}>.", allowed_mentions=CTA_NO_PINGS)
-    except Exception as exc:
-        print(f"CTA #{run_id}: no pude crear el panel de Bomb: {exc!r}")
-        db_execute("UPDATE cta_runs SET bomb_thread_id=NULL WHERE id=? AND bomb_thread_id=0", (run_id,))
-        return await interaction.followup.send("❌ No pude crear el panel de Bomb (revisá los permisos del bot en ese canal).", ephemeral=True)
-    db_execute("UPDATE cta_runs SET bomb_channel_id=?, bomb_message_id=?, bomb_thread_id=? WHERE id=?", (ch.id, msg.id, thread.id, run_id))
-    cta_audit(int(run["guild_id"]), interaction.user.id, "bomb_panel", run_id, f"thread={thread.id}")
-    await interaction.followup.send(f"💣 Panel de Bomb creado: {thread.mention}", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        ch = guild.get_channel(BOMB_CHANNEL_ID) if guild else None
+        if ch is None:
+            try:
+                ch = await bot.fetch_channel(BOMB_CHANNEL_ID)
+            except Exception:
+                return await interaction.followup.send(f"❌ No encuentro el canal de Bomb (<#{BOMB_CHANNEL_ID}>).", ephemeral=True)
+        n = len(await asyncio.to_thread(cu.bomb_panels, DB_PATH, run_id)) + 1
+        try:
+            msg = await ch.send(content=f"<@&{BOMB_ROLE_ID}>", embed=cta_bomb_embed(run, [], n), view=BombPanelView(),
+                                allowed_mentions=discord.AllowedMentions(roles=[discord.Object(id=BOMB_ROLE_ID)], users=False, everyone=False))
+            thread = await msg.create_thread(name=f"Bomb {n} {cta_run_title(run)}"[:100], auto_archive_duration=1440)
+            await thread.send(f"💣 Anotate acá escribiendo `+` (o con el botón del panel). Solo el rol <@&{BOMB_ROLE_ID}>.", allowed_mentions=CTA_NO_PINGS)
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude crear el panel de Bomb: {exc!r}")
+            return await interaction.followup.send("❌ No pude crear el panel de Bomb (revisá los permisos del bot en ese canal).", ephemeral=True)
+        await asyncio.to_thread(cu.bomb_panel_add, DB_PATH, run_id, ch.id, msg.id, thread.id)
+        cta_audit(int(run["guild_id"]), interaction.user.id, "bomb_panel", run_id, f"thread={thread.id}")
+        await interaction.followup.send(f"💣 Panel de Bomb {n} creado: {thread.mention}", ephemeral=True)
+    finally:
+        _bomb_creating.discard(run_id)
 
 
 class BombPanelView(discord.ui.View):
@@ -4215,20 +4222,20 @@ class BombPanelView(discord.ui.View):
 
     @discord.ui.button(label="Anotarme como Bomb", style=discord.ButtonStyle.danger, custom_id="bomb:join", emoji="💣")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        rows = db_fetchall("SELECT id FROM cta_runs WHERE bomb_message_id=?", (interaction.message.id,)) if interaction.message else []
-        if not rows:
+        p = cu.bomb_panel_by(DB_PATH, message_id=interaction.message.id) if interaction.message else None
+        if not p:
             return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(await cta_bomb_join(interaction.user, int(rows[0]["id"])), ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+        await interaction.followup.send(await cta_bomb_join(interaction.user, int(p["cta_id"]), int(p["id"])), ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
 async def cta_handle_bomb_message(message: discord.Message) -> bool:
-    """Mensajes del hilo de Bomb: «+» (o similar) anota a quien lo escribe. True si el hilo es de Bomb."""
-    rows = db_fetchall("SELECT id FROM cta_runs WHERE bomb_thread_id=?", (message.channel.id,))
-    if not rows:
+    """Mensajes de un hilo de Bomb: «+» (o similar) anota a quien lo escribe. True si el hilo es de Bomb."""
+    p = cu.bomb_panel_by(DB_PATH, thread_id=message.channel.id)
+    if not p:
         return False
     if cu.is_bomb_join_text(message.content):
-        text = await cta_bomb_join(message.author, int(rows[0]["id"]))
+        text = await cta_bomb_join(message.author, int(p["cta_id"]), int(p["id"]))
         if text.startswith("💣"):
             try:
                 await message.add_reaction("💣")
@@ -4830,6 +4837,10 @@ class CTAPanelView(discord.ui.View):
         if thread_url:
             self.add_item(discord.ui.Button(label="Ir al hilo para anotarte", emoji="💬",
                                             style=discord.ButtonStyle.link, url=thread_url))
+        if run_id is not None:
+            mine = discord.ui.Button(label="Ver mi build", emoji="🧩", style=discord.ButtonStyle.secondary, custom_id=f"cta:mybuild:{run_id}")
+            mine.callback = self.mybuild_callback
+            self.add_item(mine)
         if run_id is not None and not final:
             bomb = discord.ui.Button(label="Agregar Bomb", emoji="💣", style=discord.ButtonStyle.primary, custom_id=f"cta:bomb:{run_id}")
             bomb.callback = self.bomb_callback
@@ -4842,6 +4853,9 @@ class CTAPanelView(discord.ui.View):
 
     async def bomb_callback(self, interaction: discord.Interaction):
         await cta_open_bomb_panel(interaction, self.run_id)
+
+    async def mybuild_callback(self, interaction: discord.Interaction):
+        await cta_show_my_build(interaction, self.run_id)
 
     async def finish_callback(self, interaction: discord.Interaction):
         await cta_ask_final(interaction, self.run_id, "finished")
@@ -5777,6 +5791,48 @@ async def cta_send_build(interaction: discord.Interaction, comp: dict, meta: dic
     await interaction.followup.send(embed=emb, ephemeral=True)
 
 
+async def cta_show_my_build(interaction: discord.Interaction, run_id: Optional[int]):
+    """Botón «Ver mi build»: muestra la build de la posición donde se anotó quien lo toca."""
+    run = cta_run_get(run_id) if run_id else None
+    if not run:
+        return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+    rows = db_fetchall("SELECT slot_key FROM cta_signups WHERE cta_id=? AND user_id=?", (run_id, interaction.user.id))
+    if not rows:
+        if cu.bomb_list(DB_PATH, run_id) and interaction.user.id in cu.bomb_list(DB_PATH, run_id):
+            return await interaction.response.send_message("💣 Estás anotado como Bomb: no tenés una build asignada en la composición.", ephemeral=True)
+        return await interaction.response.send_message("No estás anotado en ninguna posición de esta CTA. Anotate escribiendo el número en el hilo.", ephemeral=True)
+    slot_key = str(rows[0]["slot_key"])
+    try:
+        pn, pos = (int(x) for x in slot_key.split(":", 1))
+    except Exception:
+        return await interaction.response.send_message("No pude identificar tu posición.", ephemeral=True)
+    crow = db_fetchall("SELECT * FROM cta_compositions WHERE id=?", (run["composition_id"],))
+    if not crow:
+        return await interaction.response.send_message(f"Tu posición es P{pn}-{pos}, pero la composición ya no existe.", ephemeral=True)
+    comp = dict(crow[0])
+    url = comp.get("builds_url")
+    if compoweb is None:
+        return await interaction.response.send_message(f"Tu posición: P{pn}-{pos}. Las builds no están disponibles ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        parsed = await cta_comp_parsed(comp)
+    except Exception as exc:
+        print(f"CTA #{run_id} ver mi build: {exc!r}")
+        return await interaction.followup.send("❌ No pude leer las builds ahora." + (f"\n🔗 {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+    if parsed is None:
+        return await interaction.followup.send(f"Tu posición: **P{pn}-{pos}**. Esta composición no tiene builds detalladas." + (f"\n🔗 Builds: {url}" if url else ""), ephemeral=True, suppress_embeds=True)
+    names = _armas.weapon_names(DB_PATH, run["guild_id"])
+    mine = [b for b in compoweb.build_list(parsed, lambda w: names.get(w)) if f"P{pn}-{pos}" in b["positions"]]
+    if not mine:
+        return await interaction.followup.send(f"Tu posición es **P{pn}-{pos}**, pero no tiene una build definida en la composición.", ephemeral=True)
+    if len(mine) == 1:
+        return await cta_send_build(interaction, comp, mine[0])
+    emb = discord.Embed(title=f"🧩 Tu posición P{pn}-{pos} tiene {len(mine)} builds", color=discord.Color.blurple(),
+                        description="\n".join(f"• **{b['name']}**" for b in mine)[:4000])
+    emb.set_footer(text="Elegí cuál querés ver.")
+    await interaction.followup.send(embed=emb, view=CTABuildPickView(comp, mine), ephemeral=True)
+
+
 class CTABuildPickView(discord.ui.View):
     """Menús para elegir una build de la lista (de a 25 por menú) y ver su imagen."""
     def __init__(self, comp: dict, builds: list):
@@ -6281,7 +6337,7 @@ HELP_SECTIONS = [
         ("/canal-salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
         ("/reaction-roles crear · agregar · quitar · eliminar · listar", "Council / Admin", "Mensajes de roles por reacción: `crear nombre` publica el panel y `agregar nombre rol emoji` suma un rol. Quien reacciona recibe el rol y al sacar la reacción se lo quita (si ya lo tenía, no pasa nada)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
-        ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings y casino)."),
+        ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings, casino y economía)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
         ("/desvincular", "Council / Admin", "Quita el personaje vinculado a tu propia cuenta (con confirmación). Los miembros piden al staff que use /admin_desvincular."),
         ("/admin_registro · /admin_desvincular · /admin_vincular", "Staff / Council / Admin", "Ver los personajes de un miembro, retirarlos, o vincular a mano sin que la persona acepte (queda auditado)."),
