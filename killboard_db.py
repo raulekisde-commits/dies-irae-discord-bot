@@ -379,6 +379,16 @@ def recompute_skips(db_path: str, cta_id: int, in_compo_names: Iterable[str]) ->
         conn.close()
 
 
+def players_of_cta(db_path: str, cta_id: int) -> set:
+    """Nombres (normalizados) de todos los jugadores que aparecen en los killboards cargados de la CTA."""
+    conn = connect(db_path)
+    try:
+        return {r["name_norm"] for r in conn.execute(
+            "SELECT p.name_norm FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id WHERE b.cta_id=?", (cta_id,))}
+    finally:
+        conn.close()
+
+
 def skips_of_cta(db_path: str, cta_id: int) -> List[str]:
     conn = connect(db_path)
     try:

@@ -4167,6 +4167,9 @@ async def cta_post_voice_lists(run_id: int):
                 await thread.send((header + f" ({len(ids)})\n" if i == 0 else "") + chunk, allowed_mentions=CTA_NO_PINGS)
     except Exception as exc:
         print(f"CTA #{run_id}: no pude publicar las listas de voz: {exc!r}")
+    kb_cog = bot.get_cog("KillboardCog")
+    if kb_cog is not None:                                 # tercera lista: en voz, sin anotar y sin killboard (se actualiza al cargar el killboard)
+        await kb_cog.refresh_voice_kb(run_id)
 
 
 async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
