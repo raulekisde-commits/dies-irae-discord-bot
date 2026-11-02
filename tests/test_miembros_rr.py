@@ -31,15 +31,15 @@ class Miembros(DiscordBase):
 
     def test_config_permissions_and_toggle(self):
         i = self.inter(self.alice)
-        run(self.cog.canal_entradas.callback(self.cog, i, self.chan, False))
+        run(self.cog.canal_entradas(i, self.chan, False))
         self.assertIn("Solo el Council", i.text)
         self.assertIsNone(mb.get_channel_id(self.db, GUILD_ID, "join"))
         i = self.inter(self.cou)
-        run(self.cog.canal_entradas.callback(self.cog, i, self.chan, False))
+        run(self.cog.canal_entradas(i, self.chan, False))
         self.assertEqual(mb.get_channel_id(self.db, GUILD_ID, "join"), 555)
         self.assertIsNone(mb.get_channel_id(self.db, GUILD_ID, "leave"))
-        run(self.cog.canal_salidas.callback(self.cog, self.inter(self.cou), self.chan, False))
-        run(self.cog.canal_entradas.callback(self.cog, self.inter(self.cou), None, True))
+        run(self.cog.canal_salidas(self.inter(self.cou), self.chan, False))
+        run(self.cog.canal_entradas(self.inter(self.cou), None, True))
         self.assertIsNone(mb.get_channel_id(self.db, GUILD_ID, "join"))
         self.assertEqual(mb.get_channel_id(self.db, GUILD_ID, "leave"), 555)
 

@@ -132,7 +132,7 @@ class DuelsCog(commands.Cog):
                 from economy import is_admin_member
                 channel_id = await self.run(eco.get_command_channel, "1v1")
                 roles = set(await self.run(eco.get_command_roles, "1v1"))
-                roles.add(eco_cog.member_role_id)               # los miembros pueden usarlo (como hasta ahora); el canal se elige con /perms-canal
+                roles.add(eco_cog.member_role_id)               # los miembros pueden usarlo (como hasta ahora); el canal se elige con /eco perms-canal
                 result = eco.authorize(command="1v1", is_admin=is_admin_member(me), member_role_ids={r.id for r in me.roles},
                                        allowed_role_ids=roles, channel_id=interaction.channel_id, configured_channel_id=channel_id)
                 if not result.ok:

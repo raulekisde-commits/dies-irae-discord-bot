@@ -157,8 +157,8 @@ class EconomyCog(commands.Cog):
         self.db_path = db_path
         self.member_role_id = member_role_id
         self.staff_role_id = staff_role_id
-        # roles que pueden usar el comando sin /perms-comando (además de los configurados y de los admins)
-        # Los invitados (rol Invitado) tienen acceso a la economía (bal, top, give); el casino se les da con /perms-comando.
+        # roles que pueden usar el comando sin /eco perms-comando (además de los configurados y de los admins)
+        # Los invitados (rol Invitado) tienen acceso a la economía (bal, top, give); el casino se les da con /eco perms-comando.
         self.guest_role_id = int(os.getenv("GUEST_ROLE_ID", "1565993695461777468"))
         self.default_roles = {"bal": {member_role_id, self.guest_role_id}, "top": {member_role_id, self.guest_role_id},
                               "stats": {member_role_id, self.guest_role_id}}
@@ -270,7 +270,7 @@ class EconomyCog(commands.Cog):
         return result.ok
 
     async def slash_authorize(self, interaction: discord.Interaction, command: str) -> bool:
-        """Misma regla que _authorize (roles por defecto + /perms-comando, canal de /perms-canal) pero para comandos slash."""
+        """Misma regla que _authorize (roles por defecto + /eco perms-comando, canal de /eco perms-canal) pero para comandos slash."""
         member = interaction.user
         if interaction.guild is None or not isinstance(member, discord.Member):
             await self._ephemeral(interaction, "❌ Este comando solo se usa dentro del servidor.")
@@ -291,7 +291,7 @@ class EconomyCog(commands.Cog):
         return True
 
     async def has_command_permission(self, member, command: str, *, staff_ok: bool = False) -> bool:
-        """Administrador/propietario, o un rol otorgado con /perms-comando (y, si staff_ok, el rol Staff)."""
+        """Administrador/propietario, o un rol otorgado con /eco perms-comando (y, si staff_ok, el rol Staff)."""
         if not isinstance(member, discord.Member):
             return False
         if is_admin_member(member):
@@ -685,21 +685,20 @@ class EconomyCog(commands.Cog):
             return await other.send_top_coach(interaction)
         await self._ephemeral(interaction, "❌ Tipo de top desconocido.")
 
-    @app_commands.command(name="addmoney", description="Agrega Wuju Coins a una persona")
+    eco_g = app_commands.Group(name="eco", description="Administración de Wuju Coins y permisos económicos", guild_only=True)
+
+    @eco_g.command(name="addmoney", description="Agrega Wuju Coins a una persona")
     @app_commands.describe(usuario="Persona que recibe", cantidad="Cantidad (ej: 150.000)", motivo="Motivo (opcional)")
-    @app_commands.guild_only()
     async def addmoney_slash(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
         await self.addmoney.callback(self, SlashContext(interaction), args=f"{usuario.mention} {cantidad} {motivo or ''}".strip())
 
-    @app_commands.command(name="addmoney-role", description="Agrega Wuju Coins a CADA miembro de un rol")
+    @eco_g.command(name="addmoney-role", description="Agrega Wuju Coins a CADA miembro de un rol")
     @app_commands.describe(rol="Rol", cantidad="Cantidad para cada miembro", motivo="Motivo (opcional)")
-    @app_commands.guild_only()
     async def addmoney_role_slash(self, interaction: discord.Interaction, rol: discord.Role, cantidad: str, motivo: Optional[str] = None):
         await self.addmoney_role.callback(self, SlashContext(interaction), args=f"{rol.mention} {cantidad} {motivo or ''}".strip())
 
-    @app_commands.command(name="remove-money", description="Retira Wuju Coins a una persona o a un rol")
+    @eco_g.command(name="remove-money", description="Retira Wuju Coins a una persona o a un rol")
     @app_commands.describe(cantidad="Cantidad a retirar", usuario="Persona (o usá rol)", rol="Rol (o usá usuario)", motivo="Motivo (opcional)")
-    @app_commands.guild_only()
     async def remove_money_slash(self, interaction: discord.Interaction, cantidad: str, usuario: Optional[discord.Member] = None,
                                  rol: Optional[discord.Role] = None, motivo: Optional[str] = None):
         if (usuario is None) == (rol is None):
@@ -710,10 +709,8 @@ class EconomyCog(commands.Cog):
     # ============================================================
     # Comandos slash de administración
     # ============================================================
-    @app_commands.command(name="config-moneda", description="(Admin) Configura el emoji de Wuju Coins")
+    @eco_g.command(name="config-moneda", description="(Admin) Configura el emoji de Wuju Coins")
     @app_commands.describe(icono="Emoji personalizado del servidor (ej: :wuju:). Escribí 'quitar' para borrarlo.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_moneda(self, interaction: discord.Interaction, icono: str):
         if not await self._require_admin(interaction):
             return
@@ -736,10 +733,6 @@ class EconomyCog(commands.Cog):
         self._emoji_raw = raw
         await self._ephemeral(interaction, f"✅ Icono de {eco.CURRENCY_NAME} actualizado: {emoji}")
 
-    @app_commands.command(name="bal-registro", description="(Admin) Canal donde se publican los movimientos de Wuju Coins")
-    @app_commands.describe(canal="Canal de auditoría económica")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def registro_bal(self, interaction: discord.Interaction, canal: discord.TextChannel):
         if not await self._require_admin(interaction):
             return
@@ -751,9 +744,7 @@ class EconomyCog(commands.Cog):
         await self._ephemeral(interaction, f"✅ Los movimientos económicos se publicarán en {canal.mention}. "
                                            "Si había registros pendientes se publicarán en unos minutos.")
 
-    @app_commands.command(name="bal-reintentar-registro", description="(Admin) Reintenta publicar registros económicos pendientes")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
+    @eco_g.command(name="bal-reintentar-registro", description="(Admin) Reintenta publicar registros económicos pendientes")
     async def registro_reintentar(self, interaction: discord.Interaction):
         if not await self._require_admin(interaction):
             return
@@ -773,11 +764,9 @@ class EconomyCog(commands.Cog):
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "set-balance", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
 
-    @app_commands.command(name="perms-canal", description="(Admin) Habilita un comando en ESTE canal; si ya estaba habilitado acá, lo deshabilita")
+    @eco_g.command(name="perms-canal", description="(Admin) Habilita un comando en ESTE canal; si ya estaba habilitado acá, lo deshabilita")
     @app_commands.describe(comando="Comando a habilitar en este canal (si ya está acá, se deshabilita)")
     @app_commands.choices(comando=[app_commands.Choice(name=c, value=c) for c in eco.CHANNEL_COMMANDS])
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def perms_canal(self, interaction: discord.Interaction, comando: app_commands.Choice[str]):
         if not await self._require_admin(interaction):
             return
@@ -789,18 +778,16 @@ class EconomyCog(commands.Cog):
             return await self._ephemeral(
                 interaction,
                 f"🚫 {self._cmd_label(comando.value)} quedó **deshabilitado** (ya no funciona en <#{interaction.channel_id}> ni en ningún otro canal). "
-                f"Volvé a usar `/perms-canal` en el canal que quieras para habilitarlo de nuevo.")
+                f"Volvé a usar `/eco perms-canal` en el canal que quieras para habilitarlo de nuevo.")
         await self._db(eco.set_command_channel, comando.value, interaction.channel_id)
         await self._ephemeral(interaction, f"✅ {self._cmd_label(comando.value)} ahora solo funciona en <#{interaction.channel_id}>.")
 
-    @app_commands.command(name="perms-comando", description="(Admin) Otorga o revoca a un rol el uso de un comando económico")
+    @eco_g.command(name="perms-comando", description="(Admin) Otorga o revoca a un rol el uso de un comando económico")
     @app_commands.describe(rol="Rol", comando="Comando económico", accion="Otorgar (por defecto) o revocar")
     @app_commands.choices(
         comando=[app_commands.Choice(name=c, value=c) for c in eco.GRANTABLE_COMMANDS],
         accion=[app_commands.Choice(name="Otorgar", value="otorgar"), app_commands.Choice(name="Revocar", value="revocar")],
     )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def perms_comando(self, interaction: discord.Interaction, rol: discord.Role,
                             comando: app_commands.Choice[str], accion: Optional[app_commands.Choice[str]] = None):
         if not await self._require_admin(interaction):
@@ -816,9 +803,7 @@ class EconomyCog(commands.Cog):
                    else f"ℹ️ {rol.mention} ya tenía permiso para {self._cmd_label(comando.value)}.")
         await self._ephemeral(interaction, msg)
 
-    @app_commands.command(name="perms-ver", description="(Admin) Muestra roles y canales configurados de los comandos económicos")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
+    @eco_g.command(name="perms-ver", description="(Admin) Muestra roles y canales configurados de los comandos económicos")
     async def perms_ver(self, interaction: discord.Interaction):
         if not await self._require_admin(interaction):
             return
@@ -871,10 +856,8 @@ class EconomyCog(commands.Cog):
                     break
         return list(found.values())
 
-    @app_commands.command(name="importar-bal", description="(Admin) Deja el saldo de cada persona EXACTAMENTE en el valor del archivo (nombre;cantidad)")
+    @eco_g.command(name="importar-bal", description="(Admin) Deja el saldo de cada persona EXACTAMENTE en el valor del archivo (nombre;cantidad)")
     @app_commands.describe(archivo="Archivo .txt o .csv con líneas `nombre_de_discord;saldo` (ej: juan123;5000)")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def importar_bal(self, interaction: discord.Interaction, archivo: discord.Attachment):
         if not await self._require_admin(interaction):
             return
@@ -977,7 +960,7 @@ class EconomyCog(commands.Cog):
         return applied, unchanged, repeated, failed
 
     # ============================================================
-    # Salida del servidor, /set-balance, /historico-bal, /eco-stats
+    # Salida del servidor, /eco set-balance, /eco historico-bal, /eco eco-stats
     # ============================================================
     async def _audit_note(self, embed: discord.Embed):
         """Aviso en el canal de registro (mejor esfuerzo: si falla no afecta a la operación ya confirmada)."""
@@ -1012,10 +995,8 @@ class EconomyCog(commands.Cog):
         except Exception:
             traceback.print_exc()
 
-    @app_commands.command(name="set-balance", description="(Admin) Deja el balance de una persona EXACTAMENTE en el número indicado")
+    @eco_g.command(name="set-balance", description="(Admin) Deja el balance de una persona EXACTAMENTE en el número indicado")
     @app_commands.describe(usuario="Persona", cantidad="Nuevo balance (admite 0 y negativos, ej: 5,000)")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def set_balance_cmd(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str):
         try:
             member = interaction.user
@@ -1045,7 +1026,7 @@ class EconomyCog(commands.Cog):
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No se pudo completar la operación. No se modificó el balance.")
 
-    historico_bal = app_commands.Group(name="historico-bal", description="Balance histórico de Wuju Coins", guild_only=True)
+    historico_bal = app_commands.Group(name="historico-bal", description="Balance histórico de Wuju Coins", parent=eco_g)
 
     @historico_bal.command(name="reset", description="(Admin) Pone en cero el Balance histórico de TODOS (no toca los balances)")
     async def historico_reset(self, interaction: discord.Interaction):
@@ -1070,8 +1051,7 @@ class EconomyCog(commands.Cog):
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No pude completar la operación.")
 
-    @app_commands.command(name="eco-stats", description="(Staff) Muestra cuánto Wuju Coins hay cargado en total")
-    @app_commands.guild_only()
+    @eco_g.command(name="eco-stats", description="(Staff) Muestra cuánto Wuju Coins hay cargado en total")
     async def eco_stats(self, interaction: discord.Interaction):
         try:
             if interaction.guild is None or not await self.has_command_permission(interaction.user, "eco-stats", staff_ok=True):

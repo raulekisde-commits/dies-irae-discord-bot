@@ -2413,9 +2413,7 @@ async def _publish_admin_panel(interaction: discord.Interaction, embed: discord.
     await respond_ephemeral(interaction, "✅ Panel publicado.")
 
 
-@bot.tree.command(name="panel-reclutamiento", description="(Admin) Publica el panel de reclutamiento en este canal", guild=GUILD_OBJ)
-@app_commands.default_permissions(administrator=True)
-async def panel_slash(interaction: discord.Interaction):
+async def panel_slash(interaction: discord.Interaction):         # se usa desde /panel reclutamiento (panels.py)
     embed = discord.Embed(
         title="⚔️ Smogg Reclutamiento",
         description="Presioná el botón para abrir tu **postulación oficial**.",
@@ -2425,9 +2423,7 @@ async def panel_slash(interaction: discord.Interaction):
     await _publish_admin_panel(interaction, embed, PanelView())
 
 
-@bot.tree.command(name="panel_foco", description="(Admin) Publica el panel de Foco Donor en este canal", guild=GUILD_OBJ)
-@app_commands.default_permissions(administrator=True)
-async def panel_foco_slash(interaction: discord.Interaction):
+async def panel_foco_slash(interaction: discord.Interaction):    # se usa desde /panel foco (panels.py)
     embed = discord.Embed(
         title="Foco Donor",
         description="Presioná el botón para donar foco a la guild.",
@@ -2435,6 +2431,10 @@ async def panel_foco_slash(interaction: discord.Interaction):
     )
     embed.set_footer(text="Smogg Foco Donor System")
     await _publish_admin_panel(interaction, embed, FocoPanelView())
+
+
+# /panel reclutamiento y /panel foco viven en el grupo /panel (panels.py); acá solo se registran sus funciones
+bot.panel_handlers = {"reclutamiento": panel_slash, "foco": panel_foco_slash}
 
 
 # ============================================================
@@ -3743,7 +3743,7 @@ def cta_set_party_roles(composition_id: int, party_no: int, role_ids: list):
 
 
 def cta_is_organizer(member) -> bool:
-    """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta_asignar)."""
+    """Staff / reclutadores / quien gestiona el servidor (mismo criterio que /cta-admin asignar)."""
     perms = getattr(member, "guild_permissions", None)
     return is_cta_manager(member)
 
@@ -6100,7 +6100,11 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
 cta_command.autocomplete("nombre")(cta_name_autocomplete)
 
 
-@bot.tree.command(name="cta_activas", description="Consultar las CTA activas", guild=GUILD_OBJ)
+cta_admin_group = app_commands.Group(name="cta-admin", description="Consultar y administrar las CTA (activas, programadas, cerrar, asignar, liberar)", guild_only=True)
+bot.tree.add_command(cta_admin_group, guild=GUILD_OBJ)
+
+
+@cta_admin_group.command(name="activas", description="Consultar las CTA activas")
 async def cta_activas(interaction: discord.Interaction):
     rows = db_fetchall("SELECT id, composition_name, closes_at, channel_id, thread_id FROM cta_runs WHERE guild_id=? AND status='open' ORDER BY closes_at", (interaction.guild_id,))
     if not rows:
@@ -6119,14 +6123,14 @@ def _sched_line(r: dict) -> str:
     return f"**#{r['id']}** · {r['composition_name']}{title} · <t:{at}:f> (<t:{at}:R>) · {r['minutes']} min · por <@{r['created_by']}>"
 
 
-@bot.tree.command(name="cta_programadas", description="Lista las CTA programadas que todavía no se publicaron", guild=GUILD_OBJ)
+@cta_admin_group.command(name="programadas", description="Lista las CTA programadas que todavía no se publicaron")
 async def cta_programadas(interaction: discord.Interaction):
     if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para ver las CTA programadas (solo Staff, Caller y Council).", ephemeral=True)
     rows = await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)
     if not rows:
         return await interaction.response.send_message("No hay CTA programadas.", ephemeral=True)
-    text = "⏰ **CTA programadas** (se cancelan con `/cta_cancelar_programada`)\n" + "\n".join(_sched_line(r) for r in rows)
+    text = "⏰ **CTA programadas** (se cancelan con `/cta-admin cancelar-programada`)\n" + "\n".join(_sched_line(r) for r in rows)
     await interaction.response.send_message(text[:1990], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -6141,7 +6145,7 @@ async def cta_scheduled_autocomplete(interaction: discord.Interaction, current: 
     return out[:25]
 
 
-@bot.tree.command(name="cta_cancelar_programada", description="Cancela una CTA programada antes de que se publique", guild=GUILD_OBJ)
+@cta_admin_group.command(name="cancelar-programada", description="Cancela una CTA programada antes de que se publique")
 @app_commands.describe(programada="La CTA programada a cancelar (elegila de la lista o escribí su número)")
 @app_commands.autocomplete(programada=cta_scheduled_autocomplete)
 async def cta_cancelar_programada(interaction: discord.Interaction, programada: int):
@@ -6150,7 +6154,7 @@ async def cta_cancelar_programada(interaction: discord.Interaction, programada: 
     rows = {int(r["id"]): r for r in await asyncio.to_thread(cu.pending_list, DB_PATH, interaction.guild_id)}
     row = rows.get(int(programada))
     if row is None or not await asyncio.to_thread(cu.cancel_scheduled, DB_PATH, int(programada), interaction.guild_id):
-        return await interaction.response.send_message("❌ No encontré una CTA programada pendiente con ese número (quizás ya se publicó o ya se canceló). Mirá `/cta_programadas`.", ephemeral=True)
+        return await interaction.response.send_message("❌ No encontré una CTA programada pendiente con ese número (quizás ya se publicó o ya se canceló). Mirá `/cta-admin programadas`.", ephemeral=True)
     cta_audit(interaction.guild_id, interaction.user.id, "cta_scheduled_cancelled", None, f"id={programada} comp={row['composition_name']} at={row['publish_at']} by={row['created_by']}")
     await interaction.response.send_message(f"🗑️ Cancelé la CTA programada **#{programada}**:\n{_sched_line(row)}", ephemeral=True,
                                             allowed_mentions=discord.AllowedMentions.none())
@@ -6161,8 +6165,8 @@ async def cta_cancelar_programada(interaction: discord.Interaction, programada: 
         pass
 
 
-@bot.tree.command(name="cta_cerrar", description="Cerrar la inscripción de una CTA antes de tiempo", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta_activas)")
+@cta_admin_group.command(name="cerrar", description="Cerrar la inscripción de una CTA antes de tiempo")
+@app_commands.describe(cta_id="Número de la CTA (figura en el panel y en /cta-admin activas)")
 async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
     if not is_cta_manager(interaction.user):
         return await interaction.response.send_message("No tenés permisos para cerrar CTA.", ephemeral=True)
@@ -6173,7 +6177,7 @@ async def cta_cerrar(interaction: discord.Interaction, cta_id: int):
     await cta_close_run(cta_id, reason=f"closed_by:{interaction.user.id}")
 
 
-@bot.tree.command(name="cta_asignar", description="Asignar a un jugador a una posición de una CTA", guild=discord.Object(id=GUILD_ID))
+@cta_admin_group.command(name="asignar", description="Asignar a un jugador a una posición de una CTA")
 @app_commands.describe(cta_id="Número de la CTA", miembro="Jugador", numero="Número de posición (el mismo que se usa en el hilo)", excepcion="Asignar aunque no cumpla los roles pedidos", motivo="Motivo (obligatorio si usás excepción)")
 async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member, numero: app_commands.Range[int, 1, CTA_MAX_SLOTS], excepcion: bool = False, motivo: Optional[str] = None):
     if not is_cta_manager(interaction.user):
@@ -6194,9 +6198,9 @@ async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: di
     try:
         with db_immediate() as conn:
             if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND slot_key=?", (cta_id, key)).fetchone():
-                return await interaction.response.send_message(f"La posición {numero} ya está ocupada. Liberala primero con `/cta_liberar`.", ephemeral=True)
+                return await interaction.response.send_message(f"La posición {numero} ya está ocupada. Liberala primero con `/cta-admin liberar`.", ephemeral=True)
             if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, miembro.id)).fetchone():
-                return await interaction.response.send_message(f"{miembro.mention} ya está anotado en esta CTA. Liberalo primero con `/cta_liberar`.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+                return await interaction.response.send_message(f"{miembro.mention} ya está anotado en esta CTA. Liberalo primero con `/cta-admin liberar`.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
             conn.execute("INSERT INTO cta_signups(cta_id,slot_key,user_id,assigned_by,override_reason,signed_at) VALUES (?,?,?,?,?,?)", (cta_id, key, miembro.id, interaction.user.id, motivo.strip() if excepcion and motivo else None, cta_now_iso()))
     except sqlite3.IntegrityError:
         return await interaction.response.send_message("La posición se ocupó justo ahora. Probá de nuevo.", ephemeral=True)
@@ -6205,7 +6209,7 @@ async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: di
     await interaction.response.send_message(f"✅ {miembro.mention} quedó asignado a la posición {numero} ({slot['role_name']}, Party {slot['party_no']}).", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
-@bot.tree.command(name="cta_liberar", description="Liberar la posición de un jugador en una CTA", guild=discord.Object(id=GUILD_ID))
+@cta_admin_group.command(name="liberar", description="Liberar la posición de un jugador en una CTA")
 @app_commands.describe(cta_id="Número de la CTA", miembro="Jugador")
 async def cta_liberar(interaction: discord.Interaction, cta_id: int, miembro: discord.Member):
     if not is_cta_manager(interaction.user):
@@ -6222,7 +6226,7 @@ async def cta_liberar(interaction: discord.Interaction, cta_id: int, miembro: di
     await interaction.response.send_message(f"Liberé la posición de {miembro.mention}.", ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
-@bot.tree.command(name="cta_historial", description="Ver las últimas CTA cerradas", guild=discord.Object(id=GUILD_ID))
+@cta_admin_group.command(name="historial", description="Ver las últimas CTA cerradas")
 async def cta_historial(interaction: discord.Interaction):
     rows = db_fetchall("SELECT id, composition_name, created_at, closed_at, status FROM cta_runs WHERE guild_id=? AND status IN ('closed','error') ORDER BY id DESC LIMIT 10", (interaction.guild_id,))
     if not rows:
@@ -6399,12 +6403,12 @@ HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
-        ("/cta_activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
-        ("/cta_programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
-        ("/cta_cancelar_programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
-        ("/cta_cerrar cta_id", "Staff, Caller, Council", "Cierra una CTA antes de tiempo."),
-        ("/cta_asignar · /cta_liberar", "Staff, Caller, Council", "Pone o saca a un jugador de una posición."),
-        ("/cta_historial", "Todos", "Últimas CTA cerradas."),
+        ("/cta-admin activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
+        ("/cta-admin programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
+        ("/cta-admin cancelar-programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),
+        ("/cta-admin cerrar cta_id", "Staff, Caller, Council", "Cierra una CTA antes de tiempo."),
+        ("/cta-admin asignar · /cta-admin liberar", "Staff, Caller, Council", "Pone o saca a un jugador de una posición."),
+        ("/cta-admin historial", "Todos", "Últimas CTA cerradas."),
         ("/compo crear · listar · ver · editar", "Council / Admin", "Crear y administrar composiciones: parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
@@ -6430,10 +6434,10 @@ HELP_SECTIONS = [
         ("/calcularsplit total reparacion", "Staff", "Calcula el split: descuenta taxes y reparación y suma las bolsitas."),
         ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),
         ("/deltimer material mapa tiempo [tier]", "Miembros registrados, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
-        ("/apuesta enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
-        ("/apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
-        ("/cerrarapuesta · /resolverapuesta opcion · /cancelarapuesta", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
-        ("!dados cantidad", "Habilitado con /perms-canal y /perms-comando", "Partida de dados de 5 minutos. El panel se publica en el canal definido con `/canal dados`; botón Anotarse (con confirmación). Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000; no hay baja."),
+        ("/apuesta crear enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
+        ("/apuesta apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
+        ("/apuesta cerrar · /apuesta resolver opcion · /apuesta cancelar", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),
+        ("!dados cantidad", "Habilitado con /eco perms-canal y /eco perms-comando", "Partida de dados de 5 minutos. El panel se publica en el canal definido con `/canal dados`; botón Anotarse (con confirmación). Gana el número más alto y se lleva todo el pozo (empates vuelven a tirar). Máx. 5.000.000; no hay baja."),
         ("/canal dados canal", "Council / Admin", "Define el canal donde se publican los paneles de `!dados`."),
         ("/panel apuestas", "Admin / rol autorizado", "Publica los paneles de apuestas: Top apostado, Top ganado (solo positivos), Top perdido (solo negativos) y la lista negra del casino. Solo aparece gente que sigue en el servidor; al salir se reinician sus datos."),
         ("/addhorautc [categoria]", "Council / Admin", "Crea un canal de voz «🕒 HH:MM UTC» (solo para mirar) que se renombra cada 10 minutos, el máximo que permite Discord de forma segura."),
@@ -6451,8 +6455,8 @@ HELP_SECTIONS = [
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (se muestra en el canal)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
-        ("/canal-entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
-        ("/canal-salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
+        ("/canal entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
+        ("/canal salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
         ("/reaction-roles crear · agregar · quitar · eliminar · listar", "Council / Admin", "Mensajes de roles por reacción: `crear nombre` publica el panel y `agregar nombre rol emoji` suma un rol. Quien reacciona recibe el rol y al sacar la reacción se lo quita (si ya lo tenía, no pasa nada)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings, casino, economía y zvz-vods)."),
@@ -6464,19 +6468,19 @@ HELP_SECTIONS = [
         ("/recuperar persona", "Staff / Council / Admin", "Si alguien de esa lista volvió al servidor, le devuelve su registro de Albion, sus roles y su apodo. Solo funciona de a una persona y únicamente si ya volvió."),
         ("/sincronizar-registros", "Staff / Council / Admin", "Busca en Albion el ID, servidor y guild de los registros que quedaron solo con nombre (p. ej. vinculados cuando la API no respondía) y lista los que no pudo verificar."),
         ("/estado-api", "Admin", "Revisa si la API de Albion está respondiendo en cada región (búsqueda de jugadores y lista de la guild), cuánto tarda, el estado de la lista guardada en el bot y cuántos registros/reclutas quedaron pendientes."),
-        ("/coaching-panel", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea para el rol Coaching indicando el rol que juega; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
-        ("/coaching-reporte [semana]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte."),
-        ("/mis-vods", "Miembros", "Cuántos VODs subiste esta semana y cuántos te faltan para el mínimo (si tenés el rol Observación)."),
-        ("/registro_canal · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
+        ("/panel coaching", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea para el rol Coaching indicando el rol que juega; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
+        ("/coaching reporte [semana]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte."),
+        ("/coaching mis-vods", "Miembros", "Cuántos VODs subiste esta semana y cuántos te faltan para el mínimo (si tenés el rol Observación)."),
+        ("/canal registro · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/casino ban usuario", "Council", "Bloquea a una persona del casino; si lo usás de nuevo con la misma persona, la saca de la lista."),
-        ("/casino 1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz (si lo rechaza o lo deja vencer, el bot lo cargada públicamente): la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
-        ("!coinflip cantidad [cara|cruz]", "Habilitado con /perms-canal y /perms-comando", "Desafío de cara o cruz de 5 minutos (podés elegir tu lado con `!coinflip 5k cruz` o `/casino coinflip cantidad lado`; si no, sos cara y quien acepta toma el otro): lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
-        ("/apostartodo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
-        ("/guild-shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
+        ("/casino 1v1 usuario cantidad", "Miembros", "Retá a alguien a un duelo de cara o cruz (si lo rechaza o lo deja vencer, el bot lo cargada públicamente): la persona retada acepta o rechaza y el que sale se queda con todo. Sin tope (hasta tu balance); la persona retada tiene que tener al menos lo apostado. Se habilita en un canal con /eco perms-canal (como dados y coinflip). Con el casino cerrado no se pueden crear duelos nuevos, pero sí aceptar los ya creados."),
+        ("!coinflip cantidad [cara|cruz]", "Habilitado con /eco perms-canal y /eco perms-comando", "Desafío de cara o cruz de 5 minutos (podés elegir tu lado con `!coinflip 5k cruz` o `/casino coinflip cantidad lado`; si no, sos cara y quien acepta toma el otro): lo acepta UNA persona y el que sale se queda con todo. Solo uno vivo a la vez (igual que !dados); el panel queda en el canal donde lo creás."),
+        ("/apuesta todo opción · !apostartodo opción", "Todos (dentro del hilo)", "Apuesta TODO tu saldo a una opción de una apuesta abierta, con confirmación."),
+        ("/panel shop [canal]", "Council", "Publica el Top Vendedores y el panel de compra del shop de la guild (botón Comprar → ticket con Seller)."),
         ("/canal logs guildshop [canal]", "Council", "Define el canal donde se registra cada transacción del Guild Shop."),
-        ("/set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),
-        ("/eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),
-        ("/historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
+        ("/eco set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),
+        ("/eco eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),
+        ("/eco historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
         ("/verhistorial [usuario] [completo]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. Con `completo:true` te llega TODO el historial como archivo CSV, solo visible para vos en el canal. El staff puede ver los de otra persona."),
         ("/timeradd material mapa tiempo [tier]", "Miembros registrados", "Agrega un timer (hora UTC en que sale; si ya hay uno igual con el mismo material, mapa, tier y hora, no lo duplica) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
