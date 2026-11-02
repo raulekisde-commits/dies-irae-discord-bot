@@ -86,7 +86,7 @@ class BuyPanelView(discord.ui.View):
 
 
 class SellTicketView(discord.ui.View):
-    """Botones del ticket de venta. Solo los Council pueden usarlos (se revisa en cada pulsación)."""
+    """Botones del ticket de venta. Solo el Council y los administradores pueden usarlos (se revisa en cada pulsación)."""
 
     def __init__(self, cog: "DepositsCog", processed: bool = False):
         super().__init__(timeout=None)
@@ -138,7 +138,7 @@ class ConfirmAddView(discord.ui.View):
         self.add_item(no)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id or not is_council(interaction.user):
+        if interaction.user.id != self.owner_id or not can_manage(interaction.user):
             await _reply(interaction, "❌ Este mensaje no es tuyo.")
             return False
         return True
@@ -375,7 +375,7 @@ class DepositsCog(commands.Cog):
                 emb.add_field(name="Wuju Coins que quiere comprar", value=f"**{self.money(amount)}**", inline=True)
                 emb.add_field(name="📸 Falta un paso", value=(f"{user.mention}, depositá el silver en la guild y mandá en este canal la **foto / captura del depósito**. "
                                                                "Un Council la va a revisar."), inline=False)
-                emb.set_footer(text="Solo los Council pueden agregar los Wuju Coins o cerrar este ticket.")
+                emb.set_footer(text="Solo el Council y los administradores pueden agregar los Wuju Coins o cerrar este ticket.")
                 view = BuyTicketView(self)
             embeds = [emb] + ([bal_emb] if bal_emb is not None else [])
             sent = await channel.send(f"{user.mention} <@&{COUNCIL_ROLE_ID}>", embeds=embeds, view=view, allowed_mentions=PING)
@@ -445,8 +445,8 @@ class DepositsCog(commands.Cog):
 
     # ---------- cerrar (solo Council) ----------
     async def on_close(self, interaction: discord.Interaction):
-        if interaction.guild is None or not is_council(interaction.user):
-            return await _reply(interaction, "❌ Solo los **Council** pueden usar este botón.")
+        if interaction.guild is None or not can_manage(interaction.user):
+            return await _reply(interaction, "❌ Solo el **Council** o los administradores pueden usar este botón.")
         ticket = await self.run(ddb.get_by_channel, interaction.channel.id)
         if ticket is None:
             return await _reply(interaction, "❌ Este canal no es un ticket de cambio de moneda.")
@@ -460,8 +460,8 @@ class DepositsCog(commands.Cog):
 
     async def _council_ticket(self, interaction: discord.Interaction, kind: str) -> Optional[ddb.Ticket]:
         """Valida Council + ticket del tipo correcto, abierto y sin procesar. Responde el error y devuelve None si algo falla."""
-        if interaction.guild is None or not is_council(interaction.user):
-            await _reply(interaction, "❌ Solo los **Council** pueden usar este botón.")
+        if interaction.guild is None or not can_manage(interaction.user):
+            await _reply(interaction, "❌ Solo el **Council** o los administradores pueden usar este botón.")
             return None
         ticket = await self.run(ddb.get_by_channel, interaction.channel.id)
         if ticket is None or ticket.kind != kind:
@@ -495,8 +495,8 @@ class DepositsCog(commands.Cog):
         await interaction.response.send_modal(SellAcceptModal(self, ticket.id, balance, getattr(interaction, "message", None)))
 
     async def on_sell_submitted(self, interaction: discord.Interaction, ticket_id: int, text: str, ticket_message):
-        if interaction.guild is None or not is_council(interaction.user):
-            return await _reply(interaction, "❌ Solo los **Council** pueden hacer esto.")
+        if interaction.guild is None or not can_manage(interaction.user):
+            return await _reply(interaction, "❌ Solo el **Council** o los administradores pueden hacer esto.")
         ticket = await self.run(ddb.get_ticket, ticket_id)
         if ticket is None or ticket.kind != "sell" or ticket.status != "open":
             return await _reply(interaction, "❌ Este ticket ya no está disponible.")
@@ -542,8 +542,8 @@ class DepositsCog(commands.Cog):
             f"Hacelo solo si ya revisaste la captura del depósito.", view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     async def confirm_buy_add(self, interaction: discord.Interaction, ticket_id: int, ticket_message):
-        if interaction.guild is None or not is_council(interaction.user):
-            return await _reply(interaction, "❌ Solo los **Council** pueden hacer esto.")
+        if interaction.guild is None or not can_manage(interaction.user):
+            return await _reply(interaction, "❌ Solo el **Council** o los administradores pueden hacer esto.")
         ticket = await self.run(ddb.get_ticket, ticket_id)
         if ticket is None or ticket.kind != "buy" or ticket.status != "open":
             return await _reply(interaction, "❌ Este ticket ya no está disponible.")
