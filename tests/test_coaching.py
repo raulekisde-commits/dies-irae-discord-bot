@@ -77,6 +77,7 @@ class CoachingDiscordTests(DiscordBase):
             th = discord.Thread(8800 + len(made), self.guild, name)
             th.parent_id = co.FORUM_CHANNEL_ID
             made.append(th)
+            th.first_kw = dict(kw, content=content)
             self.bot.channels[th.id] = th
             return SimpleNamespace(thread=th, message=None)
         self.forum.create_thread = create_thread
@@ -264,6 +265,30 @@ class CoachingDiscordTests(DiscordBase):
         i = self.inter(user, message=msg)
         run(self.ecog.on_done(i))
         return i.text
+
+    def test_primer_mensaje_taggea_al_usuario(self):
+        self.open_post(self.novato)
+        kw = self.made[0].first_kw
+        self.assertIn(self.novato.mention, kw["content"])
+        self.assertTrue(kw["content"].startswith(self.novato.mention + " este es tu post de VODs."))
+        self.assertIn(self.novato, kw["allowed_mentions"].kw["users"])
+
+    def test_verificar_posts(self):
+        i = self.inter(self.alice)
+        run(self.cog.coaching_verificar_posts.callback(self.cog, i))
+        self.assertIn("Solo el Staff", i.text)
+        i = self.inter(self.council)
+        run(self.cog.coaching_verificar_posts.callback(self.cog, i))
+        txt = i.text
+        self.assertIn("Sin post: **1**", txt)
+        self.open_post(self.novato)
+        i = self.inter(self.council)
+        run(self.cog.coaching_verificar_posts.callback(self.cog, i))
+        self.assertIn("Todos tienen su post", i.text)
+        del self.bot.channels[self.made[0].id]
+        i = self.inter(self.council)
+        run(self.cog.coaching_verificar_posts.callback(self.cog, i))
+        self.assertIn("Post borrado: **1**", i.text)
 
     def test_panel_command_is_council_only(self):
         i = self.inter(self.alice)
