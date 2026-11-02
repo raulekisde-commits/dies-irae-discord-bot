@@ -130,6 +130,13 @@ except Exception:
     async def setup_alters(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar alters.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from rolesmgmt import setup_rolesmgmt
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_rolesmgmt(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar rolesmgmt.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from ctavoice import setup_ctavoice
 except Exception:
     import traceback as _tb
@@ -526,6 +533,7 @@ class MyBot(commands.Bot):
             await _safe_setup("coaching", setup_coaching, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
+            await _safe_setup("rolesmgmt", setup_rolesmgmt, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
             await _safe_setup("warnings", setup_warnings, self, DB_PATH, GUILD_ID)

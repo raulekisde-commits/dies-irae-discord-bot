@@ -190,6 +190,11 @@ INFO_TEXTS["alters"] = ("🔗 Alters",
                         "• Cada alter guarda **quién lo autorizó** (quien ejecutó el comando) y la fecha.\n"
                         "• Un alter no puede estar enlazado a dos personas, ni ser el personaje principal de otra.\n"
                         "• Si tenés un alter y no está enlazado, pedíselo al Staff.")
+INFO_TEXTS["roles"] = ("🎭 Roles de Observación y CTA",
+                       "El equipo puede darte o quitarte el rol **Observación** y los roles de **CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb).\n\n"
+                       "• Cada cambio **queda registrado**: a quién, qué rol, quién lo hizo y cuándo.\n"
+                       "• Si tenés Observación, tenés que subir tus VODs semanales (`/info zvz-vods`).\n"
+                       "• Si creés que te falta un rol o te lo sacaron por error, hablá con el Staff o con Coaching.")
 
 INFO_STAFF.update({
     "splits": ("**Crear**\n"
@@ -277,10 +282,15 @@ INFO_STAFF.update({
                  "• La API de Albion no tiene login: prueba que el personaje existe y su guild, pero **no quién lo controla**.\n"
                  "• El nombre sale exacto de la API, un personaje solo puede ir con una cuenta y nadie registra a otro sin que acepte."),
 })
-INFO_STAFF["alters"] = ("• `/alter-agregar usuario alter [nota]` — enlaza un alter a la persona. Queda guardado quién lo autorizó (vos) y cuándo.\n"
-                        "• `/alter-quitar alter` — desenlaza un alter.\n"
-                        "• `/alter-ver [usuario] [alter]` — alters de una persona, o de quién es un alter (con quién lo autorizó). Máximo 10 por persona.\n"
+INFO_STAFF["alters"] = ("• `/alter agregar usuario alter [nota]` — enlaza un alter a la persona. Queda guardado quién lo autorizó (vos) y cuándo.\n"
+                        "• `/alter quitar alter` — desenlaza un alter.\n"
+                        "• `/alter ver [usuario] [alter]` — alters de una persona, o de quién es un alter (con quién lo autorizó). Máximo 10 por persona.\n"
                         "• Solo Staff, Council y administradores; se valida en el bot, no solo por permisos de Discord.")
+INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuario rol [motivo]` — el bot cambia el rol y lo registra con quién lo hizo.\n"
+                       "• **Observación:** dar = Staff, Council, Admin, Coaching y Opinólogo · quitar = Staff, Council, Admin y Coaching.\n"
+                       "• **Roles de CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb): dar = Staff, Council, Admin y Coaching · quitar = Staff, Council y Admin.\n"
+                       "• `/rol historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
+                       "• No te podés cambiar roles a vos mismo, y el rol del bot tiene que estar por encima del rol que se cambia.")
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/guild-shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
 
@@ -525,7 +535,7 @@ class InvitadosCog(commands.Cog):
             await _say(interaction, c)
 
     # ---------- /info (usuarios) y /info-staff (usuarios + equipo) ----------
-    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("splits", "zvz", "reclutamiento", "registro", "timers", "stats", "economia", "casino", "zvz-vods", "invitados", "warnings", "alters")]
+    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("splits", "zvz", "reclutamiento", "registro", "timers", "stats", "economia", "casino", "zvz-vods", "invitados", "warnings", "alters", "roles")]
 
     @staticmethod
     def info_embed(value: str, staff: bool) -> discord.Embed:

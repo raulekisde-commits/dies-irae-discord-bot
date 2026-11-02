@@ -61,10 +61,13 @@ class AltersTests(DiscordBase):
         self.assertIn("principal", self.add(self.stf, self.bob, "MainAlice"))
         self.assertIn("quedó enlazado", self.add(self.stf, self.alice, "MainAlice"))
 
+    def test_es_un_solo_comando_raiz(self):
+        self.assertEqual(sorted(self.cog.alter_g.commands), ["agregar", "quitar", "ver"])
+
     def test_info(self):
         self.assertIn("alters", [c.value for c in iv.InvitadosCog.INFO_CHOICES])
         self.assertIn("autorizó", iv.InvitadosCog.info_embed("alters", False).description)
-        self.assertIn("/alter-agregar", iv.InvitadosCog.info_embed("alters", True).description)
+        self.assertIn("/alter agregar", iv.InvitadosCog.info_embed("alters", True).description)
 
 
 if __name__ == "__main__":

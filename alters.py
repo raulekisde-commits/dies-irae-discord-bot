@@ -1,4 +1,4 @@
-"""Sistema de alters: /alter-agregar, /alter-quitar, /alter-ver.
+"""Sistema de alters: /alter agregar, /alter quitar, /alter ver.
 Solo Staff, Council y Administradores pueden agregar o quitar; queda guardado quién lo autorizó."""
 import asyncio
 import os
@@ -47,9 +47,10 @@ class AltersCog(commands.Cog):
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(fn, self.db_path, *a, **kw)
 
-    @app_commands.command(name="alter-agregar", description="(Staff/Council/Admin) Enlaza una cuenta alter a una persona del Discord")
+    alter_g = app_commands.Group(name="alter", description="Alters enlazados a personas del Discord", guild_only=True)
+
+    @alter_g.command(name="agregar", description="(Staff/Council/Admin) Enlaza una cuenta alter a una persona del Discord")
     @app_commands.describe(usuario="Persona dueña del alter", alter="Nombre de la cuenta / personaje alter", nota="Nota opcional")
-    @app_commands.guild_only()
     async def alter_agregar(self, interaction: discord.Interaction, usuario: discord.Member, alter: str, nota: str = None):
         if not can_alter(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden agregar alters.")
@@ -62,9 +63,8 @@ class AltersCog(commands.Cog):
         await _say(interaction, f"✅ **{discord.utils.escape_markdown(row['alter_name'])}** quedó enlazado como alter de {usuario.mention}.\n"
                                 f"Autorizado por {interaction.user.mention}.")
 
-    @app_commands.command(name="alter-quitar", description="(Staff/Council/Admin) Quita un alter enlazado")
+    @alter_g.command(name="quitar", description="(Staff/Council/Admin) Quita un alter enlazado")
     @app_commands.describe(alter="Nombre exacto del alter")
-    @app_commands.guild_only()
     async def alter_quitar(self, interaction: discord.Interaction, alter: str):
         if not can_alter(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden quitar alters.")
@@ -74,9 +74,8 @@ class AltersCog(commands.Cog):
         await _say(interaction, f"🗑️ Se quitó **{discord.utils.escape_markdown(row['alter_name'])}** (era alter de <@{row['user_id']}>, "
                                 f"lo había autorizado <@{row['added_by']}>).")
 
-    @app_commands.command(name="alter-ver", description="(Staff/Council/Admin) Alters de una persona, o de quién es un alter")
+    @alter_g.command(name="ver", description="(Staff/Council/Admin) Alters de una persona, o de quién es un alter")
     @app_commands.describe(usuario="Persona del Discord", alter="O el nombre de un alter para saber de quién es")
-    @app_commands.guild_only()
     async def alter_ver(self, interaction: discord.Interaction, usuario: discord.Member = None, alter: str = None):
         if not can_alter(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden ver los alters.")
