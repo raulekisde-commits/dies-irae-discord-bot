@@ -130,6 +130,22 @@ class TopStatsTests(KBBase):
         emb = i.response.sent[0][1]["embed"]
         self.assertTrue(any("Muertes" in str(f) for f in emb.fields))
 
+    def test_stats_muestra_top_de_roles_aunque_no_haya_killboard(self):
+        rdb.admin_link(self.db, self.mem.id, "Ana", 1)
+        c = connect(self.db)
+        for cta, status in ((21, "closed"), (22, "closed"), (23, "closed"), (24, "open")):
+            c.execute("INSERT OR IGNORE INTO cta_runs(id, snapshot_json, status) VALUES (?, '{\"slots\": []}', ?)", (cta, status))
+        for cta, role in ((21, 1260755129754189854), (22, 1260755129754189854), (23, 1260755151296266331), (24, 1260755151296266331)):
+            c.execute("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id) VALUES (?,?,?,?)", (cta, self.mem.id, "1:1", role))
+        c.close()
+        i = self.inter(self.mem)
+        run(self.cog.stats.callback(self.cog, i, None))                       # no hay ningún killboard cargado para Ana
+        emb = i.response.sent[0][1]["embed"]
+        campo = next(f for f in emb.fields if "Roles más jugados" in str(f))
+        txt = str(campo)
+        self.assertIn("Tank", txt); self.assertIn("67%", txt)                 # 2 de 3 CTA cerradas
+        self.assertIn("Healer", txt); self.assertIn("33%", txt)               # la CTA abierta (24) no cuenta
+
 
 if __name__ == "__main__":
     unittest.main()
