@@ -1,4 +1,4 @@
-"""Ruleta europea de casino: /ruleta (panel + hilo de apuestas), /ruleta-editar, /ruleta-stats. Apuestas con /apostar dentro del hilo.
+"""Ruleta europea de casino: /ruleta (panel + hilo de apuestas), /ruleta-editar, /ruleta-stats. Apuestas con /apuesta apostar dentro del hilo.
 
 Toda la lógica de dinero y reglas está en roulette_db.py (transacciones atómicas); acá solo hay interfaz de Discord."""
 import asyncio
@@ -116,7 +116,7 @@ class RouletteCog(commands.Cog):
             e.add_field(name=f"🎡 Ronda #{rnd.id if rnd else '—'}", value=when, inline=False)
             e.add_field(name="👥 Participantes", value=f"{parts:,} ({n:,} apuestas)", inline=True)
             e.add_field(name="💰 Total apostado", value=self.money(staked), inline=True)
-        e.add_field(name=SEP, value="Apostá **dentro del hilo** con `/apostar`: `rojo`, `negro`, `par`, `impar`, `falta`, `pasa`, "
+        e.add_field(name=SEP, value="Apostá **dentro del hilo** con `/apuesta apostar`: `rojo`, `negro`, `par`, `impar`, `falta`, `pasa`, "
                                      "`docena 1-3`, `columna 1-3`, `numero 0-36`." if is_open else "La ruleta está cerrada. Las apuestas pendientes fueron devueltas.",
                     inline=False)
         e.set_footer(text="Ruleta europea · 37 números · ventaja de la casa 2,70%")
@@ -168,8 +168,8 @@ class RouletteCog(commands.Cog):
             msg = await ch.send(embed=await self.panel_embed(panel), view=RouletteView(self), allowed_mentions=NO_MENTIONS)
             thread = await msg.create_thread(name="🎰 Apuestas de la ruleta", auto_archive_duration=10080)
             await self.run(rdb.set_panel_message, panel.id, msg.id, thread.id)
-            await thread.send("🎰 **Bienvenidos a la ruleta.** Apostá acá con `/apostar` (ej: `/apostar rojo 100k`, `/apostar numero 17 25k`, "
-                              "`/apostar docena 2 100k`). Podés hacer varias apuestas por ronda.", allowed_mentions=NO_MENTIONS)
+            await thread.send("🎰 **Bienvenidos a la ruleta.** Apostá acá con `/apuesta apostar` (ej: `/apuesta apostar rojo 100k`, `/apuesta apostar numero 17 25k`, "
+                              "`/apuesta apostar docena 2 100k`). Podés hacer varias apuestas por ronda.", allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self.run(rdb.abort_panel, panel.id)           # libera el estado global
@@ -246,7 +246,7 @@ class RouletteCog(commands.Cog):
             e.add_field(name="🧾 Ajustes y cambios recientes", value="\n".join(lines)[:1024], inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    # ---------- apuestas (las invoca bets.py cuando /apostar o !apostar se usan en un hilo de ruleta) ----------
+    # ---------- apuestas (las invoca bets.py cuando /apuesta apostar o !apostar se usan en un hilo de ruleta) ----------
     async def autocomplete_options(self, interaction, current: str):
         ch_id = interaction.channel.id if interaction.channel else 0
         panel = await self.run(rdb.find_panel_by_thread, ch_id)
@@ -278,7 +278,7 @@ class RouletteCog(commands.Cog):
             return True
         parts = (args or "").strip().rsplit(None, 1)
         if len(parts) < 2:
-            await reply("Uso: `/apostar [rojo|negro|par|impar|falta|pasa|docena 1-3|columna 1-3|numero 0-36] [cantidad]`")
+            await reply("Uso: `/apuesta apostar [rojo|negro|par|impar|falta|pasa|docena 1-3|columna 1-3|numero 0-36] [cantidad]`")
             return True
         try:
             kind, sel = rdb.parse_selection(parts[0])
@@ -317,7 +317,7 @@ class RouletteCog(commands.Cog):
             return await _say(interaction, "ℹ️ No hay una ronda en curso.")
         bets = await self.run(rdb.user_bets, rnd.id, interaction.user.id)
         if not bets:
-            return await _say(interaction, "ℹ️ Todavía no apostaste en esta ronda. Hacelo en el hilo con `/apostar`.")
+            return await _say(interaction, "ℹ️ Todavía no apostaste en esta ronda. Hacelo en el hilo con `/apuesta apostar`.")
         lines = [f"• {rdb.label_of(b.kind, b.selection)} — {self.money(b.amount)}" for b in bets[:25]]
         await _say(interaction, f"🎟️ **Tus apuestas (ronda #{rnd.id})** — total {self.money(sum(b.amount for b in bets))}\n" + "\n".join(lines))
 

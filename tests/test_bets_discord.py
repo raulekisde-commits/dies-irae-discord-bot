@@ -221,7 +221,7 @@ class BetsDiscordTests(unittest.TestCase):
         self.assertTrue(any(isinstance(v, betsm.BetPanelView) for v in self.bot.persistent_views))
         self.assertEqual([c.custom_id for c in betsm.BetPanelView(self.cog).children], ["bet:detail", "bet:cancel"])
 
-    # ---------- /apuesta ----------
+    # ---------- /apuesta crear ----------
     def test_create_requires_permission(self):
         bet, i = self.create(self.plain)
         self.assertIsNone(bet)
