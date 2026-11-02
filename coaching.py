@@ -64,6 +64,25 @@ class CoachPanelView(discord.ui.View):
         await self.cog.open_post(interaction)
 
 
+class CreateMissingView(discord.ui.View):
+    """Botón de /coaching-verificar-posts: crea los posts faltantes (solo quien corrió el comando, una vez)."""
+    def __init__(self, cog, owner_id: int, members: list):
+        super().__init__(timeout=300)
+        self.cog, self.owner_id, self.members = cog, owner_id, members
+
+    @discord.ui.button(label="Crear posts faltantes", style=discord.ButtonStyle.success, emoji="🎥")
+    async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("🔒 Este botón es de quien corrió el comando.", ephemeral=True)
+        button.disabled = True
+        self.stop()
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+        await self.cog.create_missing(interaction, self.members)
+
+
 class CoachRoleView(discord.ui.View):
     """Menú persistente que acompaña a un VOD sin rol indicado: el mensaje del VOD es al que responde el bot."""
     def __init__(self, cog: "CoachingCog"):
@@ -138,30 +157,66 @@ class CoachingCog(commands.Cog):
             forum = await self._channel(FORUM_CHANNEL_ID)
             if forum is None or not hasattr(forum, "create_thread"):
                 return await interaction.followup.send("❌ No encuentro el foro de VODs. Avisale a un administrador.", ephemeral=True)
-            quota = (f"Como tenés el rol **Observación**, tenés que subir **mínimo {cdb.WEEKLY_MIN} VODs por semana** (lunes a domingo, hora UTC)."
-                     if is_obs(user) else "Subí tus VODs acá para pedir devolución.")
-            content = (f"{user.mention} este es tu post de VODs. {quota}\n"
-                       "Pegá el link (YouTube, Twitch, Medal…) o subí el video. Si podés, decí con qué rol jugás; si no, el bot te lo pregunta.")
-            name = f"{user.display_name}"[:90] or f"VODs {user.id}"
-            allowed = discord.AllowedMentions(users=[user], roles=False, everyone=False)
             try:
-                try:
-                    res = await forum.create_thread(name=name, content=content, allowed_mentions=allowed)
-                except discord.HTTPException:
-                    tags = list(getattr(forum, "available_tags", []) or [])[:1]       # foros que obligan a elegir una etiqueta
-                    if not tags:
-                        raise
-                    res = await forum.create_thread(name=name, content=content, applied_tags=tags, allowed_mentions=allowed)
-                thread = getattr(res, "thread", res)
+                thread = await self._create_post(forum, user)
             except Exception as exc:
                 print(f"coaching: no pude crear el post de {user.id}: {exc!r}")
                 return await interaction.followup.send("❌ No pude crear tu post (el bot necesita permisos de *Crear posts* y *Gestionar hilos* en el foro).", ephemeral=True)
-            await self.run(cdb.set_post, user.id, thread.id)
-            try:
-                await thread.add_user(user)
-            except Exception:
-                pass
         await interaction.followup.send(f"🎥 Listo, este es tu post: {thread.mention}", ephemeral=True)
+
+    async def _create_post(self, forum, user):
+        """Crea el post de VODs de `user` (el primer mensaje lo menciona), lo guarda y lo agrega al hilo. Lanza si no puede crearlo."""
+        quota = (f"Como tenés el rol **Observación**, tenés que subir **mínimo {cdb.WEEKLY_MIN} VODs por semana** (lunes a domingo, hora UTC)."
+                 if is_obs(user) else "Subí tus VODs acá para pedir devolución.")
+        content = (f"{user.mention} este es tu post de VODs. {quota}\n"
+                   "Pegá el link (YouTube, Twitch, Medal…) o subí el video. Si podés, decí con qué rol jugás; si no, el bot te lo pregunta.")
+        name = f"{user.display_name}"[:90] or f"VODs {user.id}"
+        allowed = discord.AllowedMentions(users=[user], roles=False, everyone=False)
+        try:
+            res = await forum.create_thread(name=name, content=content, allowed_mentions=allowed)
+        except discord.HTTPException:
+            tags = list(getattr(forum, "available_tags", []) or [])[:1]       # foros que obligan a elegir una etiqueta
+            if not tags:
+                raise
+            res = await forum.create_thread(name=name, content=content, applied_tags=tags, allowed_mentions=allowed)
+        thread = getattr(res, "thread", res)
+        await self.run(cdb.set_post, user.id, thread.id)
+        try:
+            await thread.add_user(user)
+        except Exception:
+            pass
+        return thread
+
+    CREATE_DELAY = 1.5          # segundos entre post y post al crearlos en lote (límite de Discord)
+
+    async def create_missing(self, interaction: discord.Interaction, members: list):
+        """Crea los posts faltantes (botón de /coaching-verificar-posts). Se vuelve a chequear cada uno antes de crearlo."""
+        if not can_report(interaction.user):
+            return await interaction.response.send_message("🔒 No tenés permiso para crear posts.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        forum = await self._channel(FORUM_CHANNEL_ID)
+        if forum is None or not hasattr(forum, "create_thread"):
+            return await interaction.followup.send("❌ No encuentro el foro de VODs.", ephemeral=True)
+        created, skipped, failed = [], 0, []
+        for m in members:
+            async with self._lock(m.id):
+                post = await self.run(cdb.get_post, m.id)
+                if post and await self._channel(post["thread_id"]) is not None:
+                    skipped += 1
+                    continue
+                try:
+                    th = await self._create_post(forum, m)
+                    created.append(f"{m.mention} → {th.mention}")
+                except Exception as exc:
+                    print(f"coaching: no pude crear el post de {m.id}: {exc!r}")
+                    failed.append(m.mention)
+            await asyncio.sleep(self.CREATE_DELAY)
+        out = f"✅ Posts creados: **{len(created)}** · ya tenían: **{skipped}** · fallaron: **{len(failed)}**"
+        if created:
+            out += "\n" + "\n".join(created)
+        if failed:
+            out += "\n❌ No pude crear: " + ", ".join(failed) + " (el bot necesita *Crear posts* y *Gestionar hilos* en el foro)."
+        await interaction.followup.send(out[:1900], ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     # ---------- VODs ----------
     async def process_message(self, message: discord.Message, edited: bool = False):
@@ -349,15 +404,17 @@ class CoachingCog(commands.Cog):
         if role is None:
             return await interaction.followup.send("⚠️ No encuentro el rol Observación en este servidor.", ephemeral=True)
         observers = sorted((m for m in role.members if not m.bot), key=lambda x: x.display_name.casefold())
-        missing, broken, ok = [], [], 0
+        missing, broken, ok, todo = [], [], 0, []
         for m in observers:
             post = await self.run(cdb.get_post, m.id)
             if not post:
                 missing.append(f"{m.mention} — no tiene post")
+                todo.append(m)
                 continue
             th = await self._channel(post["thread_id"])
             if th is None or getattr(th, "parent_id", FORUM_CHANNEL_ID) != FORUM_CHANNEL_ID:
                 broken.append(f"{m.mention} — el post guardado ya no existe")
+                todo.append(m)
             else:
                 ok += 1
         head = (f"🔎 **Posts de VODs · Observación** ({len(observers)})\n"
@@ -369,8 +426,10 @@ class CoachingCog(commands.Cog):
         if not embeds:
             head += "\n🎉 Todos tienen su post."
         else:
-            head += "\nEstos tienen que tocar el botón del panel para crear su post; al abrirlo el bot los menciona en el primer mensaje."
-        await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
+            head += (f"\nCon el botón de abajo se crean los **{len(todo)}** posts faltantes (el bot menciona a cada uno en el primer mensaje). "
+                     "También pueden abrirlo ellos con el panel.")
+        extra = {"view": CreateMissingView(self, interaction.user.id, todo)} if todo else {}
+        await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS, **extra)
 
     @app_commands.command(name="mis-vods", description="Cuántos VODs subiste esta semana y cuántos te faltan")
     @app_commands.guild_only()

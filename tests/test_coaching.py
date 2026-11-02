@@ -290,6 +290,30 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.coaching_verificar_posts.callback(self.cog, i))
         self.assertIn("Post borrado: **1**", i.text)
 
+    def test_crear_posts_faltantes(self):
+        self.cog.CREATE_DELAY = 0
+        otro = discord.Member(700000000000000003, "Otro", roles=[self.r_obs], guild=self.guild)
+        self.guild.members.append(otro)
+        self.open_post(self.novato)                                   # novato ya tiene; falta otro
+        self.made[0].first_kw = None
+        i = self.inter(self.council)
+        run(self.cog.coaching_verificar_posts.callback(self.cog, i))
+        view = i.response.sent[0][1]["view"]
+        self.assertEqual([m.id for m in view.members], [otro.id])
+        i2 = self.inter(self.alice)                                   # sin permiso
+        run(self.cog.create_missing(i2, view.members))
+        self.assertIn("No tenés permiso", i2.text)
+        self.assertEqual(len(self.made), 1)
+        i3 = self.inter(self.council)
+        run(self.cog.create_missing(i3, [novato_ya := self.novato, otro]))   # novato se saltea
+        self.assertEqual(len(self.made), 2)
+        self.assertIn("Posts creados: **1**", i3.text)
+        self.assertIn("ya tenían: **1**", i3.text)
+        kw = self.made[1].first_kw
+        self.assertTrue(kw["content"].startswith(otro.mention + " este es tu post de VODs."))
+        self.assertIn(otro, kw["allowed_mentions"].kw["users"])
+        self.assertIsNotNone(co.cdb.get_post(self.db, otro.id))
+
     def test_panel_command_is_council_only(self):
         i = self.inter(self.alice)
         run(self.cog.coaching_panel.callback(self.cog, i))
