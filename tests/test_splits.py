@@ -414,10 +414,14 @@ class SplitDiscordTests(DiscordBase):
         sdb.set_looter(self.db, 1, self.admin.id, looted=1000)
         s, thread = self.split_and_thread()
         panel = self.panelch.sent[0]
-        # un administrador sin rol Council no puede
-        i = self.inter(self.admin, message=panel)
+        # alguien sin Council ni Administrator no puede
+        i = self.inter(self.alice, message=panel)
         run(self.cog.on_close_pressed(i))
         self.assertIn("Council", i.text)
+        # un administrador sin rol Council sí (recibe la confirmación)
+        i = self.inter(self.admin, message=panel)
+        run(self.cog.on_close_pressed(i))
+        self.assertIn("¿Cerrar", i.text)
         # el Council recibe la confirmación (todavía no se pagó nada)
         i = self.inter(self.council, message=panel)
         run(self.cog.on_close_pressed(i))
@@ -678,10 +682,13 @@ class SplitDiscordTests(DiscordBase):
         run(self.cog.on_close_pressed(i))
         run(i.response.sent[0][1]["view"].children[0].callback(self.inter(self.council)))
         self.assertEqual(eco.get_balance(self.db, self.alice.id), 1125)                           # 3000 − 25 % = 2250 / 2
-        # /editar sobre un split cerrado: solo el Council, y ofrece reabrir
-        i = self.inter(self.admin, thread)
+        # /editar sobre un split cerrado: solo Council o administradores, y ofrece reabrir
+        i = self.inter(self.alice, thread)
         run(self.cog.editar.callback(self.cog, i, None))
         self.assertIn("Council", i.text)
+        i = self.inter(self.admin, thread)
+        run(self.cog.editar.callback(self.cog, i, None))
+        self.assertIn("ya está cerrado", i.text)
         i = self.inter(self.council, thread)
         run(self.cog.editar.callback(self.cog, i, None))
         reopen = i.response.sent[0][1]["view"]
@@ -741,9 +748,12 @@ class SplitDiscordTests(DiscordBase):
         c = self.inter(self.council, message=panel)
         run(self.cog.on_close_pressed(c))
         run(c.response.sent[0][1]["view"].children[0].callback(self.inter(self.council)))
-        i = self.inter(self.admin, message=panel)
+        i = self.inter(self.alice, message=panel)
         run(self.cog.on_edit_pressed(i))
         self.assertIn("Council", i.text)
+        i = self.inter(self.admin, message=panel)
+        run(self.cog.on_edit_pressed(i))
+        self.assertIn("ya está cerrado", i.text)
         i = self.inter(self.council, message=panel)
         run(self.cog.on_edit_pressed(i))
         self.assertEqual([c.label for c in i.response.sent[0][1]["view"].children], ["Reabrir para editar"])
