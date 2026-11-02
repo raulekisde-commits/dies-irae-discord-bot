@@ -66,7 +66,7 @@ INFO_TEXTS = {
                  "La moneda del servidor son los **Wuju Coins**.\n\n"
                  "**Comandos**\n"
                  "• `/bal` — ver tu saldo (o el de otra persona).\n"
-                 "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo.\n"
+                 "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo (el bot te pide confirmar antes de enviar).\n"
                  "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
                  "**Splits**\n"
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
@@ -95,7 +95,7 @@ INFO_STAFF = {
                   "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n"
                   "• Quien invita queda como responsable: si hay problemas, revisá `/quien-invito` o la lista para saber a quién consultar."),
     "warnings": ("• `/warning usuario razon` — pone un warning. Queda guardado quién lo puso, cuándo y por qué. La respuesta la ve solo quien ejecuta el comando.\n"
-                 "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). Es el único comando que se muestra en el canal.\n"
+                 "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). La respuesta es privada, como la del resto de los comandos de warnings.\n"
                  "• `/warning-top` — quién acumula más warnings (privado).\n"
                  "• Los puede usar **Staff** y **Council**. Escribí un motivo claro: es el único registro que queda."),
     "casino": ("• `/casino abrir|cerrar` (Council) — mientras está cerrado se bloquean `/dados`, `/coinflip` y `/1v1`.\n"
