@@ -159,6 +159,13 @@ except Exception:
     async def setup_nodesync(*_a, _imp_err=_imp_err, **_k):
         raise RuntimeError('No se pudo importar nodesync.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from expulsar import setup_expulsar
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_expulsar(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar expulsar.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from diagnostico import setup_diagnostico
 except Exception:
     import traceback as _tb
@@ -552,6 +559,7 @@ class MyBot(commands.Bot):
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
             await _safe_setup("registration", _setup_registration, self, DB_PATH, GUILD_ID)
             await _safe_setup("diagnostico", setup_diagnostico, self, DB_PATH, GUILD_ID)
+            await _safe_setup("expulsar", setup_expulsar, self, GUILD_ID)
             await _safe_setup("nodesync", self._setup_nodesync)
             self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
