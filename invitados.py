@@ -66,7 +66,7 @@ INFO_TEXTS = {
                  "La moneda del servidor son los **Wuju Coins**.\n\n"
                  "**Comandos**\n"
                  "• `/bal` — ver tu saldo (o el de otra persona).\n"
-                 "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo.\n"
+                 "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo (el bot te pide confirmar antes de enviar).\n"
                  "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
                  "**Splits**\n"
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
