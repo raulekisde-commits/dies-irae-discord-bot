@@ -1600,15 +1600,10 @@ class RecruitView(discord.ui.View):
             log_channel = None
 
         if log_channel:
-            embed = discord.Embed(
-                title="✅ POSTULACIÓN ACEPTADA" + (" (roles pendientes de ingreso)" if roles_pending else ""),
-                color=discord.Color.green(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="👤 Postulante", value=member.mention, inline=True)
-            embed.add_field(name="🧑‍💼 Reclutador", value=interaction.user.mention, inline=True)
-            embed.add_field(name="🎭 Rol asignado", value=role_name, inline=False)
-            embed.add_field(name="📍 Ticket", value=interaction.channel.name, inline=False)
+            embed = recruit_record_embed(
+                "✅ POSTULACIÓN ACEPTADA" + (" (roles pendientes de ingreso)" if roles_pending else ""),
+                discord.Color.green(), member, interaction.user, getattr(interaction, "message", None),
+                extra=[("🎭 Rol asignado", role_name, False)])
 
             # Imagen: la guardás por uid
             img_data = ticket_images.get(member.id)
@@ -1645,7 +1640,10 @@ class RecruitView(discord.ui.View):
                 pass
 
         try:
-            await send_log(interaction.guild, f"❌ **RECHAZADO** {member} | Ticket: #{interaction.channel.name}")
+            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+            await log_channel.send(embed=recruit_record_embed("❌ POSTULACIÓN RECHAZADA", discord.Color.red(), member, interaction.user,
+                                                              getattr(interaction, "message", None)),
+                                   allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             pass
 
@@ -1660,17 +1658,11 @@ class RecruitView(discord.ui.View):
 
     async def close_ticket(self, interaction: discord.Interaction):
         member = await self._get_applicant(interaction)
-        transcript = ""
         try:
-            transcript = await create_transcript(interaction.channel)
-        except Exception:
-            pass
-
-        try:
-            await send_log(
-                interaction.guild,
-                f"🔒 **POSTULACIÓN CERRADA** {member}\n```\n{transcript[:1800]}\n```"
-            )
+            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+            await log_channel.send(embed=recruit_record_embed("🔒 POSTULACIÓN CERRADA", discord.Color.dark_grey(), member, interaction.user,
+                                                              getattr(interaction, "message", None)),
+                                   allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             pass
 
@@ -1726,6 +1718,28 @@ class RecruitView(discord.ui.View):
 
 
 RECRUIT_NICK_FIELD = "🎮 Nick en Albion"
+RECRUIT_DATA_TITLE = "📋 Datos del postulante"
+
+
+def recruit_data_fields(message) -> list:
+    """Datos que escribió el postulante, leídos del embed de datos del ticket: [(nombre, valor, inline)]. [] si no están."""
+    for emb in (getattr(message, "embeds", None) or []):
+        if getattr(emb, "title", None) == RECRUIT_DATA_TITLE:
+            return [(f.name, f.value, f.inline) for f in emb.fields]
+    return []
+
+
+def recruit_record_embed(title: str, color, member, closer, message, extra: Optional[list] = None) -> discord.Embed:
+    """Registro de una postulación: lo que ingresó la persona y quién la cerró (sin transcripción del chat)."""
+    emb = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
+    emb.add_field(name="👤 Postulante", value=getattr(member, "mention", None) or "—", inline=True)
+    emb.add_field(name="🧑‍💼 Cerrada por", value=closer.mention, inline=True)
+    for name, value, inline in (extra or []):
+        emb.add_field(name=name, value=value, inline=inline)
+    for name, value, inline in recruit_data_fields(message):
+        emb.add_field(name=name, value=(value or "—")[:1000], inline=inline)
+    return emb
+
 
 
 def recruit_nick_from_message(message) -> str:
@@ -2127,10 +2141,53 @@ class RecruitRecordView(discord.ui.View):
             b.disabled = True
         self.stop()
         try:
+            await interaction.response.edit_message(content="👥 **¿Tenés amigos en la guild?** (por defecto: No)",
+                                                    view=RecruitFriendsView(self.answers, can_record))
+        except Exception:
+            pass
+
+
+class RecruitFriendsModal(discord.ui.Modal, title="Amigos en la guild"):
+    quienes = discord.ui.TextInput(label="¿Quiénes? (nicks en Albion)", placeholder="Ej: Juan, Pedro", required=False, max_length=300)
+
+    def __init__(self, view: "RecruitFriendsView"):
+        super().__init__(timeout=300)
+        self.friends_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        names = str(self.quienes).strip()
+        await self.friends_view.finish(interaction, f"Sí: {names}" if names else "Sí")
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        traceback.print_exc()
+        await respond_ephemeral(interaction, "❌ No pude procesar tu postulación. Probá de nuevo.")
+
+
+class RecruitFriendsView(discord.ui.View):
+    """Último paso (efímero): ¿tenés amigos en la guild? Por defecto, No."""
+    def __init__(self, answers: dict, can_record: bool):
+        super().__init__(timeout=300)
+        self.answers = answers
+        self.can_record = can_record
+
+    async def finish(self, interaction: discord.Interaction, amigos: str):
+        self.answers["amigos"] = amigos
+        for b in self.children:
+            b.disabled = True
+        self.stop()
+        try:
             await interaction.response.edit_message(content="⏳ Creando tu postulación…", view=self)
         except Exception:
             pass
-        await create_recruit_ticket(interaction, self.answers, can_record)
+        await create_recruit_ticket(interaction, self.answers, self.can_record)
+
+    @discord.ui.button(label="No tengo (por defecto)", style=discord.ButtonStyle.success, emoji="🙅")
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "No")
+
+    @discord.ui.button(label="Sí, tengo", style=discord.ButtonStyle.secondary, emoji="👥")
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RecruitFriendsModal(self))
 
 
 async def create_recruit_ticket(interaction: discord.Interaction, answers: dict, can_record: bool):
@@ -2170,13 +2227,14 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
         name=safe_channel_name(user.name, user.id), category=category, overwrites=overwrites, topic=make_recruit_topic(user.id))
     active_applications[user.id] = channel.id
 
-    data = discord.Embed(title="📋 Datos del postulante", color=discord.Color.gold())
+    data = discord.Embed(title=RECRUIT_DATA_TITLE, color=discord.Color.gold())
     data.add_field(name=RECRUIT_NICK_FIELD, value=answers["nick"][:1000] or "—", inline=True)
     data.add_field(name=RECRUIT_MAIN_FIELD, value=answers["main"][:1000] or "—", inline=True)
     data.add_field(name="🎭 Otros roles que sabe jugar", value=answers["otros"][:1000] or "—", inline=False)
     data.add_field(name="🕒 Horarios (UTC)", value=answers["horarios"][:1000] or "—", inline=False)
     data.add_field(name="📜 Gremio anterior", value=answers["gremio"][:1000] or "—", inline=False)
     data.add_field(name="🎥 ¿Puede grabar sus CTAs?", value="✅ Sí" if can_record else "🚫 No", inline=True)
+    data.add_field(name="👥 Amigos en la guild", value=(answers.get("amigos") or "No")[:1000], inline=True)
     data.set_footer(text=f"Postulante: {user} · Aceptar / Rechazar / Cerrar: solo reclutadores")
 
     pedido = discord.Embed(
