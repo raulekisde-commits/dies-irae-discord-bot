@@ -20,7 +20,7 @@ ECON_COMMANDS = ("bal", "addmoney", "addmoney-role", "remove-money", "top")
 ANY_CHANNEL_COMMANDS = ("addmoney", "addmoney-role", "remove-money", "top")
 # Permisos que se otorgan con /eco perms-comando pero no son comandos de prefijo restringidos por canal
 GAME_COMMANDS = ("dados", "coinflip", "1v1")          # juegos con apuesta: se habilitan con /eco perms-canal y /eco perms-comando
-EXTRA_PERMISSION_COMMANDS = ("stats", "apuesta", "apuestas", "verhistorial", "eco-stats", "give-money", "ruleta", "ruleta-editar", "ruleta-stats") + GAME_COMMANDS
+EXTRA_PERMISSION_COMMANDS = ("stats", "apuesta", "apuestas", "verhistorial", "eco-stats", "give-money", "ruleta", "ruleta-editar", "ruleta-stats", "embo") + GAME_COMMANDS
 GRANTABLE_COMMANDS = ECON_COMMANDS + EXTRA_PERMISSION_COMMANDS
 # Por defecto funcionan en CUALQUIER canal; si un admin les fija uno con /eco perms-canal, pasan a funcionar solo ahí.
 DEFAULT_ANY_CHANNEL = ("stats",)
@@ -553,7 +553,8 @@ class InsufficientFunds(Exception):
 # ------------------------------------------------------------
 FROZEN_TEXT = ("🧊 Tu balance está **congelado** mientras tengas abierto un ticket de **Cobrar balance**: no podés apostar ni mover "
                "tu balance hasta que se cierre el ticket.")
-FROZEN_BLOCKED_TYPES = frozenset({"bet_stake", "duel_stake", "dice_stake", "coinflip_stake", "raffle_ticket", "roulette_bet", "transfer_out", "guildshop_purchase"})
+FROZEN_BLOCKED_TYPES = frozenset({"bet_stake", "duel_stake", "dice_stake", "coinflip_stake", "raffle_ticket", "roulette_bet", "transfer_out", "guildshop_purchase",
+                                  "wujupon_purchase"})
 
 
 class BalanceFrozen(Exception):

@@ -19,6 +19,7 @@ from discord.ext import commands, tasks
 
 import audit_db
 import economy_db as eco
+import embo_db
 import killboard_db as kb
 from slashctx import SlashContext
 from paging import PagedView, chunk
@@ -201,6 +202,7 @@ class EconomyCog(commands.Cog):
     # ---------------- ciclo de vida ----------------
     async def cog_load(self):
         await self._db(eco.init_schema)
+        await self._db(embo_db.init_schema)
         self._emoji_raw = await self._db(eco.get_setting, "currency_emoji")
         self.retry_pending_logs.start()
 
@@ -464,6 +466,8 @@ class EconomyCog(commands.Cog):
         emb = discord.Embed(title=eco.CURRENCY_NAME, color=color)
         emb.description = f"{target.mention}\n\n**Balance actual**\n# {self.money(balance)}"
         emb.add_field(name="📈 Balance histórico", value=self.money(lifetime), inline=False)
+        embo = await self._db(embo_db.get_balance, target.id)
+        emb.add_field(name=f"{embo_db.EMOJI} Balance de embo", value=f"{eco.format_amount(embo)} embo", inline=False)
         gamble = await self._db(stats_db.get_user_stats, target.id)
         emb.add_field(name="🎲 Total apostado", value=self.money(gamble.wagered), inline=True)
         # Mismos números que los paneles «Top ganado» / «Top perdido» de /panel apuestas (ganado − perdido): positivo o negativo.
@@ -798,6 +802,8 @@ class EconomyCog(commands.Cog):
     def _cmd_label(command: str) -> str:
         if command == "1v1":
             return "`/casino 1v1`"
+        if command == "embo":
+            return "`/eco embo`"
         if command in eco.GAME_COMMANDS or command in eco.ECON_COMMANDS:
             return f"`/{command}` y `!{command}`"
         return f"`/{command}`" if command in ("verhistorial", "apuesta", "apuestas", "eco-stats", "give-money", "stats") else f"`!{command}`"
@@ -1063,6 +1069,55 @@ class EconomyCog(commands.Cog):
         except Exception:
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No se pudo completar la operación. No se modificó el balance.")
+
+    embo_g = app_commands.Group(name="embo", description="Balance de embo (embotelladas)", parent=eco_g)
+
+    async def _embo_op(self, interaction: discord.Interaction, mode: str, usuario: discord.Member, cantidad: str,
+                       motivo: Optional[str]):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not await self.has_command_permission(member, "embo"):
+                return await self._ephemeral(interaction, "❌ No tenés permiso para administrar el balance de embo "
+                                                          "(administradores o un rol con `/eco perms-comando comando:embo`).")
+            if usuario.bot:
+                return await self._ephemeral(interaction, "❌ No se puede operar sobre bots.")
+            try:
+                amount = eco.parse_amount(cantidad) if mode != "set" else eco.parse_balance_value(cantidad)
+            except eco.AmountError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            reason = eco.clean_reason(motivo, {"add": "Embo agregado", "remove": "Embo retirado", "set": "Embo fijado"}[mode])
+            try:
+                ch = await self._db(embo_db.apply, user_id=usuario.id, mode=mode, amount=amount, actor_id=member.id,
+                                    request_key=f"embo:{interaction.id}", reason=f"{reason} · por {member.display_name}")
+            except embo_db.EmboError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            verb = {"add": "Agregado", "remove": "Retirado", "set": "Fijado"}[mode]
+            await self._ephemeral(interaction, f"✅ {verb}. Balance de embo de {usuario.mention}: "
+                                               f"**{eco.format_amount(ch.before)} → {eco.format_amount(ch.after)}**.")
+            emb = discord.Embed(title=f"{embo_db.EMOJI} Embo · {verb.lower()}", color=discord.Color.teal())
+            emb.add_field(name="Ejecutado por", value=member.mention, inline=True)
+            emb.add_field(name="Usuario", value=usuario.mention, inline=True)
+            emb.add_field(name="Antes → Ahora", value=f"{eco.format_amount(ch.before)} → **{eco.format_amount(ch.after)}**", inline=False)
+            emb.add_field(name="Motivo", value=reason[:1000], inline=False)
+            await self._audit_note(emb)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No se pudo completar la operación. No se modificó el balance de embo.")
+
+    @embo_g.command(name="add", description="Suma embo a una persona")
+    @app_commands.describe(usuario="Persona", cantidad="Cantidad de embo", motivo="Motivo (opcional)")
+    async def embo_add(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
+        await self._embo_op(interaction, "add", usuario, cantidad, motivo)
+
+    @embo_g.command(name="remove", description="Resta embo a una persona (no puede quedar negativo)")
+    @app_commands.describe(usuario="Persona", cantidad="Cantidad de embo", motivo="Motivo (opcional)")
+    async def embo_remove(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
+        await self._embo_op(interaction, "remove", usuario, cantidad, motivo)
+
+    @embo_g.command(name="set", description="Deja el balance de embo de una persona EXACTAMENTE en el número indicado")
+    @app_commands.describe(usuario="Persona", cantidad="Nuevo balance de embo (0 o más)", motivo="Motivo (opcional)")
+    async def embo_set(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
+        await self._embo_op(interaction, "set", usuario, cantidad, motivo)
 
     historico_bal = app_commands.Group(name="historico-bal", description="Balance histórico de Wuju Coins", parent=eco_g)
 

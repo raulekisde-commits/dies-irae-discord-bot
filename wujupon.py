@@ -1,0 +1,730 @@
+"""Wujupón — capa de Discord: panel con botones, tiradas, inventario, canjes y encargos del Council.
+
+La lógica y la persistencia viven en wujupon_db.py. Todo lo personal responde en privado (ephemeral) para que el panel
+no se llene de mensajes. Las tiradas se anuncian en un canal público configurable.
+"""
+import asyncio
+import traceback
+from typing import Callable, List, Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
+import economy_db as eco
+import wujupon_db as wdb
+from guildshop import COUNCIL_ROLE_ID, can_manage
+
+NO_MENTIONS = discord.AllowedMentions.none()
+GOLD = 0xF1C40F
+SPIN_FRAMES = ("🎰 Girando el Wujupón…", "🎰 ✨ ✨ ✨")
+
+
+def money(n: int) -> str:
+    return f"{eco.format_amount(n)} {eco.CURRENCY_NAME}"
+
+
+def prize_mode(p: wdb.Prize) -> str:
+    if p.automatic:
+        return "🤖 automático"
+    if p.origin == "Bot":
+        return "🛠️ lo entrega el Council (automático próximamente)"
+    return "🛠️ lo entrega el Council"
+
+
+def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: str = "🎴 ¡Nueva carta!") -> discord.Embed:
+    emb = discord.Embed(title=title, color=p.color)
+    emb.description = f"# {p.name}\n**{p.rarity_label}** · probabilidad **{wdb.chance_text(weight, total)}**"
+    emb.add_field(name="Canje", value=prize_mode(p), inline=True)
+    emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
+    if p.third_party:
+        emb.add_field(name="⚠️", value="Afecta a otra persona: el Council puede rechazarla si no corresponde.", inline=False)
+    emb.set_footer(text="Guardala en tu inventario y canjeala cuando quieras desde 🎒 Mi inventario.")
+    return emb
+
+
+def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
+    total = sum(p.weight for p in prizes if p.enabled) or 1
+    out = []
+    for rarity in wdb.RARITY_ORDER:
+        group = [p for p in prizes if p.rarity == rarity and p.enabled]
+        if not group:
+            continue
+        name, emoji, color = wdb.RARITIES[rarity]
+        share = sum(p.weight for p in group)
+        lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'🤖' if p.automatic else '🛠️'}"
+                 + (" · ⚠️ terceros" if p.third_party else "") for p in group]
+        emb = discord.Embed(title=f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}", color=color,
+                            description="\n".join(lines)[:4000])
+        out.append(emb)
+    if out:
+        out[-1].set_footer(text=f"Cada tirada cuesta {money(price)} · 🤖 canje automático · 🛠️ lo entrega el Council · "
+                                "⚠️ afecta a otra persona (requiere aprobación)")
+    return out
+
+
+def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
+    color = {"pending": 0xF39C12, "taken": 0x3498DB, "approved": 0x9B59B6, "delivered": 0x2ECC71,
+             "rejected": 0xE74C3C, "returned": 0x95A5A6}.get(req.status, 0x95A5A6)
+    emb = discord.Embed(title=f"🎴 Encargo Wujupón #{req.id}", color=color)
+    emb.add_field(name="Jugador", value=f"<@{req.user_id}>", inline=True)
+    emb.add_field(name="Premio", value=f"{p.rarity_label} · **{p.name}**" if p else req.prize_key, inline=True)
+    emb.add_field(name="Estado", value=wdb.STATUS_LABELS.get(req.status, req.status), inline=True)
+    if p is not None:
+        emb.add_field(name="Beneficio", value=prize_mode(p) + (" · ⚠️ afecta a otra persona" if p.third_party else ""), inline=False)
+    emb.add_field(name="Datos del jugador", value=(req.details or "—")[:1000], inline=False)
+    who = []
+    if req.taker_id:
+        who.append(f"Tomado por <@{req.taker_id}>")
+    if req.approved_by:
+        who.append(f"Aprobado por <@{req.approved_by}>")
+    if req.delivered_by:
+        who.append(f"Entregado por <@{req.delivered_by}>")
+    if req.rejected_by:
+        who.append(f"Rechazado por <@{req.rejected_by}> · carta {'devuelta' if req.refunded else 'consumida'}")
+    if req.status == "returned":
+        who.append("Carta devuelta al inventario")
+    if who:
+        emb.add_field(name="Seguimiento", value="\n".join(who), inline=False)
+    if req.note and req.status in ("rejected", "returned"):
+        emb.add_field(name="Nota", value=req.note[:1000], inline=False)
+    emb.set_footer(text=f"Carta #{req.card_id} · canjeada {req.created_at[:16].replace('T', ' ')} UTC")
+    return emb
+
+
+async def _say(interaction: discord.Interaction, content: str = None, **kw):
+    kw.setdefault("allowed_mentions", NO_MENTIONS)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True, **kw)
+        else:
+            await interaction.response.send_message(content, ephemeral=True, **kw)
+    except Exception:
+        traceback.print_exc()
+
+
+# ============================================================
+# Vistas
+# ============================================================
+class PanelView(discord.ui.View):
+    """Panel permanente (sobrevive reinicios: custom_id fijos)."""
+
+    def __init__(self, cog: "WujuponCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Tirar Wujupón", style=discord.ButtonStyle.success, custom_id="wjp:spin", emoji="🎰")
+    async def spin(self, interaction, button):
+        await self.cog.do_spin(interaction)
+
+    @discord.ui.button(label="Comprar tiradas", style=discord.ButtonStyle.primary, custom_id="wjp:buy", emoji="🛒")
+    async def buy(self, interaction, button):
+        await self.cog.open_buy(interaction)
+
+    @discord.ui.button(label="Mi inventario", style=discord.ButtonStyle.secondary, custom_id="wjp:inv", emoji="🎒")
+    async def inv(self, interaction, button):
+        await self.cog.show_inventory(interaction)
+
+    @discord.ui.button(label="Ver premios", style=discord.ButtonStyle.secondary, custom_id="wjp:prizes", emoji="📜")
+    async def prizes(self, interaction, button):
+        await self.cog.show_prizes(interaction)
+
+    @discord.ui.button(label="Mis solicitudes", style=discord.ButtonStyle.secondary, custom_id="wjp:reqs", emoji="📨")
+    async def reqs(self, interaction, button):
+        await self.cog.show_requests(interaction)
+
+
+class BuyModal(discord.ui.Modal, title="Comprar tiradas de Wujupón"):
+    cantidad = discord.ui.TextInput(label="¿Cuántas tiradas?", placeholder="1", default="1", max_length=3)
+
+    def __init__(self, cog: "WujuponCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.do_buy(interaction, str(self.cantidad.value))
+
+
+class OwnerView(discord.ui.View):
+    def __init__(self, owner_id: int, timeout: float = 300):
+        super().__init__(timeout=timeout)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Esto no es tuyo.")
+            return False
+        return True
+
+
+class SpinAgainView(OwnerView):
+    def __init__(self, cog: "WujuponCog", owner_id: int, spins: int):
+        super().__init__(owner_id)
+        self.cog = cog
+        if spins <= 0:
+            self.spin_again.label = "Comprar tiradas"
+            self.spin_again.emoji = "🛒"
+
+    @discord.ui.button(label="Tirar otra", style=discord.ButtonStyle.success, emoji="🎰")
+    async def spin_again(self, interaction, button):
+        if button.label == "Comprar tiradas":
+            return await self.cog.open_buy(interaction)
+        await self.cog.do_spin(interaction)
+
+    @discord.ui.button(label="Mi inventario", style=discord.ButtonStyle.secondary, emoji="🎒")
+    async def inv(self, interaction, button):
+        await self.cog.show_inventory(interaction)
+
+
+class InventoryView(OwnerView):
+    def __init__(self, cog: "WujuponCog", owner_id: int, rows: List[wdb.InventoryRow]):
+        super().__init__(owner_id)
+        self.cog = cog
+        options = [discord.SelectOption(label=r.prize.name[:100], value=str(r.first_card_id),
+                                        description=f"{wdb.RARITIES[r.prize.rarity][0]} · x{r.available}"[:100],
+                                        emoji=wdb.RARITIES[r.prize.rarity][1])
+                   for r in rows if r.first_card_id][:25]
+        if options:
+            sel = discord.ui.Select(placeholder="Elegí una carta para ver o canjear", options=options)
+            sel.callback = lambda inter, s=sel: self.cog.show_card(inter, int(s.values[0]))
+            self.add_item(sel)
+
+
+class RedeemView(OwnerView):
+    def __init__(self, cog: "WujuponCog", owner_id: int, card_id: int):
+        super().__init__(owner_id)
+        self.cog, self.card_id = cog, card_id
+
+    @discord.ui.button(label="Canjear", style=discord.ButtonStyle.success, emoji="✨")
+    async def redeem(self, interaction, button):
+        await self.cog.start_redeem(interaction, self.card_id)
+
+
+class RedeemModal(discord.ui.Modal, title="Canjear carta"):
+    datos = discord.ui.TextInput(label="Datos para cumplir el premio", style=discord.TextStyle.paragraph, max_length=800,
+                                 placeholder="A quién afecta (nick / @), qué CTA, build, ítem, horario, etc.")
+
+    def __init__(self, cog: "WujuponCog", card_id: int, required: bool):
+        super().__init__()
+        self.cog, self.card_id = cog, card_id
+        self.datos.required = required
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.do_redeem(interaction, self.card_id, str(self.datos.value or ""))
+
+
+class RequestView(discord.ui.View):
+    """Botones del encargo en el canal del Council (persistente: se busca el encargo por el mensaje)."""
+
+    def __init__(self, cog: "WujuponCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Tomar", style=discord.ButtonStyle.secondary, custom_id="wjp:req:take", emoji="✋")
+    async def take(self, interaction, button):
+        await self.cog.request_action(interaction, "take")
+
+    @discord.ui.button(label="Aprobar", style=discord.ButtonStyle.primary, custom_id="wjp:req:approve", emoji="👍")
+    async def approve(self, interaction, button):
+        await self.cog.request_action(interaction, "approve")
+
+    @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger, custom_id="wjp:req:reject", emoji="✖️")
+    async def reject(self, interaction, button):
+        await self.cog.request_action(interaction, "reject")
+
+    @discord.ui.button(label="Completado", style=discord.ButtonStyle.success, custom_id="wjp:req:deliver", emoji="✅")
+    async def deliver(self, interaction, button):
+        await self.cog.request_action(interaction, "deliver")
+
+
+class RejectView(OwnerView):
+    def __init__(self, cog: "WujuponCog", owner_id: int, req_id: int, message):
+        super().__init__(owner_id, timeout=120)
+        self.cog, self.req_id, self.message = cog, req_id, message
+
+    @discord.ui.button(label="Rechazar y devolver la carta", style=discord.ButtonStyle.primary, emoji="↩️")
+    async def refund(self, interaction, button):
+        await self.cog.do_reject(interaction, self.req_id, True, self.message)
+
+    @discord.ui.button(label="Rechazar y consumir la carta", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def consume(self, interaction, button):
+        await self.cog.do_reject(interaction, self.req_id, False, self.message)
+
+
+# ============================================================
+# Cog
+# ============================================================
+class WujuponCog(commands.Cog):
+    def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
+        self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
+        self.anim_delay = 0.8
+        self._locks: dict = {}
+
+    async def run(self, fn: Callable, *args, **kwargs):
+        return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
+
+    def _lock(self, user_id: int) -> asyncio.Lock:
+        return self._locks.setdefault(user_id, asyncio.Lock())
+
+    async def cog_load(self):
+        await self.run(wdb.init_schema)
+        self.bot.add_view(PanelView(self))
+        self.bot.add_view(RequestView(self))
+        self.housekeeping.start()
+
+    async def cog_unload(self):
+        self.housekeeping.cancel()
+
+    # ---------------- panel ----------------
+    async def panel_embed(self) -> discord.Embed:
+        price = await self.run(wdb.get_price)
+        emb = discord.Embed(title="🎰 WUJUPÓN", color=GOLD)
+        emb.description = (
+            f"Comprá tiradas con **Wuju Coins** y conseguí cartas con premios.\n"
+            f"Cada tirada cuesta **{money(price)}**.\n\n"
+            "🎰 **Tirar Wujupón** — usa una tirada y te da una carta al azar.\n"
+            "🛒 **Comprar tiradas** — compralas con tu balance.\n"
+            "🎒 **Mi inventario** — mirá tus cartas y canjealas.\n"
+            "📜 **Ver premios** — rarezas, probabilidades y cómo se entregan.\n"
+            "📨 **Mis solicitudes** — estado de tus canjes con el Council.\n\n"
+            "Las cartas son de un solo uso. Todas las respuestas son privadas.")
+        emb.add_field(name="Rarezas", value="\n".join(f"{e} {n}" for n, e, _ in wdb.RARITIES.values()), inline=True)
+        emb.set_footer(text="Las tiradas se anuncian en el canal de Wujupón.")
+        return emb
+
+    async def publish_panel(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "❌ Solo el Council o administradores pueden publicar el panel.")
+        channel = interaction.channel
+        try:
+            msg = await channel.send(embed=await self.panel_embed(), view=PanelView(self))
+        except discord.Forbidden:
+            return await _say(interaction, "❌ No tengo permiso para escribir en este canal.")
+        await self.run(wdb.set_setting, "panel_channel", str(channel.id))
+        await self.run(wdb.set_setting, "panel_message", str(getattr(msg, "id", "")))
+        await _say(interaction, "✅ Panel de Wujupón publicado. Configurá los canales con `/wujupon config`.")
+
+    # ---------------- comprar ----------------
+    async def open_buy(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BuyModal(self))
+
+    async def do_buy(self, interaction: discord.Interaction, text: str):
+        try:
+            count = int(text.strip().replace(".", "").replace(",", ""))
+        except ValueError:
+            return await _say(interaction, "❌ Escribí un número de tiradas (ej: 3).")
+        if not 1 <= count <= wdb.MAX_BUY:
+            return await _say(interaction, f"❌ Podés comprar entre 1 y {wdb.MAX_BUY} tiradas por vez.")
+        async with self._lock(interaction.user.id):
+            res = await self.run(wdb.buy_spins, interaction.user.id, count, f"buy:{interaction.id}")
+        if res.status == "funds":
+            return await _say(interaction, f"❌ No te alcanza: {count} tirada(s) cuestan **{money(res.cost)}** y tenés {money(res.balance)}.")
+        if res.status == "frozen":
+            return await _say(interaction, f"❌ {eco.FROZEN_TEXT}")
+        if res.status == "invalid":
+            return await _say(interaction, "❌ Cantidad inválida.")
+        await _say(interaction, f"✅ Compraste **{count}** tirada(s) por **{money(res.cost)}**.\n"
+                                f"🎟️ Tiradas disponibles: **{res.spins}** · Balance: {money(res.balance)}",
+                   view=SpinAgainView(self, interaction.user.id, res.spins))
+
+    # ---------------- tirar ----------------
+    async def do_spin(self, interaction: discord.Interaction):
+        user = interaction.user
+        async with self._lock(user.id):
+            res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}")
+        if res.status == "no_spins":
+            price = await self.run(wdb.get_price)
+            return await _say(interaction, f"🎟️ No tenés tiradas. Cada una cuesta **{money(price)}**.",
+                              view=SpinAgainView(self, user.id, 0))
+        if res.status == "empty":
+            return await _say(interaction, "❌ No hay premios habilitados en este momento.")
+        # la carta ya quedó guardada: la animación es solo visual (si el bot se reinicia acá, no se pierde nada)
+        final = card_embed(res.prize, res.card_id, res.weight, res.total_weight)
+        final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
+        view = SpinAgainView(self, user.id, res.spins_left)
+        animated = False
+        if self.anim_delay > 0:
+            try:
+                await interaction.response.send_message(
+                    embed=discord.Embed(title=SPIN_FRAMES[0], color=GOLD), ephemeral=True)
+                await asyncio.sleep(self.anim_delay)
+                await interaction.edit_original_response(
+                    embed=discord.Embed(title=SPIN_FRAMES[1], description=f"## {res.prize.rarity_label}", color=res.prize.color))
+                await asyncio.sleep(self.anim_delay)
+                await interaction.edit_original_response(embed=final, view=view)
+                animated = True
+            except Exception:
+                traceback.print_exc()
+        if not animated:
+            await _say(interaction, embed=final, view=view)
+        try:
+            await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
+        except Exception:
+            traceback.print_exc()
+
+    # ---------------- inventario y premios ----------------
+    async def show_inventory(self, interaction: discord.Interaction, target: Optional[discord.abc.User] = None):
+        user = target or interaction.user
+        rows = await self.run(wdb.inventory, user.id)
+        spins = await self.run(wdb.get_spins, user.id)
+        emb = discord.Embed(title=f"🎒 Inventario de {getattr(user, 'display_name', user)}", color=GOLD)
+        if not rows:
+            emb.description = "No hay cartas todavía. ¡Tirá el Wujupón!"
+        else:
+            lines = []
+            for r in rows:
+                extra = f" · {r.reserved} en canje" if r.reserved else ""
+                lines.append(f"{wdb.RARITIES[r.prize.rarity][1]} **{r.prize.name}** ×{r.available}{extra}")
+            emb.description = "\n".join(lines)[:4000]
+        emb.add_field(name="🎟️ Tiradas disponibles", value=str(spins), inline=True)
+        view = InventoryView(self, interaction.user.id, rows) if target is None and any(r.first_card_id for r in rows) else None
+        await _say(interaction, embed=emb, **({"view": view} if view else {}))
+
+    async def show_card(self, interaction: discord.Interaction, card_id: int):
+        card = await self.run(wdb.get_card, card_id)
+        if card is None or card.user_id != interaction.user.id or card.status != "available":
+            return await _say(interaction, "❌ Esa carta ya no está disponible.")
+        p = await self.run(wdb.get_prize, card.prize_key)
+        prizes = await self.run(wdb.list_prizes, True)
+        total = sum(x.weight for x in prizes) or wdb.TOTAL_WEIGHT
+        emb = card_embed(p, card.id, p.weight, total, title="🎴 Tu carta")
+        await _say(interaction, embed=emb, view=RedeemView(self, interaction.user.id, card.id))
+
+    async def show_prizes(self, interaction: discord.Interaction):
+        prizes = await self.run(wdb.list_prizes)
+        price = await self.run(wdb.get_price)
+        await _say(interaction, embeds=prizes_embeds(prizes, price)[:10])
+
+    async def show_requests(self, interaction: discord.Interaction, target: Optional[discord.abc.User] = None):
+        user = target or interaction.user
+        reqs = await self.run(wdb.user_requests, user.id)
+        emb = discord.Embed(title="📨 Solicitudes de canje", color=GOLD)
+        if not reqs:
+            emb.description = "No hay solicitudes con el Council."
+        else:
+            lines = []
+            for r in reqs:
+                p = await self.run(wdb.get_prize, r.prize_key)
+                lines.append(f"`#{r.id}` **{p.name if p else r.prize_key}** — {wdb.STATUS_LABELS.get(r.status, r.status)}"
+                             + (f" · {r.note[:80]}" if r.note and r.status in ("rejected", "returned") else ""))
+            emb.description = "\n".join(lines)[:4000]
+        await _say(interaction, embed=emb)
+
+    # ---------------- canjear ----------------
+    async def start_redeem(self, interaction: discord.Interaction, card_id: int):
+        card = await self.run(wdb.get_card, card_id)
+        if card is None or card.user_id != interaction.user.id or card.status != "available":
+            return await _say(interaction, "❌ Esa carta ya no está disponible.")
+        p = await self.run(wdb.get_prize, card.prize_key)
+        if p.automatic:
+            return await self.do_redeem(interaction, card_id, "")
+        await interaction.response.send_modal(RedeemModal(self, card_id, required=p.third_party))
+
+    async def do_redeem(self, interaction: discord.Interaction, card_id: int, details: str):
+        user = interaction.user
+        async with self._lock(user.id):
+            res = await self.run(wdb.redeem, card_id=card_id, user_id=user.id, details=details,
+                                 request_key=f"redeem:{interaction.id}", guild_id=self.guild_id)
+        if res.status == "auto":
+            return await _say(interaction, f"✨ **{res.prize.name}** canjeada.\n{res.message}")
+        if res.status == "pending":
+            published = await self.publish_request(res.request.id)
+            extra = "" if published else "\n⚠️ No pude avisar en el canal del Council; se reintenta solo en unos minutos."
+            return await _say(interaction, f"📨 Canje enviado al Council (encargo `#{res.request.id}`). La carta queda **reservada** "
+                                           f"hasta que lo resuelvan. Seguilo en 📨 **Mis solicitudes**.{extra}")
+        if res.status == "duplicate":
+            return await _say(interaction, "ℹ️ Ese canje ya se procesó.")
+        await _say(interaction, f"❌ {res.message}")
+
+    # ---------------- encargos del Council ----------------
+    async def _channel(self, setting: str):
+        cid = await self.run(wdb.get_setting, setting)
+        if not cid:
+            return None
+        ch = self.bot.get_channel(int(cid))
+        if ch is None:
+            try:
+                ch = await self.bot.fetch_channel(int(cid))
+            except Exception:
+                return None
+        return ch
+
+    async def publish_request(self, req_id: int) -> bool:
+        req = await self.run(wdb.get_request, req_id)
+        if req is None or req.message_id:
+            return bool(req)
+        channel = await self._channel("council_channel")
+        if channel is None:
+            return False
+        p = await self.run(wdb.get_prize, req.prize_key)
+        try:
+            msg = await channel.send(f"<@&{COUNCIL_ROLE_ID}> nuevo canje de Wujupón", embed=request_embed(req, p), view=RequestView(self),
+                                     allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False))
+        except Exception:
+            traceback.print_exc()
+            return False
+        await self.run(wdb.set_request_message, req_id, channel.id, msg.id)
+        return True
+
+    async def request_action(self, interaction: discord.Interaction, action: str):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "❌ Solo el Council o administradores gestionan los encargos de Wujupón.")
+        msg = interaction.message
+        req = await self.run(wdb.find_request_by_message, getattr(msg, "id", 0))
+        if req is None:
+            return await _say(interaction, "❌ No encontré el encargo de este mensaje.")
+        if action == "reject":
+            return await _say(interaction, f"¿Rechazar el encargo `#{req.id}`? Elegí qué pasa con la carta:",
+                              view=RejectView(self, interaction.user.id, req.id, msg))
+        fn = {"take": wdb.take_request, "approve": wdb.approve_request, "deliver": wdb.deliver_request}[action]
+        ch = await self.run(fn, req.id, interaction.user.id)
+        if not ch.ok:
+            return await _say(interaction, f"❌ {ch.message}")
+        await self._refresh_request(msg, ch.request)
+        label = {"take": "tomado", "approve": "aprobado", "deliver": "marcado como entregado"}[action]
+        await _say(interaction, f"✅ Encargo `#{req.id}` {label}.")
+        if action in ("approve", "deliver"):
+            await self._notify(ch.request)
+
+    async def do_reject(self, interaction: discord.Interaction, req_id: int, refund: bool, message):
+        ch = await self.run(wdb.reject_request, req_id, interaction.user.id, refund=refund,
+                            note=f"Rechazado por {interaction.user.display_name}")
+        if not ch.ok:
+            return await _say(interaction, f"❌ {ch.message}")
+        await self._refresh_request(message, ch.request)
+        await _say(interaction, f"✅ Encargo `#{req_id}` rechazado · carta {'devuelta' if refund else 'consumida'}.")
+        await self._notify(ch.request)
+
+    async def _refresh_request(self, message, req: wdb.Request):
+        if message is None or req is None:
+            return
+        p = await self.run(wdb.get_prize, req.prize_key)
+        closed = req.status not in wdb.OPEN_STATUSES
+        try:
+            await message.edit(embed=request_embed(req, p), view=None if closed else RequestView(self))
+        except Exception:
+            traceback.print_exc()
+
+    async def _refresh_request_by_id(self, req_id: Optional[int]):
+        if not req_id:
+            return
+        req = await self.run(wdb.get_request, req_id)
+        if req is None or not req.message_id or not req.channel_id:
+            return
+        ch = self.bot.get_channel(int(req.channel_id))
+        try:
+            msg = await ch.fetch_message(int(req.message_id)) if ch else None
+        except Exception:
+            msg = None
+        await self._refresh_request(msg, req)
+
+    async def _notify(self, req: wdb.Request):
+        """Aviso por MD al jugador (mejor esfuerzo)."""
+        try:
+            user = self.bot.get_user(req.user_id) or await self.bot.fetch_user(req.user_id)
+            p = await self.run(wdb.get_prize, req.prize_key)
+            await user.send(f"🎴 Tu canje de Wujupón `#{req.id}` (**{p.name if p else req.prize_key}**): "
+                            f"{wdb.STATUS_LABELS.get(req.status, req.status)}"
+                            + (" — la carta volvió a tu inventario." if req.refunded else ""))
+        except Exception:
+            pass
+
+    # ---------------- anuncios y reintentos ----------------
+    async def announce_pending(self):
+        channel = await self._channel("feed_channel")
+        if channel is None:
+            return
+        pending = await self.run(wdb.unannounced_pulls)
+        done = []
+        for pull_id, user_id, key, weight, total in pending:
+            p = await self.run(wdb.get_prize, key)
+            if p is None:
+                done.append(pull_id)
+                continue
+            emb = discord.Embed(color=p.color, description=f"🎰 <@{user_id}> sacó **{p.name}**\n"
+                                                           f"{p.rarity_label} · probabilidad **{wdb.chance_text(weight, total)}**")
+            try:
+                await channel.send(embed=emb, allowed_mentions=NO_MENTIONS)
+                done.append(pull_id)
+            except Exception:
+                traceback.print_exc()
+                break
+        await self.run(wdb.mark_announced, done)
+
+    @tasks.loop(seconds=60)
+    async def housekeeping(self):
+        try:
+            await self.announce_pending()
+            for req_id in await self.run(wdb.unpublished_requests):
+                await self.publish_request(req_id)
+        except Exception:
+            traceback.print_exc()
+
+    # ============================================================
+    # /wujupon (Council)
+    # ============================================================
+    wj = app_commands.Group(name="wujupon", description="(Council) Administración de Wujupón", guild_only=True)
+
+    async def _council(self, interaction: discord.Interaction) -> bool:
+        if not can_manage(interaction.user):
+            await _say(interaction, "❌ Solo el Council o administradores.")
+            return False
+        return True
+
+    @wj.command(name="config", description="(Council) Canales de encargos del Council y de anuncios de tiradas")
+    @app_commands.describe(canal_encargos="Canal privado del Council para los canjes", canal_anuncios="Canal público donde se anuncian las tiradas")
+    async def config(self, interaction: discord.Interaction, canal_encargos: Optional[discord.TextChannel] = None,
+                     canal_anuncios: Optional[discord.TextChannel] = None):
+        if not await self._council(interaction):
+            return
+        if canal_encargos:
+            await self.run(wdb.set_setting, "council_channel", str(canal_encargos.id))
+        if canal_anuncios:
+            await self.run(wdb.set_setting, "feed_channel", str(canal_anuncios.id))
+        enc = await self.run(wdb.get_setting, "council_channel")
+        feed = await self.run(wdb.get_setting, "feed_channel")
+        await _say(interaction, f"⚙️ Encargos: {f'<#{enc}>' if enc else '—'} · Anuncios: {f'<#{feed}>' if feed else '—'}")
+
+    @wj.command(name="regalar-tiradas", description="(Council) Regala tiradas (o quita, con número negativo)")
+    @app_commands.describe(usuario="Persona", cantidad="Tiradas (negativo para quitar)", motivo="Motivo")
+    async def gift(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: int, motivo: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            after = await self.run(wdb.gift_spins, actor_id=interaction.user.id, user_id=usuario.id, count=cantidad,
+                                   request_key=f"gift:{interaction.id}", reason=(motivo or "Regalo del Council")[:300])
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        await _say(interaction, f"✅ {usuario.mention}: {'+' if cantidad > 0 else ''}{cantidad} tirada(s). Ahora tiene **{after}**.")
+
+    async def prize_autocomplete(self, interaction: discord.Interaction, current: str):
+        prizes = await self.run(wdb.list_prizes)
+        cur = (current or "").lower()
+        return [app_commands.Choice(name=f"{wdb.RARITIES[p.rarity][1]} {p.name}"[:100], value=p.key)
+                for p in prizes if cur in p.name.lower() or cur in p.key][:25]
+
+    @wj.command(name="dar-carta", description="(Council) Da una carta de un premio a una persona")
+    @app_commands.describe(usuario="Persona", premio="Premio", motivo="Motivo")
+    @app_commands.autocomplete(premio=prize_autocomplete)
+    async def give(self, interaction: discord.Interaction, usuario: discord.Member, premio: str, motivo: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            card_id = await self.run(wdb.give_card, actor_id=interaction.user.id, user_id=usuario.id, prize_key=premio,
+                                     reason=(motivo or "Dada por el Council")[:300])
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        p = await self.run(wdb.get_prize, premio)
+        await _say(interaction, f"✅ Carta `#{card_id}` **{p.name}** agregada al inventario de {usuario.mention}.")
+
+    @wj.command(name="devolver-carta", description="(Council) Devuelve al inventario una carta usada (mal usada, bug, etc.)")
+    @app_commands.describe(carta="Número de carta (#)", motivo="Motivo")
+    async def give_back(self, interaction: discord.Interaction, carta: int, motivo: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            card, req_id = await self.run(wdb.return_card, card_id=carta, actor_id=interaction.user.id,
+                                          reason=(motivo or f"Devuelta por {interaction.user.display_name}")[:300])
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        p = await self.run(wdb.get_prize, card.prize_key)
+        await _say(interaction, f"↩️ Carta `#{card.id}` **{p.name}** devuelta al inventario de <@{card.user_id}>."
+                                + (f" Se cerró el encargo `#{req_id}`." if req_id else "")
+                                + ("\n⚠️ Si el premio ya se había entregado (Wuju, embo, etc.), no se revierte: ajustalo a mano si hace falta."
+                                   if not req_id else ""))
+        await self._refresh_request_by_id(req_id)
+
+    @wj.command(name="inventario", description="(Council) Mira el inventario y las solicitudes de una persona")
+    async def inv_admin(self, interaction: discord.Interaction, usuario: discord.Member):
+        if not await self._council(interaction):
+            return
+        await self.show_inventory(interaction, usuario)
+        await self.show_requests(interaction, usuario)
+
+    @wj.command(name="encargos", description="(Council) Lista los canjes abiertos")
+    async def open_list(self, interaction: discord.Interaction):
+        if not await self._council(interaction):
+            return
+        reqs = await self.run(wdb.open_requests)
+        lines = []
+        for r in reqs:
+            p = await self.run(wdb.get_prize, r.prize_key)
+            link = (f" · [mensaje](https://discord.com/channels/{self.guild_id}/{r.channel_id}/{r.message_id})" if r.message_id else "")
+            lines.append(f"`#{r.id}` <@{r.user_id}> **{p.name if p else r.prize_key}** — {wdb.STATUS_LABELS.get(r.status)}{link}")
+        await _say(interaction, embed=discord.Embed(title="📋 Encargos de Wujupón abiertos", color=GOLD,
+                                                    description="\n".join(lines)[:4000] or "No hay encargos abiertos."))
+
+    @wj.command(name="historial", description="(Council) Últimas tiradas (de todos o de una persona)")
+    async def history(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        if not await self._council(interaction):
+            return
+        rows = await self.run(wdb.recent_pulls, usuario.id if usuario else None, 25)
+        prizes = {p.key: p for p in await self.run(wdb.list_prizes)}
+        lines = [f"`{r['created_at'][:16].replace('T', ' ')}` <@{r['user_id']}> {wdb.RARITIES[r['rarity']][1]} "
+                 f"{prizes[r['prize_key']].name if r['prize_key'] in prizes else r['prize_key']} · carta `#{r['card_id']}`"
+                 for r in rows]
+        await _say(interaction, embed=discord.Embed(title="🧾 Historial de tiradas", color=GOLD,
+                                                    description="\n".join(lines)[:4000] or "Sin tiradas."))
+
+    @wj.command(name="registro", description="(Council) Últimas operaciones administrativas de Wujupón")
+    async def admin_log(self, interaction: discord.Interaction):
+        if not await self._council(interaction):
+            return
+        rows = await self.run(wdb.recent_log, 25)
+        lines = [f"`{r['created_at'][:16].replace('T', ' ')}` <@{r['actor_id']}> **{r['action']}**"
+                 + (f" → <@{r['user_id']}>" if r["user_id"] else "") + (f" · {r['ref']}" if r["ref"] else "")
+                 + (f" · {r['detail'][:80]}" if r["detail"] else "") for r in rows]
+        await _say(interaction, embed=discord.Embed(title="🗂️ Registro de Wujupón", color=GOLD,
+                                                    description="\n".join(lines)[:4000] or "Sin operaciones."))
+
+    @wj.command(name="premio", description="(Council) Habilita o deshabilita un premio")
+    @app_commands.describe(premio="Premio", activo="Habilitado (sí/no)")
+    @app_commands.autocomplete(premio=prize_autocomplete)
+    async def toggle_prize(self, interaction: discord.Interaction, premio: str, activo: bool):
+        if not await self._council(interaction):
+            return
+        p = await self.run(wdb.get_prize, premio)
+        if p is None:
+            return await _say(interaction, "❌ Ese premio no existe.")
+        changed = await self.run(wdb.set_prize_enabled, premio, activo, interaction.user.id)
+        state = "habilitado" if activo else "deshabilitado"
+        await _say(interaction, (f"✅ **{p.name}** {state}." if changed else f"ℹ️ **{p.name}** ya estaba {state}.")
+                   + ("\n⚠️ Mientras esté deshabilitado no sale en las tiradas: las probabilidades del resto se reparten sobre lo habilitado."
+                      if changed and not activo else ""))
+
+    @wj.command(name="stats", description="(Council) Ingresos, costos entregados y pendientes de Wujupón")
+    async def stats(self, interaction: discord.Interaction):
+        if not await self._council(interaction):
+            return
+        st = await self.run(wdb.get_stats)
+        prizes = await self.run(wdb.list_prizes, True)
+        price = await self.run(wdb.get_price)
+        exp = wdb.expected_cost(prizes)
+        exp_silver = exp.get("wuju", 0) + exp.get("silver", 0) + exp.get("embo", 0) * wdb.EMBO_SILVER_VALUE
+        emb = discord.Embed(title="📊 Wujupón — economía", color=GOLD)
+        emb.add_field(name="Tiradas", value=f"Hechas: **{st.pulls}**\nCompradas: {st.spins_bought}\nRegaladas: {st.spins_gifted}\n"
+                                            f"Sin usar: {st.spins_unused}", inline=True)
+        emb.add_field(name="Por rareza", value="\n".join(f"{e} {n}: {st.by_rarity.get(k, 0)}" for k, (n, e, _) in wdb.RARITIES.items()),
+                      inline=True)
+        emb.add_field(name="Ingresos", value=f"**{money(st.wuju_spent)}**", inline=False)
+
+        def fmt(d):
+            parts = [f"Wuju: {eco.format_amount(d.get('wuju', 0))}", f"Silver: {eco.format_amount(d.get('silver', 0))}",
+                     f"Embo: {eco.format_amount(d.get('embo', 0))}", f"VAL: {eco.format_amount(d.get('val', 0))}"]
+            return "\n".join(parts) + f"\n≈ **{eco.format_amount(wdb.silver_equivalent(d))}** silver (sin VAL)"
+        emb.add_field(name="Entregado", value=fmt(st.paid), inline=True)
+        emb.add_field(name="Pendiente (cartas sin canjear)", value=fmt(st.pending), inline=True)
+        real = (wdb.silver_equivalent(st.paid) / st.pulls) if st.pulls else 0
+        emb.add_field(name="Costo por tirada", value=f"Esperado: **{eco.format_amount(int(exp_silver))}** silver + "
+                                                     f"{eco.format_amount(int(exp.get('val', 0)))} VAL\n"
+                                                     f"Real entregado: {eco.format_amount(int(real))} silver\n"
+                                                     f"Precio: {eco.format_amount(price)}", inline=False)
+        emb.set_footer(text=f"Encargos abiertos: {st.open_requests} · Wuju = silver 1:1 · 1 embo = {eco.format_amount(wdb.EMBO_SILVER_VALUE)} · "
+                            "premios sin costo declarado cuentan 0")
+        await _say(interaction, embed=emb)
+
+
+async def setup_wujupon(bot: commands.Bot, db_path: str, guild_id: int) -> WujuponCog:
+    cog = WujuponCog(bot, db_path, guild_id)
+    await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
+    return cog

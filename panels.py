@@ -1,4 +1,4 @@
-"""Grupo /panel: publica paneles en el canal (apuestas, cambiomoneda, reclutamiento, foco, shop, coaching)."""
+"""Grupo /panel: publica paneles en el canal (apuestas, cambiomoneda, reclutamiento, foco, shop, coaching, wujupon)."""
 import traceback
 from typing import Optional
 
@@ -62,6 +62,14 @@ class PanelsCog(commands.Cog):
         if cog is None:
             return await self._missing(interaction, "coaching")
         await cog.coaching_panel(interaction)                      # valida que sea Council/Admin
+
+
+    @panel.command(name="wujupon", description="(Council) Publica el panel del gachapon Wujupón en este canal")
+    async def wujupon(self, interaction: discord.Interaction):
+        cog = self.bot.get_cog("WujuponCog")
+        if cog is None:
+            return await self._missing(interaction, "Wujupón")
+        await cog.publish_panel(interaction)                       # valida que sea Council/Admin
 
 
 async def setup_panels(bot: commands.Bot, guild_id: int) -> PanelsCog:

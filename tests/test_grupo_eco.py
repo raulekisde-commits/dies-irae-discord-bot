@@ -11,7 +11,7 @@ class EcoGroupTests(unittest.TestCase):
         self.assertEqual(g.name, "eco")
         self.assertEqual(sorted(g.commands), sorted([
             "addmoney", "addmoney-role", "remove-money", "config-moneda", "bal-reintentar-registro", "perms-canal",
-            "perms-comando", "perms-ver", "importar-bal", "set-balance", "eco-stats", "historico-bal"]))
+            "perms-comando", "perms-ver", "importar-bal", "set-balance", "eco-stats", "historico-bal", "embo"]))
 
     def test_permisos_siguen_guardados_con_el_mismo_texto(self):
         # los permisos delegados se guardan por clave de texto: agrupar no los pierde
