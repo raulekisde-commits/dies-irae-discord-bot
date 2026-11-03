@@ -18,6 +18,7 @@ from guildshop import COUNCIL_ROLE_ID, can_manage
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD = 0xF1C40F
 SPIN_FRAMES = ("🎰 Girando el Wujupón…", "🎰 ✨ ✨ ✨")
+SPIN_CLEANUP_SECONDS = 60      # los mensajes privados de cada tirada se borran solos pasado este tiempo
 
 
 def money(n: int) -> str:
@@ -67,6 +68,23 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
     return out
 
 
+def pack_embeds(embeds: List[discord.Embed], budget: int = 5800, per_msg: int = 10) -> List[List[discord.Embed]]:
+    """Agrupa embeds en mensajes que respeten los límites de Discord (6000 caracteres y 10 embeds por mensaje)."""
+    groups: List[List[discord.Embed]] = []
+    cur: List[discord.Embed] = []
+    size = 0
+    for e in embeds:
+        n = len(e)
+        if cur and (size + n > budget or len(cur) >= per_msg):
+            groups.append(cur)
+            cur, size = [], 0
+        cur.append(e)
+        size += n
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
     color = {"pending": 0xF39C12, "taken": 0x3498DB, "approved": 0x9B59B6, "delivered": 0x2ECC71,
              "rejected": 0xE74C3C, "returned": 0x95A5A6}.get(req.status, 0x95A5A6)
@@ -100,14 +118,15 @@ def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
 
 
 async def _say(interaction: discord.Interaction, content: str = None, **kw):
+    """Respuesta privada. Si va como followup, devuelve el mensaje (para poder borrarlo después)."""
     kw.setdefault("allowed_mentions", NO_MENTIONS)
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(content, ephemeral=True, **kw)
-        else:
-            await interaction.response.send_message(content, ephemeral=True, **kw)
+            return await interaction.followup.send(content, ephemeral=True, wait=True, **kw)
+        await interaction.response.send_message(content, ephemeral=True, **kw)
     except Exception:
         traceback.print_exc()
+    return None
 
 
 # ============================================================
@@ -244,6 +263,33 @@ class RequestView(discord.ui.View):
         await self.cog.request_action(interaction, "deliver")
 
 
+class WipeConfirmView(OwnerView):
+    def __init__(self, cog: "WujuponCog", owner_id: int, include_spins: bool):
+        super().__init__(owner_id, timeout=60)
+        self.cog, self.include_spins = cog, include_spins
+
+    @discord.ui.button(label="Sí, borrar todas las cartas", style=discord.ButtonStyle.danger, emoji="🧹")
+    async def ok(self, interaction, button):
+        self.stop()
+        await self.cog.do_wipe(interaction, self.include_spins)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction, button):
+        self.stop()
+        await _say(interaction, "Cancelado. No se tocó nada.")
+
+
+def is_admin(member) -> bool:
+    """Dueño del servidor o permiso Administrator (no delegable)."""
+    guild = getattr(member, "guild", None)
+    if guild is None:
+        return False
+    if guild.owner_id == member.id:
+        return True
+    perms = getattr(member, "guild_permissions", None)
+    return bool(perms and perms.administrator)
+
+
 class RejectView(OwnerView):
     def __init__(self, cog: "WujuponCog", owner_id: int, req_id: int, message):
         super().__init__(owner_id, timeout=120)
@@ -265,6 +311,8 @@ class WujuponCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self.anim_delay = 0.8
+        self.cleanup_delay = SPIN_CLEANUP_SECONDS
+        self._cleanups: set = set()
         self._locks: dict = {}
 
     async def run(self, fn: Callable, *args, **kwargs):
@@ -281,21 +329,55 @@ class WujuponCog(commands.Cog):
 
     async def cog_unload(self):
         self.housekeeping.cancel()
+        for t in list(self._cleanups):
+            t.cancel()
+
+    def _cleanup_later(self, interaction: discord.Interaction, *extra_messages):
+        """Borra a los `cleanup_delay` segundos la respuesta privada de esta interacción (y los followups dados).
+        Es solo visual: la carta ya está guardada en el inventario. Si el bot se reinicia antes, el mensaje queda
+        (Discord igual lo saca al cerrar o recargar el cliente)."""
+        if not self.cleanup_delay or self.cleanup_delay <= 0:
+            return
+
+        async def go():
+            try:
+                await asyncio.sleep(self.cleanup_delay)
+                try:
+                    await interaction.delete_original_response()
+                except Exception:
+                    pass                                    # ya borrado, token vencido o el usuario lo descartó
+                for m in extra_messages:
+                    if m is None:
+                        continue
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                pass
+        task = asyncio.create_task(go())
+        self._cleanups.add(task)
+        task.add_done_callback(self._cleanups.discard)
 
     # ---------------- panel ----------------
     async def panel_embed(self) -> discord.Embed:
         price = await self.run(wdb.get_price)
+        limit = await self.run(wdb.get_daily_limit)
+        totals = await self.run(wdb.rarity_totals)
+        all_w = sum(totals.values()) or 1
         emb = discord.Embed(title="🎰 WUJUPÓN", color=GOLD)
         emb.description = (
             f"Comprá tiradas con **Wuju Coins** y conseguí cartas con premios.\n"
-            f"Cada tirada cuesta **{money(price)}**.\n\n"
+            f"Cada tirada cuesta **{money(price)}**."
+            + (f" Límite: **{limit}** tirada(s) compradas por día (UTC)." if limit else "") + "\n\n"
             "🎰 **Tirar Wujupón** — usa una tirada y te da una carta al azar.\n"
             "🛒 **Comprar tiradas** — compralas con tu balance.\n"
             "🎒 **Mi inventario** — mirá tus cartas y canjealas.\n"
             "📜 **Ver premios** — rarezas, probabilidades y cómo se entregan.\n"
             "📨 **Mis solicitudes** — estado de tus canjes con el Council.\n\n"
             "Las cartas son de un solo uso. Todas las respuestas son privadas.")
-        emb.add_field(name="Rarezas", value="\n".join(f"{e} {n}" for n, e, _ in wdb.RARITIES.values()), inline=True)
+        emb.add_field(name="Rarezas", value="\n".join(f"{e} {n} — {wdb.chance_text(totals.get(k, 0), all_w)}"
+                                                    for k, (n, e, _) in wdb.RARITIES.items()), inline=True)
         emb.set_footer(text="Las tiradas se anuncian en el canal de Wujupón.")
         return emb
 
@@ -310,6 +392,21 @@ class WujuponCog(commands.Cog):
         await self.run(wdb.set_setting, "panel_channel", str(channel.id))
         await self.run(wdb.set_setting, "panel_message", str(getattr(msg, "id", "")))
         await _say(interaction, "✅ Panel de Wujupón publicado. Configurá los canales con `/wujupon canal-encargos` y `/wujupon canal-anuncios`.")
+
+    async def refresh_panel(self):
+        """Actualiza el embed del panel publicado (precio, límite, rarezas). Mejor esfuerzo."""
+        try:
+            cid = await self.run(wdb.get_setting, "panel_channel")
+            mid = await self.run(wdb.get_setting, "panel_message")
+            if not cid or not mid:
+                return
+            ch = self.bot.get_channel(int(cid))
+            if ch is None:
+                return
+            msg = await ch.fetch_message(int(mid))
+            await msg.edit(embed=await self.panel_embed(), view=PanelView(self))
+        except Exception:
+            traceback.print_exc()
 
     # ---------------- comprar ----------------
     async def open_buy(self, interaction: discord.Interaction):
@@ -330,6 +427,11 @@ class WujuponCog(commands.Cog):
             return await _say(interaction, f"❌ {eco.FROZEN_TEXT}")
         if res.status == "invalid":
             return await _say(interaction, "❌ Cantidad inválida.")
+        if res.status == "limit":
+            limit = await self.run(wdb.get_daily_limit)
+            return await _say(interaction, f"⏳ El límite es de **{limit}** tirada(s) compradas por día (UTC). "
+                                           + (f"Hoy podés comprar **{res.remaining_today}** más." if res.remaining_today
+                                              else "Ya llegaste al límite de hoy: se renueva a las 00:00 UTC."))
         await _say(interaction, f"✅ Compraste **{count}** tirada(s) por **{money(res.cost)}**.\n"
                                 f"🎟️ Tiradas disponibles: **{res.spins}** · Balance: {money(res.balance)}",
                    view=SpinAgainView(self, interaction.user.id, res.spins))
@@ -341,13 +443,17 @@ class WujuponCog(commands.Cog):
             res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}")
         if res.status == "no_spins":
             price = await self.run(wdb.get_price)
-            return await _say(interaction, f"🎟️ No tenés tiradas. Cada una cuesta **{money(price)}**.",
-                              view=SpinAgainView(self, user.id, 0))
+            msg = await _say(interaction, f"🎟️ No tenés tiradas. Cada una cuesta **{money(price)}**.",
+                             view=SpinAgainView(self, user.id, 0))
+            return self._cleanup_later(interaction, msg)
         if res.status == "empty":
-            return await _say(interaction, "❌ No hay premios habilitados en este momento.")
+            msg = await _say(interaction, "❌ No hay premios habilitados en este momento.")
+            return self._cleanup_later(interaction, msg)
         # la carta ya quedó guardada: la animación es solo visual (si el bot se reinicia acá, no se pierde nada)
         final = card_embed(res.prize, res.card_id, res.weight, res.total_weight)
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
+        if self.cleanup_delay:
+            final.set_footer(text=f"Ya quedó guardada en 🎒 Mi inventario · este mensaje se borra en {self.cleanup_delay} s.")
         view = SpinAgainView(self, user.id, res.spins_left)
         animated = False
         if self.anim_delay > 0:
@@ -362,8 +468,10 @@ class WujuponCog(commands.Cog):
                 animated = True
             except Exception:
                 traceback.print_exc()
+        extra = None
         if not animated:
-            await _say(interaction, embed=final, view=view)
+            extra = await _say(interaction, embed=final, view=view)
+        self._cleanup_later(interaction, extra)
         try:
             await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
         except Exception:
@@ -400,7 +508,8 @@ class WujuponCog(commands.Cog):
     async def show_prizes(self, interaction: discord.Interaction):
         prizes = await self.run(wdb.list_prizes)
         price = await self.run(wdb.get_price)
-        await _say(interaction, embeds=prizes_embeds(prizes, price)[:10])
+        for group in pack_embeds(prizes_embeds(prizes, price)):
+            await _say(interaction, embeds=group)
 
     async def show_requests(self, interaction: discord.Interaction, target: Optional[discord.abc.User] = None):
         user = target or interaction.user
@@ -739,6 +848,107 @@ class WujuponCog(commands.Cog):
                  + (f" · {r['detail'][:80]}" if r["detail"] else "") for r in rows]
         await _say(interaction, embed=discord.Embed(title="🗂️ Registro de Wujupón", color=GOLD,
                                                     description="\n".join(lines)[:4000] or "Sin operaciones."))
+
+    @wj.command(name="carta-probabilidad", description="(Council) Cambia la probabilidad y/o la rareza (tier) de una carta")
+    @app_commands.describe(carta="Carta", probabilidad="Probabilidad nueva en % (ej: 0,5)", rareza="Rareza nueva (mover de tier)")
+    @app_commands.choices(rareza=[app_commands.Choice(name=f"{e} {n}", value=k) for k, (n, e, _) in wdb.RARITIES.items()])
+    @app_commands.autocomplete(carta=prize_autocomplete)
+    async def odds_card(self, interaction: discord.Interaction, carta: str, probabilidad: Optional[str] = None,
+                        rareza: Optional[app_commands.Choice[str]] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            weight = wdb.parse_chance(probabilidad) if probabilidad else None
+            before, after = await self.run(wdb.set_prize_odds, carta, actor_id=interaction.user.id, weight=weight,
+                                           rarity=rareza.value if rareza else None)
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        totals = await self.run(wdb.rarity_totals)
+        total = sum(totals.values())
+        lines = [f"✅ **{after.name}** actualizada."]
+        if weight is not None:
+            lines.append(f"Probabilidad: {wdb.chance_text(before.weight)} → **{wdb.chance_text(after.weight)}**")
+        if rareza is not None:
+            lines.append(f"Rareza: {before.rarity_label} → **{after.rarity_label}**")
+        lines.append("Rarezas ahora: " + " · ".join(f"{e} {wdb.chance_text(totals.get(k, 0))}" for k, (_, e, _c) in wdb.RARITIES.items()))
+        if total != wdb.TOTAL_WEIGHT:
+            lines.append(f"⚠️ Las cartas habilitadas suman **{wdb.chance_text(total)}** (no 100 %): cada carta sale en proporción a su "
+                         f"peso, así que la chance real de esta es **{wdb.chance_text(after.weight, total)}**. Ajustá otras para volver al 100 %.")
+        await _say(interaction, "\n".join(lines))
+        await self.refresh_panel()
+
+    @wj.command(name="precio", description="(Council) Cambia el precio de cada tirada")
+    @app_commands.describe(cantidad="Wuju Coins por tirada (ej: 500.000)")
+    async def set_price(self, interaction: discord.Interaction, cantidad: str):
+        if not await self._council(interaction):
+            return
+        try:
+            price = eco.parse_amount(cantidad)
+        except eco.AmountError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        if price > 10 ** 12:
+            return await _say(interaction, "❌ Precio demasiado alto.")
+        old = await self.run(wdb.get_price)
+        await self.run(wdb.set_setting, "price", str(price))
+        await self.run(wdb.log_action, interaction.user.id, "set_price", detail=f"{old} → {price}")
+        await _say(interaction, f"✅ Precio por tirada: {money(old)} → **{money(price)}**. Las tiradas ya compradas no cambian.")
+        await self.refresh_panel()
+
+    @wj.command(name="limite-diario", description="(Council) Máximo de tiradas que cada persona puede comprar por día (0 = sin límite)")
+    @app_commands.describe(cantidad="Tiradas por persona por día UTC (0 = sin límite)")
+    async def set_daily_limit(self, interaction: discord.Interaction, cantidad: int):
+        if not await self._council(interaction):
+            return
+        if not 0 <= cantidad <= 10_000:
+            return await _say(interaction, "❌ Poné un número entre 0 y 10.000.")
+        await self.run(wdb.set_setting, "daily_limit", str(cantidad) if cantidad else None)
+        await self.run(wdb.log_action, interaction.user.id, "set_daily_limit", detail=str(cantidad))
+        await _say(interaction, f"✅ Límite diario de compra: **{cantidad}** tirada(s) por persona (se renueva a las 00:00 UTC). "
+                                "Las tiradas regaladas por el Council no cuentan." if cantidad
+                   else "✅ Sin límite diario de compra.")
+        await self.refresh_panel()
+
+    @wj.command(name="publicar-premios", description="(Admin) Publica en el canal un mensaje público con la lista de premios")
+    @app_commands.describe(canal="Canal donde publicarla (por defecto, este canal)")
+    async def publish_prizes(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador puede publicar la lista de premios.")
+        target = canal or interaction.channel
+        prizes = await self.run(wdb.list_prizes)
+        price = await self.run(wdb.get_price)
+        groups = pack_embeds(prizes_embeds(prizes, price))
+        if not groups:
+            return await _say(interaction, "❌ No hay premios habilitados.")
+        try:
+            for n, group in enumerate(groups):
+                await target.send("📜 **Premios de Wujupón**" if n == 0 else None, embeds=group, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+            return await _say(interaction, f"❌ No pude publicar en {target.mention} (¿tengo permiso para enviar mensajes con embeds?).")
+        await self.run(wdb.log_action, interaction.user.id, "publish_prizes", ref=str(target.id))
+        await _say(interaction, f"✅ Lista de premios publicada en {target.mention}. Si después cambiás cartas o probabilidades, "
+                                "volvé a publicarla: este mensaje no se actualiza solo.")
+
+    @wj.command(name="limpiar-cartas", description="(Admin) Borra TODAS las cartas de todos los jugadores")
+    @app_commands.describe(tambien_tiradas="Sí = también deja en 0 las tiradas sin usar de todos")
+    async def wipe(self, interaction: discord.Interaction, tambien_tiradas: Optional[bool] = False):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador puede limpiar todas las cartas.")
+        st = await self.run(wdb.get_stats)
+        await _say(interaction, "⚠️ **Esto borra todas las cartas sin usar de todos los jugadores**"
+                                + (" y **deja en 0 sus tiradas**" if tambien_tiradas else "")
+                                + f". Los encargos abiertos ({st.open_requests}) se anulan. No se puede deshacer.\n"
+                                  "El historial de tiradas y canjes se conserva. ¿Confirmás?",
+                   view=WipeConfirmView(self, interaction.user.id, bool(tambien_tiradas)))
+
+    async def do_wipe(self, interaction: discord.Interaction, include_spins: bool):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador.")
+        res = await self.run(wdb.wipe_all_cards, actor_id=interaction.user.id, include_spins=include_spins)
+        await _say(interaction, f"🧹 Listo: se borraron **{res.cards}** carta(s) de **{res.users}** persona(s) y se anularon "
+                                f"**{len(res.requests)}** encargo(s)." + (f" Tiradas puestas en 0: **{res.spins}**." if include_spins else ""))
+        for req in res.requests:
+            await self._refresh_request_by_id(req.id)
 
     @wj.command(name="premio", description="(Council) Habilita o deshabilita un premio")
     @app_commands.describe(premio="Premio", activo="Habilitado (sí/no)")

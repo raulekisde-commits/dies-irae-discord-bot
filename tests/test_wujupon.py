@@ -267,6 +267,79 @@ class CartasEditablesTests(DbBase):
         self.assertEqual(wdb.get_prize(db, "caerleon_port").description, "")
 
 
+class ProbabilidadLimiteLimpiezaTests(DbBase):
+    def test_cambiar_probabilidad_y_rareza_sobrevive_reinicio(self):
+        before, after = wdb.set_prize_odds(self.db, "caerleon_port", actor_id=1, weight=2000, rarity="legendary")
+        self.assertEqual((before.weight, before.rarity), (1100, "epic"))
+        self.assertEqual((after.weight, after.rarity), (2000, "legendary"))
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        p = wdb.get_prize(self.db, "caerleon_port")
+        self.assertEqual((p.weight, p.rarity), (2000, "legendary"))
+        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 900)
+        self.assertEqual(wdb.rarity_totals(self.db)["legendary"], 4600 + 2000)
+
+    def test_cambiar_probabilidad_cambia_el_sorteo(self):
+        wdb.set_prize_odds(self.db, "flex_cta", actor_id=1, weight=wdb.TOTAL_WEIGHT)
+        prizes = wdb.list_prizes(self.db, True)
+        rng = random.Random(3)
+        hits = sum(wdb.draw(prizes, rng)[0].key == "flex_cta" for _ in range(2000))
+        self.assertGreater(hits, 1000)          # ahora pesa más que todo el resto junto
+
+    def test_odds_validaciones(self):
+        with self.assertRaises(wdb.WujuponError):
+            wdb.set_prize_odds(self.db, "flex_cta", actor_id=1)
+        with self.assertRaises(wdb.WujuponError):
+            wdb.set_prize_odds(self.db, "flex_cta", actor_id=1, rarity="ultra")
+        with self.assertRaises(wdb.WujuponError):
+            wdb.set_prize_odds(self.db, "nope", actor_id=1, weight=10)
+
+    def test_limite_diario(self):
+        self.fund(5, PRICE * 10)
+        wdb.set_setting(self.db, "daily_limit", "3")
+        self.assertEqual(wdb.buy_spins(self.db, 5, 2, "a").status, "ok")
+        r = wdb.buy_spins(self.db, 5, 2, "b")
+        self.assertEqual((r.status, r.remaining_today), ("limit", 1))
+        self.assertEqual(eco.get_balance(self.db, 5), PRICE * 8)
+        self.assertEqual(wdb.buy_spins(self.db, 5, 1, "c").status, "ok")
+        self.assertEqual(wdb.buy_spins(self.db, 5, 1, "d").status, "limit")
+        # las compras de ayer no cuentan
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_ops SET created_at = ? WHERE kind = 'buy'",
+                     ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),))
+        conn.close()
+        self.assertEqual(wdb.buy_spins(self.db, 5, 3, "e").status, "ok")
+        # regalos no cuentan
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=5, request_key="g", reason="t")
+        self.assertEqual(wdb.bought_today(self.db, 5), 3)
+
+    def test_precio_configurable(self):
+        wdb.set_setting(self.db, "price", "1000")
+        self.fund(5, 3000)
+        r = wdb.buy_spins(self.db, 5, 3, "k")
+        self.assertEqual((r.status, r.cost, r.balance), ("ok", 3000, 0))
+
+    def test_limpiar_todas_las_cartas(self):
+        a = wdb.give_card(self.db, actor_id=1, user_id=5, prize_key="wuju_100k", reason="t")
+        b = wdb.give_card(self.db, actor_id=1, user_id=6, prize_key="ho_house", reason="t")
+        c = wdb.give_card(self.db, actor_id=1, user_id=6, prize_key="wuju_100k", reason="t")
+        wdb.redeem(self.db, card_id=c, user_id=6, details="", request_key="rc", guild_id=GUILD_ID)   # ya usada: no se toca
+        r = wdb.redeem(self.db, card_id=b, user_id=6, details="", request_key="rb", guild_id=GUILD_ID)
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=4, request_key="g", reason="t")
+        res = wdb.wipe_all_cards(self.db, actor_id=1, include_spins=False)
+        self.assertEqual((res.cards, res.users, len(res.requests), res.spins), (2, 2, 1, 0))
+        self.assertEqual(wdb.inventory(self.db, 5), [])
+        self.assertEqual(wdb.inventory(self.db, 6), [])
+        self.assertEqual(wdb.get_card(self.db, c).status, "consumed")
+        self.assertEqual(wdb.get_request(self.db, r.request.id).status, "wiped")
+        self.assertFalse(wdb.deliver_request(self.db, r.request.id, 7).ok)
+        self.assertEqual(wdb.redeem(self.db, card_id=a, user_id=5, details="", request_key="ra", guild_id=GUILD_ID).status, "not_available")
+        self.assertEqual(wdb.get_spins(self.db, 5), 4)
+        res2 = wdb.wipe_all_cards(self.db, actor_id=1, include_spins=True)
+        self.assertEqual((res2.cards, res2.spins), (0, 4))
+        self.assertEqual(wdb.get_spins(self.db, 5), 0)
+
+
 class SellCooldownTests(DbBase):
     def _open_ticket(self, uid, ago_hours=1):
         ddb.init_schema(self.db)
@@ -325,6 +398,7 @@ class WujuponDiscordTests(DiscordBase):
         self.bot.channels.update({COUNCIL_CH: self.councilch, FEED_CH: self.feedch})
         self.cog = run(wj.setup_wujupon(self.bot, self.db, GUILD_ID))
         self.cog.anim_delay = 0
+        self.cog.cleanup_delay = 0          # cada prueba de borrado lo activa con un tiempo corto
         wdb.set_setting(self.db, "council_channel", str(COUNCIL_CH))
         wdb.set_setting(self.db, "feed_channel", str(FEED_CH))
 
@@ -341,6 +415,42 @@ class WujuponDiscordTests(DiscordBase):
         desc = self.feedch.sent[0].embeds[0].description
         self.assertIn(self.alice.mention, desc)
         self.assertIn("probabilidad", desc)
+
+    def _spy_delete(self, i):
+        i.deleted = 0
+
+        async def delete_original_response():
+            i.deleted += 1
+        i.delete_original_response = delete_original_response
+        return i
+
+    def test_mensajes_de_tirada_se_borran_solos(self):
+        import asyncio
+        self.cog.cleanup_delay = 0.01
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        i = self._spy_delete(self.inter(self.alice))
+        i2 = self._spy_delete(self.inter(self.alice))
+
+        async def go():
+            await self.cog.do_spin(i)             # con tirada: carta
+            await self.cog.do_spin(i2)            # sin tiradas: aviso
+            self.assertEqual((i.deleted, i2.deleted), (0, 0))
+            await asyncio.sleep(0.05)
+        run(go())
+        self.assertEqual((i.deleted, i2.deleted), (1, 1))
+        self.assertIn("se borra en", i.response.sent[0][1]["embed"].footer)
+        self.assertEqual(wdb.inventory(self.db, self.alice.id)[0].available, 1)   # la carta sigue en el inventario
+
+    def test_sin_borrado_si_esta_desactivado(self):
+        import asyncio
+        self.cog.cleanup_delay = 0
+        i = self._spy_delete(self.inter(self.alice))
+
+        async def go():
+            await self.cog.do_spin(i)
+            await asyncio.sleep(0.02)
+        run(go())
+        self.assertEqual(i.deleted, 0)
 
     def test_tirar_sin_tiradas(self):
         i = self.inter(self.alice)
@@ -437,6 +547,73 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.alice)
         run(self.cog.show_prizes(i))
         self.assertIn("Elegís cualquiera", " ".join(e.description for e in i.response.sent[0][1]["embeds"]))
+
+    def test_comandos_precio_limite_y_probabilidad(self):
+        run(self.cog.publish_panel(self.inter(self.council)))
+        panel = self.panelch.sent[-1]
+        i = self.inter(self.bob)
+        run(self.cog.set_price.callback(self.cog, i, "1.000"))
+        self.assertIn("Solo el Council", i.text)
+        run(self.cog.set_price.callback(self.cog, self.inter(self.council), "250.000"))
+        self.assertEqual(wdb.get_price(self.db), 250_000)
+        self.assertIn("250,000", panel.embeds[0].description)          # el panel se actualizó
+        run(self.cog.set_daily_limit.callback(self.cog, self.inter(self.council), 2))
+        self.assertEqual(wdb.get_daily_limit(self.db), 2)
+        self.fund(self.alice, 250_000 * 5)
+        i = self.inter(self.alice)
+        run(self.cog.do_buy(i, "3"))
+        self.assertIn("límite", i.text)
+        run(self.cog.set_daily_limit.callback(self.cog, self.inter(self.council), 0))
+        self.assertEqual(wdb.get_daily_limit(self.db), 0)
+        leg = discord.app_commands.Choice(name="Legendaria", value="legendary")
+        i = self.inter(self.council)
+        run(self.cog.odds_card.callback(self.cog, i, "flex_cta", "10", leg))
+        self.assertIn("Legendaria", i.text)
+        self.assertIn("99 %", i.text)                                  # avisa que ya no suma 100 %
+        p = wdb.get_prize(self.db, "flex_cta")
+        self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
+
+    def test_limpiar_cartas_solo_admin_y_con_confirmacion(self):
+        wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="wuju_100k", reason="t")
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="ho_house", reason="t")
+        run(self.cog.do_redeem(self.inter(self.alice), cid, ""))
+        req_msg = self.councilch.sent[-1]
+        i = self.inter(self.council)                     # Council no alcanza: es solo admin
+        run(self.cog.wipe.callback(self.cog, i, False))
+        self.assertIn("Solo el dueño", i.text)
+        i = self.inter(self.admin)
+        run(self.cog.wipe.callback(self.cog, i, False))
+        self.assertIsInstance(i.response.sent[0][1]["view"], wj.WipeConfirmView)
+        self.assertEqual(len(wdb.inventory(self.db, self.alice.id)), 2)   # todavía no se borró nada
+        run(self.cog.do_wipe(self.inter(self.admin), False))
+        self.assertEqual(wdb.inventory(self.db, self.alice.id), [])
+        self.assertIsNone(req_msg.view)                  # el encargo anulado ya no tiene botones
+
+    def test_publicar_premios_solo_admin(self):
+        i = self.inter(self.council, self.feedch)
+        run(self.cog.publish_prizes.callback(self.cog, i, None))
+        self.assertIn("Solo el dueño", i.text)
+        self.assertEqual(self.feedch.sent, [])
+        wdb.edit_prize(self.db, "caerleon_port", actor_id=1, description="Te llevan a Caerleon con escolta")
+        i = self.inter(self.admin, self.panelch)
+        run(self.cog.publish_prizes.callback(self.cog, i, self.feedch))
+        self.assertIn("publicada", i.text)
+        msgs = self.feedch.sent
+        self.assertGreaterEqual(len(msgs), 1)
+        self.assertIn("Premios de Wujupón", msgs[0].content)
+        self.assertFalse(i.response.sent[0][1].get("ephemeral") is False)
+        embeds = [e for m in msgs for e in m.embeds]
+        self.assertEqual(len(embeds), 5)
+        self.assertIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))
+        for m in msgs:
+            self.assertLessEqual(sum(len(e) for e in m.embeds), 6000)
+
+    def test_pack_embeds_respeta_limites(self):
+        big = [discord.Embed(title="x", description="y" * 3000) for _ in range(4)]
+        groups = wj.pack_embeds(big)
+        self.assertEqual([len(g) for g in groups], [1, 1, 1, 1])
+        small = [discord.Embed(title=str(n)) for n in range(23)]
+        self.assertEqual([len(g) for g in wj.pack_embeds(small)], [10, 10, 3])
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")
