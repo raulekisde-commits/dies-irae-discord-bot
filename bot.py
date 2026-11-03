@@ -4796,37 +4796,63 @@ async def cta_ack_ok(message: discord.Message, fallback_text: str):
 CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
 
 
-async def cta_add_time(message: discord.Message, run: dict, arg: str):
-    """«!agregartiempo [tiempo]» dentro del hilo: suma tiempo a la inscripción abierta (Staff, Caller, Council)."""
-    member = message.author
+async def cta_extend_close(run: dict, member, arg: Optional[str]):
+    """Suma tiempo a la inscripción abierta. Devuelve (ok, texto, minutos, nuevo_cierre). Usado por !agregartiempo y el botón del panel."""
     if not cta_is_organizer(member):
-        return await cta_reply_short(message, "🔒 Solo Staff, Caller y Council pueden agregar tiempo.", 8)
+        return False, "🔒 Solo Staff, Caller y Council pueden agregar tiempo.", 0, None
     if run["status"] != "open":
-        return await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya cerraron: no se puede agregar tiempo.", 10)
+        return False, "🔒 Las inscripciones de esta CTA ya cerraron: no se puede agregar tiempo.", 0, None
     try:
         extra = cu.parse_extra_minutes(arg)
     except ValueError as exc:
-        return await cta_reply_short(message, f"❌ {exc}", 14)
+        return False, f"❌ {exc}", 0, None
     now = datetime.now(timezone.utc)
     new_close = _cta_parse_dt(run["closes_at"]) + timedelta(minutes=extra)
     if (new_close - now).total_seconds() > CTA_MAX_MINUTES * 60:
-        return await cta_reply_short(message, "❌ Las inscripciones no pueden quedar abiertas más de 23:59 desde ahora.", 12)
+        return False, "❌ Las inscripciones no pueden quedar abiertas más de 23:59 desde ahora.", 0, None
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         changed = conn.execute("UPDATE cta_runs SET closes_at=? WHERE id=? AND status='open'", (new_close.isoformat(), int(run["id"]))).rowcount
         conn.commit()
     if not changed:
-        return await cta_reply_short(message, "🔒 Las inscripciones ya cerraron: no se puede agregar tiempo.", 10)
+        return False, "🔒 Las inscripciones ya cerraron: no se puede agregar tiempo.", 0, None
     cta_audit(int(run["guild_id"]), member.id, "cta_add_time", int(run["id"]), f"+{extra} min -> {new_close.isoformat()}")
     cta_request_board_refresh(int(run["id"]), delay=0.5)
+    ts = int(new_close.timestamp())
+    return True, f"⏱️ {member.mention} agregó **{extra} min**: las inscripciones ahora cierran <t:{ts}:t> (<t:{ts}:R>).", extra, new_close
+
+
+async def cta_add_time(message: discord.Message, run: dict, arg: str):
+    """«!agregartiempo [tiempo]» dentro del hilo: suma tiempo a la inscripción abierta (Staff, Caller, Council)."""
+    ok, text, _, _ = await cta_extend_close(run, message.author, arg)
+    if not ok:
+        return await cta_reply_short(message, text, 12)
     try:
-        await message.channel.send(f"⏱️ {member.mention} agregó **{extra} min**: las inscripciones ahora cierran <t:{int(new_close.timestamp())}:t> (<t:{int(new_close.timestamp())}:R>).",
-                                   allowed_mentions=CTA_NO_PINGS)
+        await message.channel.send(text, allowed_mentions=CTA_NO_PINGS)
     except discord.HTTPException:
         pass
-    try:
-        await message.delete()
-    except discord.HTTPException:
-        pass
+
+
+class CTAAddTimeModal(discord.ui.Modal, title="Agregar tiempo a la CTA"):
+    amount = discord.ui.TextInput(label="Tiempo a sumar", placeholder="10, 15m, 1h, 1h30 o 00:15 (vacío = 10 min)",
+                                  required=False, max_length=10)
+
+    def __init__(self, run_id: int):
+        super().__init__()
+        self.run_id = run_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        run = cta_run_get(self.run_id)
+        if not run:
+            return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+        ok, text, _, _ = await cta_extend_close(dict(run), interaction.user, str(self.amount.value or ""))
+        await interaction.response.send_message(text, ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+        if ok:
+            thread = await cta_get_thread(dict(run)) if run["thread_id"] else None
+            if thread is not None:
+                try:
+                    await thread.send(text, allowed_mentions=CTA_NO_PINGS)
+                except discord.HTTPException:
+                    pass
 
 
 async def cta_handle_thread_message(message: discord.Message) -> bool:
@@ -5040,11 +5066,25 @@ class CTAPanelView(discord.ui.View):
             fin = discord.ui.Button(label="CTA terminado", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
             ab = discord.ui.Button(label="Cancelar CTA", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
             fin.callback, ab.callback = self.finish_callback, self.abort_callback
+            if not closed:                                       # solo mientras la inscripción sigue abierta
+                addt = discord.ui.Button(label="Agregar tiempo", emoji="⏱️", style=discord.ButtonStyle.secondary, custom_id=f"cta:addtime:{run_id}")
+                addt.callback = self.addtime_callback
+                self.add_item(addt)
             self.add_item(fin)
             self.add_item(ab)
 
     async def bomb_callback(self, interaction: discord.Interaction):
         await cta_open_bomb_panel(interaction, self.run_id)
+
+    async def addtime_callback(self, interaction: discord.Interaction):
+        run = cta_run_get(self.run_id)
+        if not run:
+            return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+        if not cta_is_organizer(interaction.user):
+            return await interaction.response.send_message("🔒 Solo Staff, Caller y Council pueden agregar tiempo.", ephemeral=True)
+        if run["status"] != "open":
+            return await interaction.response.send_message("🔒 Las inscripciones de esta CTA ya cerraron: no se puede agregar tiempo.", ephemeral=True)
+        await interaction.response.send_modal(CTAAddTimeModal(int(self.run_id)))
 
     async def mybuild_callback(self, interaction: discord.Interaction):
         await cta_show_my_build(interaction, self.run_id)
