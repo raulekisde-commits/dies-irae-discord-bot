@@ -62,6 +62,19 @@ class BombsTests(DiscordBase):
         self.assertNotIn(self.r_b1, self.outsider.roles)
         self.assertIn("no está", self.call("sacar", self.stf, "Norte", self.outsider))
 
+    def test_cargar(self):
+        self.call("crear", self.council, "Norte", self.r_b1, self.bob)
+        self.call("agregar", self.stf, "Norte", self.outsider)              # ya cargado por comando
+        self.alice.roles.append(self.r_b1)                                   # rol dado a mano
+        self.robot.roles.append(self.r_b1)                                   # los bots no se cargan
+        self.assertIn("no fue cargado", self.call("listar", self.stf, "Norte"))
+        self.assertIn("Solo el Staff", self.call("cargar", self.alice, "Norte"))
+        text = self.call("cargar", self.rec, "Norte")
+        self.assertIn("**1** personas", text); self.assertIn(f"<@{self.alice.id}>", text)
+        m = {r["user_id"]: r["added_by"] for r in bdb.members(self.db, bdb.find_bomb(self.db, GUILD_ID, "Norte")["id"])}
+        self.assertEqual(m, {self.outsider.id: self.stf.id, self.alice.id: self.rec.id})
+        self.assertIn("ya están cargados", self.call("cargar", self.rec, "Norte"))
+
     def test_eliminar(self):
         self.call("crear", self.council, "Norte", self.r_b1, self.bob)
         self.call("agregar", self.stf, "Norte", self.outsider)
@@ -74,7 +87,7 @@ class BombsTests(DiscordBase):
         self.call("crear", self.council, "Sur", self.r_b2, self.bob)
         res = run(self.cog.bomb_autocomplete(self.inter(self.stf), "no"))
         self.assertEqual([c.value for c in res], ["Norte"])
-        self.assertEqual(sorted(self.cog.bomb_g.commands), ["agregar", "crear", "editar", "eliminar", "listar", "sacar"])
+        self.assertEqual(sorted(self.cog.bomb_g.commands), ["agregar", "cargar", "crear", "editar", "eliminar", "listar", "sacar"])
 
 
 if __name__ == "__main__":

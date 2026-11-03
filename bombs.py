@@ -1,6 +1,7 @@
 """Grupo /bomb: cada bomb tiene nombre, rol y caller.
 - Council (o admin/propietario): /bomb crear, /bomb editar, /bomb eliminar.
-- Staff, Reclutador y Council: /bomb agregar, /bomb sacar (dan / quitan el rol y queda quién lo hizo).
+- Staff, Reclutador y Council: /bomb agregar, /bomb sacar (dan / quitan el rol y queda quién lo hizo) y /bomb cargar
+  (anota en la lista a quienes ya tienen el rol de la bomb pero no fueron agregados con el comando).
 - /bomb listar: lo anterior y además el caller de cualquier bomb."""
 import asyncio
 import os
@@ -214,6 +215,32 @@ class BombsCog(commands.Cog):
                 return await _say(interaction, f"⚠️ Lo saqué de la lista pero no pude quitarle el rol (revisá que mi rol esté por encima): {exc}")
         await _say(interaction, f"✅ {usuario.mention} salió de **{discord.utils.escape_markdown(b['name'])}**.")
 
+    @bomb_g.command(name="cargar", description="(Staff/Reclutador) Anota en la bomb a todos los que ya tienen su rol y no fueron cargados")
+    @app_commands.describe(bomb="La bomb")
+    async def cargar(self, interaction: discord.Interaction, bomb: str):
+        if not can_staff(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, los reclutadores y el Council pueden cargar una bomb.")
+        b = await self._bomb(interaction, bomb)
+        if b is None:
+            return
+        role = interaction.guild.get_role(b["role_id"])
+        if role is None:
+            return await _say(interaction, "❌ El rol de esa bomb ya no existe. Pedile al Council que la edite con `/bomb editar`.")
+        listed = {r["user_id"] for r in await self.run(bdb.members, b["id"])}
+        nuevos = [m for m in role.members if not m.bot and m.id not in listed]
+        name = discord.utils.escape_markdown(b["name"])
+        if not nuevos:
+            return await _say(interaction, f"✅ Todos los que tienen el rol {role.mention} ya están cargados en **{name}**.")
+        added = []
+        for m in nuevos:
+            if await self.run(bdb.add_member, b["id"], m.id, interaction.user.id):
+                added.append(m)
+        lines = [f"<@{m.id}>" for m in added]
+        text = f"✅ Se cargaron **{len(added)}** personas en **{name}** (ya tenían el rol {role.mention}). Quedan como agregadas por vos.\n"
+        chunks = _chunks([text + ", ".join(lines)], limit=1900) if len(text) + len(", ".join(lines)) <= 1900 else _chunks([text] + lines)
+        for c in chunks:
+            await _say(interaction, c)
+
     # ---------- listar ----------
     @bomb_g.command(name="listar", description="Lista las bombs, o los integrantes de una")
     @app_commands.describe(bomb="(Opcional) Una bomb para ver sus integrantes")
@@ -245,7 +272,7 @@ class BombsCog(commands.Cog):
         if role is not None:
             for m in role.members:
                 if m.id not in listed and not m.bot:
-                    lines.append(f"• <@{m.id}> · tiene el rol pero no fue agregado con `/bomb agregar`")
+                    lines.append(f"• <@{m.id}> · tiene el rol pero no fue cargado (usá `/bomb cargar`)")
         head = (f"💣 **{discord.utils.escape_markdown(b['name'])}** · rol <@&{b['role_id']}> · caller <@{b['caller_id']}>\n"
                 f"**Integrantes ({len(mem)})**\n")
         if not lines:
@@ -255,7 +282,7 @@ class BombsCog(commands.Cog):
         for c in chunks[1:]:
             await _say(interaction, c)
 
-    for _cmd in (editar, eliminar, agregar, sacar, listar):
+    for _cmd in (editar, eliminar, agregar, sacar, cargar, listar):
         _cmd.autocomplete("bomb")(bomb_autocomplete)
     del _cmd
 
