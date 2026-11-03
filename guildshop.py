@@ -470,6 +470,7 @@ class GuildShopCog(commands.Cog):
             return
         if not await self.run(gdb.close_ticket, ticket.id, interaction.user.id):
             return await _reply(interaction, "ℹ️ Este ticket ya fue cerrado o vendido.")
+        await self._record_task(interaction.user.id, ticket.buyer_id, f"Cerrar el ticket del Guild Shop #{ticket.id}", ticket.id)
         await interaction.response.send_message(f"🔒 Ticket cerrado sin transacción por {interaction.user.mention}. El canal se borra en unos segundos.",
                                                 allowed_mentions=NO_MENTIONS)
         emb = discord.Embed(title="🔒 Ticket cerrado sin transacción", color=0x95A5A6)
@@ -479,6 +480,12 @@ class GuildShopCog(commands.Cog):
         emb.add_field(name="Lista de compra", value=ticket.items[:1000], inline=False)
         await self.log(interaction.guild, emb)
         await self._delete_later(interaction.channel)
+
+    async def _record_task(self, actor_id: int, buyer_id: int, text: str, ticket_id: int):
+        """Cerrar el ticket de otra persona cuenta como tarea finalizada para /top tareas (una vez por ticket)."""
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is not None and actor_id != buyer_id:
+            await enc.record_done(text, actor_id, f"gshop:{ticket_id}")
 
     async def _delete_later(self, channel):
         if self.close_delay:
@@ -561,6 +568,7 @@ class GuildShopCog(commands.Cog):
                                    f"❌ El comprador ya no tiene saldo suficiente (tiene {self.wuju(result.balance_before)}, hacen falta {self.wuju(p.net)}). No se cobró nada.")
             return
         p, t = result.pending, result.ticket
+        await self._record_task(interaction.user.id, t.buyer_id, f"Cerrar el ticket del Guild Shop #{t.id} (venta)", t.id)
         await self._finish_msg(interaction, f"✅ Venta confirmada por {interaction.user.mention}.", view=None)
         done = discord.Embed(title=f"✅ Venta realizada — ticket #{t.id}", color=0x2ECC71)
         done.add_field(name="Comprador", value=f"<@{t.buyer_id}>", inline=True)
