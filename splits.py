@@ -2,7 +2,7 @@
 import asyncio
 import re
 import traceback
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -238,6 +238,22 @@ class SplitRequestView(discord.ui.View):
     @discord.ui.button(label="Descartar", style=discord.ButtonStyle.secondary, custom_id="split:req_no", emoji="✖️")
     async def no(self, interaction: discord.Interaction, button):
         await self.cog.on_request_decision(interaction, False)
+
+
+class SplitSuggestionView(discord.ui.View):
+    """Preguntas del bot en el hilo del split: sacar a un anotado que no se conectó / sumar a alguien que estuvo en el killboard sin anotarse."""
+
+    def __init__(self, cog: "SplitsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Sí", style=discord.ButtonStyle.success, custom_id="split:sug_yes", emoji="✅")
+    async def yes(self, interaction: discord.Interaction, button):
+        await self.cog.on_suggestion_decision(interaction, True)
+
+    @discord.ui.button(label="No, dejarlo", style=discord.ButtonStyle.secondary, custom_id="split:sug_no", emoji="✖️")
+    async def no(self, interaction: discord.Interaction, button):
+        await self.cog.on_suggestion_decision(interaction, False)
 
 
 class ConfirmCancelView(discord.ui.View):
@@ -583,6 +599,7 @@ class SplitsCog(commands.Cog):
         self.bot.add_view(SplitEditingPanelView(self))
         self.bot.add_view(SplitClosedPanelView(self))
         self.bot.add_view(SplitRequestView(self))
+        self.bot.add_view(SplitSuggestionView(self))
         self._closed_panels_done = False
 
     @commands.Cog.listener()
@@ -893,6 +910,93 @@ class SplitsCog(commands.Cog):
             if s.source_cta_id is not None:
                 await self.run(cu.add_late_position, s.source_cta_id, req.user_id, req.slot_no)     # entra al historial con la posición pedida
             await self.sync_split(req.split_id)
+
+    # ---------- sugerencias por conectados / killboard ----------
+    MAX_SUGGESTIONS = 40                                      # por tanda y por tipo; el resto sale en la próxima carga
+
+    async def apply_suggestions(self, cta_id: int, remove_ids, add_ids) -> Tuple[int, int]:
+        """Deja en el hilo del split de la CTA las preguntas pendientes. `remove_ids`: anotados que no estaban conectados;
+        `add_ids`: gente del killboard que no estaba en la lista. Las pendientes que ya no aplican se anulan y a quien ya se le
+        preguntó una vez no se le vuelve a preguntar. Devuelve (preguntas de sacar nuevas, preguntas de sumar nuevas)."""
+        s = await self.run(sdb.find_by_cta, cta_id)
+        if s is None or s.status != "open":
+            return 0, 0
+        async with self._lock(-cta_id):
+            th = await self._get_channel(s.thread_id)
+            if th is None:
+                return 0, 0
+            s = await self.run(sdb.get_split, s.id)
+            remove_ids = [int(u) for u in dict.fromkeys(remove_ids) if int(u) in s.people]
+            add_ids = [int(u) for u in dict.fromkeys(add_ids) if int(u) not in s.people]
+            late = set()
+            for u in add_ids:
+                if (await self.run(sdb.mirror_of, s.id, u)) != (None, None):
+                    late.add(u)                               # ya pidió entrar tarde: se decide por ese otro mensaje
+            add_ids = [u for u in add_ids if u not in late]
+            made = []
+            for kind, wanted in (("remove", remove_ids), ("add", add_ids)):
+                have = await self.run(sdb.suggestions_of, s.id, kind)
+                for uid, sug in have.items():
+                    if sug.status == "pending" and uid not in wanted:
+                        mid = await self.run(sdb.void_suggestion, s.id, uid, kind)
+                        if mid:
+                            try:
+                                m = await th.fetch_message(mid)
+                                await m.edit(content=f"ℹ️ Ya no aplica: <@{uid}>.", view=None, allowed_mentions=NO_MENTIONS)
+                            except Exception:
+                                pass
+                new = [u for u in wanted if u not in have][:self.MAX_SUGGESTIONS]
+                made.append(new)
+            n_rm, n_add = len(made[0]), len(made[1])
+            try:
+                if n_rm:
+                    await th.send(f"🔌 **Anotados que no estaban conectados** ({n_rm}). Según la lista de conectados, estas personas se anotaron pero no "
+                                  "estuvieron online. Decidí con los botones si salen del split.", allowed_mentions=NO_MENTIONS)
+                for uid in made[0]:
+                    if await self.run(sdb.add_suggestion, s.id, uid, "remove"):
+                        m = await th.send(f"🔌 <@{uid}> estaba anotado pero no estaba conectado. ¿Lo saco del split?",
+                                          view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
+                        await self.run(sdb.set_suggestion_message, s.id, uid, "remove", m.id)
+                if n_add:
+                    await th.send(f"⚔️ **Estuvieron en el killboard sin anotarse** ({n_add}). Decidí con los botones si se suman al split.",
+                                  allowed_mentions=NO_MENTIONS)
+                for uid in made[1]:
+                    if await self.run(sdb.add_suggestion, s.id, uid, "add"):
+                        m = await th.send(f"⚔️ <@{uid}> apareció en el killboard pero no estaba anotado. ¿Lo sumo al split?",
+                                          view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
+                        await self.run(sdb.set_suggestion_message, s.id, uid, "add", m.id)
+            except Exception as exc:
+                print(f"⚠️ Split #{s.id}: no pude publicar las sugerencias: {exc!r}")
+            return n_rm, n_add
+
+    async def on_suggestion_decision(self, interaction: discord.Interaction, accept: bool):
+        msg = getattr(interaction, "message", None)
+        sug = await self.run(sdb.get_suggestion_by_message, msg.id) if msg is not None else None
+        if sug is None:
+            return await _say(interaction, "❌ No encuentro esta pregunta.")
+        s = await self.run(sdb.get_split, sug.split_id)
+        if s is None or not can_decide_late(interaction.user, s):
+            return await _say(interaction, "🔒 Solo el Council, el Staff, el Caller o quien creó el split puede decidir.")
+        try:
+            res, lost = await self.run(sdb.decide_suggestion, sug.split_id, sug.user_id, sug.kind, accept, interaction.user.id)
+        except sdb.SplitError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        if res == "closed":
+            return await _say(interaction, "❌ El split ya está cerrado.")
+        if res in ("decided", "missing"):
+            return await _say(interaction, "ℹ️ Esto ya estaba decidido.")
+        if res == "accepted":
+            verdict = "✅ Sacado del split" if sug.kind == "remove" else "✅ Sumado al split"
+        else:
+            verdict = "✖️ Se queda como estaba"
+        extra = " (también era looter: salió de los looters)" if lost else ""
+        try:
+            await interaction.response.edit_message(content=f"{verdict} por <@{interaction.user.id}>: <@{sug.user_id}>{extra}", view=None,
+                                                    allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+        if res == "accepted":
+            await self.sync_split(sug.split_id)
 
     # ---------- /editar ----------
     async def _target(self, interaction, split_id: Optional[int]) -> Optional[sdb.Split]:
