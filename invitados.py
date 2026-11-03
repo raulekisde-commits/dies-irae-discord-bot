@@ -67,6 +67,7 @@ INFO_TEXTS = {
                  "**Comandos**\n"
                  "• `/bal` — ver tu saldo (o el de otra persona).\n"
                  "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo (el bot te pide confirmar antes de enviar).\n"
+                 "• En `/bal` también ves tu **balance de embo** (embotelladas de Albion), que lleva el Staff.\n"
                  "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
                  "**Splits**\n"
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
@@ -106,6 +107,7 @@ INFO_STAFF = {
                "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/casino winrate`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
+                 "• `/eco embo add|remove|set usuario cantidad [motivo]` — balance de embo (Admin o rol con `/eco perms-comando comando:embo`). No puede quedar negativo.\n"
                  "• `/eco set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco eco-stats` (Staff) — total de monedas en el servidor. `/eco historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
                  "• **Splits** (Council / Admin): `/split` (con looters) y `/split-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
                  "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"
@@ -291,6 +293,48 @@ INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuar
                        "• **Roles de CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb): dar = Staff, Council, Admin y Coaching · quitar = Staff, Council y Admin.\n"
                        "• `/rol historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
                        "• No te podés cambiar roles a vos mismo, y el rol del bot tiene que estar por encima del rol que se cambia.")
+INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
+    "Comprás tiradas con **Wuju Coins** y cada tirada te da una **carta** al azar con un premio. Todo se usa desde el **panel de Wujupón**, "
+    "y las respuestas son privadas.\n\n"
+    "**Botones del panel**\n"
+    "• 🛒 **Comprar tiradas** — se descuentan de tu balance. Puede haber un límite de compras por día (se renueva a las 00:00 UTC).\n"
+    "• 🎰 **Tirar Wujupón** — usa una tirada y te muestra la carta. El mensaje se borra solo a los 60 s, pero la carta ya queda guardada.\n"
+    "• 🎒 **Mi inventario** — tus cartas; elegí una y tocá **Canjear**.\n"
+    "• 📜 **Ver premios** — todas las cartas con su rareza, probabilidad y descripción.\n"
+    "• 📨 **Mis solicitudes** — el estado de tus canjes con el Council.\n\n"
+    "**Rarezas**: ⚪ Común · 🔵 Rara · 🟣 Épica · 🟠 Legendaria · 🔴 Mítica.\n\n"
+    "**Canjes**\n"
+    "• 🤖 **Automáticos** (Wuju Coins, embo, cancelar el cooldown de *Cobrar balance*): se aplican al instante.\n"
+    "• 🛠️ **Los entrega el Council**: se abre un encargo y la carta queda **reservada** hasta que lo resuelvan. Si lo rechazan, la carta "
+    "puede volver a tu inventario.\n"
+    "• ⚠️ Las cartas que afectan a otra persona necesitan aprobación del Council.\n\n"
+    "**Reglas**: cada carta se usa una sola vez. Si tenés el balance congelado no podés comprar tiradas. Cada tirada se anuncia en el canal "
+    "de Wujupón con la carta, la rareza y la probabilidad.")
+INFO_STAFF["wujupon"] = (
+    "**Montaje** (Council / Admin)\n"
+    "• `/panel wujupon` — publica el panel en el canal.\n"
+    "• `/wujupon canal-encargos [canal]` — canal privado donde llegan los canjes.\n"
+    "• `/wujupon canal-anuncios [canal] [quitar]` — canal público de tiradas; `quitar: Sí` deja de anunciarlas.\n\n"
+    "**Economía**\n"
+    "• `/wujupon precio cantidad` — precio de cada tirada (actualiza el panel).\n"
+    "• `/wujupon limite-diario cantidad` — tiradas que cada persona puede comprar por día UTC; `0` = sin límite. Lo regalado no cuenta.\n"
+    "• `/wujupon stats` — ingresos, lo entregado y lo pendiente por moneda (Wuju = silver 1:1, embo = 10.000).\n\n"
+    "**Cartas**\n"
+    "• `/wujupon carta-agregar nombre rareza probabilidad [descripcion] [afecta_a_otro]` — carta nueva (la entrega el Council).\n"
+    "• `/wujupon carta-editar carta [nombre] [descripcion]` — `quitar` borra la descripción.\n"
+    "• `/wujupon carta-probabilidad carta [probabilidad] [rareza]` — cambia la chance o la mueve de tier.\n"
+    "• `/wujupon premio carta activo` — habilita o deshabilita una carta.\n"
+    "• Si las cartas habilitadas no suman 100 %, cada una sale en proporción a su peso: el bot lo avisa.\n\n"
+    "**Jugadores**\n"
+    "• `/wujupon regalar-tiradas usuario cantidad` (negativo = quitar) · `/wujupon dar-carta usuario premio`.\n"
+    "• `/wujupon devolver-carta numero` — vuelve una carta usada al inventario (mal usada, bug). Si el premio era automático, "
+    "lo entregado no se descuenta: ajustalo a mano.\n"
+    "• `/wujupon inventario usuario` · `/wujupon encargos` · `/wujupon historial [usuario]` · `/wujupon registro`.\n"
+    "• **Encargos**: en el canal del Council, **Tomar** → **Aprobar** → **Completado** (queda quién lo entregó). **Rechazar** pregunta si se "
+    "devuelve la carta.\n\n"
+    "**Solo Admin**\n"
+    "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra todas las cartas sin usar de todos y anula los encargos abiertos (pide confirmación).")
+
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
 
@@ -544,7 +588,7 @@ class InvitadosCog(commands.Cog):
             await _say(interaction, c)
 
     # ---------- /info (usuarios) y /info-staff (usuarios + equipo) ----------
-    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("splits", "zvz", "reclutamiento", "registro", "timers", "stats", "economia", "casino", "zvz-vods", "invitados", "warnings", "alters", "roles")]
+    INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("splits", "zvz", "reclutamiento", "registro", "timers", "stats", "economia", "casino", "zvz-vods", "invitados", "warnings", "alters", "roles", "wujupon")]
 
     @staticmethod
     def info_embed(value: str, staff: bool) -> discord.Embed:

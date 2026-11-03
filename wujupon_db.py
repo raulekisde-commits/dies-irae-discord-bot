@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS wjp_prizes (
     sort          INTEGER NOT NULL DEFAULT 0,
     description   TEXT NOT NULL DEFAULT '',
     custom        INTEGER NOT NULL DEFAULT 0,   -- 1 = carta creada desde el bot (/wujupon carta-agregar)
-    name_edited   INTEGER NOT NULL DEFAULT 0    -- 1 = el Council cambió el nombre: el catálogo del código ya no lo pisa
+    name_edited   INTEGER NOT NULL DEFAULT 0,   -- 1 = el Council cambió el nombre: el catálogo del código ya no lo pisa
+    odds_edited   INTEGER NOT NULL DEFAULT 0    -- 1 = el Council cambió la probabilidad o la rareza: tampoco se pisan
 );
 CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS wjp_spins (
@@ -183,6 +184,7 @@ OPEN_STATUSES = ("pending", "taken", "approved")
 STATUS_LABELS = {
     "auto": "✅ Entregado automáticamente", "pending": "🕓 Pendiente", "taken": "✋ En proceso",
     "approved": "👍 Aprobado", "delivered": "✅ Entregado", "rejected": "❌ Rechazado", "returned": "↩️ Carta devuelta",
+    "wiped": "🧹 Anulado (limpieza de cartas)",
 }
 
 
@@ -284,7 +286,7 @@ def init_schema(db_path: str) -> None:
         conn.executescript(SCHEMA)
         cols = {c["name"] for c in conn.execute("PRAGMA table_info(wjp_prizes)").fetchall()}
         for col, ddl in (("description", "TEXT NOT NULL DEFAULT ''"), ("custom", "INTEGER NOT NULL DEFAULT 0"),
-                         ("name_edited", "INTEGER NOT NULL DEFAULT 0")):
+                         ("name_edited", "INTEGER NOT NULL DEFAULT 0"), ("odds_edited", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE wjp_prizes ADD COLUMN {col} {ddl}")
         with write_tx(conn):
@@ -293,7 +295,9 @@ def init_schema(db_path: str) -> None:
                 conn.execute("INSERT OR IGNORE INTO wjp_prizes(key, name, rarity, weight, origin, handler, amount, cost, cost_currency, "
                              "third_party, enabled, sort) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
                              (key, name, rarity, weight, origin, handler, amount, cost, cur, third, i))
-                conn.execute("UPDATE wjp_prizes SET name = CASE WHEN name_edited = 1 THEN name ELSE ? END, rarity=?, weight=?, origin=?, "
+                conn.execute("UPDATE wjp_prizes SET name = CASE WHEN name_edited = 1 THEN name ELSE ? END, "
+                             "rarity = CASE WHEN odds_edited = 1 THEN rarity ELSE ? END, "
+                             "weight = CASE WHEN odds_edited = 1 THEN weight ELSE ? END, origin=?, "
                              "handler=?, amount=?, cost=?, cost_currency=?, third_party=?, sort=? WHERE key=? AND custom = 0",
                              (name, rarity, weight, origin, handler, amount, cost, cur, third, i, key))
     finally:
@@ -334,6 +338,15 @@ def get_prize(db_path: str, key: str) -> Optional[Prize]:
 def _log(conn, actor_id: int, action: str, user_id: Optional[int] = None, ref: str = "", detail: str = "") -> None:
     conn.execute("INSERT INTO wjp_log(actor_id, action, user_id, ref, detail, created_at) VALUES (?,?,?,?,?,?)",
                  (actor_id, action, user_id, ref, detail[:1000], utcnow_iso()))
+
+
+def log_action(db_path: str, actor_id: int, action: str, user_id: Optional[int] = None, ref: str = "", detail: str = "") -> None:
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            _log(conn, actor_id, action, user_id, ref, detail)
+    finally:
+        conn.close()
 
 
 def set_prize_enabled(db_path: str, key: str, enabled: bool, actor_id: int) -> bool:
@@ -442,6 +455,109 @@ def edit_prize(db_path: str, key: str, *, actor_id: int, name: Optional[str] = N
         conn.close()
 
 
+def set_prize_odds(db_path: str, key: str, *, actor_id: int, weight: Optional[int] = None,
+                   rarity: Optional[str] = None) -> Tuple[Prize, Prize]:
+    """Cambia la probabilidad y/o la rareza (tier) de una carta. Devuelve (antes, después)."""
+    if weight is None and rarity is None:
+        raise WujuponError("Indicá una probabilidad nueva, una rareza nueva o ambas.")
+    if rarity is not None and rarity not in RARITIES:
+        raise WujuponError("Rareza inválida.")
+    if weight is not None and not 1 <= int(weight) <= TOTAL_WEIGHT:
+        raise WujuponError("Probabilidad inválida.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            row = conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                raise WujuponError("Esa carta no existe.")
+            before = _prize(row)
+            changes = []
+            if weight is not None:
+                conn.execute("UPDATE wjp_prizes SET weight = ?, odds_edited = 1 WHERE key = ?", (int(weight), key))
+                changes.append(f"probabilidad: {chance_text(before.weight)} → {chance_text(int(weight))}")
+            if rarity is not None:
+                conn.execute("UPDATE wjp_prizes SET rarity = ?, odds_edited = 1 WHERE key = ?", (rarity, key))
+                changes.append(f"rareza: {RARITIES[before.rarity][0]} → {RARITIES[rarity][0]}")
+            _log(conn, actor_id, "prize_odds", ref=key, detail=" · ".join(changes))
+            return before, _prize(conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (key,)).fetchone())
+    finally:
+        conn.close()
+
+
+def rarity_totals(db_path: str) -> Dict[str, int]:
+    """Peso habilitado por rareza."""
+    conn = _open(db_path)
+    try:
+        return {r["rarity"]: int(r["w"]) for r in
+                conn.execute("SELECT rarity, SUM(weight) AS w FROM wjp_prizes WHERE enabled = 1 GROUP BY rarity").fetchall()}
+    finally:
+        conn.close()
+
+
+@dataclass
+class WipeResult:
+    cards: int
+    users: int
+    requests: List[Request]
+    spins: int
+
+
+def wipe_all_cards(db_path: str, *, actor_id: int, include_spins: bool = False) -> WipeResult:
+    """(Admin) Anula TODAS las cartas disponibles o reservadas de todos los jugadores y los encargos abiertos.
+    El historial de tiradas y canjes se conserva (las cartas quedan con estado 'wiped')."""
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            now = utcnow_iso()
+            users = int(conn.execute("SELECT COUNT(DISTINCT user_id) FROM wjp_cards WHERE status IN ('available', 'reserved')")
+                        .fetchone()[0])
+            cards = conn.execute("UPDATE wjp_cards SET status = 'wiped', updated_at = ? WHERE status IN ('available', 'reserved')",
+                                 (now,)).rowcount
+            marks = ",".join("?" * len(OPEN_STATUSES))
+            reqs = [_request(r) for r in conn.execute(f"SELECT * FROM wjp_requests WHERE status IN ({marks})", OPEN_STATUSES).fetchall()]
+            conn.execute(f"UPDATE wjp_requests SET status = 'wiped', note = 'Limpieza general de cartas', updated_at = ? "
+                         f"WHERE status IN ({marks})", (now, *OPEN_STATUSES))
+            spins = 0
+            if include_spins:
+                spins = int(conn.execute("SELECT COALESCE(SUM(spins), 0) FROM wjp_spins").fetchone()[0])
+                conn.execute("UPDATE wjp_spins SET spins = 0, updated_at = ? WHERE spins != 0", (now,))
+            _log(conn, actor_id, "wipe_all_cards", detail=f"{cards} cartas de {users} personas · {len(reqs)} encargos"
+                                                          + (f" · {spins} tiradas" if include_spins else ""))
+            for r in reqs:
+                r.status = "wiped"
+            return WipeResult(int(cards), users, reqs, spins)
+    finally:
+        conn.close()
+
+
+def get_daily_limit(db_path: str) -> int:
+    """Máximo de tiradas que una persona puede COMPRAR por día UTC (0 = sin límite)."""
+    v = get_setting(db_path, "daily_limit")
+    try:
+        return max(0, int(v)) if v else 0
+    except ValueError:
+        return 0
+
+
+def _day_start_iso(now=None) -> str:
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _bought_today(conn, user_id: int) -> int:
+    return int(conn.execute("SELECT COALESCE(SUM(spins), 0) FROM wjp_ops WHERE kind = 'buy' AND user_id = ? AND created_at >= ?",
+                            (user_id, _day_start_iso())).fetchone()[0])
+
+
+def bought_today(db_path: str, user_id: int) -> int:
+    conn = _open(db_path)
+    try:
+        return _bought_today(conn, user_id)
+    finally:
+        conn.close()
+
+
 def get_setting(db_path: str, key: str) -> Optional[str]:
     conn = _open(db_path)
     try:
@@ -499,22 +615,28 @@ def get_spins(db_path: str, user_id: int) -> int:
 
 @dataclass
 class BuyResult:
-    status: str               # ok | duplicate | funds | frozen | invalid
+    status: str               # ok | duplicate | funds | frozen | invalid | limit
     spins: int = 0
     cost: int = 0
     balance: int = 0
+    remaining_today: int = 0  # status 'limit': cuántas puede comprar todavía hoy
 
 
 def buy_spins(db_path: str, user_id: int, count: int, request_key: str) -> BuyResult:
     if not 1 <= count <= MAX_BUY:
         return BuyResult("invalid")
     price = get_price(db_path)
+    limit = get_daily_limit(db_path)
     cost = price * count
     conn = _open(db_path)
     try:
         with write_tx(conn):
             if conn.execute("SELECT 1 FROM wjp_ops WHERE request_key = ?", (request_key,)).fetchone():
                 return BuyResult("duplicate", _spins(conn, user_id), cost, eco_balance(conn, user_id))
+            if limit:
+                left = max(0, limit - _bought_today(conn, user_id))
+                if count > left:
+                    return BuyResult("limit", cost=cost, remaining_today=left)
             op_id = eco.tx_new_operation(conn, kind="remove", actor_id=user_id, request_key=f"wjp:buy:{request_key}",
                                          total_amount=cost, target_count=1, reason=f"Wujupón: {count} tirada(s)",
                                          related_id=f"wjp:buy:{request_key}")
