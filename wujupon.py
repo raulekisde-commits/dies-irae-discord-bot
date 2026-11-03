@@ -21,6 +21,11 @@ SPIN_FRAMES = ("🎰 Girando el Wujupón…", "🎰 ✨ ✨ ✨")
 SPIN_CLEANUP_SECONDS = 60      # los mensajes privados de cada tirada se borran solos pasado este tiempo
 
 
+def _hm(seconds: int) -> str:
+    h, m = divmod((int(seconds) + 59) // 60, 60)
+    return f"{h} h {m} min" if h else f"{m} min"
+
+
 def money(n: int) -> str:
     return f"{eco.format_amount(n)} {eco.CURRENCY_NAME}"
 
@@ -971,6 +976,38 @@ class WujuponCog(commands.Cog):
                                 f"**{len(res.requests)}** encargo(s)." + (f" Tiradas puestas en 0: **{res.spins}**." if include_spins else ""))
         for req in res.requests:
             await self._refresh_request_by_id(req.id)
+
+    @wj.command(name="cooldown-cobro", description="(Council) Suma, saca o muestra el cooldown de «Cobrar balance» de alguien")
+    @app_commands.describe(usuario="Persona", accion="Sumar horas, sacar todo el cooldown o ver cuánto le falta",
+                           horas="Horas a sumar (solo para «Sumar»)")
+    @app_commands.choices(accion=[app_commands.Choice(name="Sumar horas", value="sumar"),
+                                  app_commands.Choice(name="Sacar cooldown", value="quitar"),
+                                  app_commands.Choice(name="Ver", value="ver")])
+    async def sell_cooldown_cmd(self, interaction: discord.Interaction, usuario: discord.Member,
+                                accion: app_commands.Choice[str], horas: Optional[int] = None):
+        if not await self._council(interaction):
+            return
+        import deposits_db as ddb
+        gid = interaction.guild.id
+        try:
+            if accion.value == "sumar":
+                if not horas:
+                    return await _say(interaction, "❌ Indicá cuántas horas sumar (ej: `horas: 8`).")
+                left = await asyncio.to_thread(ddb.add_sell_cooldown, self.db_path, gid, usuario.id, horas)
+                await self.run(wdb.log_action, interaction.user.id, "sell_cooldown_add", usuario.id, detail=f"+{horas} h")
+                return await _say(interaction, f"⏳ Se le sumaron **{horas} h** a {usuario.mention}. "
+                                               f"Puede volver a cobrar en **{_hm(left)}**.")
+            if accion.value == "quitar":
+                had = await asyncio.to_thread(ddb.clear_sell_cooldown, self.db_path, gid, usuario.id)
+                if had:
+                    await self.run(wdb.log_action, interaction.user.id, "sell_cooldown_clear", usuario.id)
+                return await _say(interaction, f"✅ {usuario.mention} ya puede cobrar balance." if had
+                                  else f"ℹ️ {usuario.mention} no tenía cooldown.")
+            left = await asyncio.to_thread(ddb.sell_cooldown_remaining, self.db_path, gid, usuario.id)
+            await _say(interaction, f"⏳ A {usuario.mention} le faltan **{_hm(left)}** para cobrar." if left
+                       else f"✅ {usuario.mention} no tiene cooldown para cobrar.")
+        except ddb.DepositError as exc:
+            await _say(interaction, f"❌ {exc}")
 
     @wj.command(name="premio", description="(Council) Habilita o deshabilita un premio")
     @app_commands.describe(premio="Premio", activo="Habilitado (sí/no)")

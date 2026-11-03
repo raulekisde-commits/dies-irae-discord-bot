@@ -137,9 +137,29 @@ def sell_cooldown_remaining(db_path: str, guild_id: int, user_id: int, now=None)
 
 
 def _sell_cooldown_conn(conn, guild_id: int, user_id: int, now=None) -> int:
+    """Lo que falte entre el cooldown del último ticket de cobro y el cooldown extra (cartas ☠️ o el Council)."""
     from datetime import datetime, timezone
-    r = conn.execute("SELECT created_at FROM cm_tickets WHERE guild_id = ? AND user_id = ? AND kind = 'sell' ORDER BY id DESC LIMIT 1",
-                     (guild_id, user_id)).fetchone()
+    now = now or datetime.now(timezone.utc)
+    return max(_ticket_cooldown(conn, guild_id, user_id, now), _extra_cooldown(conn, guild_id, user_id, now))
+
+
+def _parse(ts):
+    from datetime import datetime, timezone
+    try:
+        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _ticket_cooldown(conn, guild_id: int, user_id: int, now) -> int:
+    try:
+        r = conn.execute("SELECT created_at FROM cm_tickets WHERE guild_id = ? AND user_id = ? AND kind = 'sell' ORDER BY id DESC LIMIT 1",
+                         (guild_id, user_id)).fetchone()
+    except Exception as exc:     # tabla todavía no creada
+        if "no such table" in str(exc):
+            return 0
+        raise
     if r is None:
         return 0
     try:
@@ -147,31 +167,72 @@ def _sell_cooldown_conn(conn, guild_id: int, user_id: int, now=None) -> int:
     except Exception:            # tabla todavía no creada
         reset = None
     if reset is not None and str(reset["reset_at"]) >= str(r["created_at"]):
-        return 0                 # cooldown cancelado con una carta de Wujupón
-    try:
-        opened = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
-        if opened.tzinfo is None:
-            opened = opened.replace(tzinfo=timezone.utc)
-    except ValueError:
+        return 0                 # cooldown cancelado con una carta de Wujupón o por el Council
+    opened = _parse(r["created_at"])
+    if opened is None:
         return 0
-    now = now or datetime.now(timezone.utc)
     return max(0, int(SELL_COOLDOWN_SECONDS - (now - opened).total_seconds()))
 
 
-def tx_reset_sell_cooldown(conn, guild_id: int, user_id: int) -> bool:
-    """Dentro de una transacción: cancela el cooldown de «Cobrar balance». False si no había cooldown activo."""
-    conn.execute("CREATE TABLE IF NOT EXISTS cm_cooldown_resets (guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
-                 "reset_at TEXT NOT NULL, PRIMARY KEY (guild_id, user_id))")
+def _extra_cooldown(conn, guild_id: int, user_id: int, now) -> int:
     try:
-        if _sell_cooldown_conn(conn, guild_id, user_id) <= 0:
-            return False
-    except Exception as exc:     # sin tabla de tickets: no hay cooldown
-        if "no such table" in str(exc):
-            return False
-        raise
+        r = conn.execute("SELECT until_at FROM cm_cooldown_extra WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)).fetchone()
+    except Exception:            # tabla todavía no creada
+        return 0
+    until = _parse(r["until_at"]) if r else None
+    return max(0, int((until - now).total_seconds())) if until else 0
+
+
+_EXTRA_SQL = ("CREATE TABLE IF NOT EXISTS cm_cooldown_extra (guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+              "until_at TEXT NOT NULL, PRIMARY KEY (guild_id, user_id))")
+_RESETS_SQL = ("CREATE TABLE IF NOT EXISTS cm_cooldown_resets (guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+               "reset_at TEXT NOT NULL, PRIMARY KEY (guild_id, user_id))")
+MAX_EXTRA_HOURS = 24 * 30
+
+
+def tx_reset_sell_cooldown(conn, guild_id: int, user_id: int) -> bool:
+    """Dentro de una transacción: cancela el cooldown de «Cobrar balance» (el del ticket y el extra).
+    False si no había cooldown activo."""
+    conn.execute(_RESETS_SQL)
+    conn.execute(_EXTRA_SQL)
+    if _sell_cooldown_conn(conn, guild_id, user_id) <= 0:
+        return False
     conn.execute("INSERT OR REPLACE INTO cm_cooldown_resets(guild_id, user_id, reset_at) VALUES (?,?,?)",
                  (guild_id, user_id, utcnow_iso()))
+    conn.execute("DELETE FROM cm_cooldown_extra WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
     return True
+
+
+def add_sell_cooldown(db_path: str, guild_id: int, user_id: int, hours: float, now=None) -> int:
+    """Suma `hours` al cooldown de «Cobrar balance» (sobre lo que ya le falte; si no tenía, empieza uno).
+    Devuelve los segundos que le quedan."""
+    from datetime import datetime, timedelta, timezone
+    if not 0 < hours <= MAX_EXTRA_HOURS:
+        raise DepositError(f"Las horas tienen que estar entre 1 y {MAX_EXTRA_HOURS}.")
+    now = now or datetime.now(timezone.utc)
+    init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute(_EXTRA_SQL)
+            left = _sell_cooldown_conn(conn, guild_id, user_id, now)
+            until = now + timedelta(seconds=left) + timedelta(hours=hours)
+            conn.execute("INSERT OR REPLACE INTO cm_cooldown_extra(guild_id, user_id, until_at) VALUES (?,?,?)",
+                         (guild_id, user_id, until.isoformat()))
+            return _sell_cooldown_conn(conn, guild_id, user_id, now)
+    finally:
+        conn.close()
+
+
+def clear_sell_cooldown(db_path: str, guild_id: int, user_id: int) -> bool:
+    """Saca todo el cooldown de «Cobrar balance». False si no tenía."""
+    init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return tx_reset_sell_cooldown(conn, guild_id, user_id)
+    finally:
+        conn.close()
 
 
 def open_ticket_of(db_path: str, guild_id: int, user_id: int, kind: str) -> Optional[Ticket]:

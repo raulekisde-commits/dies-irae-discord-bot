@@ -438,6 +438,41 @@ class SellCooldownTests(DbBase):
         self.assertGreater(ddb.sell_cooldown_remaining(self.db, GUILD_ID, 5), 0)
 
 
+class CooldownExtraTests(DbBase):
+    def test_sumar_sin_cooldown_previo(self):
+        left = ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 4)
+        self.assertAlmostEqual(left, 4 * 3600, delta=5)
+        self.assertGreater(ddb.sell_cooldown_remaining(self.db, GUILD_ID, 5), 4 * 3600 - 10)
+
+    def test_se_suma_al_cooldown_del_ticket(self):
+        ddb.init_schema(self.db)
+        conn = connect(self.db)
+        conn.execute("INSERT INTO cm_tickets(guild_id, channel_id, user_id, kind, status, created_at) VALUES (?,?,?,?,?,?)",
+                     (GUILD_ID, 77, 5, "sell", "closed", (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()))
+        conn.close()
+        left = ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 8)
+        self.assertAlmostEqual(left, (6 + 8) * 3600, delta=10)       # le quedaban 6 h + 8 h nuevas
+        left2 = ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 4)
+        self.assertAlmostEqual(left2, (6 + 8 + 4) * 3600, delta=10)  # se acumula
+
+    def test_sacar_y_carta_de_cancelar(self):
+        ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 12)
+        self.assertTrue(ddb.clear_sell_cooldown(self.db, GUILD_ID, 5))
+        self.assertEqual(ddb.sell_cooldown_remaining(self.db, GUILD_ID, 5), 0)
+        self.assertFalse(ddb.clear_sell_cooldown(self.db, GUILD_ID, 5))
+        # la carta «Cancelar cooldown de cobro» también saca el extra
+        ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 24)
+        cid = wdb.give_card(self.db, actor_id=1, user_id=5, prize_key="sell_cooldown", reason="t")
+        self.assertEqual(wdb.redeem(self.db, card_id=cid, user_id=5, details="", request_key="r", guild_id=GUILD_ID).status, "auto")
+        self.assertEqual(ddb.sell_cooldown_remaining(self.db, GUILD_ID, 5), 0)
+
+    def test_horas_invalidas(self):
+        with self.assertRaises(ddb.DepositError):
+            ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 0)
+        with self.assertRaises(ddb.DepositError):
+            ddb.add_sell_cooldown(self.db, GUILD_ID, 5, 10_000)
+
+
 class EmboDbTests(DbBase):
     def test_add_remove_set(self):
         self.assertEqual(embo_db.apply(self.db, user_id=5, mode="add", amount=50, actor_id=1, request_key="a", reason="").after, 50)
@@ -700,6 +735,28 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIn("Carta mala", i.response.sent[0][1]["embed"].footer)
         msg = self.councilch.sent[-1]
         self.assertIn("−15 de embo", str(msg.embeds[0].fields))
+
+    def test_comando_cooldown_cobro(self):
+        sumar = discord.app_commands.Choice(name="Sumar horas", value="sumar")
+        quitar = discord.app_commands.Choice(name="Sacar cooldown", value="quitar")
+        ver = discord.app_commands.Choice(name="Ver", value="ver")
+        i = self.inter(self.bob)
+        run(self.cog.sell_cooldown_cmd.callback(self.cog, i, self.alice, sumar, 4))
+        self.assertIn("Solo el Council", i.text)
+        i = self.inter(self.council)
+        run(self.cog.sell_cooldown_cmd.callback(self.cog, i, self.alice, sumar, None))
+        self.assertIn("Indicá cuántas horas", i.text)
+        i = self.inter(self.council)
+        run(self.cog.sell_cooldown_cmd.callback(self.cog, i, self.alice, sumar, 8))
+        self.assertIn("8 h", i.text)
+        self.assertGreater(ddb.sell_cooldown_remaining(self.db, GUILD_ID, self.alice.id), 7 * 3600)
+        i = self.inter(self.council)
+        run(self.cog.sell_cooldown_cmd.callback(self.cog, i, self.alice, ver, None))
+        self.assertIn("le faltan", i.text)
+        i = self.inter(self.council)
+        run(self.cog.sell_cooldown_cmd.callback(self.cog, i, self.alice, quitar, None))
+        self.assertIn("ya puede cobrar", i.text)
+        self.assertEqual(ddb.sell_cooldown_remaining(self.db, GUILD_ID, self.alice.id), 0)
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")
