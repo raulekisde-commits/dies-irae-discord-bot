@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by  INTEGER NOT NULL,
     created_at  TEXT NOT NULL,
     publish_at  REAL,
-    status      TEXT NOT NULL,                 -- scheduled | publishing | open | taken | done
+    status      TEXT NOT NULL,                 -- scheduled | publishing | open | taken | done | cancelled
     taker_id    INTEGER,
     done_by     INTEGER,
     done_at     TEXT,
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS task_events (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id  INTEGER NOT NULL,
     at       TEXT NOT NULL,
-    kind     TEXT NOT NULL,                    -- created | taken | released | done
+    kind     TEXT NOT NULL,                    -- created | taken | released | done | cancelled
     actor_id INTEGER,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
@@ -296,6 +296,35 @@ def finish(db_path: str, task_id: int, user_id: int, override: bool) -> Change:
                          (user_id, utcnow_iso(), task_id))
             _event(conn, task_id, "done", user_id)
             return Change("ok", _load(conn, task_id))
+    finally:
+        conn.close()
+
+
+def cancel(db_path: str, task_id: int, actor_id: int) -> Change:
+    """Cancela una tarea que no se hizo (botón «Cancelar tarea», o se canceló la CTA que la generó). No cuenta como terminada.
+    'ok' · 'closed' (ya estaba terminada o cancelada) · 'notfound'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            t = _load(conn, task_id)
+            if t is None:
+                return Change("notfound")
+            if t.status in ("done", "cancelled"):
+                return Change("closed", t)
+            conn.execute("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status NOT IN ('done','cancelled')", (task_id,))
+            _event(conn, task_id, "cancelled", actor_id)
+            return Change("ok", _load(conn, task_id))
+    finally:
+        conn.close()
+
+
+def open_by_source_prefix(db_path: str, prefix: str) -> List[int]:
+    """Ids de las tareas sin terminar ni cancelar cuyo `source` empieza con `prefix` (p. ej. «cta:12:»)."""
+    conn = connect(db_path)
+    try:
+        like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        return [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM tasks WHERE source LIKE ? ESCAPE '\\' AND status NOT IN ('done','cancelled') ORDER BY id", (like,))]
     finally:
         conn.close()
 

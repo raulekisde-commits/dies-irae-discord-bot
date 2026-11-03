@@ -65,6 +65,36 @@ class TaskView(discord.ui.View):
     async def done(self, interaction: discord.Interaction, button):
         await self.cog.on_done(interaction)
 
+    @discord.ui.button(label="Cancelar tarea", style=discord.ButtonStyle.danger, custom_id="task:cancel", emoji="🗑️")
+    async def cancel(self, interaction: discord.Interaction, button):
+        await self.cog.on_cancel(interaction)
+
+
+class ConfirmCancelTaskView(discord.ui.View):
+    """Confirmación privada antes de cancelar una tarea (evita un clic por error)."""
+    def __init__(self, cog: "EncargosCog", task_id: int, user_id: int):
+        super().__init__(timeout=60.0)
+        self.cog, self.task_id, self.user_id = cog, task_id, user_id
+        ok = discord.ui.Button(label="Sí, cancelar la tarea", style=discord.ButtonStyle.danger)
+        no = discord.ui.Button(label="No", style=discord.ButtonStyle.secondary)
+        ok.callback, no.callback = self._ok, self._no
+        self.add_item(ok)
+        self.add_item(no)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await _say(interaction, "❌ Este mensaje no es tuyo.")
+            return False
+        return True
+
+    async def _ok(self, interaction: discord.Interaction):
+        self.stop()
+        await self.cog.confirm_cancel(interaction, self.task_id)
+
+    async def _no(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="Listo, la tarea sigue como estaba.", view=None)
+
 
 class EncargosCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
@@ -297,6 +327,57 @@ class EncargosCog(commands.Cog):
             override = is_staff_or_council(interaction.user) or ((t.source or "").startswith("coach:") and can_take(interaction.user))
             await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
 
+    # ---------- cancelar tareas ----------
+    async def on_cancel(self, interaction: discord.Interaction):
+        if not is_staff_or_council(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff y el Council pueden cancelar tareas.")
+        t = await self._task(interaction)
+        if t is None:
+            return
+        if t.status in ("done", "cancelled"):
+            return await _say(interaction, "ℹ️ Esta tarea ya está cerrada.")
+        await interaction.response.send_message(f"¿Cancelar la **tarea #{t.id}**? Se borra el panel y no cuenta como terminada.\n> {t.text[:200]}",
+                                                view=ConfirmCancelTaskView(self, t.id, interaction.user.id), ephemeral=True,
+                                                allowed_mentions=NO_MENTIONS)
+
+    async def confirm_cancel(self, interaction: discord.Interaction, task_id: int):
+        if not is_staff_or_council(interaction.user):                       # se revisa de nuevo al confirmar
+            return await _say(interaction, "🔒 Solo el Staff y el Council pueden cancelar tareas.")
+        res = await self.run(edb.cancel, task_id, interaction.user.id)
+        if res.status == "closed":
+            return await interaction.response.edit_message(content="ℹ️ Esa tarea ya estaba cerrada.", view=None)
+        if res.status != "ok":
+            return await interaction.response.edit_message(content="❌ No encuentro esa tarea.", view=None)
+        await self.after_cancel(res.task, f"cancelada por <@{interaction.user.id}>")
+        await interaction.response.edit_message(content="🗑️ Tarea cancelada.", view=None)
+
+    async def after_cancel(self, t: edb.Task, who: str) -> None:
+        """Borra el panel y el hilo de una tarea ya cancelada y deja el registro en el canal de logs."""
+        await self.drop_thread(t)
+        if t.message_id:
+            try:
+                ch = await self._channel(t.channel_id)
+                msg = await ch.fetch_message(t.message_id)
+                await msg.delete()
+            except Exception as exc:
+                print(f"Tarea {t.id}: cancelada pero no pude borrar el panel: {exc!r}")
+        try:
+            log = await self._channel(TASK_LOG_CHANNEL_ID)
+            if log is not None:
+                await log.send(f"🗑️ Tarea #{t.id} {who}.\n> {t.text[:300]}", allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+
+    async def cancel_by_prefix(self, prefix: str, actor_id: int, why: str) -> int:
+        """Cancela todas las tareas abiertas cuyo `source` empieza con `prefix` (p. ej. las de una CTA cancelada). Devuelve cuántas."""
+        n = 0
+        for tid in await self.run(edb.open_by_source_prefix, prefix):
+            res = await self.run(edb.cancel, tid, actor_id)
+            if res.status == "ok":
+                await self.after_cancel(res.task, why)
+                n += 1
+        return n
+
     async def log_done(self, t: edb.Task) -> bool:
         """Deja el registro de la tarea terminada en el canal de logs. False si no se pudo (entonces el panel NO se borra)."""
         try:
@@ -312,7 +393,7 @@ class EncargosCog(commands.Cog):
     async def update_text_by_source(self, source: str, text: str) -> bool:
         """Cambia el texto de una tarea abierta (y su panel). False si no hay tarea o ya está terminada."""
         t = await self.run(edb.find_by_source, source)
-        if t is None or t.status == "done":
+        if t is None or t.status in ("done", "cancelled"):
             return False
         await self.run(edb.set_text, t.id, text)
         t = await self.run(edb.get_task, t.id)

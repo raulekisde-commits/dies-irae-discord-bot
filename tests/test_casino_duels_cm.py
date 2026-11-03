@@ -755,12 +755,26 @@ class CambioMonedaTests(DiscordBase):
         sell_ch = self.last_channel()
         self.open_buy()
         buy_ch = self.last_channel()
+        # el ticket de compra solo lo cierra el Council; en el de cobro, además, quien lo abrió
+        self.assertIn("Council", self.press("on_close", self.alice, buy_ch).text)
+        self.assertFalse(getattr(buy_ch, "deleted", False))
+        self.assertIn("Council", self.press("on_close", self.bob, sell_ch).text)             # otra persona: no
+        self.assertFalse(getattr(sell_ch, "deleted", False))
         for ch in (sell_ch, buy_ch):
-            self.assertIn("Council", self.press("on_close", self.alice, ch).text)
-            self.assertFalse(getattr(ch, "deleted", False))
             self.press("on_close", self.council, ch)
             self.assertTrue(ch.deleted)
             self.assertIsNone(ddb.open_ticket_of(self.db, GUILD_ID, self.alice.id, ddb.get_by_channel(self.db, ch.id).kind))
+
+    def test_owner_can_close_own_sell_ticket_but_cooldown_stays(self):
+        self.fund(self.alice, 100)
+        self.open_sell()
+        ch = self.last_channel()
+        self.press("on_close", self.alice, ch)
+        self.assertTrue(ch.deleted)
+        self.assertEqual(ddb.get_by_channel(self.db, ch.id).status, "closed")
+        self.assertGreater(ddb.sell_cooldown_remaining(self.db, GUILD_ID, self.alice.id), 0)    # cerrarlo NO devuelve las 8 h
+        self.open_sell()                                                                      # volver a abrir: sigue el cooldown
+        self.assertIsNone(ddb.open_ticket_of(self.db, GUILD_ID, self.alice.id, "sell"))
 
     def test_admin_without_council_role_can_also_use_ticket_buttons(self):
         self.fund(self.alice, 100)
