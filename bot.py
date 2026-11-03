@@ -335,7 +335,7 @@ CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
 
 RECRUITER_ROLE_ID = 1257896905099444354
-CONTENT_CREATOR_ROLE_ID = 1258562816512884808     # puede usar /cta (iniciar CTAs)
+CONTENT_CREATOR_ROLE_ID = 1258562816512884808     # puede usar /content (iniciar CTA de content)
 FLEX_ROLE_ID = 1558522576743964762                # puede anotarse en cualquier posición de una CTA, sin importar los roles pedidos
 MIEMBRO_ROLE_ID = 1257896455860129822
 TANK_ROLE_ID = 1260755129754189854
@@ -3268,6 +3268,7 @@ import json
 import copy
 import contextlib
 import ctautil as cu
+CONTENT_CHANNEL_ID = int(os.getenv("CONTENT_CHANNEL_ID", "0")) or cu.CTA_CHANNEL_ID      # canal donde se publica /content (por defecto, el de CTA)
 import ctavoice as cv
 
 CTA_EMOJIS_DEFAULT = {
@@ -3378,6 +3379,8 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "role_id", "INTEGER")
         # Composiciones «track»: al cerrar la inscripción generan un split (/split) en vez de crear un rol.
         db_ensure_column(conn, "cta_compositions", "track", "INTEGER NOT NULL DEFAULT 0")
+        db_ensure_column(conn, "cta_compositions", "ava", "INTEGER NOT NULL DEFAULT 0")     # 1 = el split de esta composición es un split-ava
+        db_ensure_column(conn, "cta_runs", "kind", "TEXT NOT NULL DEFAULT 'cta'")           # 'cta' | 'content' (/content: sin Bomb ni tareas de combatlog)
         db_ensure_column(conn, "cta_runs", "track", "INTEGER NOT NULL DEFAULT 0")
         db_ensure_column(conn, "cta_runs", "tab", "TEXT")
         db_ensure_column(conn, "cta_runs", "city", "TEXT")
@@ -3456,6 +3459,11 @@ def cta_ensure_brawl(guild_id: int, creator_id: int):
 
 def cta_slot_key(slot: dict) -> str:
     return f"{int(slot['party_no'])}:{int(slot['position_no'])}"
+
+
+def cta_is_content(run_id: int) -> bool:
+    rows = db_fetchall("SELECT kind FROM cta_runs WHERE id=?", (run_id,))
+    return bool(rows) and rows[0]["kind"] == "content"
 
 
 def cta_run_get(run_id: int):
@@ -3556,7 +3564,7 @@ def cta_snapshot_from_comp(comp: dict):
             "party_access": party_access.get(int(s["party_no"]), {"mode": "any", "role_ids": [], "match": "any"})
         })
     return {"name": comp["name"], "slots": slots, "party_access": party_access, "builds_url": comp.get("builds_url") or None,
-            "legacy_first": bool(comp.get("legacy_first"))}
+            "legacy_first": bool(comp.get("legacy_first")), "ava": bool(comp.get("ava"))}
 
 
 # ================== CTA: reglas, numeración global y tablero en el hilo ==================
@@ -4060,9 +4068,10 @@ async def cta_close_run(run_id: int, reason="timeout"):
     task = asyncio.create_task(cta_create_track_split(run_id))
     cta_role_tasks.add(task)
     task.add_done_callback(cta_role_tasks.discard)
-    task2 = asyncio.create_task(cta_create_combatlog_task(run))
-    cta_role_tasks.add(task2)
-    task2.add_done_callback(cta_role_tasks.discard)
+    if run.get("kind") != "content":                        # /content: sin panel ni tarea de combatlog
+        task2 = asyncio.create_task(cta_create_combatlog_task(run))
+        cta_role_tasks.add(task2)
+        task2.add_done_callback(cta_role_tasks.discard)
     task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
     cta_role_tasks.add(task4)
     task4.add_done_callback(cta_role_tasks.discard)
@@ -4186,8 +4195,12 @@ async def cta_create_track_split(run_id: int):
     user_ids += [u for u in cu.bomb_list(DB_PATH, run_id) if u not in user_ids]          # los Bomb también van al split
     title = cta_run_title(run)
     try:
+        try:
+            is_ava = bool(json.loads(run["snapshot_json"]).get("ava"))
+        except Exception:
+            is_ava = False
         split, msg, error = await cog.create_from_cta(cta_id=run_id, title=title, tab=run.get("tab"), city=run.get("city"),
-                                                      user_ids=user_ids, creator_id=int(run["created_by"]))
+                                                      user_ids=user_ids, creator_id=int(run["created_by"]), kind="ava" if is_ava else "normal")
     except Exception as exc:
         print(f"CTA #{run_id}: error generando el split: {exc!r}")
         split, msg, error = None, None, "❌ Falló la creación del split."
@@ -4430,9 +4443,10 @@ async def cta_delete_message(run: dict) -> bool:
 
 
 async def cta_ask_final(interaction: discord.Interaction, run_id: Optional[int], state: str):
-    if not is_council_or_caller(interaction.user):
-        return await interaction.response.send_message("🔒 Solo el Council y el Caller pueden usar este botón.", ephemeral=True)
     run = cta_run_get(run_id) if run_id else None
+    own_content = bool(run) and run.get("kind") == "content" and int(run["created_by"]) == interaction.user.id     # quien lanzó el /content
+    if not (is_council_or_caller(interaction.user) or own_content):
+        return await interaction.response.send_message("🔒 Solo el Council y el Caller (y quien lanzó el /content) pueden usar este botón.", ephemeral=True)
     if not run:
         return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
     if run.get("final_state") is not None or run["status"] == "cancelled":
@@ -4477,7 +4491,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
             pass
     await cta_create_split_task(run)                      # tarea del Staff: repartir el split (recién ahora que la CTA terminó)
     cog = bot.get_cog("EncargosCog")
-    if cog is not None:                                   # tarea para el staff: revisar el combat log de esta CTA
+    if cog is not None and run.get("kind") != "content":  # tarea para el staff: revisar el combat log de esta CTA (no en /content)
         try:
             await cog.create(text=f"Revisar el combat log de {cta_run_title(run)}", created_by=actor_id, source=f"cta:{run_id}:combatlog_review",
                              link=f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}")
@@ -4939,9 +4953,10 @@ class CTAPanelView(discord.ui.View):
             mine.callback = self.mybuild_callback
             self.add_item(mine)
         if run_id is not None and not final:
-            bomb = discord.ui.Button(label="Agregar Bomb", emoji="💣", style=discord.ButtonStyle.primary, custom_id=f"cta:bomb:{run_id}")
-            bomb.callback = self.bomb_callback
-            self.add_item(bomb)
+            if not cta_is_content(run_id):                       # las CTA de /content no tienen Bomb
+                bomb = discord.ui.Button(label="Agregar Bomb", emoji="💣", style=discord.ButtonStyle.primary, custom_id=f"cta:bomb:{run_id}")
+                bomb.callback = self.bomb_callback
+                self.add_item(bomb)
             fin = discord.ui.Button(label="CTA terminado", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
             ab = discord.ui.Button(label="Cancelar CTA", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
             fin.callback, ab.callback = self.finish_callback, self.abort_callback
@@ -5573,6 +5588,20 @@ class CTACompositionGroup(app_commands.Group):
             msg = f"✅ **{comp['name']}**: sin prioridad Legacy."
         await interaction.response.send_message(msg + cta_active_notice(comp["id"]), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
+    @app_commands.command(name="ava", description="Marcar si el split de esta composición es un split-ava")
+    @app_commands.describe(nombre="Nombre de la composición", activar="true = el split que sale de esta composición es split-ava; false = split normal")
+    async def ava(self, interaction: discord.Interaction, nombre: str, activar: bool):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        db_execute("UPDATE cta_compositions SET ava=?, updated_at=? WHERE id=?", (int(activar), cta_now_iso(), comp["id"]))
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_ava", details=f"{comp['name']}: {'split-ava' if activar else 'split normal'}")
+        msg = (f"✅ **{comp['name']}**: el split de las CTA nuevas va a ser un **split-ava**." if activar
+               else f"✅ **{comp['name']}**: el split de las CTA nuevas va a ser un split normal.")
+        await interaction.response.send_message(msg + cta_active_notice(comp["id"]), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     @app_commands.command(name="builds", description="Poner o quitar el link de builds de una composición")
     @app_commands.describe(nombre="Nombre de la composición", link="Link a la web de builds (https://...). Vacío o «quitar» = sacar el link")
     async def builds(self, interaction: discord.Interaction, nombre: str, link: Optional[str] = None):
@@ -5977,12 +6006,14 @@ compo_ver_builds.autocomplete("nombre")(cta_name_autocomplete)
 compo_ver_builds.autocomplete("build")(cta_build_autocomplete)
 
 
-async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_override: Optional[str], creator_id: int, *, scheduled: bool = False):
-    """Publica la CTA en el canal fijo de CTA. Devuelve (run_id, error_text)."""
-    channel = guild.get_channel(cu.CTA_CHANNEL_ID)
+async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_override: Optional[str], creator_id: int, *, scheduled: bool = False,
+                      kind: str = "cta"):
+    """Publica la CTA en el canal fijo de CTA (o, si es de content, en el de content). Devuelve (run_id, error_text)."""
+    channel_id = CONTENT_CHANNEL_ID if kind == "content" else cu.CTA_CHANNEL_ID
+    channel = guild.get_channel(channel_id)
     if channel is None:
         try:
-            channel = await bot.fetch_channel(cu.CTA_CHANNEL_ID)
+            channel = await bot.fetch_channel(channel_id)
         except Exception:
             return None, "❌ No encuentro el canal de CTA."
     now = datetime.now(timezone.utc)
@@ -5992,8 +6023,9 @@ async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_over
     title = cu.unique_title(base, existing)
     snapshot = cta_snapshot_from_comp(comp)
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status,track,title) VALUES (?,?,?,?,?,?,?,?, 'open', 1, ?)",
-                           (guild.id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), channel.id, creator_id, now.isoformat(), close_at.isoformat(), title))
+        cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status,track,title,kind) VALUES (?,?,?,?,?,?,?,?, 'open', 1, ?, ?)",
+                           (guild.id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), channel.id, creator_id, now.isoformat(), close_at.isoformat(), title,
+                            "content" if kind == "content" else "cta"))
         run_id = cur.lastrowid
         conn.commit()
     run = cta_run_get(run_id)
@@ -6099,6 +6131,38 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
 
 
 cta_command.autocomplete("nombre")(cta_name_autocomplete)
+
+
+def is_content_manager(member) -> bool:
+    """Quién puede usar /content: el rol Content Creator, Council y administradores."""
+    return isinstance(member, discord.Member) and (
+        is_council_or_admin(member) or any(r.id == CONTENT_CREATOR_ROLE_ID for r in member.roles))
+
+
+@bot.tree.command(name="content", description="Publicar una CTA de content con una composición guardada (sin Bomb ni combatlog)", guild=GUILD_OBJ)
+@app_commands.describe(nombre="Nombre de la composición",
+                       tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)")
+async def content_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
+    if not is_content_manager(interaction.user):
+        return await interaction.response.send_message("No tenés permisos para publicar un content (solo Content Creator y Council).", ephemeral=True)
+    try:
+        minutes = cta_parse_duration(tiempo)
+    except ValueError as exc:
+        return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+    comp, err = cta_pick_composition(interaction.guild_id, nombre, interaction.user.id)
+    if comp is None:
+        return await interaction.response.send_message(err, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    run_id, err = await cta_publish(interaction.guild, comp, minutes, None, interaction.user.id, kind="content")
+    if err:
+        return await interaction.followup.send(err, ephemeral=True)
+    cta_audit(interaction.guild_id, interaction.user.id, "content_created", run_id, f"composition={comp['name']}")
+    await interaction.followup.send(f"✅ **{cta_run_title(cta_run_get(run_id))}** publicada en <#{CONTENT_CHANNEL_ID}>.", ephemeral=True)
+
+
+content_command.autocomplete("nombre")(cta_name_autocomplete)
 
 
 cta_admin_group = app_commands.Group(name="cta-admin", description="Consultar y administrar las CTA (activas, programadas, cerrar, asignar, liberar)", guild_only=True)
@@ -6404,6 +6468,8 @@ HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
+        ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content: igual que /cta pero sin Bomb ni tareas de combatlog. Quien la lanza puede terminarla o cancelarla con los botones."),
+        ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/cta-admin activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta-admin programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
         ("/cta-admin cancelar-programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),

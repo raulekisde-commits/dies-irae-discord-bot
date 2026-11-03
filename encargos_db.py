@@ -70,6 +70,7 @@ class Task:
     thread_id: Optional[int] = None                            # hilo para que quien tomó la tarea se coordine
     taken_at: Optional[float] = None
     last_reminder: Optional[float] = None
+    for_role: Optional[int] = None                             # tarea «para» un rol: solo ese rol (y el Council) la puede tomar y terminar
 
 
 def _ids(text) -> List[int]:
@@ -86,7 +87,7 @@ def init_schema(db_path: str) -> None:
         conn.executescript(SCHEMA)
         have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
         for col, ddl in (("ping_roles", "TEXT"), ("ping_users", "TEXT"), ("ping_staff", "INTEGER"),
-                         ("thread_id", "INTEGER"), ("taken_at", "REAL"), ("last_reminder", "REAL")):
+                         ("thread_id", "INTEGER"), ("taken_at", "REAL"), ("last_reminder", "REAL"), ("for_role", "INTEGER")):
             if col not in have:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
         with write_tx(conn):
@@ -105,7 +106,7 @@ def _load(conn, task_id: int) -> Optional[Task]:
     return Task(int(r["id"]), int(r["guild_id"]), int(r["channel_id"]), r["message_id"], r["text"], int(r["created_by"]), r["created_at"],
                 r["publish_at"], r["status"], r["taker_id"], r["done_by"], r["done_at"], r["source"], r["link"], ev,
                 _ids(r["ping_roles"]), _ids(r["ping_users"]), r["ping_staff"] is None or bool(r["ping_staff"]),
-                r["thread_id"], r["taken_at"], r["last_reminder"])
+                r["thread_id"], r["taken_at"], r["last_reminder"], int(r["for_role"]) if r["for_role"] else None)
 
 
 def get_task(db_path: str, task_id: int) -> Optional[Task]:
@@ -164,7 +165,7 @@ def parse_when(text: str, now: Optional[datetime] = None) -> float:
 
 def create_task(db_path: str, *, guild_id: int, channel_id: int, text: str, created_by: int, publish_at: Optional[float] = None,
                 source: Optional[str] = None, link: Optional[str] = None, now: Optional[float] = None,
-                ping_roles=(), ping_users=(), ping_staff: bool = True) -> Task:
+                ping_roles=(), ping_users=(), ping_staff: bool = True, for_role: Optional[int] = None) -> Task:
     text = " ".join((text or "").split())
     if not text:
         raise TaskError("La tarea no puede estar vacía.")
@@ -180,9 +181,9 @@ def create_task(db_path: str, *, guild_id: int, channel_id: int, text: str, crea
                 if dup:                                                    # tareas automáticas: una sola por origen
                     return _load(conn, int(dup["id"]))
             cur = conn.execute("INSERT INTO tasks(guild_id, channel_id, text, created_by, created_at, publish_at, status, source, link, "
-                               "ping_roles, ping_users, ping_staff) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                               "ping_roles, ping_users, ping_staff, for_role) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                (guild_id, channel_id, text, created_by, utcnow_iso(), publish_at if publish_at else now, status, source, link,
-                                _csv(ping_roles), _csv(ping_users), 1 if ping_staff else 0))
+                                _csv(ping_roles), _csv(ping_users), 1 if ping_staff else 0, int(for_role) if for_role else None))
             tid = int(cur.lastrowid)
             conn.execute("INSERT INTO task_events(task_id, at, kind, actor_id) VALUES (?,?,?,?)", (tid, utcnow_iso(), "created", created_by))
             return _load(conn, tid)

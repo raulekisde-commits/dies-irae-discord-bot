@@ -815,7 +815,7 @@ class SplitsCog(commands.Cog):
 
     # ---------- split generado desde una CTA con track ----------
     async def create_from_cta(self, *, cta_id: int, title: str, tab: Optional[str], city: Optional[str],
-                              user_ids: List[int], creator_id: int):
+                              user_ids: List[int], creator_id: int, kind: str = "normal"):
         """Al cerrar una CTA con track: arma el split con los anotados (sin crear ningún rol).
         Devuelve (split, mensaje, error); si ya existía uno para esa CTA, lo devuelve sin crear otro."""
         async with self._lock(-cta_id):
@@ -823,7 +823,8 @@ class SplitsCog(commands.Cog):
             if old is not None:
                 return old, None, None
             return await self._publish(creator_id=creator_id, title=title, tab=tab, city=city,
-                                       people=[u for u in dict.fromkeys(user_ids)][:sdb.MAX_PEOPLE], source_cta_id=cta_id)
+                                       people=[u for u in dict.fromkeys(user_ids)][:sdb.MAX_PEOPLE], source_cta_id=cta_id,
+                                       kind=kind)
 
     async def register_late_request(self, *, cta_id: int, user_id: int, slot_no: Optional[int]) -> Optional[str]:
         """Alguien se anotó en la CTA ya cerrada: queda una solicitud en el hilo del split para que el organizador decida.
