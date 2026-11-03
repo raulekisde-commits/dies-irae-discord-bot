@@ -36,60 +36,193 @@ RARITY_ORDER = list(RARITIES)
 # Handlers automáticos implementados. Las cartas «Bot» sin handler todavía se canjean por encargo al Council.
 AUTO_HANDLERS = ("wuju", "embo", "sell_cooldown")
 
-# (clave, nombre, rareza, peso/100.000, origen Bot|Staff, handler, cantidad, costo, moneda del costo, afecta a terceros)
+# (clave, nombre, rareza, peso/100.000, origen Bot|Staff, handler, cantidad, costo, moneda del costo, afecta a terceros,
+#  descripción, forzada)
+# - origen «Bot»: lo va a hacer el bot; mientras no tenga handler se entrega por encargo al Council.
+# - forzada (☠️ cartas malas): se aplica sola al salir; no se guarda en el inventario (va directo al Council).
+# Los pesos suman 100.000 y respetan 45 / 35 / 15,2 / 4,6 / 0,2 por rareza.
+SHIELD_NOTE = " El escudo y los inmunes la bloquean."
 CATALOG = [
     # ⚪ Comunes — 45 %
-    ("casino_block", "Bloquear del casino hasta su próximo cierre y reapertura", "common", 8000, "Bot", None, 0, 0, "", 1),
-    ("flex_cta", "Rol Flex para la próxima CTA", "common", 11000, "Bot", None, 0, 0, "", 0),
-    ("sell_cooldown", "Cancelar cooldown de cobro", "common", 8500, "Bot", "sell_cooldown", 0, 0, "", 0),
-    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 9000, "Staff", None, 0, 0, "", 0),
-    ("wuju_100k", "100.000 Wuju Coins", "common", 2500, "Bot", "wuju", 100_000, 100_000, "wuju", 0),
-    ("embo_50", "50 de balance de embo", "common", 1500, "Bot", "embo", 50, 50, "embo", 0),
-    ("party_switch", "Switchear roles en una party (vendiéndole el set al jugador afectado)", "common", 4500, "Staff", None, 0, 0, "", 1),
+    ("casino_block", "Bloqueo de casino", "common", 6000, "Bot", None, 0, 0, "", 1,
+     "Bloqueás a un jugador del casino hasta que el casino se cierre y se vuelva a abrir." + SHIELD_NOTE, 0),
+    ("flex_cta", "Anotación libre en CTA", "common", 7000, "Bot", None, 0, 0, "", 0,
+     "En el próximo /cta te podés anotar en el rol que quieras.", 0),
+    ("sell_cooldown", "Cancelar cooldown de cobro", "common", 7000, "Bot", "sell_cooldown", 0, 0, "", 0,
+     "Te saca el cooldown de «Cobrar balance». Si no tenés cooldown, la carta no se gasta.", 0),
+    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 7000, "Bot", None, 0, 0, "", 0,
+     "Te llega un mensaje temporal con la foto.", 0),
+    ("wuju_100k", "100.000 Wuju Coins", "common", 3500, "Bot", "wuju", 100_000, 100_000, "wuju", 0,
+     "Se acreditan al instante en tu balance.", 0),
+    ("embo_50", "50 de embo", "common", 1500, "Bot", "embo", 50, 50, "embo", 0,
+     "Se acreditan al instante en tu balance de embo.", 0),
+    ("party_switch", "Staff a tu elección en la CTA", "common", 3000, "Bot", None, 0, 0, "", 1,
+     "En una CTA activa, elegís a alguien del Staff y el slot libre donde tiene que jugar." + SHIELD_NOTE, 0),
+    ("mute_chat_5", "Mute de chat 5 min", "common", 2000, "Bot", None, 0, 0, "", 1,
+     "Le muteás el chat a un jugador por 5 minutos." + SHIELD_NOTE, 0),
+    ("mute_voice_5", "Mute de voice 5 min", "common", 2000, "Bot", None, 0, 0, "", 1,
+     "Muteás a un jugador en el voice por 5 minutos." + SHIELD_NOTE, 0),
+    ("shield_1h", "🛡️ Escudo 1 h", "common", 2000, "Bot", None, 0, 0, "", 0,
+     "Durante 1 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
+    ("clean_chat", "🧹 Limpiar mute de chat", "common", 1500, "Bot", None, 0, 0, "", 0,
+     "Te saca un mute de chat (también el autosilencio). Si no tenés, no se gasta.", 0),
+    ("clean_voice", "🧹 Limpiar mute de voice", "common", 1500, "Bot", None, 0, 0, "", 0,
+     "Te saca un mute de voice (también el autosilencio). Si no tenés, no se gasta.", 0),
+    ("bad_cd_4h", "☠️ Cooldown de cobro +4 h", "common", 1000, "Bot", None, 0, 0, "", 0,
+     "Carta mala: suma 4 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔵 Raras — 35 %
-    ("mute_15", "Silenciar miembro de Discord durante 15 minutos", "rare", 4500, "Bot", None, 0, 0, "", 1),
-    ("voice_mute_15", "Silenciar del voice durante 15 minutos", "rare", 2500, "Bot", None, 0, 0, "", 1),
-    ("undo_coinflip", "Deshacer Coinflip", "rare", 4500, "Bot", None, 0, 0, "", 1),
-    ("casino_open", "Abrir el casino", "rare", 3500, "Bot", None, 0, 0, "", 0),
-    ("casino_close", "Cerrar el casino", "rare", 3500, "Bot", None, 0, 0, "", 0),
-    ("plot_tax0", "Tax 0 en plots durante 24 horas", "rare", 2500, "Staff", None, 0, 0, "", 0),
-    ("free_build_p1", "Build libre en Party PRIO 1", "rare", 3500, "Staff", None, 0, 0, "", 0),
-    ("craft_alter_7d", "Alter de crafteo durante 7 días", "rare", 2000, "Staff", None, 0, 0, "", 0),
-    ("party1_slot", "Ocupar un slot de Party 1", "rare", 3500, "Staff", None, 0, 0, "", 0),
-    ("wuju_500k", "500.000 Wuju Coins", "rare", 2000, "Bot", "wuju", 500_000, 500_000, "wuju", 0),
-    ("embo_100", "100 de balance de embo", "rare", 2000, "Bot", "embo", 100, 100, "embo", 0),
-    ("freeze_30m", "Congelar balance de otro jugador durante 30 minutos", "rare", 1000, "Bot", None, 0, 0, "", 1),
+    ("mute_15", "Mute de chat 15 min", "rare", 2500, "Bot", None, 0, 0, "", 1,
+     "Le muteás el chat a un jugador por 15 minutos." + SHIELD_NOTE, 0),
+    ("voice_mute_15", "Mute de voice 15 min", "rare", 1500, "Bot", None, 0, 0, "", 1,
+     "Muteás a un jugador en el voice por 15 minutos." + SHIELD_NOTE, 0),
+    ("undo_coinflip", "Coinflip hasta 10M", "rare", 4000, "Bot", None, 0, 0, "", 0,
+     "Un coinflip del casino con apuesta máxima de 10M. Rigen todas las reglas del coinflip.", 0),
+    ("casino_open", "Abrir el casino", "rare", 2000, "Bot", None, 0, 0, "", 0,
+     "Abrís el casino si está cerrado.", 0),
+    ("casino_close", "Cerrar el casino", "rare", 2000, "Bot", None, 0, 0, "", 0,
+     "Cerrás el casino si está abierto.", 0),
+    ("plot_tax0", "Tax 0 en plots 24 h", "rare", 2500, "Staff", None, 0, 0, "", 0,
+     "Tus plots sin tax durante 24 horas.", 0),
+    ("free_build_p1", "Build libre en Party PRIO 1", "rare", 2000, "Staff", None, 0, 0, "", 0,
+     "En Party PRIO 1 jugás con la build que quieras.", 0),
+    ("party1_slot", "Slot libre en Party 1", "rare", 2500, "Bot", None, 0, 0, "", 0,
+     "Te anotás en Party 1 en cualquier rol libre, sin la espera de 5 min de Legacy.", 0),
+    ("wuju_500k", "500.000 Wuju Coins", "rare", 4000, "Bot", "wuju", 500_000, 500_000, "wuju", 0,
+     "Se acreditan al instante en tu balance.", 0),
+    ("embo_100", "100 de embo", "rare", 2000, "Bot", "embo", 100, 100, "embo", 0,
+     "Se acreditan al instante en tu balance de embo.", 0),
+    ("freeze_30m", "Congelar balance 30 min", "rare", 1000, "Bot", None, 0, 0, "", 1,
+     "Durante 30 min el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
+     + SHIELD_NOTE, 0),
+    ("shield_3h", "🛡️ Escudo 3 h", "rare", 1500, "Bot", None, 0, 0, "", 0,
+     "Durante 3 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
+    ("clean_freeze", "🧹 Limpiar congelamiento", "rare", 1000, "Bot", None, 0, 0, "", 0,
+     "Te descongela el balance (si te lo congeló una carta). Si no estás congelado, no se gasta.", 0),
+    ("wjp_freeze_1h", "❄️ Congelar Wujupón 1 h", "rare", 1000, "Bot", None, 0, 0, "", 1,
+     "Durante 1 h el jugador no puede tirar, comprar ni usar cartas. No pierde nada." + SHIELD_NOTE, 0),
+    ("bad_wuju_100k", "☠️ −100.000 Wuju Coins", "rare", 1200, "Bot", None, 100_000, -100_000, "wuju", 0,
+     "Carta mala: se te descuentan 100.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_embo_15", "☠️ −15 de embo", "rare", 800, "Bot", None, 15, -15, "embo", 0,
+     "Carta mala: se te descuentan 15 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_wuju_300k", "☠️ −300.000 Wuju Coins", "rare", 600, "Bot", None, 300_000, -300_000, "wuju", 0,
+     "Carta mala: se te descuentan 300.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_embo_30", "☠️ −30 de embo", "rare", 400, "Bot", None, 30, -30, "embo", 0,
+     "Carta mala: se te descuentan 30 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_selfmute_chat_5", "☠️ Te silenciás el chat 5 min", "rare", 600, "Bot", None, 0, 0, "", 0,
+     "Carta mala: quedás muteado del chat 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_selfmute_chat_15", "☠️ Te silenciás el chat 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
+     "Carta mala: quedás muteado del chat 15 minutos. Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_selfmute_voice_5", "☠️ Te silenciás el voice 5 min", "rare", 600, "Bot", None, 0, 0, "", 0,
+     "Carta mala: quedás muteado del voice 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_selfmute_voice_15", "☠️ Te silenciás el voice 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
+     "Carta mala: quedás muteado del voice 15 minutos. Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_cd_8h", "☠️ Cooldown de cobro +8 h", "rare", 500, "Bot", None, 0, 0, "", 0,
+     "Carta mala: suma 8 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🟣 Épicas — 15,2 %
-    ("regear_4m", "Reequipo de próxima CTA (presupuesto 4M)", "epic", 600, "Staff", None, 0, 4_000_000, "silver", 0),
-    ("mount_escort", "Porte con montura libre y escolta", "epic", 1700, "Staff", None, 0, 0, "", 0),
-    ("loot_3_items", "Tres ítems de loot (valor estimado 7M)", "epic", 500, "Staff", None, 0, 7_000_000, "silver", 0),
-    ("repair_4m", "Ticket reparación hasta 4M", "epic", 700, "Staff", None, 0, 4_000_000, "silver", 0),
-    ("ava_replace", "Reemplazar a alguien en una Avalonian antes de salir", "epic", 1700, "Staff", None, 0, 0, "", 1),
-    ("caerleon_port", "Porte a Caerleon", "epic", 1100, "Staff", None, 0, 0, "", 0),
-    ("duel_1v1", "Duelo 1v1 especial", "epic", 2300, "Bot", None, 0, 0, "", 1),
-    ("ho_house", "Reclamar una casa del HO", "epic", 700, "Staff", None, 0, 0, "", 0),
-    ("lootsplit_remove", "Sacar a un jugador del lootsplit de la última CTA", "epic", 1300, "Staff", None, 0, 0, "", 1),
-    ("weapon_73", "Arma 7.3 de Guild Shop (valor 8M)", "epic", 600, "Staff", None, 0, 8_000_000, "silver", 0),
-    ("wuju_2m", "2.000.000 Wuju Coins", "epic", 300, "Bot", "wuju", 2_000_000, 2_000_000, "wuju", 0),
-    ("embo_500", "500 de balance de embo", "epic", 650, "Bot", "embo", 500, 500, "embo", 0),
-    ("freeze_2h", "Congelar balance de otro jugador durante 2 horas", "epic", 750, "Bot", None, 0, 0, "", 1),
-    ("split_no_join", "Recibir split de una CTA del día sin participar", "epic", 1000, "Staff", None, 0, 0, "", 0),
-    ("cta_free_mount", "CTA con montura libre (aportada por el jugador)", "epic", 1300, "Staff", None, 0, 0, "", 0),
+    ("regear_4m", "Reequipo próxima CTA (4M)", "epic", 600, "Staff", None, 0, 4_000_000, "silver", 0,
+     "Te reequipan para la próxima CTA con un presupuesto de hasta 4M.", 0),
+    ("mount_escort", "Porte con montura y escolta", "epic", 850, "Staff", None, 0, 0, "", 0,
+     "Un porte con montura libre y escolta del staff.", 0),
+    ("loot_3_items", "Tres ítems de loot (7M)", "epic", 500, "Staff", None, 0, 7_000_000, "silver", 0,
+     "Tres ítems del loot por un valor estimado de 7M.", 0),
+    ("repair_4m", "Ticket de reparación (4M)", "epic", 700, "Staff", None, 0, 4_000_000, "silver", 0,
+     "Te cubren la reparación hasta 4M.", 0),
+    ("ava_replace", "Reemplazo en Avalonian", "epic", 1100, "Staff", None, 0, 0, "", 1,
+     "Reemplazás a alguien en una Avalonian antes de que salga.", 0),
+    ("caerleon_port", "Porte a Caerleon", "epic", 800, "Staff", None, 0, 0, "", 0,
+     "Te portean a Caerleon.", 0),
+    ("duel_1v1", "Duelo 1v1 especial", "epic", 1600, "Bot", None, 0, 0, "", 1,
+     "Retás a alguien del Top 10 de apostado; se anuncia con @here. Tiene 24 h para aceptar o pierde el 5 % de su balance. "
+     "Tope 200M." + SHIELD_NOTE, 0),
+    ("ho_house", "Casa del HO", "epic", 400, "Staff", None, 0, 0, "", 0,
+     "Reclamás una casa del HO.", 0),
+    ("lootsplit_remove", "Sacar del lootsplit", "epic", 1000, "Staff", None, 0, 0, "", 1,
+     "Sacás a un jugador del lootsplit de la última CTA." + SHIELD_NOTE, 0),
+    ("weapon_73", "Arma 7.3 del Guild Shop (8M)", "epic", 600, "Staff", None, 0, 8_000_000, "silver", 0,
+     "Un arma 7.3 del Guild Shop de hasta 8M.", 0),
+    ("wuju_2m", "2.000.000 Wuju Coins", "epic", 750, "Bot", "wuju", 2_000_000, 2_000_000, "wuju", 0,
+     "Se acreditan al instante en tu balance.", 0),
+    ("embo_500", "500 de embo", "epic", 650, "Bot", "embo", 500, 500, "embo", 0,
+     "Se acreditan al instante en tu balance de embo.", 0),
+    ("freeze_2h", "Congelar balance 2 h", "epic", 600, "Bot", None, 0, 0, "", 1,
+     "Durante 2 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
+     + SHIELD_NOTE, 0),
+    ("split_no_join", "Split sin participar", "epic", 800, "Staff", None, 0, 0, "", 0,
+     "Cobrás el split de una CTA del día sin haber ido.", 0),
+    ("cta_free_mount", "CTA con montura libre", "epic", 500, "Staff", None, 0, 0, "", 0,
+     "Vas a una CTA con la montura que quieras (la ponés vos).", 0),
+    ("coinflip_15m", "Coinflip hasta 15M", "epic", 850, "Bot", None, 0, 0, "", 0,
+     "Un coinflip del casino con apuesta máxima de 15M. Rigen todas las reglas del coinflip.", 0),
+    ("morgana_chest", "Cofre de Morgana en el HO", "epic", 600, "Staff", None, 0, 0, "", 0,
+     "Ponés un cofre de Morgana en el HO, sobre un spot que no sea de la guild.", 0),
+    ("mute_chat_30", "Mute de chat 30 min", "epic", 300, "Bot", None, 0, 0, "", 1,
+     "Le muteás el chat a un jugador por 30 minutos." + SHIELD_NOTE, 0),
+    ("mute_voice_30", "Mute de voice 30 min", "epic", 300, "Bot", None, 0, 0, "", 1,
+     "Muteás a un jugador en el voice por 30 minutos." + SHIELD_NOTE, 0),
+    ("shield_12h", "🛡️ Escudo 12 h", "epic", 600, "Bot", None, 0, 0, "", 0,
+     "Durante 12 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
+    ("clean_all", "🧹 Limpieza total", "epic", 400, "Bot", None, 0, 0, "", 0,
+     "Te saca mutes de chat y voice, el congelamiento de balance y el de Wujupón. Si no tenés nada, no se gasta.", 0),
+    ("wjp_freeze_6h", "❄️ Congelar Wujupón 6 h", "epic", 400, "Bot", None, 0, 0, "", 1,
+     "Durante 6 h el jugador no puede tirar, comprar ni usar cartas. No pierde nada." + SHIELD_NOTE, 0),
+    ("bad_cd_12h", "☠️ Cooldown de cobro +12 h", "epic", 300, "Bot", None, 0, 0, "", 0,
+     "Carta mala: suma 12 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🟠 Legendarias — 4,6 %
-    ("guild_kick", "Kick de un miembro de la guild", "legendary", 100, "Staff", None, 0, 0, "", 1),
-    ("weapon_83", "Arma 8.3 hasta 12M", "legendary", 250, "Staff", None, 0, 12_000_000, "silver", 0),
-    ("wuju_15m", "Jackpot de 15M Wuju Coins", "legendary", 250, "Bot", "wuju", 15_000_000, 15_000_000, "wuju", 0),
-    ("regear_full_5m", "Reequipo completo de CTA (presupuesto 5M)", "legendary", 400, "Staff", None, 0, 5_000_000, "silver", 0),
-    ("custom_bomb", "Bomb personalizada con 5 personas a elección", "legendary", 1200, "Staff", None, 0, 0, "", 0),
-    ("embo_1000", "1.000 de balance de embo", "legendary", 300, "Bot", "embo", 1000, 1000, "embo", 0),
-    ("freeze_12h", "Congelar balance de otro jugador durante 12 horas", "legendary", 400, "Bot", None, 0, 0, "", 1),
-    ("deny_cta", "Denegar una CTA a un jugador", "legendary", 600, "Staff", None, 0, 0, "", 1),
-    ("guild_desc_1d", "Cambiar la descripción de la guild durante 1 día", "legendary", 500, "Staff", None, 0, 0, "", 0),
-    ("staff_build", "Elegirle la build a un miembro del staff", "legendary", 600, "Staff", None, 0, 0, "", 1),
+    ("guild_kick", "Kick de la guild", "legendary", 100, "Staff", None, 0, 0, "", 1,
+     "Sacás a un miembro de la guild. Requiere aprobación del Council." + SHIELD_NOTE, 0),
+    ("weapon_83", "Arma 8.3 (hasta 12M)", "legendary", 250, "Staff", None, 0, 12_000_000, "silver", 0,
+     "Un arma 8.3 de hasta 12M.", 0),
+    ("wuju_15m", "Jackpot 15M Wuju Coins", "legendary", 450, "Bot", "wuju", 15_000_000, 15_000_000, "wuju", 0,
+     "Se acreditan al instante en tu balance.", 0),
+    ("regear_full_5m", "Reequipo completo (5M)", "legendary", 400, "Staff", None, 0, 5_000_000, "silver", 0,
+     "Reequipo completo para una CTA, con presupuesto de hasta 5M.", 0),
+    ("custom_bomb", "Bomb personalizada", "legendary", 500, "Staff", None, 0, 0, "", 0,
+     "Armás una bomb con 5 personas a elección.", 0),
+    ("embo_1000", "1.000 de embo", "legendary", 300, "Bot", "embo", 1000, 1000, "embo", 0,
+     "Se acreditan al instante en tu balance de embo.", 0),
+    ("freeze_12h", "Congelar balance 12 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
+     "Durante 12 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
+     + SHIELD_NOTE, 0),
+    ("deny_cta", "Denegar una CTA", "legendary", 300, "Staff", None, 0, 0, "", 1,
+     "Un jugador no puede ir a una CTA." + SHIELD_NOTE, 0),
+    ("guild_desc_1d", "Descripción de la guild 1 día", "legendary", 200, "Staff", None, 0, 0, "", 0,
+     "Elegís la descripción de la guild durante 1 día.", 0),
+    ("staff_build", "Elegirle la build a un staff", "legendary", 250, "Staff", None, 0, 0, "", 1,
+     "Elegís la build que va a usar alguien del staff." + SHIELD_NOTE, 0),
+    ("craft_alter_7d", "Alter de crafteo 7 días", "legendary", 400, "Staff", None, 0, 0, "", 0,
+     "Un alter de crafteo durante 7 días.", 0),
+    ("coinflip_20m", "Coinflip hasta 20M", "legendary", 350, "Bot", None, 0, 0, "", 0,
+     "Un coinflip del casino con apuesta máxima de 20M. Rigen todas las reglas del coinflip.", 0),
+    ("mute_chat_60", "Mute de chat 1 h", "legendary", 100, "Bot", None, 0, 0, "", 1,
+     "Le muteás el chat a un jugador por 1 hora." + SHIELD_NOTE, 0),
+    ("mute_voice_60", "Mute de voice 1 h", "legendary", 100, "Bot", None, 0, 0, "", 1,
+     "Muteás a un jugador en el voice por 1 hora." + SHIELD_NOTE, 0),
+    ("shield_24h", "🛡️ Escudo 24 h", "legendary", 200, "Bot", None, 0, 0, "", 0,
+     "Durante 24 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
+    ("purge_shield", "💥 Purgar escudo", "legendary", 150, "Bot", None, 0, 0, "", 1,
+     "Le rompés el escudo a otro jugador. No funciona contra los inmunes. Si no tiene escudo, no se gasta.", 0),
+    ("wjp_freeze_24h", "❄️ Congelar Wujupón 24 h", "legendary", 150, "Bot", None, 0, 0, "", 1,
+     "Durante 24 h el jugador no puede tirar, comprar ni usar cartas. No pierde nada." + SHIELD_NOTE, 0),
+    ("bad_cd_24h", "☠️ Cooldown de cobro +24 h", "legendary", 100, "Bot", None, 0, 0, "", 0,
+     "Carta mala: suma 24 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔴 Míticas — 0,2 %
-    ("premium_30m", "Premio equivalente a Premium de Albion (30M VAL)", "mythic", 75, "Staff", None, 0, 30_000_000, "val", 0),
-    ("freeze_24h", "Congelar balance de otro jugador durante 24 horas", "mythic", 125, "Bot", None, 0, 0, "", 1),
+    ("premium_30m", "Premium de Albion (30M VAL)", "mythic", 70, "Staff", None, 0, 30_000_000, "val", 0,
+     "Un premio equivalente a Premium de Albion (30M VAL).", 0),
+    ("freeze_24h", "Congelar balance 24 h", "mythic", 60, "Bot", None, 0, 0, "", 1,
+     "Durante 24 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
+     + SHIELD_NOTE, 0),
+    ("coinflip_nolimit", "Coinflip sin límite", "mythic", 20, "Bot", None, 0, 0, "", 0,
+     "Un coinflip del casino sin tope de apuesta. Rigen todas las reglas del coinflip.", 0),
+    ("mute_chat_180", "Mute de chat 3 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
+     "Le muteás el chat a un jugador por 3 horas." + SHIELD_NOTE, 0),
+    ("mute_voice_180", "Mute de voice 3 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
+     "Muteás a un jugador en el voice por 3 horas." + SHIELD_NOTE, 0),
+    ("shield_4d", "🛡️ Escudo 4 días", "mythic", 20, "Bot", None, 0, 0, "", 0,
+     "Durante 4 días nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
+    ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
+     "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
+CATALOG_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS wjp_prizes (
@@ -108,7 +241,9 @@ CREATE TABLE IF NOT EXISTS wjp_prizes (
     description   TEXT NOT NULL DEFAULT '',
     custom        INTEGER NOT NULL DEFAULT 0,   -- 1 = carta creada desde el bot (/wujupon carta-agregar)
     name_edited   INTEGER NOT NULL DEFAULT 0,   -- 1 = el Council cambió el nombre: el catálogo del código ya no lo pisa
-    odds_edited   INTEGER NOT NULL DEFAULT 0    -- 1 = el Council cambió la probabilidad o la rareza: tampoco se pisan
+    odds_edited   INTEGER NOT NULL DEFAULT 0,   -- 1 = el Council cambió la probabilidad o la rareza: tampoco se pisan
+    desc_edited   INTEGER NOT NULL DEFAULT 0,   -- 1 = el Council cambió la descripción
+    forced        INTEGER NOT NULL DEFAULT 0    -- 1 = carta mala: se aplica sola al salir (va directo al Council)
 );
 CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS wjp_spins (
@@ -207,6 +342,7 @@ class Prize:
     enabled: bool
     description: str = ""
     custom: bool = False
+    forced: bool = False
 
     @property
     def automatic(self) -> bool:
@@ -286,20 +422,32 @@ def init_schema(db_path: str) -> None:
         conn.executescript(SCHEMA)
         cols = {c["name"] for c in conn.execute("PRAGMA table_info(wjp_prizes)").fetchall()}
         for col, ddl in (("description", "TEXT NOT NULL DEFAULT ''"), ("custom", "INTEGER NOT NULL DEFAULT 0"),
-                         ("name_edited", "INTEGER NOT NULL DEFAULT 0"), ("odds_edited", "INTEGER NOT NULL DEFAULT 0")):
+                         ("name_edited", "INTEGER NOT NULL DEFAULT 0"), ("odds_edited", "INTEGER NOT NULL DEFAULT 0"),
+                         ("desc_edited", "INTEGER NOT NULL DEFAULT 0"), ("forced", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE wjp_prizes ADD COLUMN {col} {ddl}")
         with write_tx(conn):
-            for i, (key, name, rarity, weight, origin, handler, amount, cost, cur, third) in enumerate(CATALOG):
-                # INSERT OR IGNORE: lo que el Council habilitó/deshabilitó se conserva; nombre, peso y handler siguen al código.
+            conn.execute("CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT)")
+            v = conn.execute("SELECT value FROM wjp_settings WHERE key = 'catalog_version'").fetchone()
+            if v is None or int(v["value"] or 0) < CATALOG_VERSION:
+                # Catálogo nuevo: se aplica completo (nombres, descripciones, probabilidades y rarezas), aunque el Council
+                # haya editado alguna carta del catálogo anterior. Las cartas creadas desde el bot no se tocan.
+                conn.execute("UPDATE wjp_prizes SET name_edited = 0, odds_edited = 0, desc_edited = 0 WHERE custom = 0")
+                conn.execute("INSERT OR REPLACE INTO wjp_settings(key, value) VALUES ('catalog_version', ?)", (str(CATALOG_VERSION),))
+            for i, (key, name, rarity, weight, origin, handler, amount, cost, cur, third, desc, forced) in enumerate(CATALOG):
+                # INSERT OR IGNORE: lo que el Council habilitó/deshabilitó se conserva; lo editado desde el bot no se pisa.
                 conn.execute("INSERT OR IGNORE INTO wjp_prizes(key, name, rarity, weight, origin, handler, amount, cost, cost_currency, "
-                             "third_party, enabled, sort) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
-                             (key, name, rarity, weight, origin, handler, amount, cost, cur, third, i))
+                             "third_party, enabled, sort, description, forced) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+                             (key, name, rarity, weight, origin, handler, amount, cost, cur, third, i, desc, forced))
                 conn.execute("UPDATE wjp_prizes SET name = CASE WHEN name_edited = 1 THEN name ELSE ? END, "
                              "rarity = CASE WHEN odds_edited = 1 THEN rarity ELSE ? END, "
-                             "weight = CASE WHEN odds_edited = 1 THEN weight ELSE ? END, origin=?, "
-                             "handler=?, amount=?, cost=?, cost_currency=?, third_party=?, sort=? WHERE key=? AND custom = 0",
-                             (name, rarity, weight, origin, handler, amount, cost, cur, third, i, key))
+                             "weight = CASE WHEN odds_edited = 1 THEN weight ELSE ? END, "
+                             "description = CASE WHEN desc_edited = 1 THEN description ELSE ? END, origin=?, "
+                             "handler=?, amount=?, cost=?, cost_currency=?, third_party=?, forced=?, sort=? WHERE key=? AND custom = 0",
+                             (name, rarity, weight, desc, origin, handler, amount, cost, cur, third, forced, i, key))
+            keys = [c[0] for c in CATALOG]
+            # premios del código que ya no existen: quedan deshabilitados (sus cartas siguen visibles en el historial)
+            conn.execute(f"UPDATE wjp_prizes SET enabled = 0 WHERE custom = 0 AND key NOT IN ({','.join('?' * len(keys))})", keys)
     finally:
         conn.close()
     _ready.add(db_path)
@@ -309,7 +457,8 @@ def _prize(r) -> Prize:
     keys = r.keys()
     return Prize(r["key"], r["name"], r["rarity"], int(r["weight"]), r["origin"], r["handler"], int(r["amount"]), int(r["cost"]),
                  r["cost_currency"], bool(r["third_party"]), bool(r["enabled"]),
-                 (r["description"] or "") if "description" in keys else "", bool(r["custom"]) if "custom" in keys else False)
+                 (r["description"] or "") if "description" in keys else "", bool(r["custom"]) if "custom" in keys else False,
+                 bool(r["forced"]) if "forced" in keys else False)
 
 
 def _open(db_path: str) -> sqlite3.Connection:
@@ -447,7 +596,7 @@ def edit_prize(db_path: str, key: str, *, actor_id: int, name: Optional[str] = N
                 changes.append(f"nombre: {before.name} → {new_name}")
             if description is not None:
                 new_desc = "" if description.strip().lower() in ("-", "quitar", "borrar") else _clean_text(description, MAX_DESC, "La descripción")
-                conn.execute("UPDATE wjp_prizes SET description = ? WHERE key = ?", (new_desc, key))
+                conn.execute("UPDATE wjp_prizes SET description = ?, desc_edited = 1 WHERE key = ?", (new_desc, key))
                 changes.append("descripción actualizada" if new_desc else "descripción quitada")
             _log(conn, actor_id, "prize_edited", ref=key, detail=" · ".join(changes))
             return before, _prize(conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (key,)).fetchone())
@@ -697,6 +846,7 @@ class PullResult:
     weight: int = 0
     total_weight: int = 0
     spins_left: int = 0
+    request_id: Optional[int] = None  # carta mala: encargo creado solo para el Council
 
 
 def draw(prizes: List[Prize], rng=None) -> Tuple[Prize, int]:
@@ -735,7 +885,18 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
             pull_id = conn.execute("INSERT INTO wjp_pulls(request_key, user_id, prize_key, rarity, weight, total_weight, card_id, created_at) "
                                    "VALUES (?,?,?,?,?,?,?,?)",
                                    (request_key, user_id, prize.key, prize.rarity, prize.weight, total, card_id, now)).lastrowid
-            return PullResult("ok", prize, int(card_id), int(pull_id), prize.weight, total, left)
+            req_id = None
+            if prize.forced:
+                # Carta mala: no se guarda para «usar»; queda reservada y va directo al Council para que la aplique
+                # (hasta que el bot lo haga solo). Si el jugador tenía escudo, el Council la rechaza y se consume.
+                conn.execute("UPDATE wjp_cards SET status = 'reserved' WHERE id = ?", (card_id,))
+                req_id = conn.execute("INSERT INTO wjp_requests(request_key, card_id, user_id, prize_key, details, status, note, "
+                                      "created_at, updated_at) VALUES (?,?,?,?,?,'pending','',?,?)",
+                                      (f"forced:{request_key}", card_id, user_id, prize.key,
+                                       "☠️ Carta mala: aplicarla al jugador que la sacó (salvo que tenga escudo o sea inmune).",
+                                       now, now)).lastrowid
+            return PullResult("ok", prize, int(card_id), int(pull_id), prize.weight, total, left,
+                              int(req_id) if req_id else None)
     finally:
         conn.close()
 
@@ -1009,6 +1170,9 @@ def _transition(db_path: str, req_id: int, actor_id: int, action: str, *, refund
                              "updated_at = ? WHERE id = ?", (actor_id, actor_id, now, req_id))
                 conn.execute("UPDATE wjp_cards SET status = 'consumed', updated_at = ? WHERE id = ?", (now, req.card_id))
             elif action == "reject":
+                forced = conn.execute("SELECT forced FROM wjp_prizes WHERE key = ?", (req.prize_key,)).fetchone()
+                if forced is not None and forced["forced"]:
+                    refund = False                     # una carta mala nunca vuelve al inventario
                 conn.execute("UPDATE wjp_requests SET status = 'rejected', rejected_by = ?, refunded = ?, note = ?, updated_at = ? "
                              "WHERE id = ?", (actor_id, int(refund), note[:500], now, req_id))
                 conn.execute("UPDATE wjp_cards SET status = ?, updated_at = ? WHERE id = ?",

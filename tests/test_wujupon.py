@@ -57,10 +57,12 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(by, {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
     def test_costo_esperado(self):
-        prizes = [wdb.Prize(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], bool(c[9]), True) for c in wdb.CATALOG]
+        prizes = [wdb.Prize(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], bool(c[9]), True, c[10], False, bool(c[11]))
+                  for c in wdb.CATALOG]
         exp = wdb.expected_cost(prizes)
         silver = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE
-        self.assertAlmostEqual(silver + exp["val"], 353_500, places=3)
+        self.assertAlmostEqual(silver + exp["val"], 396_600, places=3)      # margen ≈ 20,7 % con la tirada a 500.000
+        self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
     def test_texto_de_chance(self):
         self.assertEqual(wdb.chance_text(75), "0,075 %")
@@ -242,7 +244,7 @@ class CartasEditablesTests(DbBase):
         wdb._ready.discard(self.db)          # simula un reinicio del bot: vuelve a sembrar el catálogo
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "caerleon_port")
-        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 1100))
+        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 800))
         _, cleared = wdb.edit_prize(self.db, "caerleon_port", actor_id=1, description="quitar")
         self.assertEqual(cleared.description, "")
 
@@ -264,19 +266,19 @@ class CartasEditablesTests(DbBase):
         conn.close()
         wdb.init_schema(db)
         self.assertEqual(len(wdb.list_prizes(db)), len(wdb.CATALOG))
-        self.assertEqual(wdb.get_prize(db, "caerleon_port").description, "")
+        self.assertEqual(wdb.get_prize(db, "caerleon_port").description, "Te portean a Caerleon.")
 
 
 class ProbabilidadLimiteLimpiezaTests(DbBase):
     def test_cambiar_probabilidad_y_rareza_sobrevive_reinicio(self):
         before, after = wdb.set_prize_odds(self.db, "caerleon_port", actor_id=1, weight=2000, rarity="legendary")
-        self.assertEqual((before.weight, before.rarity), (1100, "epic"))
+        self.assertEqual((before.weight, before.rarity), (800, "epic"))
         self.assertEqual((after.weight, after.rarity), (2000, "legendary"))
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "caerleon_port")
         self.assertEqual((p.weight, p.rarity), (2000, "legendary"))
-        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 900)
+        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 1200)
         self.assertEqual(wdb.rarity_totals(self.db)["legendary"], 4600 + 2000)
 
     def test_cambiar_probabilidad_cambia_el_sorteo(self):
@@ -338,6 +340,69 @@ class ProbabilidadLimiteLimpiezaTests(DbBase):
         res2 = wdb.wipe_all_cards(self.db, actor_id=1, include_spins=True)
         self.assertEqual((res2.cards, res2.spins), (0, 4))
         self.assertEqual(wdb.get_spins(self.db, 5), 0)
+
+
+class CatalogoV2Tests(DbBase):
+    def test_carta_mala_va_directo_al_council(self):
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
+        r = wdb.pull(self.db, 5, "p", rng=FixedRng(offset_of("bad_wuju_300k")))
+        self.assertEqual(r.prize.key, "bad_wuju_300k")
+        self.assertTrue(r.prize.forced)
+        self.assertIsNotNone(r.request_id)
+        self.assertEqual(wdb.get_card(self.db, r.card_id).status, "reserved")
+        self.assertEqual(wdb.get_request(self.db, r.request_id).status, "pending")
+        # no se puede «canjear» desde el inventario
+        self.assertEqual(wdb.redeem(self.db, card_id=r.card_id, user_id=5, details="", request_key="x", guild_id=GUILD_ID).status,
+                         "not_available")
+        # aunque el Council pida devolverla, una carta mala nunca vuelve al inventario
+        ch = wdb.reject_request(self.db, r.request_id, 77, refund=True, note="tenía escudo")
+        self.assertFalse(ch.request.refunded)
+        self.assertEqual(wdb.get_card(self.db, r.card_id).status, "consumed")
+        self.assertEqual(eco.get_balance(self.db, 5), 0)          # nada automático: no se descontó solo
+
+    def test_cartas_buenas_no_crean_encargo_solas(self):
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
+        r = wdb.pull(self.db, 5, "p", rng=FixedRng(offset_of("shield_1h")))
+        self.assertIsNone(r.request_id)
+        self.assertEqual(wdb.get_card(self.db, r.card_id).status, "available")
+
+    def test_nada_nuevo_es_automatico(self):
+        auto = {c[0] for c in wdb.CATALOG if c[5]}
+        self.assertEqual(auto, {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
+                                "wuju_15m", "embo_1000"})
+
+    def test_descripciones_y_nombres_cortos(self):
+        for c in wdb.CATALOG:
+            self.assertTrue(c[10], c[0])
+            self.assertLessEqual(len(c[1]), 40, c[0])
+            self.assertLessEqual(len(c[10]), 200, c[0])
+        self.assertIn("Top 10", wdb.get_prize(self.db, "duel_1v1").description)
+
+    def test_migracion_aplica_el_catalogo_nuevo_una_vez(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_prizes SET name = 'Viejo', weight = 1, name_edited = 1, odds_edited = 1 WHERE key = 'flex_cta'")
+        conn.execute("UPDATE wjp_settings SET value = '1' WHERE key = 'catalog_version'")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        p = wdb.get_prize(self.db, "flex_cta")
+        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 7000))
+        # una edición posterior del Council se mantiene en los reinicios siguientes
+        wdb.edit_prize(self.db, "flex_cta", actor_id=1, name="Flex", description="Mía")
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        p = wdb.get_prize(self.db, "flex_cta")
+        self.assertEqual((p.name, p.description), ("Flex", "Mía"))
+
+    def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
+        conn = connect(self.db)
+        conn.execute("INSERT INTO wjp_prizes(key, name, rarity, weight, origin, cost_currency, enabled, sort) "
+                     "VALUES ('viejo', 'Viejo', 'rare', 100, 'Staff', '', 1, 999)")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        self.assertFalse(wdb.get_prize(self.db, "viejo").enabled)
+        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT)
 
 
 class SellCooldownTests(DbBase):
@@ -439,7 +504,8 @@ class WujuponDiscordTests(DiscordBase):
         run(go())
         self.assertEqual((i.deleted, i2.deleted), (1, 1))
         self.assertIn("se borra en", i.response.sent[0][1]["embed"].footer)
-        self.assertEqual(wdb.inventory(self.db, self.alice.id)[0].available, 1)   # la carta sigue en el inventario
+        inv = wdb.inventory(self.db, self.alice.id)[0]
+        self.assertEqual(inv.available + inv.reserved, 1)                          # la carta sigue guardada
 
     def test_sin_borrado_si_esta_desactivado(self):
         import asyncio
@@ -496,8 +562,12 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIsInstance(self.panelch.sent[-1].view, wj.PanelView)
         i = self.inter(self.alice)
         run(self.cog.show_prizes(i))
-        embeds = i.response.sent[0][1]["embeds"]
-        self.assertEqual(len(embeds), 5)
+        embeds = [e for _, kw in i.response.sent for e in kw.get("embeds", [])]
+        for _, kw in i.response.sent:
+            self.assertLessEqual(sum(len(e) for e in kw["embeds"]), 6000)
+        self.assertEqual({e.title.split(" — ")[0] for e in embeds if "(cont.)" not in e.title},
+                         {f"{em} {n.upper()}" for n, em, _ in wdb.RARITIES.values()})   # una sección por rareza
+        self.assertTrue(all(len(e.description) <= 4096 for e in embeds))
         self.assertIn("45 %", embeds[0].title)
         wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="embo_50", reason="t")
         i = self.inter(self.alice)
@@ -569,7 +639,7 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.council)
         run(self.cog.odds_card.callback(self.cog, i, "flex_cta", "10", leg))
         self.assertIn("Legendaria", i.text)
-        self.assertIn("99 %", i.text)                                  # avisa que ya no suma 100 %
+        self.assertIn("103 %", i.text)                                 # avisa que ya no suma 100 %
         p = wdb.get_prize(self.db, "flex_cta")
         self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
 
@@ -603,7 +673,9 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIn("Premios de Wujupón", msgs[0].content)
         self.assertFalse(i.response.sent[0][1].get("ephemeral") is False)
         embeds = [e for m in msgs for e in m.embeds]
-        self.assertEqual(len(embeds), 5)
+        self.assertEqual({e.title.split(" — ")[0] for e in embeds if "(cont.)" not in e.title},
+                         {f"{em} {n.upper()}" for n, em, _ in wdb.RARITIES.values()})   # una sección por rareza
+        self.assertTrue(all(len(e.description) <= 4096 for e in embeds))
         self.assertIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))
         for m in msgs:
             self.assertLessEqual(sum(len(e) for e in m.embeds), 6000)
@@ -614,6 +686,20 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual([len(g) for g in groups], [1, 1, 1, 1])
         small = [discord.Embed(title=str(n)) for n in range(23)]
         self.assertEqual([len(g) for g in wj.pack_embeds(small)], [10, 10, 3])
+
+    def test_carta_mala_se_publica_en_el_council(self):
+        import random as _r
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        orig = wdb.draw
+        wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("bad_embo_15")))
+        try:
+            i = self.inter(self.alice)
+            run(self.cog.do_spin(i))
+        finally:
+            wdb.draw = orig
+        self.assertIn("Carta mala", i.response.sent[0][1]["embed"].footer)
+        msg = self.councilch.sent[-1]
+        self.assertIn("−15 de embo", str(msg.embeds[0].fields))
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")

@@ -26,6 +26,8 @@ def money(n: int) -> str:
 
 
 def prize_mode(p: wdb.Prize) -> str:
+    if p.forced:
+        return "☠️ se aplica sola (por ahora la aplica el Council)"
     if p.automatic:
         return "🤖 automático"
     if p.origin == "Bot":
@@ -43,8 +45,24 @@ def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: st
         emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
     if p.third_party:
         emb.add_field(name="⚠️", value="Afecta a otra persona: el Council puede rechazarla si no corresponde.", inline=False)
-    emb.set_footer(text="Guardala en tu inventario y canjeala cuando quieras desde 🎒 Mi inventario.")
+    if p.forced:
+        emb.set_footer(text="Carta mala: no va a tu inventario; se le avisó al Council para aplicarla.")
+    else:
+        emb.set_footer(text="Guardala en tu inventario y canjeala cuando quieras desde 🎒 Mi inventario.")
     return emb
+
+
+def _chunk_lines(lines: List[str], budget: int) -> List[str]:
+    blocks, cur, size = [], [], 0
+    for ln in lines:
+        if cur and size + len(ln) + 1 > budget:
+            blocks.append("\n".join(cur))
+            cur, size = [], 0
+        cur.append(ln)
+        size += len(ln) + 1
+    if cur:
+        blocks.append("\n".join(cur))
+    return blocks
 
 
 def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
@@ -56,15 +74,15 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
             continue
         name, emoji, color = wdb.RARITIES[rarity]
         share = sum(p.weight for p in group)
-        lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'🤖' if p.automatic else '🛠️'}"
+        lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'☠️' if p.forced else '🤖' if p.automatic else '🛠️'}"
                  + (" · ⚠️ terceros" if p.third_party else "")
-                 + (f"\n  ↳ {p.description[:150]}" if p.description else "") for p in group]
-        emb = discord.Embed(title=f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}", color=color,
-                            description="\n".join(lines)[:4000])
-        out.append(emb)
+                 + (f"\n  ↳ {p.description[:200]}" if p.description else "") for p in group]
+        title = f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}"
+        for n, block in enumerate(_chunk_lines(lines, 3900)):   # una rareza larga se parte en varios embeds
+            out.append(discord.Embed(title=title if n == 0 else f"{title} (cont.)", color=color, description=block))
     if out:
         out[-1].set_footer(text=f"Cada tirada cuesta {money(price)} · 🤖 canje automático · 🛠️ lo entrega el Council · "
-                                "⚠️ afecta a otra persona (requiere aprobación)")
+                                "☠️ carta mala, se aplica sola · ⚠️ afecta a otra persona (requiere aprobación)")
     return out
 
 
@@ -453,7 +471,9 @@ class WujuponCog(commands.Cog):
         final = card_embed(res.prize, res.card_id, res.weight, res.total_weight)
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
         if self.cleanup_delay:
-            final.set_footer(text=f"Ya quedó guardada en 🎒 Mi inventario · este mensaje se borra en {self.cleanup_delay} s.")
+            first = ("Carta mala: se le avisó al Council para aplicarla" if res.prize.forced
+                     else "Ya quedó guardada en 🎒 Mi inventario")
+            final.set_footer(text=f"{first} · este mensaje se borra en {self.cleanup_delay} s.")
         view = SpinAgainView(self, user.id, res.spins_left)
         animated = False
         if self.anim_delay > 0:
@@ -472,6 +492,8 @@ class WujuponCog(commands.Cog):
         if not animated:
             extra = await _say(interaction, embed=final, view=view)
         self._cleanup_later(interaction, extra)
+        if res.request_id:
+            await self.publish_request(res.request_id)   # carta mala: el loop de 60 s lo reintenta si falla
         try:
             await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
         except Exception:
