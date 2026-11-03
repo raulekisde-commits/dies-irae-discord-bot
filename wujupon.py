@@ -18,6 +18,7 @@ from guildshop import COUNCIL_ROLE_ID, can_manage
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD = 0xF1C40F
 SPIN_FRAMES = ("🎰 Girando el Wujupón…", "🎰 ✨ ✨ ✨")
+SPIN_CLEANUP_SECONDS = 60      # los mensajes privados de cada tirada se borran solos pasado este tiempo
 
 
 def money(n: int) -> str:
@@ -100,14 +101,15 @@ def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
 
 
 async def _say(interaction: discord.Interaction, content: str = None, **kw):
+    """Respuesta privada. Si va como followup, devuelve el mensaje (para poder borrarlo después)."""
     kw.setdefault("allowed_mentions", NO_MENTIONS)
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(content, ephemeral=True, **kw)
-        else:
-            await interaction.response.send_message(content, ephemeral=True, **kw)
+            return await interaction.followup.send(content, ephemeral=True, wait=True, **kw)
+        await interaction.response.send_message(content, ephemeral=True, **kw)
     except Exception:
         traceback.print_exc()
+    return None
 
 
 # ============================================================
@@ -265,6 +267,8 @@ class WujuponCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self.anim_delay = 0.8
+        self.cleanup_delay = SPIN_CLEANUP_SECONDS
+        self._cleanups: set = set()
         self._locks: dict = {}
 
     async def run(self, fn: Callable, *args, **kwargs):
@@ -281,6 +285,35 @@ class WujuponCog(commands.Cog):
 
     async def cog_unload(self):
         self.housekeeping.cancel()
+        for t in list(self._cleanups):
+            t.cancel()
+
+    def _cleanup_later(self, interaction: discord.Interaction, *extra_messages):
+        """Borra a los `cleanup_delay` segundos la respuesta privada de esta interacción (y los followups dados).
+        Es solo visual: la carta ya está guardada en el inventario. Si el bot se reinicia antes, el mensaje queda
+        (Discord igual lo saca al cerrar o recargar el cliente)."""
+        if not self.cleanup_delay or self.cleanup_delay <= 0:
+            return
+
+        async def go():
+            try:
+                await asyncio.sleep(self.cleanup_delay)
+                try:
+                    await interaction.delete_original_response()
+                except Exception:
+                    pass                                    # ya borrado, token vencido o el usuario lo descartó
+                for m in extra_messages:
+                    if m is None:
+                        continue
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                pass
+        task = asyncio.create_task(go())
+        self._cleanups.add(task)
+        task.add_done_callback(self._cleanups.discard)
 
     # ---------------- panel ----------------
     async def panel_embed(self) -> discord.Embed:
@@ -341,13 +374,17 @@ class WujuponCog(commands.Cog):
             res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}")
         if res.status == "no_spins":
             price = await self.run(wdb.get_price)
-            return await _say(interaction, f"🎟️ No tenés tiradas. Cada una cuesta **{money(price)}**.",
-                              view=SpinAgainView(self, user.id, 0))
+            msg = await _say(interaction, f"🎟️ No tenés tiradas. Cada una cuesta **{money(price)}**.",
+                             view=SpinAgainView(self, user.id, 0))
+            return self._cleanup_later(interaction, msg)
         if res.status == "empty":
-            return await _say(interaction, "❌ No hay premios habilitados en este momento.")
+            msg = await _say(interaction, "❌ No hay premios habilitados en este momento.")
+            return self._cleanup_later(interaction, msg)
         # la carta ya quedó guardada: la animación es solo visual (si el bot se reinicia acá, no se pierde nada)
         final = card_embed(res.prize, res.card_id, res.weight, res.total_weight)
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
+        if self.cleanup_delay:
+            final.set_footer(text=f"Ya quedó guardada en 🎒 Mi inventario · este mensaje se borra en {self.cleanup_delay} s.")
         view = SpinAgainView(self, user.id, res.spins_left)
         animated = False
         if self.anim_delay > 0:
@@ -362,8 +399,10 @@ class WujuponCog(commands.Cog):
                 animated = True
             except Exception:
                 traceback.print_exc()
+        extra = None
         if not animated:
-            await _say(interaction, embed=final, view=view)
+            extra = await _say(interaction, embed=final, view=view)
+        self._cleanup_later(interaction, extra)
         try:
             await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
         except Exception:

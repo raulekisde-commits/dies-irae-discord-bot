@@ -325,6 +325,7 @@ class WujuponDiscordTests(DiscordBase):
         self.bot.channels.update({COUNCIL_CH: self.councilch, FEED_CH: self.feedch})
         self.cog = run(wj.setup_wujupon(self.bot, self.db, GUILD_ID))
         self.cog.anim_delay = 0
+        self.cog.cleanup_delay = 0          # cada prueba de borrado lo activa con un tiempo corto
         wdb.set_setting(self.db, "council_channel", str(COUNCIL_CH))
         wdb.set_setting(self.db, "feed_channel", str(FEED_CH))
 
@@ -341,6 +342,42 @@ class WujuponDiscordTests(DiscordBase):
         desc = self.feedch.sent[0].embeds[0].description
         self.assertIn(self.alice.mention, desc)
         self.assertIn("probabilidad", desc)
+
+    def _spy_delete(self, i):
+        i.deleted = 0
+
+        async def delete_original_response():
+            i.deleted += 1
+        i.delete_original_response = delete_original_response
+        return i
+
+    def test_mensajes_de_tirada_se_borran_solos(self):
+        import asyncio
+        self.cog.cleanup_delay = 0.01
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        i = self._spy_delete(self.inter(self.alice))
+        i2 = self._spy_delete(self.inter(self.alice))
+
+        async def go():
+            await self.cog.do_spin(i)             # con tirada: carta
+            await self.cog.do_spin(i2)            # sin tiradas: aviso
+            self.assertEqual((i.deleted, i2.deleted), (0, 0))
+            await asyncio.sleep(0.05)
+        run(go())
+        self.assertEqual((i.deleted, i2.deleted), (1, 1))
+        self.assertIn("se borra en", i.response.sent[0][1]["embed"].footer)
+        self.assertEqual(wdb.inventory(self.db, self.alice.id)[0].available, 1)   # la carta sigue en el inventario
+
+    def test_sin_borrado_si_esta_desactivado(self):
+        import asyncio
+        self.cog.cleanup_delay = 0
+        i = self._spy_delete(self.inter(self.alice))
+
+        async def go():
+            await self.cog.do_spin(i)
+            await asyncio.sleep(0.02)
+        run(go())
+        self.assertEqual(i.deleted, 0)
 
     def test_tirar_sin_tiradas(self):
         i = self.inter(self.alice)
