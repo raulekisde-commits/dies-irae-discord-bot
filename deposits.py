@@ -394,7 +394,7 @@ class DepositsCog(commands.Cog):
         emb = discord.Embed(title=f"💰 Cobro de balance #{ticket_id}", color=ORANGE)
         emb.add_field(name="Usuario", value=user.mention, inline=True)
         emb.add_field(name="Qué quiere", value="Cobrar su balance de Wuju Coins en silver", inline=True)
-        emb.add_field(name="Council", value="**Aceptar** para elegir el monto y retirar los Wuju Coins, o **Cerrar** para cancelar.", inline=False)
+        emb.add_field(name="Council", value="**Aceptar** para elegir el monto y retirar los Wuju Coins, o **Cerrar** para cancelar (también puede cerrarlo quien abrió el ticket; eso no devuelve el tiempo de espera para abrir otro).", inline=False)
         emb.set_footer(text="El balance de abajo se actualiza solo si la persona juega o recibe/gasta Wuju Coins mientras el ticket está abierto.")
         return emb
 
@@ -445,9 +445,13 @@ class DepositsCog(commands.Cog):
 
     # ---------- cerrar (solo Council) ----------
     async def on_close(self, interaction: discord.Interaction):
-        if interaction.guild is None or not can_manage(interaction.user):
-            return await _reply(interaction, "❌ Solo el **Council** o los administradores pueden usar este botón.")
+        if interaction.guild is None:
+            return await _reply(interaction, "❌ Solo disponible en el servidor.")
         ticket = await self.run(ddb.get_by_channel, interaction.channel.id)
+        # En «Cobrar balance» también puede cerrar quien abrió el ticket (el cooldown de 8 h cuenta desde que lo abrió: cerrarlo no lo devuelve).
+        is_owner = ticket is not None and ticket.kind == "sell" and ticket.user_id == interaction.user.id
+        if not (can_manage(interaction.user) or is_owner):
+            return await _reply(interaction, "❌ Solo el **Council** o los administradores pueden usar este botón.")
         if ticket is None:
             return await _reply(interaction, "❌ Este canal no es un ticket de cambio de moneda.")
         if not await self.run(ddb.close_ticket, ticket.id, interaction.user.id):

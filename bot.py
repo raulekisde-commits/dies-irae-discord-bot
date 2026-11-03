@@ -4597,6 +4597,12 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
     voice = bot.get_cog("CTAVoiceCog")
     if voice is not None:
         await voice.stop_run(run_id)
+    enc = bot.get_cog("EncargosCog")
+    if enc is not None:                                   # las tareas del Staff que ya había generado esta CTA dejan de tener sentido
+        try:
+            await enc.cancel_by_prefix(f"cta:{run_id}:", actor_id, f"cancelada porque <@{actor_id}> canceló la CTA #{run_id}")
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude cancelar sus tareas: {exc!r}")
     import splits_db as _sdb
     title = cta_run_title(run)
     cog = bot.get_cog("SplitsCog")
@@ -4936,7 +4942,7 @@ class CTAPanelView(discord.ui.View):
             bomb = discord.ui.Button(label="Agregar Bomb", emoji="💣", style=discord.ButtonStyle.primary, custom_id=f"cta:bomb:{run_id}")
             bomb.callback = self.bomb_callback
             self.add_item(bomb)
-            fin = discord.ui.Button(label="Cerrar CTA", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
+            fin = discord.ui.Button(label="CTA terminado", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
             ab = discord.ui.Button(label="Cancelar CTA", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
             fin.callback, ab.callback = self.finish_callback, self.abort_callback
             self.add_item(fin)
