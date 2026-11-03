@@ -301,7 +301,7 @@ class DepositsCog(commands.Cog):
     def _cooldown_text(seconds: int) -> str:
         h, m = divmod((seconds + 59) // 60, 60)
         left = f"{h} h {m} min" if h else f"{m} min"
-        return f"⏳ Ya abriste un ticket de cobro hace poco. Podés volver a abrir uno en **{left}**."
+        return f"⏳ Tenés cooldown para cobrar balance. Podés volver a abrir un ticket de cobro en **{left}**."
 
     async def confirm_sell_open(self, interaction: discord.Interaction):
         """El usuario confirmó que quiere retirar: se vuelven a comprobar las condiciones (pasó tiempo) y recién ahí se abre el ticket."""

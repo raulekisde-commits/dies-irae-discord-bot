@@ -533,7 +533,7 @@ class CambioMonedaTests(DiscordBase):
         conn.commit()
         conn.close()
         i = self.open_sell()
-        self.assertIn("Ya abriste un ticket de cobro", i.text)
+        self.assertIn("Tenés cooldown para cobrar balance", i.text)
         self.assertRegex(i.text, r"\d h \d+ min")
         self.assertEqual(len(self.guild.created_channels), 1)
         # otra persona no se ve afectada
@@ -558,7 +558,7 @@ class CambioMonedaTests(DiscordBase):
         conn.close()
         j = self.inter(self.alice)
         run(view.children[0].callback(j))
-        self.assertIn("Ya abriste un ticket de cobro", j.text)
+        self.assertIn("Tenés cooldown para cobrar balance", j.text)
         self.assertFalse(hasattr(self.guild, "created_channels"))
 
     def test_sell_ticket_pings_council_shows_bal_and_has_council_buttons(self):
