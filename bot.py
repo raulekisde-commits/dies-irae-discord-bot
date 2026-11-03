@@ -2705,8 +2705,262 @@ async def obtener_jugadores_albion(
     return jugadores
 
 
+# ============================================================
+# MATCHING DISCORD
+# ============================================================
+
+def construir_indice_discord(
+    guild: discord.Guild
+) -> dict[str, list[discord.Member]]:
+
+    """
+    Construye un índice:
+
+    nombre -> miembros Discord
+
+    Busca tanto:
+    - nickname/apodo
+    - username
+
+    Todo comparado ignorando mayúsculas.
+    """
+
+    indice = {}
+
+    for member in guild.members:
+
+        # ----------------------------------------------------
+        # Username
+        # ----------------------------------------------------
+
+        username = normalizar_nombre(member.name)
+
+        indice.setdefault(username, [])
+        indice[username].append(member)
+
+        # ----------------------------------------------------
+        # Nickname / apodo
+        # ----------------------------------------------------
+
+        if member.nick:
+
+            nickname = normalizar_nombre(member.nick)
+
+            indice.setdefault(nickname, [])
+            indice[nickname].append(member)
+
+    return indice
+
+
+# ============================================================
+# SLASH COMMAND: ROL DESDE ALBIONBB
+# ============================================================
+
+@bot.tree.command(
+    name="rolalbion",
+    description="Crea un rol y lo asigna a participantes de AlbionBB.",
+    guild=GUILD_OBJ,
+)
+@app_commands.describe(
+    ids="IDs o link de AlbionBB. Ej: 1461052597,1461051559,1461048629",
+    guild="Nombre exacto de la guild de Albion. Ej: Smogg",
+    rol="Nombre del rol que se creará. Ej: Smogg ZvZ"
+)
+async def rolalbion(
+    interaction: discord.Interaction,
+    ids: str,
+    guild: str,
+    rol: str,
+):
+    """Crea un rol y lo asigna mediante coincidencia exacta de nombres."""
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send(
+            "❌ Este comando solo puede usarse dentro del servidor.",
+            ephemeral=True,
+        )
+
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.followup.send(
+            "❌ Necesitás el permiso **Gestionar roles** para usar este comando.",
+            ephemeral=True,
+        )
+
+    battle_ids = extraer_ids(ids)
+    if not battle_ids:
+        return await interaction.followup.send(
+            "❌ No encontré ningún ID de batalla.\n\n"
+            "Ejemplo:\n"
+            "`/rolalbion ids:1461052597,1461051559,1461048629 guild:Smogg rol:Smogg ZvZ`",
+            ephemeral=True,
+        )
+
+    if len(battle_ids) > 50:
+        return await interaction.followup.send(
+            "❌ Podés consultar como máximo 50 batallas por comando.",
+            ephemeral=True,
+        )
+
+    guild_name = guild.strip()
+    role_name = rol.strip()
+    if not guild_name or not role_name:
+        return await interaction.followup.send(
+            "❌ La guild y el nombre del rol no pueden estar vacíos.",
+            ephemeral=True,
+        )
+
+    # Obtener participantes reales de las batallas.
+    try:
+        jugadores = await obtener_jugadores_albion(battle_ids)
+    except Exception as error:
+        print(f"❌ /rolalbion AlbionBB: {error!r}")
+        return await interaction.followup.send(
+            "❌ No pude obtener los participantes de AlbionBB.\n"
+            "Revisá los IDs y que AlbionBB esté disponible.",
+            ephemeral=True,
+        )
+
+    guild_key = normalizar_nombre(guild_name)
+    jugadores_guild = []
+
+    for datos in jugadores.values():
+        if normalizar_nombre(datos["guild"]) == guild_key:
+            jugadores_guild.append(datos["name"])
+
+    # Deduplicar jugadores que aparecieron en varias batallas.
+    jugadores_guild = list(dict.fromkeys(jugadores_guild))
+
+    if not jugadores_guild:
+        return await interaction.followup.send(
+            f"❌ No encontré participantes de **{guild_name}** en las "
+            f"{len(battle_ids)} batallas consultadas.",
+            ephemeral=True,
+        )
+
+    # Discord necesita la lista de miembros para poder comparar apodos.
+    try:
+        await interaction.guild.chunk(cache=True)
+    except Exception:
+        pass
+
+    indice_discord: dict[str, dict[int, discord.Member]] = {}
+
+    for member in interaction.guild.members:
+        # Username actual de Discord.
+        username_key = normalizar_nombre(member.name)
+        indice_discord.setdefault(username_key, {})[member.id] = member
+
+        # Apodo dentro del servidor.
+        if member.nick:
+            nickname_key = normalizar_nombre(member.nick)
+            indice_discord.setdefault(nickname_key, {})[member.id] = member
+
+    encontrados: list[tuple[str, discord.Member]] = []
+    no_encontrados: list[str] = []
+    ambiguos: list[tuple[str, list[discord.Member]]] = []
+
+    for jugador in jugadores_guild:
+        candidatos = list(indice_discord.get(normalizar_nombre(jugador), {}).values())
+
+        if len(candidatos) == 0:
+            no_encontrados.append(jugador)
+        elif len(candidatos) == 1:
+            encontrados.append((jugador, candidatos[0]))
+        else:
+            ambiguos.append((jugador, candidatos))
+
+    # Crear o reutilizar el rol.
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+
+    if role is None:
+        try:
+            role = await interaction.guild.create_role(
+                name=role_name,
+                reason=f"Creado por /rolalbion para la guild {guild_name}",
+            )
+        except discord.Forbidden:
+            return await interaction.followup.send(
+                "❌ No puedo crear roles. Necesito **Gestionar roles**.",
+                ephemeral=True,
+            )
+        except discord.HTTPException as error:
+            return await interaction.followup.send(
+                f"❌ Discord rechazó la creación del rol: `{error}`",
+                ephemeral=True,
+            )
+
+    bot_member = interaction.guild.me
+    if bot_member is None or role >= bot_member.top_role:
+        return await interaction.followup.send(
+            "❌ El rol está por encima o al mismo nivel que el rol del bot.\n"
+            "Mové el rol del bot por encima del rol que querés asignar.",
+            ephemeral=True,
+        )
+
+    asignados = []
+    ya_tenian = []
+    errores = []
+
+    for jugador, member in encontrados:
+        try:
+            if role in member.roles:
+                ya_tenian.append((jugador, member))
+            else:
+                await member.add_roles(
+                    role,
+                    reason=f"Participación AlbionBB - {guild_name}",
+                )
+                asignados.append((jugador, member))
+        except discord.Forbidden:
+            errores.append((jugador, member))
+        except discord.HTTPException as error:
+            print(f"⚠️ Error asignando {role_name} a {member}: {error}")
+            errores.append((jugador, member))
+
+    # Resultado compacto. Los detalles se mandan en mensajes efímeros separados
+    # para no superar el límite de 2000 caracteres de Discord.
+    resumen = (
+        "## ⚔️ Rol AlbionBB\n"
+        f"**Guild:** `{guild_name}`\n"
+        f"**Batallas:** `{len(battle_ids)}`\n"
+        f"**Jugadores de la guild:** `{len(jugadores_guild)}`\n"
+        f"**Encontrados:** `{len(encontrados)}`\n"
+        f"**Asignados ahora:** `{len(asignados)}`\n"
+        f"**Ya tenían el rol:** `{len(ya_tenian)}`\n"
+        f"**No encontrados:** `{len(no_encontrados)}`\n"
+        f"**Ambiguos:** `{len(ambiguos)}`\n"
+        f"**Errores:** `{len(errores)}`\n\n"
+        f"**Rol:** {role.mention}"
+    )
+
+    await interaction.followup.send(
+        resumen,
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+
+    detalles: list[str] = []
+    detalles.extend(f"✓ `{j}` → {m.display_name}" for j, m in asignados)
+    detalles.extend(f"↪ `{j}` → {m.display_name} (ya lo tenía)" for j, m in ya_tenian)
+    detalles.extend(f"✗ `{j}` → NO ENCONTRADO" for j in no_encontrados)
+    detalles.extend(
+        f"⚠ `{j}` → {', '.join(m.display_name for m in miembros)}"
+        for j, miembros in ambiguos
+    )
+    detalles.extend(f"🚫 `{j}` → {m.display_name} (sin permisos)" for j, m in errores)
+
+    if detalles:
+        for inicio in range(0, len(detalles), 25):
+            bloque = "\n".join(detalles[inicio:inicio + 25])
+            await interaction.followup.send(
+                bloque,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
 async def albion_participantes_para_split(guild: discord.Guild, texto: str, guild_name: str) -> dict:
-    """Busca a los participantes de la guild en AlbionBB (coincidencia exacta de nombre/apodo de Discord) y solo devuelve el resultado.
+    """Misma búsqueda que /rolalbion (AlbionBB + coincidencia exacta de nombre/apodo), pero solo devuelve el resultado.
     Lo usa el botón «Agregar killboard» del panel de edición de /split."""
     battle_ids = extraer_ids(texto)
     if not battle_ids:
@@ -6169,6 +6423,7 @@ HELP_SECTIONS = [
         ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de muertes en el primer engage, roles más jugados e IP de un jugador (por defecto, vos)."),
         ("/killboard cargar · conectados · borrar · probar", "Staff / Council (cargar y conectados también Caller y Opinólogo en el hilo de stats de una CTA, con los botones del panel)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
+        ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
     ("💰 Economía y timers", [
         ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),

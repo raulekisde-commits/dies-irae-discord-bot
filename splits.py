@@ -987,7 +987,7 @@ class SplitsCog(commands.Cog):
         await self._done(interaction, split_id, "✅ Bolsitas actualizadas.")
 
     async def apply_killboard(self, interaction, split_id, text, guild_name):
-        """Lista a la gente de la guild que participó en las batallas y la suma a la lista del split."""
+        """Lista a la gente de la guild que participó en las batallas (igual que /rolalbion) y la suma a la lista del split."""
         s = await self._guard(interaction, split_id)
         if not s:
             return
