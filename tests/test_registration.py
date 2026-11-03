@@ -334,6 +334,34 @@ class RegistrationDiscordTests(DiscordBase):
         self._search = self.cog.fetch_json
         self.cog.fetch_json = fake
 
+    def test_limpiar_miembros(self):
+        self._recruit_setup()
+        self.admin.roles.append(self.r_member)
+        council_member = self.council; council_member.roles.append(self.r_member)
+        rdb.admin_link(self.db, self.alice.id, "AliceMain", self.admin.id)            # alice enlazada → se queda
+        i = self.inter(self.council)
+        run(self.cog.limpiar_miembros.callback(self.cog, i, True))
+        self.assertIn("administradores", i.text)                                        # Council no alcanza: solo Admin
+        i = self.inter(self.admin)
+        run(self.cog.limpiar_miembros.callback(self.cog, i, True))
+        self.assertIn("**1** personas", i.text)
+        self.assertIn(f"<@{self.bob.id}>", i.text)
+        for m in (self.alice, self.admin, self.council, self.robot):
+            self.assertNotIn(f"<@{m.id}>", i.text)
+        self.assertIn(self.r_member, self.bob.roles)                                    # sin confirmar no cambia nada
+        view = [x for x in i.response.sent if x[1].get("view") is not None][-1][1]["view"]
+        self.assertFalse(run(view.interaction_check(self.inter(self.council))))
+        j = self.inter(self.admin)
+
+        async def eor(content=None, **kw):
+            j.response.edits.append({"content": content})
+        j.edit_original_response = eor
+        run(view.children[0].callback(j))
+        self.assertNotIn(self.r_member, self.bob.roles)
+        self.assertIn(self.r_public, self.bob.roles)
+        self.assertIn(self.r_member, self.alice.roles)
+        self.assertIn("**1** personas", j.response.edits[-1]["content"])
+
     def test_recruit_accept_registers_but_waits_for_guild_entry(self):
         self._recruit_setup()
         ok, text, granted = run(self.cog.accept_recruit(self.newbie, "Forastero", self.r_main.id, "Tank", self.council))
