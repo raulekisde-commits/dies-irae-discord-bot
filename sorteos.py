@@ -17,6 +17,7 @@ from memberguard import button_block_reason
 
 NO_MENTIONS = discord.AllowedMentions.none()
 REFRESH_SECONDS = 5
+MAX_HOURS = 24 * 30          # un tiempo enorme rompía la cuenta de la fecha (OverflowError); tope de 30 días
 
 
 def _staff_role_id(bot) -> Optional[int]:
@@ -33,7 +34,7 @@ def parse_duration_hhmm(text: str) -> Optional[tuple]:
         h, m = int(parts[0]), int(parts[1])
     except ValueError:
         return None
-    if h < 0 or m < 0 or m > 59:
+    if h < 0 or m < 0 or m > 59 or h > MAX_HOURS:
         return None
     return h, m
 
@@ -94,6 +95,8 @@ class SorteosCog(commands.Cog):
                             color=discord.Color.gold() if not finished else discord.Color.dark_grey())
         emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
         emb.add_field(name="🏆 Ganadores", value=str(g.winners_count), inline=True)
+        if g.role_id:
+            emb.add_field(name="🔒 Solo con el rol", value=f"<@&{g.role_id}>", inline=True)
         if finished:
             emb.add_field(name="👥 Anotados", value=str(n), inline=True)
             if winners:
@@ -118,10 +121,11 @@ class SorteosCog(commands.Cog):
     # ---------- /sorteo ----------
     @app_commands.command(name="sorteo", description="Crear sorteo (Staff y Council)")
     @app_commands.describe(premio="Qué se sortea (texto libre)", tiempo="Duración en H:M (ej: 0:30, 2:00, 6:10)",
-                           ganadores=f"Cantidad de ganadores (1 a {sdb.MAX_WINNERS}). Por defecto 1")
+                           ganadores=f"Cantidad de ganadores (1 a {sdb.MAX_WINNERS}). Por defecto 1",
+                           rol="(Opcional) Si lo ponés, solo pueden anotarse y ganar quienes tengan este rol")
     @app_commands.guild_only()
     async def sorteo(self, interaction: discord.Interaction, premio: str, tiempo: str,
-                     ganadores: app_commands.Range[int, 1, sdb.MAX_WINNERS] = 1):
+                     ganadores: app_commands.Range[int, 1, sdb.MAX_WINNERS] = 1, rol: Optional[discord.Role] = None):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await _say(interaction, "❌ Este comando solo funciona dentro del servidor.")
         if not self._can_create(interaction.user):
@@ -134,9 +138,13 @@ class SorteosCog(commands.Cog):
         h, m = dur
         if h == 0 and m == 0:
             return await _say(interaction, "❌ La duración tiene que ser mayor a `0:00`.")
+        if rol is not None and rol.id == interaction.guild.id:
+            return await _say(interaction, "❌ Elegí un rol del servidor (no @everyone).")
         end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
         await interaction.response.defer(ephemeral=True)
-        draft = sdb.Giveaway(0, premio.strip(), end_at, interaction.channel.id, interaction.user.id, interaction.guild.id, int(ganadores), "open")
+        role_id = rol.id if rol is not None else None
+        draft = sdb.Giveaway(0, premio.strip(), end_at, interaction.channel.id, interaction.user.id, interaction.guild.id, int(ganadores), "open",
+                             role_id=role_id)
         try:
             msg = await interaction.channel.send(embed=self.embed(draft), view=GiveawayJoinView(self))
         except Exception:
@@ -144,7 +152,7 @@ class SorteosCog(commands.Cog):
             return await _say(interaction, "❌ No pude publicar el sorteo. Revisá que el bot pueda enviar mensajes en este canal.")
         try:
             await self.run(sdb.create, message_id=msg.id, prize=draft.prize, end_at=end_at, channel_id=interaction.channel.id,
-                           creator_id=interaction.user.id, guild_id=interaction.guild.id, winners_count=int(ganadores))
+                           creator_id=interaction.user.id, guild_id=interaction.guild.id, winners_count=int(ganadores), role_id=role_id)
         except Exception:
             traceback.print_exc()
             try:
@@ -152,7 +160,8 @@ class SorteosCog(commands.Cog):
             except Exception:
                 pass
             return await _say(interaction, "❌ No pude guardar el sorteo en la base de datos, así que lo cancelé. Avisale a un administrador.")
-        await _say(interaction, f"✅ Sorteo creado. Premio: `{draft.prize}` · Ganadores: {ganadores} · Termina: <t:{int(end_at.timestamp())}:R>")
+        await _say(interaction, f"✅ Sorteo creado. Premio: `{draft.prize}` · Ganadores: {ganadores}"
+                             + (f" · Solo con el rol {rol.name}" if rol is not None else "") + f" · Termina: <t:{int(end_at.timestamp())}:R>")
 
     # ---------- anotarse ----------
     async def on_join(self, interaction: discord.Interaction):
@@ -165,6 +174,9 @@ class SorteosCog(commands.Cog):
         blocked = await button_block_reason(self.bot, interaction.user)          # Miembro + registrado (admins exentos)
         if blocked:
             return await _say(interaction, blocked)
+        g = await self.run(sdb.get, interaction.message.id)
+        if g is not None and g.role_id and not any(r.id == g.role_id for r in interaction.user.roles):
+            return await _say(interaction, f"🔒 Este sorteo es solo para quienes tienen el rol <@&{g.role_id}>.")
         try:
             res = await self.run(sdb.add_entrant, interaction.message.id, interaction.user.id)
         except Exception:
@@ -221,8 +233,8 @@ class SorteosCog(commands.Cog):
                 self._busy.discard(mid)
         return done
 
-    async def valid_entrants(self, guild: discord.Guild, entrants) -> List[int]:
-        """Siguen en el servidor y no son bots. Un error pasajero de Discord NO descarta a nadie (solo «no existe» lo descarta)."""
+    async def valid_entrants(self, guild: discord.Guild, entrants, role_id: Optional[int] = None) -> List[int]:
+        """Siguen en el servidor, no son bots y (si el sorteo es de un rol) todavía tienen ese rol. Un error pasajero de Discord NO descarta a nadie (solo «no existe» lo descarta)."""
         valid = []
         for uid in entrants:
             member = guild.get_member(uid)
@@ -235,7 +247,7 @@ class SorteosCog(commands.Cog):
                     print(f"Sorteo: no pude verificar a {uid} ({exc!r}); lo dejo participar.")
                     valid.append(uid)
                     continue
-            if member is not None and not member.bot:
+            if member is not None and not member.bot and (not role_id or any(r.id == role_id for r in member.roles)):
                 valid.append(uid)
         return valid
 
@@ -251,7 +263,7 @@ class SorteosCog(commands.Cog):
             if not await self.run(sdb.claim_draw, message_id, now):
                 return False
             try:
-                valid = await self.valid_entrants(guild, sorted(g.entrants))
+                valid = await self.valid_entrants(guild, sorted(g.entrants), g.role_id)
                 g = await self.run(sdb.record_result, message_id, valid)
             except Exception:
                 traceback.print_exc()
@@ -280,7 +292,7 @@ class SorteosCog(commands.Cog):
             note = None
             lines = [f"🏆 **¡Sorteo finalizado!** Premio: `{g.prize}`", ""]
             lines += [f"{i}. <@{uid}>" for i, uid in enumerate(g.winners, start=1)]
-            lines += ["", f"Participantes válidos: **{g.valid_count}**."]
+            lines += ["", f"Participantes válidos: **{g.valid_count}**" + (f" (con el rol <@&{g.role_id}>)." if g.role_id else ".")]
             if g.outcome == "partial":
                 lines.append(f"Se pidieron {g.winners_count} ganadores, pero solo había {len(g.winners)} participantes válidos.")
             text = "\n".join(lines)

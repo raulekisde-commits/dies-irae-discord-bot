@@ -23,9 +23,9 @@ class SorteoBase(DiscordBase):
         self.guild.members.append(self.staff)
         self.cog = run(sg.setup_sorteos(self.bot, self.db, GUILD_ID, STAFF_ROLE))
 
-    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1):
+    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None):
         i = self.inter(user or self.staff)
-        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners))
+        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol))
         return i
 
     def msg(self):
@@ -54,6 +54,55 @@ class CreationTests(SorteoBase):
     def test_bad_time(self):
         self.assertIn("Tiempo inválido", self.create(tiempo="abc").text)
         self.assertIn("mayor a", self.create(tiempo="0:00").text)
+
+
+class RolTests(SorteoBase):
+    def setUp(self):
+        super().setUp()
+        self.r_vip = discord.Role(777000000000000001, "VIP", self.guild)
+        self.guild.roles.append(self.r_vip)
+        self.alice.roles.append(self.r_vip)
+
+    def test_embed_y_guardado_con_rol(self):
+        self.assertIn("Sorteo creado", self.create(rol=self.r_vip).text)
+        m = self.msg()
+        self.assertEqual(sdb.get(self.db, m.id).role_id, self.r_vip.id)
+        self.assertTrue(any("rol" in str(f[0]).lower() for f in m.embeds[0].fields))
+        self.assertIn("Solo con el rol", self.create(rol=self.r_vip).text)
+
+    def test_sin_el_rol_no_se_anota(self):
+        self.create(rol=self.r_vip)
+        self.assertIn("solo para quienes tienen el rol", self.join(self.bob).text)
+        self.assertEqual(sdb.count_entrants(self.db, self.msg().id), 0)
+        self.assertIn("quedaste anotado", self.join(self.alice).text)
+
+    def test_everyone_no_vale(self):
+        everyone = discord.Role(self.guild.id, "@everyone", self.guild)
+        self.assertIn("no @everyone", self.create(rol=everyone).text)
+
+    def test_al_sortear_pierde_el_rol_y_queda_afuera(self):
+        self.create(rol=self.r_vip, winners=1)
+        m = self.msg()
+        self.join(self.alice)
+        self.alice.roles.remove(self.r_vip)                   # se anotó con el rol y después lo perdió
+        self.past(m.id)
+        run(self.cog.process_due())
+        self.assertIn("cancelado", [x.content for x in self.panelch.sent if x.content][-1])
+        self.assertEqual(run(self.cog.valid_entrants(self.guild, [self.bob.id], self.r_vip.id)), [])
+
+    def test_sortea_solo_entre_los_del_rol(self):
+        self.bob.roles.append(self.r_vip)
+        self.create(rol=self.r_vip, winners=2)
+        m = self.msg()
+        self.join(self.alice); self.join(self.bob)
+        self.past(m.id)
+        run(self.cog.process_due())
+        txt = [x.content for x in self.panelch.sent if x.content][-1]
+        self.assertIn(f"<@{self.alice.id}>", txt); self.assertIn(f"<@{self.bob.id}>", txt)
+        self.assertIn("con el rol", txt)
+
+    def test_tiempo_enorme_rechazado(self):
+        self.assertIn("Tiempo inválido", self.create(tiempo="999999999:00").text)
 
 
 class JoinTests(SorteoBase):
