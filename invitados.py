@@ -316,7 +316,12 @@ INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
     "• 🤖 **Automáticos** (Wuju Coins, embo, cancelar el cooldown de *Cobrar balance*): se aplican al instante.\n"
     "• 🛠️ **Los entrega el Council**: se abre un encargo y la carta queda **reservada** hasta que lo resuelvan. Si lo rechazan, la carta "
     "puede volver a tu inventario.\n"
-    "• ⚠️ Las cartas que afectan a otra persona necesitan aprobación del Council.\n\n"
+    "• ⚠️ Las cartas que afectan a otra persona necesitan aprobación del Council.\n"
+    "• ☠️ **Cartas malas** (descuentos, autosilencio, más cooldown de cobro): no van a tu inventario; se aplican solas "
+    "(por ahora las aplica el Council).\n\n"
+    "**Tipos de carta**: 🛡️ escudos (nadie te puede usar cartas y te protegen de las malas) · 💥 purgar escudo · "
+    "🧹 limpiezas (te sacan mutes o congelamientos) · ❄️ congelar Wujupón (el otro no puede tirar ni usar cartas). "
+    "Mirá el detalle de cada una en 📜 **Ver premios**.\n\n"
     "**Reglas**: cada carta se usa una sola vez. Si tenés el balance congelado no podés comprar tiradas. Cada tirada se anuncia en el canal "
     "de Wujupón con la carta, la rareza y la probabilidad.")
 INFO_STAFF["wujupon"] = (
@@ -340,7 +345,9 @@ INFO_STAFF["wujupon"] = (
     "lo entregado no se descuenta: ajustalo a mano.\n"
     "• `/wujupon inventario usuario` · `/wujupon encargos` · `/wujupon historial [usuario]` · `/wujupon registro`.\n"
     "• **Encargos**: en el canal del Council, **Tomar** → **Aprobar** → **Completado** (queda quién lo entregó). **Rechazar** pregunta si se "
-    "devuelve la carta.\n\n"
+    "devuelve la carta.\n"
+    "• ☠️ **Cartas malas**: llegan solas como encargo. Aplicalas a mano (`/eco remove-money`, `/eco embo remove`, timeout) y "
+    "marcá **Completado**; si no corresponde, **Rechazar** (nunca vuelven al inventario).\n\n"
     "**Solo Admin**\n"
     "• `/wujupon publicar-premios [canal]` — publica un mensaje público con la lista de premios (no se actualiza solo: republicala si cambian).\n"
     "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra todas las cartas sin usar de todos y anula los encargos abiertos (pide confirmación).")
