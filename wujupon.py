@@ -68,6 +68,23 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
     return out
 
 
+def pack_embeds(embeds: List[discord.Embed], budget: int = 5800, per_msg: int = 10) -> List[List[discord.Embed]]:
+    """Agrupa embeds en mensajes que respeten los límites de Discord (6000 caracteres y 10 embeds por mensaje)."""
+    groups: List[List[discord.Embed]] = []
+    cur: List[discord.Embed] = []
+    size = 0
+    for e in embeds:
+        n = len(e)
+        if cur and (size + n > budget or len(cur) >= per_msg):
+            groups.append(cur)
+            cur, size = [], 0
+        cur.append(e)
+        size += n
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
     color = {"pending": 0xF39C12, "taken": 0x3498DB, "approved": 0x9B59B6, "delivered": 0x2ECC71,
              "rejected": 0xE74C3C, "returned": 0x95A5A6}.get(req.status, 0x95A5A6)
@@ -491,7 +508,8 @@ class WujuponCog(commands.Cog):
     async def show_prizes(self, interaction: discord.Interaction):
         prizes = await self.run(wdb.list_prizes)
         price = await self.run(wdb.get_price)
-        await _say(interaction, embeds=prizes_embeds(prizes, price)[:10])
+        for group in pack_embeds(prizes_embeds(prizes, price)):
+            await _say(interaction, embeds=group)
 
     async def show_requests(self, interaction: discord.Interaction, target: Optional[discord.abc.User] = None):
         user = target or interaction.user
@@ -889,6 +907,27 @@ class WujuponCog(commands.Cog):
                                 "Las tiradas regaladas por el Council no cuentan." if cantidad
                    else "✅ Sin límite diario de compra.")
         await self.refresh_panel()
+
+    @wj.command(name="publicar-premios", description="(Admin) Publica en el canal un mensaje público con la lista de premios")
+    @app_commands.describe(canal="Canal donde publicarla (por defecto, este canal)")
+    async def publish_prizes(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador puede publicar la lista de premios.")
+        target = canal or interaction.channel
+        prizes = await self.run(wdb.list_prizes)
+        price = await self.run(wdb.get_price)
+        groups = pack_embeds(prizes_embeds(prizes, price))
+        if not groups:
+            return await _say(interaction, "❌ No hay premios habilitados.")
+        try:
+            for n, group in enumerate(groups):
+                await target.send("📜 **Premios de Wujupón**" if n == 0 else None, embeds=group, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+            return await _say(interaction, f"❌ No pude publicar en {target.mention} (¿tengo permiso para enviar mensajes con embeds?).")
+        await self.run(wdb.log_action, interaction.user.id, "publish_prizes", ref=str(target.id))
+        await _say(interaction, f"✅ Lista de premios publicada en {target.mention}. Si después cambiás cartas o probabilidades, "
+                                "volvé a publicarla: este mensaje no se actualiza solo.")
 
     @wj.command(name="limpiar-cartas", description="(Admin) Borra TODAS las cartas de todos los jugadores")
     @app_commands.describe(tambien_tiradas="Sí = también deja en 0 las tiradas sin usar de todos")

@@ -589,6 +589,32 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual(wdb.inventory(self.db, self.alice.id), [])
         self.assertIsNone(req_msg.view)                  # el encargo anulado ya no tiene botones
 
+    def test_publicar_premios_solo_admin(self):
+        i = self.inter(self.council, self.feedch)
+        run(self.cog.publish_prizes.callback(self.cog, i, None))
+        self.assertIn("Solo el dueño", i.text)
+        self.assertEqual(self.feedch.sent, [])
+        wdb.edit_prize(self.db, "caerleon_port", actor_id=1, description="Te llevan a Caerleon con escolta")
+        i = self.inter(self.admin, self.panelch)
+        run(self.cog.publish_prizes.callback(self.cog, i, self.feedch))
+        self.assertIn("publicada", i.text)
+        msgs = self.feedch.sent
+        self.assertGreaterEqual(len(msgs), 1)
+        self.assertIn("Premios de Wujupón", msgs[0].content)
+        self.assertFalse(i.response.sent[0][1].get("ephemeral") is False)
+        embeds = [e for m in msgs for e in m.embeds]
+        self.assertEqual(len(embeds), 5)
+        self.assertIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))
+        for m in msgs:
+            self.assertLessEqual(sum(len(e) for e in m.embeds), 6000)
+
+    def test_pack_embeds_respeta_limites(self):
+        big = [discord.Embed(title="x", description="y" * 3000) for _ in range(4)]
+        groups = wj.pack_embeds(big)
+        self.assertEqual([len(g) for g in groups], [1, 1, 1, 1])
+        small = [discord.Embed(title=str(n)) for n in range(23)]
+        self.assertEqual([len(g) for g in wj.pack_embeds(small)], [10, 10, 3])
+
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")
         emb = run(self.ecog.bal_embed(self.alice))
