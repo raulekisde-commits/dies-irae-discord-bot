@@ -309,8 +309,8 @@ INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
     "**Botones del panel**\n"
     "• 🛒 **Comprar tiradas** — se descuentan de tu balance. Puede haber un límite de compras por día (se renueva a las 00:00 UTC).\n"
     "• 🎰 **Tirar Wujupón** — usa una tirada y te muestra la carta. El mensaje se borra solo a los 60 s, pero la carta ya queda guardada.\n"
-    "• 🎒 **Mi inventario** — tus cartas; elegí una y tocá **Canjear**.\n"
-    "• 📜 **Ver premios** — todas las cartas con su rareza, probabilidad y descripción.\n"
+    "• 🎒 **Mi inventario** — tus cartas: elegí una para ver qué hace y tocá **Canjear**.\n"
+    "• 📜 **Ver premios** — todas las cartas con su rareza y probabilidad.\n"
     "• 📨 **Mis solicitudes** — el estado de tus canjes con el Council.\n\n"
     "**Rarezas**: ⚪ Común · 🔵 Rara · 🟣 Épica · 🟠 Legendaria · 🔴 Mítica.\n\n"
     "**Canjes**\n"
@@ -322,7 +322,7 @@ INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
     "(por ahora las aplica el Council).\n\n"
     "**Tipos de carta**: 🛡️ escudos (nadie te puede usar cartas y te protegen de las malas) · 💥 purgar escudo · "
     "🧹 limpiezas (te sacan mutes o congelamientos) · ❄️ congelar Wujupón (el otro no puede tirar ni usar cartas). "
-    "Mirá el detalle de cada una en 📜 **Ver premios**.\n\n"
+    "Qué hace cada carta lo ves al abrirla en 🎒 **Mi inventario**.\n\n"
     "**Reglas**: cada carta se usa una sola vez. Si tenés el balance congelado no podés comprar tiradas. Cada tirada se anuncia en el canal "
     "de Wujupón con la carta, la rareza y la probabilidad.")
 INFO_STAFF["wujupon"] = (

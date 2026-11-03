@@ -553,6 +553,23 @@ class WujuponDiscordTests(DiscordBase):
         run(go())
         self.assertEqual(i.deleted, 0)
 
+    def test_tirada_no_muestra_descripcion_salvo_carta_mala(self):
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=2, request_key="g", reason="t")
+        orig = wdb.draw
+        try:
+            wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("caerleon_port")))
+            i = self.inter(self.alice)
+            run(self.cog.do_spin(i))
+            desc = i.response.sent[0][1]["embed"].description
+            self.assertNotIn("Te portean a Caerleon", desc)
+            self.assertIn("Mi inventario", desc)
+            wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("bad_embo_15")))
+            i = self.inter(self.alice)
+            run(self.cog.do_spin(i))
+            self.assertIn("se te descuentan 15 de embo", i.response.sent[0][1]["embed"].description)
+        finally:
+            wdb.draw = orig
+
     def test_tirar_sin_tiradas(self):
         i = self.inter(self.alice)
         run(self.cog.do_spin(i))
@@ -648,10 +665,16 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.edit_card.callback(self.cog, i, key, "Skin premium", "Elegís cualquiera"))
         self.assertIn("Skin premium", i.text)
         self.assertEqual(wdb.get_prize(self.db, key).description, "Elegís cualquiera")
-        # la descripción aparece en Ver premios
+        # Ver premios
         i = self.inter(self.alice)
         run(self.cog.show_prizes(i))
-        self.assertIn("Elegís cualquiera", " ".join(e.description for e in i.response.sent[0][1]["embeds"]))
+        # la descripción NO aparece en Ver premios…
+        self.assertNotIn("Elegís cualquiera", " ".join(e.description for _, kw in i.response.sent for e in kw["embeds"]))
+        # …solo al abrir la carta desde el inventario
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key=key, reason="t")
+        i = self.inter(self.alice)
+        run(self.cog.show_card(i, cid))
+        self.assertIn("Elegís cualquiera", i.response.sent[0][1]["embed"].description)
 
     def test_comandos_precio_limite_y_probabilidad(self):
         run(self.cog.publish_panel(self.inter(self.council)))
@@ -711,7 +734,7 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual({e.title.split(" — ")[0] for e in embeds if "(cont.)" not in e.title},
                          {f"{em} {n.upper()}" for n, em, _ in wdb.RARITIES.values()})   # una sección por rareza
         self.assertTrue(all(len(e.description) <= 4096 for e in embeds))
-        self.assertIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))
+        self.assertNotIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))   # la lista pública no muestra descripciones
         for m in msgs:
             self.assertLessEqual(sum(len(e) for e in m.embeds), 6000)
 

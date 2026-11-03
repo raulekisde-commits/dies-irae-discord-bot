@@ -42,11 +42,15 @@ def prize_mode(p: wdb.Prize) -> str:
     return "🛠️ lo entrega el Council"
 
 
-def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: str = "🎴 ¡Nueva carta!") -> discord.Embed:
+def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: str = "🎴 ¡Nueva carta!",
+               show_desc: bool = True) -> discord.Embed:
+    """show_desc=False: la descripción no se muestra (solo se ve desde 🎒 Mi inventario)."""
     emb = discord.Embed(title=title, color=p.color)
     emb.description = f"# {p.name}\n**{p.rarity_label}** · probabilidad **{wdb.chance_text(weight, total)}**"
-    if p.description:
+    if p.description and show_desc:
         emb.description += f"\n\n{p.description}"
+    elif p.description:
+        emb.description += "\n\n📖 Mirá qué hace en 🎒 **Mi inventario**."
     emb.add_field(name="Canje", value=prize_mode(p), inline=True)
     if card_id > 0:
         emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
@@ -82,8 +86,7 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
         name, emoji, color = wdb.RARITIES[rarity]
         share = sum(p.weight for p in group)
         lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'☠️' if p.forced else '🤖' if p.automatic else '🛠️'}"
-                 + (" · ⚠️ terceros" if p.third_party else "")
-                 + (f"\n  ↳ {p.description[:200]}" if p.description else "") for p in group]
+                 + (" · ⚠️ terceros" if p.third_party else "") for p in group]   # la descripción solo se ve en el inventario
         title = f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}"
         for n, block in enumerate(_chunk_lines(lines, 3900)):   # una rareza larga se parte en varios embeds
             out.append(discord.Embed(title=title if n == 0 else f"{title} (cont.)", color=color, description=block))
@@ -477,7 +480,8 @@ class WujuponCog(commands.Cog):
             msg = await _say(interaction, "❌ No hay premios habilitados en este momento.")
             return self._cleanup_later(interaction, msg)
         # la carta ya quedó guardada: la animación es solo visual (si el bot se reinicia acá, no se pierde nada)
-        final = card_embed(res.prize, res.card_id, res.weight, res.total_weight)
+        # las cartas malas no van al inventario: su descripción se muestra acá
+        final = card_embed(res.prize, res.card_id, res.weight, res.total_weight, show_desc=res.prize.forced)
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
         if self.cleanup_delay:
             first = ("Carta mala: se le avisó al Council para aplicarla" if res.prize.forced
