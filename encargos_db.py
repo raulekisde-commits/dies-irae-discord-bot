@@ -301,6 +301,25 @@ def finish(db_path: str, task_id: int, user_id: int, override: bool) -> Change:
         conn.close()
 
 
+def record_done(db_path: str, *, guild_id: int, channel_id: int, text: str, actor_id: int, source: str) -> bool:
+    """Anota como tarea hecha algo que el Staff resolvió fuera del panel de tareas (cerrar un ticket, pagar un split…),
+    para que cuente en /top tareas. Una sola vez por `source`. True si se anotó ahora; False si ya estaba."""
+    text = " ".join((text or "").split())[:MAX_TEXT] or "Tarea"
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM tasks WHERE source = ?", (source,)).fetchone():
+                return False
+            now = utcnow_iso()
+            cur = conn.execute("INSERT INTO tasks(guild_id, channel_id, text, created_by, created_at, status, taker_id, done_by, done_at, source) "
+                               "VALUES (?,?,?,?,?, 'done', ?, ?, ?, ?)",
+                               (guild_id, channel_id, text, actor_id, now, actor_id, actor_id, now, source))
+            conn.execute("INSERT INTO task_events(task_id, at, kind, actor_id) VALUES (?,?,?,?)", (int(cur.lastrowid), now, "done", actor_id))
+            return True
+    finally:
+        conn.close()
+
+
 def cancel(db_path: str, task_id: int, actor_id: int) -> Change:
     """Cancela una tarea que no se hizo (botón «Cancelar tarea», o se canceló la CTA que la generó). No cuenta como terminada.
     'ok' · 'closed' (ya estaba terminada o cancelada) · 'notfound'."""

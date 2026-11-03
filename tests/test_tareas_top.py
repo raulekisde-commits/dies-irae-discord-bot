@@ -73,6 +73,25 @@ class TopTareas(DiscordBase):
         self.assertFalse(run(self.cog.log_done(res.task)))
 
 
+class CierresCuentanComoTareas(TopTareas):
+    def test_record_done_cuenta_una_sola_vez_en_el_top(self):
+        self.assertTrue(run(self.cog.record_done("Cerrar ticket #1", self.stf.id, "cambio:1")))
+        self.assertFalse(run(self.cog.record_done("Cerrar ticket #1", self.stf2.id, "cambio:1")))      # mismo origen: no se duplica
+        self.assertTrue(run(self.cog.record_done("Repartir split", self.stf.id, "split:7")))
+        taken, done = edb.top_users(self.db)
+        self.assertEqual(done[0], (self.stf.id, 2))
+        self.assertEqual(dict(done).get(self.stf2.id), None)
+        self.assertEqual(taken, [])                                                                  # no cuenta como «aceptada»
+        t = edb.find_by_source(self.db, "cambio:1")
+        self.assertEqual((t.status, t.done_by), ("done", self.stf.id))
+
+    def test_no_aparece_en_coaching_ni_se_puede_tocar(self):
+        run(self.cog.record_done("x", self.stf.id, "recruit:99"))
+        self.assertEqual(edb.top_coaches(self.db), [])
+        self.assertEqual(edb.due_for_publish(self.db, now=10 ** 12), [])
+        self.assertEqual(edb.cancel(self.db, edb.find_by_source(self.db, "recruit:99").id, 1).status, "closed")
+
+
 class CancelarTareas(TopTareas):
     def setUp(self):
         super().setUp()

@@ -598,6 +598,15 @@ class SplitDiscordTests(DiscordBase):
         sdb.cancel_split(self.db, split.id, 1)
         self.assertEqual(run(self.cog.add_bomb(cta_id=7, user_id=self.outsider.id, actor_id=self.admin.id)), "closed")
 
+    def test_repartir_un_split_cuenta_como_tarea_hecha_una_vez(self):
+        import encargos, encargos_db as edb
+        run(encargos.setup_encargos(self.bot, self.db, GUILD_ID))
+        self.create(rol=self.r_split, total="1.000")
+        run(self.cog.close_split(self.inter(self.council), 1))
+        self.assertEqual(edb.top_users(self.db)[1], [(self.council.id, 1)])
+        run(self.cog.close_split(self.inter(self.council), 1))               # ya cerrado
+        self.assertEqual(edb.top_users(self.db)[1], [(self.council.id, 1)])
+
     def test_late_signups_become_requests_the_organizer_decides(self):
         split, _msg, _err = run(self.cog.create_from_cta(cta_id=7, title="CTA #7", tab="T", city="C", user_ids=[self.alice.id], creator_id=self.admin.id))
         thread = self.panelch.sent[0].thread
