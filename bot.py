@@ -6654,6 +6654,8 @@ HELP_SECTIONS = [
         ("/canal salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
         ("/reaction-roles crear · agregar · quitar · eliminar · listar", "Council / Admin", "Mensajes de roles por reacción: `crear nombre` publica el panel y `agregar nombre rol emoji` suma un rol. Quien reacciona recibe el rol y al sacar la reacción se lo quita (si ya lo tenía, no pasa nada)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
+        ("/invitar-premium usuario quien_es personaje_de_albion", "Council", "Invitación premium: se registra, pierde Public (e Invitado), recibe Miembro y queda registrado quién lo invitó."),
+        ("/invitados-premium", "Staff", "Lista los invitados premium actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings, casino, economía y zvz-vods)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),
         ("/desvincular", "Council / Admin", "Quita el personaje vinculado a tu propia cuenta (con confirmación). Los miembros piden al staff que use /admin_desvincular."),

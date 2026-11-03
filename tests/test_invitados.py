@@ -64,6 +64,59 @@ class InvBase(DiscordBase):
 
 
 class Tests(InvBase):
+    def prem(self, who, target, why="amigo del Council", char="AmigoPro", confirm=True):
+        i = self.inter(who)
+        run(self.cog.invitar_premium.callback(self.cog, i, target, why, char))
+        sent = [x for x in i.response.sent if x[1].get("view") is not None]
+        if confirm and sent:
+            view = sent[-1][1]["view"]
+            j = self.inter(who)
+
+            async def eor(content=None, **kw):
+                j.response.edits.append({"content": content})
+            j.edit_original_response = eor
+            run(view.children[0].callback(j))
+            i.confirmed_text = "\n".join(str(e.get("content")) for e in j.response.edits)
+        return i
+
+    def test_premium_only_council(self):
+        self.assertIn("Council", self.prem(self.leg, self.newbie).text)
+        self.assertIn("Council", self.prem(self.stf, self.newbie).text)
+        self.assertNotIn(iv.MIEMBRO_ROLE_ID, [r.id for r in self.newbie.roles])
+
+    def test_premium_gives_member_and_lists(self):
+        i = self.prem(self.council, self.newbie)
+        ids = [r.id for r in self.newbie.roles]
+        self.assertIn(iv.MIEMBRO_ROLE_ID, ids)
+        self.assertNotIn(iv.PUBLIC_ROLE_ID, ids)
+        self.assertNotIn(iv.GUEST_ROLE_ID, ids)
+        self.assertIn("premium", i.confirmed_text)
+        g = iv.get_guest(self.db, GUILD_ID, self.newbie.id)
+        self.assertEqual((g["invited_by"], g["kind"]), (self.council.id, "premium"))
+        self.assertEqual(rdb.get_registration(self.db, self.newbie.id).char_name, "AmigoPro")
+        j = self.inter(self.stf)
+        run(self.cog.invitados_premium.callback(self.cog, j))
+        self.assertIn(f"<@{self.newbie.id}>", j.text)
+        j = self.inter(self.stf)
+        run(self.cog.invitados.callback(self.cog, j))
+        self.assertNotIn(f"<@{self.newbie.id}>", j.text)
+        j = self.inter(self.alice)
+        run(self.cog.quien_invito.callback(self.cog, j, self.newbie))
+        self.assertIn("premium", j.text)
+        self.assertIn("ya es miembro", self.prem(self.council, self.newbie).text)
+
+    def test_guest_can_upgrade_to_premium(self):
+        self.inv(self.leg, self.newbie)
+        i = self.prem(self.council, self.newbie, char="OtroNombre")
+        self.assertIn("ya está registrado", i.text)                   # mantiene el registro que tenía como invitado
+        ids = [r.id for r in self.newbie.roles]
+        self.assertIn(iv.MIEMBRO_ROLE_ID, ids)
+        self.assertNotIn(iv.GUEST_ROLE_ID, ids)
+        run(self.cog.on_member_update(types.SimpleNamespace(roles=[self.r_guest]), self.newbie))   # perder Invitado no cierra el premium
+        self.assertEqual(iv.get_guest(self.db, GUILD_ID, self.newbie.id)["active"], 1)
+        self.assertEqual(iv.get_guest(self.db, GUILD_ID, self.newbie.id)["kind"], "premium")
+
+
     def test_only_legacy(self):
         self.assertIn("Legacy", self.inv(self.alice, self.newbie).text)
         self.assertNotIn(iv.GUEST_ROLE_ID, [r.id for r in self.newbie.roles])

@@ -41,6 +41,7 @@ INFO_TEXTS = {
                   "• Solo quienes tienen el rol **Legacy** pueden invitar con `/invitar usuario motivo`.\n"
                   "• Al invitar tenés que indicar el nombre exacto de su personaje de Albion: el bot lo busca, te muestra el personaje y vos confirmás que es tu amigo.\n"
                   "• El invitado recibe el rol **Invitado** y tiene acceso a la economía; el casino se le habilita aparte.\n"
+                  "• El **Council** puede hacer una **invitación premium** con `/invitar-premium`: la persona entra directo con el rol **Miembro**.\n"
                   "• Cualquier miembro puede ver quién invitó a alguien con `/quien-invito usuario`.\n"
                   "• Quien invita responde por su invitado."),
     "warnings": ("⚠️ Sistema de warnings",
@@ -91,7 +92,8 @@ INFO_TEXTS = {
 }
 
 INFO_STAFF = {
-    "invitados": ("• `/invitados` — lista todos los invitados activos con quién los invitó, cuándo y el motivo.\n"
+    "invitados": ("• `/invitados` — lista todos los invitados activos con quién los invitó, cuándo y el motivo. `/invitados-premium` — lo mismo para los premium.\n"
+                  "• `/invitar-premium usuario quien_es personaje_de_albion` (Council) — registra a la persona, le da **Miembro**, le saca Public (e Invitado si lo era) y guarda quién la invitó. Si pierde el rol Miembro, deja de aparecer en la lista.\n"
                   "• Al invitar, el bot registra al invitado como si hubiera usado `/registrar`, le saca el rol **Public** y le pone **Invitado**.\n"
                   "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n"
                   "• Quien invita queda como responsable: si hay problemas, revisá `/quien-invito` o la lista para saber a quién consultar."),
@@ -284,8 +286,9 @@ INFO_STAFF.update({
                  "• La API de Albion no tiene login: prueba que el personaje existe y su guild, pero **no quién lo controla**.\n"
                  "• El nombre sale exacto de la API, un personaje solo puede ir con una cuenta y nadie registra a otro sin que acepte."),
 })
-INFO_STAFF["alters"] = ("• `/alter agregar usuario alter [nota]` — enlaza un alter a la persona. Queda guardado quién lo autorizó (vos) y cuándo.\n"
-                        "• `/alter quitar alter` — desenlaza un alter.\n"
+INFO_STAFF["alters"] = ("• `/alter agregar usuario personaje [descripcion]` — enlaza un alter a la persona (p. ej. «alter de crafteo»). Queda guardado quién lo agregó (vos) y cuándo.\n"
+                        "• `/alter eliminar personaje` — desenlaza un alter.\n"
+                        "• `/alter listar` — todos los alters con su dueño, quién los agregó y la descripción.\n"
                         "• `/alter ver [usuario] [alter]` — alters de una persona, o de quién es un alter (con quién lo autorizó). Máximo 10 por persona.\n"
                         "• Solo Staff, Council y administradores; se valida en el bot, no solo por permisos de Discord.")
 INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuario rol [motivo]` — el bot cambia el rol y lo registra con quién lo hizo.\n"
@@ -343,16 +346,31 @@ def _roles(m) -> set:
     return {r.id for r in getattr(m, "roles", [])}
 
 
-def add_guest(db_path: str, guild_id: int, user_id: int, invited_by: int, reason: str) -> bool:
-    """False si ya es invitado activo."""
+GUEST_KINDS = ("guest", "premium")
+
+
+def ensure_schema(db_path: str) -> None:
+    conn = connect(db_path)
+    try:
+        conn.executescript(SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(guests)").fetchall()}
+        if "kind" not in cols:                                    # migración aditiva: los invitados viejos quedan como 'guest'
+            conn.execute("ALTER TABLE guests ADD COLUMN kind TEXT NOT NULL DEFAULT 'guest'")
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def add_guest(db_path: str, guild_id: int, user_id: int, invited_by: int, reason: str, kind: str = "guest") -> bool:
+    """False si ya es invitado activo de ese mismo tipo (un invitado común sí puede pasar a premium)."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            r = conn.execute("SELECT active FROM guests WHERE guild_id=? AND user_id=?", (guild_id, user_id)).fetchone()
-            if r is not None and r["active"]:
+            r = conn.execute("SELECT active, kind FROM guests WHERE guild_id=? AND user_id=?", (guild_id, user_id)).fetchone()
+            if r is not None and r["active"] and (r["kind"] or "guest") == kind:
                 return False
-            conn.execute("INSERT OR REPLACE INTO guests(guild_id,user_id,invited_by,reason,created_at,active,ended_at) VALUES (?,?,?,?,?,1,NULL)",
-                         (guild_id, user_id, invited_by, reason, utcnow_iso()))
+            conn.execute("INSERT OR REPLACE INTO guests(guild_id,user_id,invited_by,reason,created_at,active,ended_at,kind) VALUES (?,?,?,?,?,1,NULL,?)",
+                         (guild_id, user_id, invited_by, reason, utcnow_iso(), kind))
             return True
     finally:
         conn.close()
@@ -367,19 +385,20 @@ def get_guest(db_path: str, guild_id: int, user_id: int) -> Optional[dict]:
         conn.close()
 
 
-def list_guests(db_path: str, guild_id: int) -> List[dict]:
+def list_guests(db_path: str, guild_id: int, kind: str = "guest") -> List[dict]:
     conn = connect(db_path)
     try:
-        return [dict(r) for r in conn.execute("SELECT * FROM guests WHERE guild_id=? AND active=1 ORDER BY created_at", (guild_id,))]
+        return [dict(r) for r in conn.execute("SELECT * FROM guests WHERE guild_id=? AND active=1 AND kind=? ORDER BY created_at", (guild_id, kind))]
     finally:
         conn.close()
 
 
-def end_guest(db_path: str, guild_id: int, user_id: int) -> None:
+def end_guest(db_path: str, guild_id: int, user_id: int, kind: str = "guest") -> None:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("UPDATE guests SET active=0, ended_at=? WHERE guild_id=? AND user_id=? AND active=1", (utcnow_iso(), guild_id, user_id))
+            conn.execute("UPDATE guests SET active=0, ended_at=? WHERE guild_id=? AND user_id=? AND active=1 AND kind=?",
+                         (utcnow_iso(), guild_id, user_id, kind))
     finally:
         conn.close()
 
@@ -409,9 +428,10 @@ def _unix(iso: str) -> int:
 
 class ConfirmInviteView(discord.ui.View):
     """Solo quien invita puede confirmar que el personaje es su amigo."""
-    def __init__(self, cog, inviter_id: int, target, reason: str, character):
+    def __init__(self, cog, inviter_id: int, target, reason: str, character, premium: bool = False):
         super().__init__(timeout=300)
         self.cog, self.inviter_id, self.target, self.reason, self.character, self.done = cog, inviter_id, target, reason, character, False
+        self.premium = premium
         ok = discord.ui.Button(label="Sí, es mi amigo", style=discord.ButtonStyle.success, emoji="✅")
         no = discord.ui.Button(label="No, cancelar", style=discord.ButtonStyle.secondary, emoji="✖️")
         ok.callback, no.callback = self._ok, self._no
@@ -433,7 +453,7 @@ class ConfirmInviteView(discord.ui.View):
             return await interaction.response.send_message("Ya fue procesada.", ephemeral=True)
         self.done = True
         await interaction.response.edit_message(content="⏳ Procesando…", embeds=[], view=None)
-        text = await self.cog.finish_invite(interaction, interaction.user, self.target, self.reason, self.character)
+        text = await self.cog.finish_invite(interaction, interaction.user, self.target, self.reason, self.character, premium=self.premium)
         await interaction.edit_original_response(content=text)
 
 
@@ -442,11 +462,7 @@ class InvitadosCog(commands.Cog):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
 
     async def cog_load(self):
-        conn = connect(self.db_path)
-        try:
-            conn.executescript(SCHEMA)
-        finally:
-            conn.close()
+        ensure_schema(self.db_path)
 
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(lambda: fn(self.db_path, *a, **kw))
@@ -461,18 +477,42 @@ class InvitadosCog(commands.Cog):
         perms = getattr(me, "guild_permissions", None)
         if LEGACY_ROLE_ID not in _roles(me) and not (perms is not None and perms.administrator):
             return await _say(interaction, "🔒 Solo quienes tienen el rol **Legacy** pueden invitar.")
+        await self._start_invite(interaction, usuario, quien_es, personaje_de_albion, premium=False)
+
+    # ---------- /invitar-premium ----------
+    @app_commands.command(name="invitar-premium", description="(Council) Invitación premium: entra directo con el rol Miembro y queda quién lo invitó")
+    @app_commands.describe(usuario="La persona de Discord que invitás", quien_es="Quién es / por qué lo invitás",
+                           personaje_de_albion="Nombre exacto de su personaje en Albion (se registra igual que con /registrar)")
+    @app_commands.guild_only()
+    async def invitar_premium(self, interaction: discord.Interaction, usuario: discord.Member, quien_es: str, personaje_de_albion: str):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el **Council** puede hacer invitaciones premium.")
+        await self._start_invite(interaction, usuario, quien_es, personaje_de_albion, premium=True)
+
+    async def _start_invite(self, interaction: discord.Interaction, usuario: discord.Member, quien_es: str, personaje_de_albion: str, premium: bool):
+        import registration_db as rdb
+        me = interaction.user
         reason = " ".join((quien_es or "").split())
         if not reason:
             return await _say(interaction, "❌ Tenés que indicar quién es el invitado.")
         if len(reason) > REASON_MAX:
             return await _say(interaction, f"❌ Máximo {REASON_MAX} caracteres.")
-        err = self._check_target(interaction.guild, me, usuario)
+        err = self._check_target(interaction.guild, me, usuario, premium)
         if err:
             return await _say(interaction, err)
         reg_cog = self.bot.get_cog("RegistrationCog")
         if reg_cog is None:
             return await _say(interaction, "❌ El sistema de registro no está disponible ahora. Probá más tarde.")
         await interaction.response.defer(ephemeral=True)
+        if premium:                                               # si ya tiene registro (p. ej. era invitado común), se usa ese
+            existing = await self.run(rdb.get_registration, usuario.id)
+            if existing is not None:
+                import registration as _reg
+                c = _reg.Character(char_id=existing.char_id, name=existing.char_name, region=None, guild="", alliance="", kill_fame=0, death_fame=0)
+                view = ConfirmInviteView(self, me.id, usuario, reason, c, premium=True)
+                return await interaction.followup.send(
+                    f"⭐ {usuario.mention} ya está registrado como **{discord.utils.escape_markdown(existing.char_name)}**: se mantiene ese registro. "
+                    "¿Confirmás la invitación premium (rol **Miembro**)?", view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
         look = await reg_cog.lookup_character(personaje_de_albion, any_guild=True)
         # Registro forzado: si la API no responde, no lo encuentra o hay homónimos, se registra igual con el nombre escrito (sin ID, como /admin_vincular).
         manual = {"error": "la API de Albion no respondió", "none": "no encontré ese personaje en la API de Albion",
@@ -483,7 +523,7 @@ class InvitadosCog(commands.Cog):
             if not name:
                 return await _say(interaction, "❌ Nombre de personaje inválido.")
             c = _reg.Character(char_id=None, name=name, region=None, guild="", alliance="", kill_fame=0, death_fame=0)
-            view = ConfirmInviteView(self, me.id, usuario, reason, c)
+            view = ConfirmInviteView(self, me.id, usuario, reason, c, premium=premium)
             return await interaction.followup.send(
                 f"⚠️ {manual[0].upper() + manual[1:]}. Si confirmás, {usuario.mention} queda registrado **a mano** como "
                 f"**{discord.utils.escape_markdown(name)}** (revisá que esté bien escrito; `/sincronizar-registros` completa el ID después).",
@@ -493,42 +533,59 @@ class InvitadosCog(commands.Cog):
         c = look.character
         embed = reg_cog.character_embed(c, title="🎟️ ¿Es este tu amigo?")
         embed.set_footer(text=f"Vas a invitar a {usuario.display_name} con este personaje. Confirmá solo si es la persona correcta.")
-        view = ConfirmInviteView(self, me.id, usuario, reason, c)
+        view = ConfirmInviteView(self, me.id, usuario, reason, c, premium=premium)
         await interaction.followup.send(f"Confirmá que **{discord.utils.escape_markdown(c.name)}** es el personaje de {usuario.mention}:", embed=embed, view=view,
                                         ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    def _check_target(self, guild, me, usuario) -> Optional[str]:
+    def _check_target(self, guild, me, usuario, premium: bool = False) -> Optional[str]:
         if usuario.bot or usuario.id == me.id:
             return "❌ No podés invitar a un bot ni a vos mismo."
         have = _roles(usuario)
         if MIEMBRO_ROLE_ID in have:
             return "❌ Esa persona ya es miembro de la guild."
+        if premium:                                               # un invitado común sí puede pasar a premium
+            if guild.get_role(MIEMBRO_ROLE_ID) is None:
+                return "❌ No encuentro el rol Miembro en el servidor."
+            return None
         if GUEST_ROLE_ID in have:
             return f"❌ {usuario.mention} ya es invitado."
         if guild.get_role(GUEST_ROLE_ID) is None:
             return "❌ No encuentro el rol Invitado en el servidor."
         return None
 
-    async def finish_invite(self, interaction: discord.Interaction, inviter, usuario: discord.Member, reason: str, c) -> str:
-        """Tras confirmar: registra al invitado con ese personaje, le da el rol Invitado, le saca Public y guarda quién lo invitó."""
+    async def finish_invite(self, interaction: discord.Interaction, inviter, usuario: discord.Member, reason: str, c, premium: bool = False) -> str:
+        """Tras confirmar: registra al invitado con ese personaje, le da el rol Invitado (o Miembro si es premium), le saca Public y guarda quién lo invitó."""
         import registration_db as rdb
         guild = interaction.guild
-        err = self._check_target(guild, inviter, usuario)
+        err = self._check_target(guild, inviter, usuario, premium)
         if err:
             return err
         reg_cog = self.bot.get_cog("RegistrationCog")
+        existing = await self.run(rdb.get_registration, usuario.id) if premium else None
+        linked_now = existing is None
+        if existing is not None and existing.char_name.casefold() != c.name.casefold():
+            return f"❌ {usuario.mention} ya está registrado como **{discord.utils.escape_markdown(existing.char_name)}**."
+        if linked_now:
+            try:
+                await self.run(rdb.admin_link, usuario.id, c.name, inviter.id, char_id=c.char_id or None, region=c.region or None, guild_name=c.guild or None,
+                               method="guest_invite" if c.char_id else "admin_override")
+            except rdb.RegError as exc:
+                return f"❌ {exc}"
+        role_id, role_name = (MIEMBRO_ROLE_ID, "Miembro") if premium else (GUEST_ROLE_ID, "Invitado")
+        kind_txt = "Invitación premium" if premium else "Invitado"
         try:
-            await self.run(rdb.admin_link, usuario.id, c.name, inviter.id, char_id=c.char_id or None, region=c.region or None, guild_name=c.guild or None,
-                           method="guest_invite" if c.char_id else "admin_override")
-        except rdb.RegError as exc:
-            return f"❌ {exc}"
-        guest_role = guild.get_role(GUEST_ROLE_ID)
-        try:
-            await usuario.add_roles(guest_role, reason=f"Invitado por {inviter} ({inviter.id}): {reason}")
+            await usuario.add_roles(guild.get_role(role_id), reason=f"{kind_txt} por {inviter} ({inviter.id}): {reason}")
         except discord.HTTPException as exc:
-            await self.run(rdb.unlink, usuario.id, inviter.id, c.name, "no se pudo dar el rol Invitado")
-            return f"❌ No pude darle el rol Invitado (revisá que mi rol esté por encima y tenga Gestionar roles): {exc}"
+            if linked_now:
+                await self.run(rdb.unlink, usuario.id, inviter.id, c.name, f"no se pudo dar el rol {role_name}")
+            return f"❌ No pude darle el rol {role_name} (revisá que mi rol esté por encima y tenga Gestionar roles): {exc}"
         warn = ""
+        guest = guild.get_role(GUEST_ROLE_ID)
+        if premium and guest is not None and GUEST_ROLE_ID in _roles(usuario):
+            try:
+                await usuario.remove_roles(guest, reason=f"Pasa a invitación premium ({inviter})")
+            except discord.HTTPException:
+                warn += "\n⚠️ No pude sacarle el rol Invitado; avisale al staff."
         public = guild.get_role(PUBLIC_ROLE_ID)
         if public is not None and PUBLIC_ROLE_ID in _roles(usuario):
             try:
@@ -536,7 +593,7 @@ class InvitadosCog(commands.Cog):
             except discord.HTTPException:
                 warn += "\n⚠️ Quedó con el rol Invitado pero no pude sacarle Public; avisale al staff."
         try:
-            await self.run(add_guest, guild.id, usuario.id, inviter.id, reason)
+            await self.run(add_guest, guild.id, usuario.id, inviter.id, reason, "premium" if premium else "guest")
         except Exception:
             traceback.print_exc()
             warn += "\n⚠️ No pude guardar el registro de la invitación; avisale al staff."
@@ -547,9 +604,12 @@ class InvitadosCog(commands.Cog):
         if nick:
             warn += f"\n{nick}"
         try:
-            await interaction.channel.send(f"🎟️ {inviter.mention} invitó a {usuario.mention} (**{discord.utils.escape_markdown(c.name)}**): *{reason}*", allowed_mentions=NO_MENTIONS)
+            icon, extra = ("⭐", " con **invitación premium**") if premium else ("🎟️", "")
+            await interaction.channel.send(f"{icon} {inviter.mention} invitó a {usuario.mention}{extra} (**{discord.utils.escape_markdown(c.name)}**): *{reason}*", allowed_mentions=NO_MENTIONS)
         except Exception:
             pass
+        if premium:
+            return f"✅ {usuario.mention} entró con **invitación premium** (rol Miembro) y quedó registrado como **{discord.utils.escape_markdown(c.name)}**.{warn}"
         return f"✅ {usuario.mention} ahora es invitado y quedó registrado como **{discord.utils.escape_markdown(c.name)}**.{warn}"
 
     # ---------- /quien-invito ----------
@@ -563,19 +623,29 @@ class InvitadosCog(commands.Cog):
         g = await self.run(get_guest, interaction.guild.id, usuario.id)
         if g is None:
             return await _say(interaction, f"{usuario.mention} no figura como invitado.")
-        estado = "invitado actual" if g["active"] else "ya no es invitado"
+        premium = (g.get("kind") or "guest") == "premium"
+        estado = ("invitado premium" if premium else "invitado actual") if g["active"] else ("ya no es invitado premium" if premium else "ya no es invitado")
         await _say(interaction, f"🎟️ {usuario.mention} ({estado})\nInvitado por: <@{g['invited_by']}>\nMotivo: {g['reason']}\nFecha: <t:{_unix(g['created_at'])}:f>")
 
-    # ---------- /invitados ----------
+    # ---------- /invitados y /invitados-premium ----------
     @app_commands.command(name="invitados", description="(Staff) Listar los invitados actuales")
     @app_commands.guild_only()
     async def invitados(self, interaction: discord.Interaction):
+        await self._list(interaction, "guest")
+
+    @app_commands.command(name="invitados-premium", description="(Staff) Listar los invitados premium actuales")
+    @app_commands.guild_only()
+    async def invitados_premium(self, interaction: discord.Interaction):
+        await self._list(interaction, "premium")
+
+    async def _list(self, interaction: discord.Interaction, kind: str):
         me = interaction.user
         if not (can_manage(me) or STAFF_ROLE_ID in _roles(me)):
             return await _say(interaction, "🔒 Solo el Staff puede ver la lista de invitados.")
-        rows = await self.run(list_guests, interaction.guild.id)
+        rows = await self.run(list_guests, interaction.guild.id, kind)
+        title = "Invitados premium" if kind == "premium" else "Invitados"
         if not rows:
-            return await _say(interaction, "No hay invitados actualmente.")
+            return await _say(interaction, f"No hay {title.lower()} actualmente.")
         lines = [f"• <@{r['user_id']}> · invitado por <@{r['invited_by']}> el <t:{_unix(r['created_at'])}:d> · {r['reason']}" for r in rows]
         chunks, cur = [], ""
         for ln in lines:
@@ -584,7 +654,7 @@ class InvitadosCog(commands.Cog):
                 cur = ""
             cur += ln + "\n"
         chunks.append(cur)
-        await _say(interaction, f"**Invitados ({len(rows)})**\n" + chunks[0])
+        await _say(interaction, f"**{title} ({len(rows)})**\n" + chunks[0])
         for c in chunks[1:]:
             await _say(interaction, c)
 
@@ -620,11 +690,12 @@ class InvitadosCog(commands.Cog):
     # ---------- si pierde el rol Invitado (p. ej. lo hacen miembro) el registro queda como histórico ----------
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
-        if GUEST_ROLE_ID in _roles(before) and GUEST_ROLE_ID not in _roles(after):
-            try:
-                await self.run(end_guest, after.guild.id, after.id)
-            except Exception:
-                traceback.print_exc()
+        for role_id, kind in ((GUEST_ROLE_ID, "guest"), (MIEMBRO_ROLE_ID, "premium")):
+            if role_id in _roles(before) and role_id not in _roles(after):
+                try:
+                    await self.run(end_guest, after.guild.id, after.id, kind)
+                except Exception:
+                    traceback.print_exc()
 
 
 async def setup_invitados(bot, db_path: str, guild_id: int) -> InvitadosCog:

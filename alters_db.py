@@ -84,6 +84,14 @@ def alters_of(db_path: str, user_id: int) -> List[dict]:
         conn.close()
 
 
+def all_alters(db_path: str) -> List[dict]:
+    conn = connect(db_path)
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM alters ORDER BY user_id, id").fetchall()]
+    finally:
+        conn.close()
+
+
 def find_alter(db_path: str, alter_name: str) -> Optional[dict]:
     conn = connect(db_path)
     try:

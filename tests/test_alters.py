@@ -51,7 +51,7 @@ class AltersTests(DiscordBase):
         self.assertIn("Solo el Staff", i.text)
         i = self.inter(self.council)
         run(self.cog.alter_quitar.callback(self.cog, i, "altbob"))
-        self.assertIn("Se quitó", i.text)
+        self.assertIn("Se eliminó", i.text)
         self.assertIsNone(adb.find_alter(self.db, "AltBob"))
 
     def test_no_puede_ser_principal_de_otro(self):
@@ -62,7 +62,20 @@ class AltersTests(DiscordBase):
         self.assertIn("quedó enlazado", self.add(self.stf, self.alice, "MainAlice"))
 
     def test_es_un_solo_comando_raiz(self):
-        self.assertEqual(sorted(self.cog.alter_g.commands), ["agregar", "quitar", "ver"])
+        self.assertEqual(sorted(self.cog.alter_g.commands), ["agregar", "eliminar", "listar", "ver"])
+
+    def test_listar(self):
+        i = self.inter(self.alice)
+        run(self.cog.alter_listar.callback(self.cog, i))
+        self.assertIn("Solo el Staff", i.text)
+        self.add(self.stf, self.bob, "CraftBob", "alter de crafteo")
+        self.add(self.council, self.alice, "AltAli")
+        i = self.inter(self.stf)
+        run(self.cog.alter_listar.callback(self.cog, i))
+        self.assertIn("Alters (2)", i.text)
+        self.assertIn(f"<@{self.bob.id}> → **CraftBob** — autorizado por <@{self.stf.id}>", i.text)
+        self.assertIn("alter de crafteo", i.text)
+        self.assertIn(f"<@{self.council.id}>", i.text)
 
     def test_info(self):
         self.assertIn("alters", [c.value for c in iv.InvitadosCog.INFO_CHOICES])

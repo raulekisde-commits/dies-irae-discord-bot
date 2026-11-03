@@ -1,4 +1,4 @@
-"""Sistema de alters: /alter agregar, /alter quitar, /alter ver.
+"""Sistema de alters: /alter agregar, /alter eliminar, /alter ver, /alter listar.
 Solo Staff, Council y Administradores pueden agregar o quitar; queda guardado quién lo autorizó."""
 import asyncio
 import os
@@ -50,7 +50,9 @@ class AltersCog(commands.Cog):
     alter_g = app_commands.Group(name="alter", description="Alters enlazados a personas del Discord", guild_only=True)
 
     @alter_g.command(name="agregar", description="(Staff/Council/Admin) Enlaza una cuenta alter a una persona del Discord")
-    @app_commands.describe(usuario="Persona dueña del alter", alter="Nombre de la cuenta / personaje alter", nota="Nota opcional")
+    @app_commands.describe(usuario="Persona dueña del alter", alter="Nombre del personaje alter en Albion",
+                           nota="Descripción opcional (p. ej. alter de crafteo)")
+    @app_commands.rename(alter="personaje", nota="descripcion")
     async def alter_agregar(self, interaction: discord.Interaction, usuario: discord.Member, alter: str, nota: str = None):
         if not can_alter(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden agregar alters.")
@@ -63,15 +65,16 @@ class AltersCog(commands.Cog):
         await _say(interaction, f"✅ **{discord.utils.escape_markdown(row['alter_name'])}** quedó enlazado como alter de {usuario.mention}.\n"
                                 f"Autorizado por {interaction.user.mention}.")
 
-    @alter_g.command(name="quitar", description="(Staff/Council/Admin) Quita un alter enlazado")
+    @alter_g.command(name="eliminar", description="(Staff/Council/Admin) Elimina un alter enlazado")
     @app_commands.describe(alter="Nombre exacto del alter")
+    @app_commands.rename(alter="personaje")
     async def alter_quitar(self, interaction: discord.Interaction, alter: str):
         if not can_alter(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden quitar alters.")
+            return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden eliminar alters.")
         row = await self.run(adb.remove_alter, alter)
         if not row:
             return await _say(interaction, "ℹ️ Ese alter no está enlazado.")
-        await _say(interaction, f"🗑️ Se quitó **{discord.utils.escape_markdown(row['alter_name'])}** (era alter de <@{row['user_id']}>, "
+        await _say(interaction, f"🗑️ Se eliminó **{discord.utils.escape_markdown(row['alter_name'])}** (era alter de <@{row['user_id']}>, "
                                 f"lo había autorizado <@{row['added_by']}>).")
 
     @alter_g.command(name="ver", description="(Staff/Council/Admin) Alters de una persona, o de quién es un alter")
@@ -90,6 +93,25 @@ class AltersCog(commands.Cog):
         if not row:
             return await _say(interaction, "ℹ️ Ese alter no está enlazado a nadie.")
         await _say(interaction, f"**{discord.utils.escape_markdown(row['alter_name'])}** es alter de <@{row['user_id']}>\n" + "\n".join(alter_lines([row])))
+
+    @alter_g.command(name="listar", description="(Staff/Council/Admin) Lista todos los alters enlazados")
+    async def alter_listar(self, interaction: discord.Interaction):
+        if not can_alter(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council y los administradores pueden ver los alters.")
+        rows = await self.run(adb.all_alters)
+        if not rows:
+            return await _say(interaction, "No hay alters enlazados.")
+        lines = [f"• <@{r['user_id']}> → " + alter_lines([r])[0][2:] for r in rows]
+        chunks, cur = [], ""
+        for ln in lines:
+            if len(cur) + len(ln) + 1 > 1800:
+                chunks.append(cur)
+                cur = ""
+            cur += ln + "\n"
+        chunks.append(cur)
+        await _say(interaction, f"**Alters ({len(rows)})**\n" + chunks[0])
+        for c in chunks[1:]:
+            await _say(interaction, c)
 
 
 async def setup_alters(bot, db_path: str, guild_id: int) -> AltersCog:
