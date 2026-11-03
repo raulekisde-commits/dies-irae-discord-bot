@@ -317,6 +317,11 @@ def init_database():
                 url TEXT NOT NULL,
                 filename TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS recruit_rejections (
+                user_id INTEGER PRIMARY KEY,
+                rejected_at REAL NOT NULL,
+                rejected_by INTEGER
+            );
             CREATE TABLE IF NOT EXISTS split_log_ids (
                 panel_message_id INTEGER PRIMARY KEY,
                 log_message_id INTEGER NOT NULL
@@ -649,6 +654,22 @@ def save_ticket_image(user_id: int, url: str, filename: str):
 def delete_ticket_image(user_id: int):
     ticket_images.pop(user_id, None)
     db_execute("DELETE FROM ticket_images WHERE user_id = ?", (user_id,))
+
+
+RECRUIT_REJECT_COOLDOWN_DAYS = float(os.getenv("RECRUIT_REJECT_COOLDOWN_DAYS", "7") or 7)
+
+
+def save_recruit_rejection(user_id: int, rejected_by: Optional[int]):
+    db_execute("INSERT OR REPLACE INTO recruit_rejections(user_id, rejected_at, rejected_by) VALUES (?, ?, ?)",
+               (user_id, time.time(), rejected_by))
+
+
+def recruit_reject_cooldown_left(user_id: int) -> float:
+    """Segundos que le faltan para volver a postularse tras un rechazo (0 si puede)."""
+    rows = db_fetchall("SELECT rejected_at FROM recruit_rejections WHERE user_id = ?", (user_id,))
+    if not rows:
+        return 0.0
+    return max(0.0, rows[0]["rejected_at"] + RECRUIT_REJECT_COOLDOWN_DAYS * 86400 - time.time())
 
 
 def save_split_log_mapping(panel_message_id: int, log_message_id: int):
@@ -1758,18 +1779,30 @@ class RecruitView(discord.ui.View):
         except Exception:
             pass
 
-    async def reject_player(self, interaction: discord.Interaction):
+    async def reject_player(self, interaction: discord.Interaction, reason: str = "", message=None):
         member = await self._get_applicant(interaction)
+        message = message or getattr(interaction, "message", None)
+        reason = (reason or "").strip()
         if member:
             try:
-                await member.send("❌ Tu postulación en **Smogg** fue rechazada. Podés volver a aplicar más adelante.")
+                save_recruit_rejection(member.id, interaction.user.id)
+            except Exception:
+                traceback.print_exc()
+            days = RECRUIT_REJECT_COOLDOWN_DAYS
+            text = "❌ Tu postulación en **Smogg** fue rechazada."
+            if reason:
+                text += f"\n\n📝 **Mensaje del reclutador:**\n{reason}"
+            text += f"\n\nPodés volver a postularte en **{days:g} día{'s' if days != 1 else ''}**."
+            try:
+                await member.send(text)
             except Exception:
                 pass
 
         try:
             log_channel = interaction.guild.get_channel(bs.get("log")) or await interaction.guild.fetch_channel(bs.get("log"))
+            extra = [("📝 Mensaje al postulante", reason[:1000], False)] if reason else None
             await log_channel.send(embed=recruit_record_embed("❌ POSTULACIÓN RECHAZADA", discord.Color.red(), member, interaction.user,
-                                                              getattr(interaction, "message", None)),
+                                                              message, extra=extra),
                                    allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             pass
@@ -1839,13 +1872,26 @@ class RecruitView(discord.ui.View):
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        await self.reject_player(interaction)
+        await interaction.response.send_modal(RecruitRejectModal(self, interaction.message))
 
     @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger, custom_id="recruit_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await self.close_ticket(interaction)
+
+
+class RecruitRejectModal(discord.ui.Modal, title="Rechazar postulación"):
+    """Mensaje opcional que le llega por privado al postulante rechazado."""
+    motivo = discord.ui.TextInput(label="Mensaje para el postulante (opcional)", style=discord.TextStyle.paragraph,
+                                  placeholder="Le llega por privado. Dejalo vacío para no enviar mensaje.", required=False, max_length=1000)
+
+    def __init__(self, ticket_view, message):
+        super().__init__()
+        self.ticket_view, self.message = ticket_view, message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await self.ticket_view.reject_player(interaction, str(self.motivo.value or ""), self.message)
 
 
 RECRUIT_NICK_FIELD = "🎮 Nick en Albion"
@@ -1987,8 +2033,7 @@ class RecruitTicketView(discord.ui.View):
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        await self.reject_player(interaction)
+        await interaction.response.send_modal(RecruitRejectModal(self, interaction.message))
 
     @discord.ui.button(label="🔒 Cerrar", style=discord.ButtonStyle.danger, custom_id="recruit2_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2280,6 +2325,10 @@ class PanelView(discord.ui.View):
 
         if user_id in active_applications:
             return await respond_ephemeral(interaction, "❌ Ya tenés una postulación activa.")
+
+        left = await asyncio.to_thread(recruit_reject_cooldown_left, user_id)
+        if left > 0:
+            return await respond_ephemeral(interaction, f"⏳ Tu última postulación fue rechazada. Podés volver a postularte <t:{int(time.time() + left)}:R>.")
 
         if user_id in cooldowns and (now - cooldowns[user_id] < COOLDOWN_SECONDS):
             return await respond_ephemeral(interaction, "⏳ Esperá un momento antes de volver a intentar.")
