@@ -19,6 +19,7 @@ import casino_db as cdb
 import games_db as gdb
 import stats_db
 from memberguard import button_block_reason
+from paging import PagedView
 from slashctx import SlashContext
 
 ERROR_VISIBLE_SECONDS = 8
@@ -327,15 +328,20 @@ class GamesCog(commands.Cog):
         await self.winrate.callback(self, ctx, objetivo=usuario.mention if usuario else "")
 
     # ---------- top de winrate y total apostado (públicos, para todos) ----------
-    TOP_WINRATE_SHOWN = 15
+    TOP_PAGE = 10
 
-    def _winrate_lines(self, rows) -> str:
+    def _winrate_lines(self, rows, start: int = 0) -> str:
         if not rows:
             return f"Todavía nadie llegó a {stats_db.MIN_GAMES_FOR_TOP} partidas."
-        lines = [f"`{i}.` <@{w.user_id}> — **{w.percent}** ({w.wins}/{w.played})" for i, w in enumerate(rows[:self.TOP_WINRATE_SHOWN], 1)]
-        if len(rows) > self.TOP_WINRATE_SHOWN:
-            lines.append(f"… y {len(rows) - self.TOP_WINRATE_SHOWN} más")
-        return "\n".join(lines)
+        part = rows[start:start + self.TOP_PAGE]
+        return "\n".join(f"`{i}.` <@{w.user_id}> — **{w.percent}** ({w.wins}/{w.played})" for i, w in enumerate(part, start + 1)) or "—"
+
+    @staticmethod
+    async def _send_pages(ctx, pages):
+        if len(pages) > 1:
+            await ctx.send(embed=pages[0], view=PagedView(pages, owner_id=ctx.author.id), allowed_mentions=NO_MENTIONS)
+        else:
+            await ctx.send(embed=pages[0], allowed_mentions=NO_MENTIONS)
 
     @commands.command(name="topwinrate")
     @guard
@@ -345,29 +351,35 @@ class GamesCog(commands.Cog):
         dice = await self.run(stats_db.top_winrate, "dice")
         coin = await self.run(stats_db.top_winrate, "coinflip")
         both = await self.run(stats_db.top_winrate_combined)
-        emb = discord.Embed(title="🏆 Top winrate", color=GREEN)
-        emb.add_field(name="🌐 General (dados + coinflip)", value=self._winrate_lines(both), inline=False)
-        emb.add_field(name="🎲 Dados", value=self._winrate_lines(dice), inline=False)
-        emb.add_field(name="🪙 Coinflip", value=self._winrate_lines(coin), inline=False)
-        emb.set_footer(text=f"Mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas terminadas con rival para entrar al top.")
-        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
-
-    TOP_STREAKS_SHOWN = 15
+        total = max(1, -(-max(len(dice), len(coin), len(both)) // self.TOP_PAGE))
+        pages = []
+        for n in range(total):
+            start = n * self.TOP_PAGE
+            emb = discord.Embed(title="🏆 Top winrate", color=GREEN)
+            emb.add_field(name="🌐 General (dados + coinflip)", value=self._winrate_lines(both, start), inline=False)
+            emb.add_field(name="🎲 Dados", value=self._winrate_lines(dice, start), inline=False)
+            emb.add_field(name="🪙 Coinflip", value=self._winrate_lines(coin, start), inline=False)
+            emb.set_footer(text=f"Mínimo {stats_db.MIN_GAMES_FOR_TOP} partidas terminadas con rival para entrar al top."
+                           + (f" · Página {n + 1}/{total}" if total > 1 else ""))
+            pages.append(emb)
+        await self._send_pages(ctx, pages)
 
     async def send_top_rachas(self, ctx):
         """Top de mejores rachas de coinflip (victorias seguidas)."""
         rows = await self.run(stats_db.top_streaks)
-        emb = discord.Embed(title="🔥 Top rachas de coinflip", color=GREEN)
-        if not rows:
-            emb.description = f"Todavía nadie ganó {stats_db.MIN_STREAK_FOR_TOP} coinflips seguidos."
-        else:
-            lines = [f"`{i}.` <@{s.user_id}> — **{s.best}** seguidas" + (f" · ahora {s.current}" if s.current else "")
-                     for i, s in enumerate(rows[:self.TOP_STREAKS_SHOWN], 1)]
-            if len(rows) > self.TOP_STREAKS_SHOWN:
-                lines.append(f"… y {len(rows) - self.TOP_STREAKS_SHOWN} más")
-            emb.description = "\n".join(lines)
-        emb.set_footer(text="Victorias seguidas en coinflip con rival: una derrota corta la racha; las partidas devueltas no cuentan.")
-        await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+        groups = [rows[i:i + self.TOP_PAGE] for i in range(0, len(rows), self.TOP_PAGE)] or [[]]
+        pages = []
+        for n, group in enumerate(groups):
+            emb = discord.Embed(title="🔥 Top rachas de coinflip", color=GREEN)
+            if not group:
+                emb.description = f"Todavía nadie ganó {stats_db.MIN_STREAK_FOR_TOP} coinflips seguidos."
+            else:
+                emb.description = "\n".join(f"`{i}.` <@{s.user_id}> — **{s.best}** seguidas" + (f" · ahora {s.current}" if s.current else "")
+                                            for i, s in enumerate(group, n * self.TOP_PAGE + 1))
+            emb.set_footer(text="Victorias seguidas en coinflip con rival: una derrota corta la racha; las partidas devueltas no cuentan."
+                           + (f" · Página {n + 1}/{len(groups)}" if len(groups) > 1 else ""))
+            pages.append(emb)
+        await self._send_pages(ctx, pages)
 
     @commands.command(name="totalapostado")
     @guard

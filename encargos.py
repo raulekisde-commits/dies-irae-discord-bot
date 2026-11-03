@@ -219,20 +219,40 @@ class EncargosCog(commands.Cog):
                    else f"⚠️ Tarea #{t.id} guardada, pero no pude publicarla ahora; se reintenta sola.")
 
     async def send_top_coach(self, interaction: discord.Interaction):
-        """Lo usa `/top coach`: quiénes dan más devoluciones (cierran más tareas de coaching)."""
+        """Lo usa `/top coach`: quiénes dan más devoluciones (cierran más tareas de coaching), de a 10 por página."""
         from coaching_db import week_start
         since = week_start().isoformat()
-        total = await self.run(edb.top_coaches, 10)
-        week = await self.run(edb.top_coaches, 10, since)
+        total = await self.run(edb.top_coaches, 1000)
+        week = await self.run(edb.top_coaches, 1000, since)
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        count = max(1, -(-max(len(total), len(week)) // 10))
 
-        def lines(rows):
-            return "\n".join(f"{medals.get(i, f'`{i}.`')} <@{u}> — **{n}**" for i, (u, n) in enumerate(rows, start=1)) or "Todavía no hay datos."
-        emb = discord.Embed(title="🎓 Top coaches", color=discord.Color.gold(),
-                            description="Quienes más devoluciones dan: tareas de coaching cerradas (a mano o respondiendo en el post del jugador).")
-        emb.add_field(name="🏆 Total", value=lines(total), inline=True)
-        emb.add_field(name="📅 Esta semana", value=lines(week), inline=True)
-        await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
+        def lines(rows, start):
+            part = rows[start:start + 10]
+            if not rows:
+                return "Todavía no hay datos."
+            return "\n".join(f"{medals.get(i, f'`{i}.`')} <@{u}> — **{n}**" for i, (u, n) in enumerate(part, start=start + 1)) or "—"
+        embeds = []
+        for p in range(count):
+            emb = discord.Embed(title="🎓 Top coaches", color=discord.Color.gold(),
+                                description="Quienes más devoluciones dan: tareas de coaching cerradas (a mano o respondiendo en el post del jugador).")
+            emb.add_field(name="🏆 Total", value=lines(total, p * 10), inline=True)
+            emb.add_field(name="📅 Esta semana", value=lines(week, p * 10), inline=True)
+            if count > 1:
+                emb.set_footer(text=f"Página {p + 1}/{count}")
+            embeds.append(emb)
+        await self._send_paged(interaction, embeds)
+
+    async def _send_paged(self, interaction: discord.Interaction, embeds):
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
 
     async def send_top(self, interaction: discord.Interaction):
         """Lo usa `/top tareas`: quién finalizó más tareas del staff, de a 10 por página (botón Siguiente)."""
@@ -249,15 +269,7 @@ class EncargosCog(commands.Cog):
             if len(pages) > 1:
                 emb.set_footer(text=f"Página {n}/{len(pages)}")
             embeds.append(emb)
-        if len(embeds) > 1:
-            view = PagedView(embeds, owner_id=interaction.user.id)
-            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
-            try:
-                view.message = await interaction.original_response()
-            except Exception:
-                pass
-        else:
-            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
+        await self._send_paged(interaction, embeds)
 
     # ---------- botones ----------
     async def _task(self, interaction) -> Optional[edb.Task]:
