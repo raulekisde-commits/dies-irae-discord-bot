@@ -64,6 +64,7 @@ class Giveaway:
     valid_count: int = 0
     winners: List[int] = field(default_factory=list)
     entrants: Set[int] = field(default_factory=set)
+    bal: int = 0                                   # si es > 0, balance que se acredita a CADA ganador al sortear
     role_id: Optional[int] = None                 # si está, solo participan (y pueden ganar) quienes tengan ese rol
 
 
@@ -83,6 +84,7 @@ def init_schema(db_path: str) -> None:
         _ensure_column(conn, "giveaways", "valid_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "giveaways", "winners_json", "TEXT")
         _ensure_column(conn, "giveaways", "role_id", "INTEGER")
+        _ensure_column(conn, "giveaways", "bal", "INTEGER NOT NULL DEFAULT 0")
         with write_tx(conn):               # un reclamo sin resultado guardado no dejó nada hecho: se puede reclamar de nuevo
             conn.execute("UPDATE giveaways SET state = 'open' WHERE state = 'drawing'")
     finally:
@@ -99,18 +101,19 @@ def _build(conn, r) -> Giveaway:
     return Giveaway(int(r["message_id"]), r["prize"], _dt(r["end_at"]).astimezone(timezone.utc), int(r["channel_id"]), int(r["creator_id"]),
                     int(r["guild_id"]), max(1, int(r["winners_count"] or 1)), r["state"] or "open", r["outcome"], int(r["valid_count"] or 0),
                     [int(w) for w in json.loads(r["winners_json"] or "[]")], entrants,
+                    int(r["bal"] or 0) if "bal" in r.keys() else 0,
                     int(r["role_id"]) if "role_id" in r.keys() and r["role_id"] else None)
 
 
 def create(db_path: str, *, message_id: int, prize: str, end_at: datetime, channel_id: int, creator_id: int, guild_id: int,
-           winners_count: int = 1, role_id: Optional[int] = None) -> Giveaway:
+           winners_count: int = 1, role_id: Optional[int] = None, bal: int = 0) -> Giveaway:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count, state, role_id) "
-                         "VALUES (?,?,?,?,?,?,?, 'open', ?)",
+            conn.execute("INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count, state, role_id, bal) "
+                         "VALUES (?,?,?,?,?,?,?, 'open', ?, ?)",
                          (message_id, prize, end_at.astimezone(timezone.utc).isoformat(), channel_id, creator_id, guild_id,
-                          max(1, min(MAX_WINNERS, int(winners_count))), int(role_id) if role_id else None))
+                          max(1, min(MAX_WINNERS, int(winners_count))), int(role_id) if role_id else None, max(0, int(bal or 0))))
             return _build(conn, conn.execute("SELECT * FROM giveaways WHERE message_id = ?", (message_id,)).fetchone())
     finally:
         conn.close()

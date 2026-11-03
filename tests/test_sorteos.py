@@ -23,9 +23,9 @@ class SorteoBase(DiscordBase):
         self.guild.members.append(self.staff)
         self.cog = run(sg.setup_sorteos(self.bot, self.db, GUILD_ID, STAFF_ROLE))
 
-    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None):
+    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None, bal=None):
         i = self.inter(user or self.staff)
-        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol))
+        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol, bal))
         return i
 
     def msg(self):
@@ -103,6 +103,56 @@ class RolTests(SorteoBase):
 
     def test_tiempo_enorme_rechazado(self):
         self.assertIn("Tiempo inválido", self.create(tiempo="999999999:00").text)
+
+
+class BalTests(SorteoBase):
+    def setUp(self):
+        super().setUp()
+        import economy_db as eco
+        self.eco = eco
+        eco.init_schema(self.db)
+
+    def balance(self, u):
+        return self.eco.get_balance(self.db, u.id) if hasattr(self.eco, "get_balance") else self.eco.balance(self.db, u.id)
+
+    def test_bal_invalido(self):
+        self.assertIn("Balance inválido", self.create(bal="abc").text)
+        self.assertIn("Balance inválido", self.create(bal="-5").text)
+        self.assertEqual(len([m for m in self.panelch.sent if m.embeds]), 0)
+
+    def test_paga_a_cada_ganador_una_sola_vez(self):
+        self.assertIn("Balance por ganador", self.create(winners=2, bal="5m").text)
+        m = self.msg()
+        self.assertEqual(sdb.get(self.db, m.id).bal, 5_000_000)
+        self.assertTrue(any("balance" in str(f[0]).lower() for f in m.embeds[0].fields))
+        self.join(self.alice); self.join(self.bob)
+        self.past(m.id)
+        run(self.cog.process_due())
+        self.assertEqual((self.balance(self.alice), self.balance(self.bob)), (5_000_000, 5_000_000))
+        self.assertIn("Se acreditó", [x.content for x in self.panelch.sent if x.content][-1])
+        run(self.cog.process_due())
+        self.assertEqual(self.balance(self.alice), 5_000_000)                 # no se vuelve a pagar
+
+    def test_reintento_del_anuncio_no_paga_dos_veces(self):
+        self.create(winners=1, bal="1.000")
+        m = self.msg()
+        self.join(self.alice)
+        self.past(m.id)
+        orig = self.panelch.send
+
+        async def boom(*a, **k):
+            raise discord.HTTPException()
+        self.panelch.send = boom
+        run(self.cog.process_due())
+        self.panelch.send = orig
+        run(self.cog.process_due())
+        self.assertEqual(self.balance(self.alice), 1000)
+
+    def test_sin_participantes_no_paga(self):
+        self.create(bal="1.000")
+        self.past(self.msg().id)
+        run(self.cog.process_due())
+        self.assertEqual(self.balance(self.alice), 0)
 
 
 class JoinTests(SorteoBase):

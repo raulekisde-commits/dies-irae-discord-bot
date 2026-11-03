@@ -11,6 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import economy_db as eco
 import sorteos_db as sdb
 from guildshop import can_manage
 from memberguard import button_block_reason
@@ -95,6 +96,8 @@ class SorteosCog(commands.Cog):
                             color=discord.Color.gold() if not finished else discord.Color.dark_grey())
         emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
         emb.add_field(name="🏆 Ganadores", value=str(g.winners_count), inline=True)
+        if g.bal:
+            emb.add_field(name="💰 Balance por ganador", value=f"`{eco.format_amount(g.bal)}`", inline=True)
         if g.role_id:
             emb.add_field(name="🔒 Solo con el rol", value=f"<@&{g.role_id}>", inline=True)
         if finished:
@@ -122,10 +125,11 @@ class SorteosCog(commands.Cog):
     @app_commands.command(name="sorteo", description="Crear sorteo (Staff y Council)")
     @app_commands.describe(premio="Qué se sortea (texto libre)", tiempo="Duración en H:M (ej: 0:30, 2:00, 6:10)",
                            ganadores=f"Cantidad de ganadores (1 a {sdb.MAX_WINNERS}). Por defecto 1",
-                           rol="(Opcional) Si lo ponés, solo pueden anotarse y ganar quienes tengan este rol")
+                           rol="(Opcional) Si lo ponés, solo pueden anotarse y ganar quienes tengan este rol",
+                           bal="(Opcional) Balance que se le acredita a cada ganador al sortear (ej: 5.000.000 o 5m)")
     @app_commands.guild_only()
     async def sorteo(self, interaction: discord.Interaction, premio: str, tiempo: str,
-                     ganadores: app_commands.Range[int, 1, sdb.MAX_WINNERS] = 1, rol: Optional[discord.Role] = None):
+                     ganadores: app_commands.Range[int, 1, sdb.MAX_WINNERS] = 1, rol: Optional[discord.Role] = None, bal: Optional[str] = None):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await _say(interaction, "❌ Este comando solo funciona dentro del servidor.")
         if not self._can_create(interaction.user):
@@ -140,11 +144,17 @@ class SorteosCog(commands.Cog):
             return await _say(interaction, "❌ La duración tiene que ser mayor a `0:00`.")
         if rol is not None and rol.id == interaction.guild.id:
             return await _say(interaction, "❌ Elegí un rol del servidor (no @everyone).")
+        bal_amount = 0
+        if bal is not None and bal.strip():
+            try:
+                bal_amount = eco.parse_amount_short(bal)
+            except eco.AmountError as exc:
+                return await _say(interaction, f"❌ Balance inválido: {exc}")
         end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
         await interaction.response.defer(ephemeral=True)
         role_id = rol.id if rol is not None else None
         draft = sdb.Giveaway(0, premio.strip(), end_at, interaction.channel.id, interaction.user.id, interaction.guild.id, int(ganadores), "open",
-                             role_id=role_id)
+                             bal=bal_amount, role_id=role_id)
         try:
             msg = await interaction.channel.send(embed=self.embed(draft), view=GiveawayJoinView(self))
         except Exception:
@@ -152,7 +162,7 @@ class SorteosCog(commands.Cog):
             return await _say(interaction, "❌ No pude publicar el sorteo. Revisá que el bot pueda enviar mensajes en este canal.")
         try:
             await self.run(sdb.create, message_id=msg.id, prize=draft.prize, end_at=end_at, channel_id=interaction.channel.id,
-                           creator_id=interaction.user.id, guild_id=interaction.guild.id, winners_count=int(ganadores), role_id=role_id)
+                           creator_id=interaction.user.id, guild_id=interaction.guild.id, winners_count=int(ganadores), role_id=role_id, bal=bal_amount)
         except Exception:
             traceback.print_exc()
             try:
@@ -161,7 +171,8 @@ class SorteosCog(commands.Cog):
                 pass
             return await _say(interaction, "❌ No pude guardar el sorteo en la base de datos, así que lo cancelé. Avisale a un administrador.")
         await _say(interaction, f"✅ Sorteo creado. Premio: `{draft.prize}` · Ganadores: {ganadores}"
-                             + (f" · Solo con el rol {rol.name}" if rol is not None else "") + f" · Termina: <t:{int(end_at.timestamp())}:R>")
+                             + (f" · Solo con el rol {rol.name}" if rol is not None else "")
+                             + (f" · Balance por ganador: {eco.format_amount(bal_amount)}" if bal_amount else "") + f" · Termina: <t:{int(end_at.timestamp())}:R>")
 
     # ---------- anotarse ----------
     async def on_join(self, interaction: discord.Interaction):
@@ -297,6 +308,22 @@ class SorteosCog(commands.Cog):
                 lines.append(f"Se pidieron {g.winners_count} ganadores, pero solo había {len(g.winners)} participantes válidos.")
             text = "\n".join(lines)
             allowed = discord.AllowedMentions(users=[discord.Object(id=u) for u in g.winners], roles=False, everyone=False)
+        if g.bal and g.winners:
+            try:                                               # idempotente: si el anuncio se reintenta, no se paga dos veces
+                res = await asyncio.to_thread(eco.apply_operation, self.db_path, kind="add", actor_id=g.creator_id, user_ids=g.winners,
+                                              amount=g.bal, request_key=f"sorteo:{g.message_id}:premio",
+                                              reason=f"Premio del sorteo #{g.message_id}")
+            except Exception:
+                traceback.print_exc()
+                return False
+            if res.created:
+                e = self.bot.get_cog("EconomyCog")
+                if e is not None:
+                    try:
+                        await e.publish_log(res.op_id)
+                    except Exception:
+                        traceback.print_exc()
+            text += f"\n💰 Se acreditó **{eco.format_amount(g.bal)}** a cada ganador."
         try:
             msg = await ch.fetch_message(g.message_id)
             await msg.edit(embed=self.embed(g, entrants=len(g.entrants), winners=g.winners or None, finished=True, note=note),
