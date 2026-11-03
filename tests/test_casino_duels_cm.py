@@ -765,6 +765,21 @@ class CambioMonedaTests(DiscordBase):
             self.assertTrue(ch.deleted)
             self.assertIsNone(ddb.open_ticket_of(self.db, GUILD_ID, self.alice.id, ddb.get_by_channel(self.db, ch.id).kind))
 
+    def test_cerrar_ticket_de_otra_persona_cuenta_como_tarea_hecha(self):
+        import encargos, encargos_db as edb
+        run(encargos.setup_encargos(self.bot, self.db, GUILD_ID))
+        self.fund(self.alice, 100)
+        self.open_sell()
+        sell_ch = self.last_channel()
+        self.open_buy()
+        buy_ch = self.last_channel()
+        self.press("on_close", self.alice, sell_ch)                      # la dueña cierra su propio ticket: no es una tarea del Council
+        self.assertEqual(edb.top_users(self.db)[1], [])
+        self.press("on_close", self.council, buy_ch)
+        self.assertEqual(edb.top_users(self.db)[1], [(self.council.id, 1)])
+        self.press("on_close", self.council, buy_ch)                     # cerrado dos veces: no suma de nuevo
+        self.assertEqual(edb.top_users(self.db)[1], [(self.council.id, 1)])
+
     def test_owner_can_close_own_sell_ticket_but_cooldown_stays(self):
         self.fund(self.alice, 100)
         self.open_sell()

@@ -456,6 +456,10 @@ class DepositsCog(commands.Cog):
             return await _reply(interaction, "❌ Este canal no es un ticket de cambio de moneda.")
         if not await self.run(ddb.close_ticket, ticket.id, interaction.user.id):
             return await _reply(interaction, "ℹ️ Este ticket ya estaba cerrado.")
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is not None and can_manage(interaction.user) and interaction.user.id != ticket.user_id:   # cerrar el ticket de otra persona = tarea hecha
+            what = "cobro de balance" if ticket.kind == "sell" else "compra de Wuju Coins"
+            await enc.record_done(f"Cerrar el ticket de {what} #{ticket.id}", interaction.user.id, f"cambio:{ticket.id}")
         await interaction.response.send_message(f"🔒 Ticket cerrado por {interaction.user.mention}. El canal se borra en unos segundos.",
                                                 allowed_mentions=NO_MENTIONS)
         if self.close_delay:

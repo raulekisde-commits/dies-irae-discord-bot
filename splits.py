@@ -1249,6 +1249,9 @@ class SplitsCog(commands.Cog):
             await self.run(sdb.finish_close, split_id, paid)
         await self._publish_log(ops)
         s = await self.run(sdb.get_split, split_id)
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is not None:                                    # repartir el split cuenta como tarea hecha para /top tareas (una vez por split)
+            await enc.record_done(f"Repartir el split «{s.title}» (#{split_id})", interaction.user.id, f"split:{split_id}")
         await self.sync_split(split_id)
         if old_pay:
             await self._post_adjustment(s, old_pay, paid, interaction.user.id)

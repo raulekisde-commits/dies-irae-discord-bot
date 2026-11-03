@@ -1774,6 +1774,10 @@ class RecruitView(discord.ui.View):
 
     async def close_ticket(self, interaction: discord.Interaction):
         member = await self._get_applicant(interaction)
+        enc = bot.get_cog("EncargosCog")
+        if enc is not None:                                    # cerrar una postulación cuenta como tarea hecha para /top tareas
+            who = member.display_name if member else "postulante"
+            await enc.record_done(f"Cerrar la postulación de {who}", interaction.user.id, f"recruit:{interaction.channel.id}")
         try:
             log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
             await log_channel.send(embed=recruit_record_embed("🔒 POSTULACIÓN CERRADA", discord.Color.dark_grey(), member, interaction.user,

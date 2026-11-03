@@ -350,6 +350,14 @@ class EncargosCog(commands.Cog):
                 override = is_staff_or_council(interaction.user) or ((t.source or "").startswith("coach:") and can_take(interaction.user))
             await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
 
+    async def record_done(self, text: str, actor_id: int, source: str) -> bool:
+        """Cuenta como tarea hecha (para /top tareas) algo que el Staff resolvió sin pasar por el panel de tareas. Nunca rompe a quien la llama."""
+        try:
+            return await self.run(edb.record_done, guild_id=self.guild_id, channel_id=TASKS_CHANNEL_ID, text=text, actor_id=actor_id, source=source)
+        except Exception:
+            traceback.print_exc()
+            return False
+
     # ---------- cancelar tareas ----------
     async def on_cancel(self, interaction: discord.Interaction):
         if not is_staff_or_council(interaction.user):
