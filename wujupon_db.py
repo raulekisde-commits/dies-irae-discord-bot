@@ -104,7 +104,10 @@ CREATE TABLE IF NOT EXISTS wjp_prizes (
     cost_currency TEXT NOT NULL DEFAULT '',   -- wuju | embo | silver | val | ''
     third_party   INTEGER NOT NULL DEFAULT 0,
     enabled       INTEGER NOT NULL DEFAULT 1,
-    sort          INTEGER NOT NULL DEFAULT 0
+    sort          INTEGER NOT NULL DEFAULT 0,
+    description   TEXT NOT NULL DEFAULT '',
+    custom        INTEGER NOT NULL DEFAULT 0,   -- 1 = carta creada desde el bot (/wujupon carta-agregar)
+    name_edited   INTEGER NOT NULL DEFAULT 0    -- 1 = el Council cambió el nombre: el catálogo del código ya no lo pisa
 );
 CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS wjp_spins (
@@ -200,6 +203,8 @@ class Prize:
     cost_currency: str
     third_party: bool
     enabled: bool
+    description: str = ""
+    custom: bool = False
 
     @property
     def automatic(self) -> bool:
@@ -277,14 +282,19 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {c["name"] for c in conn.execute("PRAGMA table_info(wjp_prizes)").fetchall()}
+        for col, ddl in (("description", "TEXT NOT NULL DEFAULT ''"), ("custom", "INTEGER NOT NULL DEFAULT 0"),
+                         ("name_edited", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE wjp_prizes ADD COLUMN {col} {ddl}")
         with write_tx(conn):
             for i, (key, name, rarity, weight, origin, handler, amount, cost, cur, third) in enumerate(CATALOG):
                 # INSERT OR IGNORE: lo que el Council habilitó/deshabilitó se conserva; nombre, peso y handler siguen al código.
                 conn.execute("INSERT OR IGNORE INTO wjp_prizes(key, name, rarity, weight, origin, handler, amount, cost, cost_currency, "
                              "third_party, enabled, sort) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
                              (key, name, rarity, weight, origin, handler, amount, cost, cur, third, i))
-                conn.execute("UPDATE wjp_prizes SET name=?, rarity=?, weight=?, origin=?, handler=?, amount=?, cost=?, cost_currency=?, "
-                             "third_party=?, sort=? WHERE key=?",
+                conn.execute("UPDATE wjp_prizes SET name = CASE WHEN name_edited = 1 THEN name ELSE ? END, rarity=?, weight=?, origin=?, "
+                             "handler=?, amount=?, cost=?, cost_currency=?, third_party=?, sort=? WHERE key=? AND custom = 0",
                              (name, rarity, weight, origin, handler, amount, cost, cur, third, i, key))
     finally:
         conn.close()
@@ -292,8 +302,10 @@ def init_schema(db_path: str) -> None:
 
 
 def _prize(r) -> Prize:
+    keys = r.keys()
     return Prize(r["key"], r["name"], r["rarity"], int(r["weight"]), r["origin"], r["handler"], int(r["amount"]), int(r["cost"]),
-                 r["cost_currency"], bool(r["third_party"]), bool(r["enabled"]))
+                 r["cost_currency"], bool(r["third_party"]), bool(r["enabled"]),
+                 (r["description"] or "") if "description" in keys else "", bool(r["custom"]) if "custom" in keys else False)
 
 
 def _open(db_path: str) -> sqlite3.Connection:
@@ -332,6 +344,100 @@ def set_prize_enabled(db_path: str, key: str, enabled: bool, actor_id: int) -> b
             if cur.rowcount:
                 _log(conn, actor_id, "prize_enabled" if enabled else "prize_disabled", ref=key)
             return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+MAX_NAME = 90
+MAX_DESC = 500
+CUSTOM_SORT_BASE = 1000
+
+
+def _clean_text(text: Optional[str], limit: int, what: str) -> str:
+    text = " ".join((text or "").split())
+    if len(text) > limit:
+        raise WujuponError(f"{what} puede tener hasta {limit} caracteres.")
+    return text
+
+
+def parse_chance(text: str) -> int:
+    """'0,5' / '0.5%' / '11' → peso sobre 100.000 (mínimo 0,001 %)."""
+    raw = (text or "").strip().replace("%", "").replace(" ", "").replace(",", ".")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise WujuponError("Escribí la probabilidad como porcentaje (ej: 0,5 o 2).")
+    weight = round(value * TOTAL_WEIGHT / 100)
+    if abs(weight * 100 / TOTAL_WEIGHT - value) > 1e-9 or not 1 <= weight <= TOTAL_WEIGHT:
+        raise WujuponError("La probabilidad tiene que estar entre 0,001 % y 100 %, con hasta 3 decimales.")
+    return weight
+
+
+def enabled_total(db_path: str) -> int:
+    conn = _open(db_path)
+    try:
+        return int(conn.execute("SELECT COALESCE(SUM(weight), 0) FROM wjp_prizes WHERE enabled = 1").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def add_prize(db_path: str, *, actor_id: int, name: str, description: str, rarity: str, weight: int,
+              third_party: bool = False) -> Prize:
+    """Carta nueva creada desde el bot. Siempre se canjea por encargo al Council (no tiene canje automático)."""
+    if rarity not in RARITIES:
+        raise WujuponError("Rareza inválida.")
+    name = _clean_text(name, MAX_NAME, "El nombre")
+    if not name:
+        raise WujuponError("El nombre no puede estar vacío.")
+    description = _clean_text(description, MAX_DESC, "La descripción")
+    if not 1 <= int(weight) <= TOTAL_WEIGHT:
+        raise WujuponError("Probabilidad inválida.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM wjp_prizes WHERE lower(name) = lower(?)", (name,)).fetchone():
+                raise WujuponError("Ya hay una carta con ese nombre.")
+            n = int(conn.execute("SELECT COUNT(*) FROM wjp_prizes WHERE custom = 1").fetchone()[0]) + 1
+            key = f"custom_{n}"
+            while conn.execute("SELECT 1 FROM wjp_prizes WHERE key = ?", (key,)).fetchone():
+                n += 1
+                key = f"custom_{n}"
+            conn.execute("INSERT INTO wjp_prizes(key, name, rarity, weight, origin, handler, amount, cost, cost_currency, third_party, "
+                         "enabled, sort, description, custom, name_edited) VALUES (?,?,?,?,'Staff',NULL,0,0,'',?,1,?,?,1,1)",
+                         (key, name, rarity, int(weight), int(bool(third_party)), CUSTOM_SORT_BASE + n, description))
+            _log(conn, actor_id, "prize_added", ref=key, detail=f"{name} · {rarity} · {chance_text(int(weight))}")
+            return _prize(conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (key,)).fetchone())
+    finally:
+        conn.close()
+
+
+def edit_prize(db_path: str, key: str, *, actor_id: int, name: Optional[str] = None,
+               description: Optional[str] = None) -> Tuple[Prize, Prize]:
+    """Cambia nombre y/o descripción. Las cartas ya obtenidas muestran el texto nuevo. Devuelve (antes, después)."""
+    if name is None and description is None:
+        raise WujuponError("Indicá un nombre nuevo, una descripción nueva o ambos.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            row = conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                raise WujuponError("Esa carta no existe.")
+            before = _prize(row)
+            changes = []
+            if name is not None:
+                new_name = _clean_text(name, MAX_NAME, "El nombre")
+                if not new_name:
+                    raise WujuponError("El nombre no puede estar vacío.")
+                if conn.execute("SELECT 1 FROM wjp_prizes WHERE lower(name) = lower(?) AND key != ?", (new_name, key)).fetchone():
+                    raise WujuponError("Ya hay otra carta con ese nombre.")
+                conn.execute("UPDATE wjp_prizes SET name = ?, name_edited = 1 WHERE key = ?", (new_name, key))
+                changes.append(f"nombre: {before.name} → {new_name}")
+            if description is not None:
+                new_desc = "" if description.strip().lower() in ("-", "quitar", "borrar") else _clean_text(description, MAX_DESC, "La descripción")
+                conn.execute("UPDATE wjp_prizes SET description = ? WHERE key = ?", (new_desc, key))
+                changes.append("descripción actualizada" if new_desc else "descripción quitada")
+            _log(conn, actor_id, "prize_edited", ref=key, detail=" · ".join(changes))
+            return before, _prize(conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (key,)).fetchone())
     finally:
         conn.close()
 
@@ -519,6 +625,15 @@ def unannounced_pulls(db_path: str, limit: int = 20) -> List[Tuple[int, int, str
         rows = conn.execute("SELECT id, user_id, prize_key, weight, total_weight FROM wjp_pulls WHERE announced = 0 "
                             "ORDER BY id LIMIT ?", (limit,)).fetchall()
         return [(int(r["id"]), int(r["user_id"]), r["prize_key"], int(r["weight"]), int(r["total_weight"])) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_all_announced(db_path: str) -> None:
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE wjp_pulls SET announced = 1 WHERE announced = 0")
     finally:
         conn.close()
 

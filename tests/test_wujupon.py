@@ -211,6 +211,62 @@ class WujuponDbTests(DbBase):
         self.assertEqual(eco.get_balance(self.db, 5), PRICE)
 
 
+class CartasEditablesTests(DbBase):
+    def test_parse_chance(self):
+        self.assertEqual(wdb.parse_chance("0,5"), 500)
+        self.assertEqual(wdb.parse_chance("0.075%"), 75)
+        self.assertEqual(wdb.parse_chance("11"), 11000)
+        for bad in ("0", "abc", "0,0001", "101"):
+            with self.assertRaises(wdb.WujuponError):
+                wdb.parse_chance(bad)
+
+    def test_agregar_carta_sale_en_tiradas_y_se_canjea_por_encargo(self):
+        p = wdb.add_prize(self.db, actor_id=1, name="Cena con el GM", description="Una cena", rarity="epic", weight=500)
+        self.assertTrue(p.custom)
+        self.assertFalse(p.automatic)
+        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 500)
+        self.assertIn(p.key, [x.key for x in wdb.list_prizes(self.db, True)])
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
+        r = wdb.pull(self.db, 5, "p", rng=FixedRng(wdb.TOTAL_WEIGHT))      # el último tramo = la carta nueva
+        self.assertEqual(r.prize.key, p.key)
+        red = wdb.redeem(self.db, card_id=r.card_id, user_id=5, details="", request_key="r", guild_id=GUILD_ID)
+        self.assertEqual(red.status, "pending")
+
+    def test_no_se_repite_nombre(self):
+        with self.assertRaises(wdb.WujuponError):
+            wdb.add_prize(self.db, actor_id=1, name="porte a caerleon", description="", rarity="rare", weight=10)
+
+    def test_editar_nombre_y_descripcion_sobrevive_reinicio(self):
+        _, after = wdb.edit_prize(self.db, "caerleon_port", actor_id=1, name="Porte VIP a Caerleon", description="Con escolta")
+        self.assertEqual((after.name, after.description), ("Porte VIP a Caerleon", "Con escolta"))
+        wdb._ready.discard(self.db)          # simula un reinicio del bot: vuelve a sembrar el catálogo
+        wdb.init_schema(self.db)
+        p = wdb.get_prize(self.db, "caerleon_port")
+        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 1100))
+        _, cleared = wdb.edit_prize(self.db, "caerleon_port", actor_id=1, description="quitar")
+        self.assertEqual(cleared.description, "")
+
+    def test_editar_sin_datos_o_carta_inexistente(self):
+        with self.assertRaises(wdb.WujuponError):
+            wdb.edit_prize(self.db, "caerleon_port", actor_id=1)
+        with self.assertRaises(wdb.WujuponError):
+            wdb.edit_prize(self.db, "nope", actor_id=1, name="x")
+
+    def test_migra_tabla_vieja_sin_columnas_nuevas(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        db = os.path.join(d, "old.sqlite3")
+        conn = connect(db)
+        conn.execute("CREATE TABLE wjp_prizes (key TEXT PRIMARY KEY, name TEXT NOT NULL, rarity TEXT NOT NULL, weight INTEGER NOT NULL, "
+                     "origin TEXT NOT NULL, handler TEXT, amount INTEGER NOT NULL DEFAULT 0, cost INTEGER NOT NULL DEFAULT 0, "
+                     "cost_currency TEXT NOT NULL DEFAULT '', third_party INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, "
+                     "sort INTEGER NOT NULL DEFAULT 0)")
+        conn.close()
+        wdb.init_schema(db)
+        self.assertEqual(len(wdb.list_prizes(db)), len(wdb.CATALOG))
+        self.assertEqual(wdb.get_prize(db, "caerleon_port").description, "")
+
+
 class SellCooldownTests(DbBase):
     def _open_ticket(self, uid, ago_hours=1):
         ddb.init_schema(self.db)
@@ -338,6 +394,49 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.show_inventory(i))
         self.assertIsInstance(i.response.sent[0][1]["view"], wj.InventoryView)
         self.assertIn("×1", i.response.sent[0][1]["embed"].description)
+
+    def test_canal_anuncios_fijar_y_quitar(self):
+        i = self.inter(self.bob, self.feedch)
+        run(self.cog.feed_channel.callback(self.cog, i, None, False))
+        self.assertIn("Solo el Council", i.text)
+        run(self.cog.feed_channel.callback(self.cog, self.inter(self.council, self.feedch), None, True))
+        self.assertIsNone(wdb.get_setting(self.db, "feed_channel"))
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        run(self.cog.do_spin(self.inter(self.alice)))
+        self.assertEqual(self.feedch.sent, [])
+        # al reactivarlo no se publica lo que salió mientras estaba desactivado
+        i = self.inter(self.council, self.feedch)
+        run(self.cog.feed_channel.callback(self.cog, i, None, False))
+        self.assertEqual(wdb.get_setting(self.db, "feed_channel"), str(FEED_CH))
+        run(self.cog.announce_pending())
+        self.assertEqual(self.feedch.sent, [])
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g2", reason="t")
+        run(self.cog.do_spin(self.inter(self.alice)))
+        self.assertEqual(len(self.feedch.sent), 1)
+
+    def test_canal_encargos(self):
+        other = discord.TextChannel(3000000000000000099, self.guild, "otro")
+        run(self.cog.council_channel.callback(self.cog, self.inter(self.council, other), None))
+        self.assertEqual(wdb.get_setting(self.db, "council_channel"), str(other.id))
+
+    def test_comandos_carta_agregar_y_editar(self):
+        rare = discord.app_commands.Choice(name="Rara", value="rare")
+        i = self.inter(self.bob)
+        run(self.cog.add_card.callback(self.cog, i, "X", rare, "1", None, False))
+        self.assertIn("Solo el Council", i.text)
+        i = self.inter(self.council)
+        run(self.cog.add_card.callback(self.cog, i, "Skin gratis", rare, "1", "Una skin", False))
+        self.assertIn("Carta creada", i.text)
+        self.assertIn("101 %", i.text)                       # avisa que el total ya no es 100 %
+        key = [p.key for p in wdb.list_prizes(self.db) if p.name == "Skin gratis"][0]
+        i = self.inter(self.council)
+        run(self.cog.edit_card.callback(self.cog, i, key, "Skin premium", "Elegís cualquiera"))
+        self.assertIn("Skin premium", i.text)
+        self.assertEqual(wdb.get_prize(self.db, key).description, "Elegís cualquiera")
+        # la descripción aparece en Ver premios
+        i = self.inter(self.alice)
+        run(self.cog.show_prizes(i))
+        self.assertIn("Elegís cualquiera", " ".join(e.description for e in i.response.sent[0][1]["embeds"]))
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")

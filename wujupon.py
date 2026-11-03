@@ -35,8 +35,11 @@ def prize_mode(p: wdb.Prize) -> str:
 def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: str = "🎴 ¡Nueva carta!") -> discord.Embed:
     emb = discord.Embed(title=title, color=p.color)
     emb.description = f"# {p.name}\n**{p.rarity_label}** · probabilidad **{wdb.chance_text(weight, total)}**"
+    if p.description:
+        emb.description += f"\n\n{p.description}"
     emb.add_field(name="Canje", value=prize_mode(p), inline=True)
-    emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
+    if card_id > 0:
+        emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
     if p.third_party:
         emb.add_field(name="⚠️", value="Afecta a otra persona: el Council puede rechazarla si no corresponde.", inline=False)
     emb.set_footer(text="Guardala en tu inventario y canjeala cuando quieras desde 🎒 Mi inventario.")
@@ -53,7 +56,8 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
         name, emoji, color = wdb.RARITIES[rarity]
         share = sum(p.weight for p in group)
         lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'🤖' if p.automatic else '🛠️'}"
-                 + (" · ⚠️ terceros" if p.third_party else "") for p in group]
+                 + (" · ⚠️ terceros" if p.third_party else "")
+                 + (f"\n  ↳ {p.description[:150]}" if p.description else "") for p in group]
         emb = discord.Embed(title=f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}", color=color,
                             description="\n".join(lines)[:4000])
         out.append(emb)
@@ -71,7 +75,10 @@ def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
     emb.add_field(name="Premio", value=f"{p.rarity_label} · **{p.name}**" if p else req.prize_key, inline=True)
     emb.add_field(name="Estado", value=wdb.STATUS_LABELS.get(req.status, req.status), inline=True)
     if p is not None:
-        emb.add_field(name="Beneficio", value=prize_mode(p) + (" · ⚠️ afecta a otra persona" if p.third_party else ""), inline=False)
+        benefit = prize_mode(p) + (" · ⚠️ afecta a otra persona" if p.third_party else "")
+        if p.description:
+            benefit = f"{p.description[:800]}\n{benefit}"
+        emb.add_field(name="Beneficio", value=benefit, inline=False)
     emb.add_field(name="Datos del jugador", value=(req.details or "—")[:1000], inline=False)
     who = []
     if req.taker_id:
@@ -302,7 +309,7 @@ class WujuponCog(commands.Cog):
             return await _say(interaction, "❌ No tengo permiso para escribir en este canal.")
         await self.run(wdb.set_setting, "panel_channel", str(channel.id))
         await self.run(wdb.set_setting, "panel_message", str(getattr(msg, "id", "")))
-        await _say(interaction, "✅ Panel de Wujupón publicado. Configurá los canales con `/wujupon config`.")
+        await _say(interaction, "✅ Panel de Wujupón publicado. Configurá los canales con `/wujupon canal-encargos` y `/wujupon canal-anuncios`.")
 
     # ---------------- comprar ----------------
     async def open_buy(self, interaction: discord.Interaction):
@@ -571,19 +578,33 @@ class WujuponCog(commands.Cog):
             return False
         return True
 
-    @wj.command(name="config", description="(Council) Canales de encargos del Council y de anuncios de tiradas")
-    @app_commands.describe(canal_encargos="Canal privado del Council para los canjes", canal_anuncios="Canal público donde se anuncian las tiradas")
-    async def config(self, interaction: discord.Interaction, canal_encargos: Optional[discord.TextChannel] = None,
-                     canal_anuncios: Optional[discord.TextChannel] = None):
+    @wj.command(name="canal-anuncios", description="(Council) Fija o quita el canal donde se anuncia qué carta sacó cada uno")
+    @app_commands.describe(canal="Canal de anuncios (por defecto, este canal)", quitar="Sí = dejar de anunciar las tiradas")
+    async def feed_channel(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None,
+                           quitar: Optional[bool] = False):
         if not await self._council(interaction):
             return
-        if canal_encargos:
-            await self.run(wdb.set_setting, "council_channel", str(canal_encargos.id))
-        if canal_anuncios:
-            await self.run(wdb.set_setting, "feed_channel", str(canal_anuncios.id))
-        enc = await self.run(wdb.get_setting, "council_channel")
-        feed = await self.run(wdb.get_setting, "feed_channel")
-        await _say(interaction, f"⚙️ Encargos: {f'<#{enc}>' if enc else '—'} · Anuncios: {f'<#{feed}>' if feed else '—'}")
+        if quitar:
+            await self.run(wdb.set_setting, "feed_channel", None)
+            await self.run(wdb.mark_all_announced)
+            return await _say(interaction, "🔕 Las tiradas ya no se anuncian. Volvé a usar `/wujupon canal-anuncios` para activarlo.")
+        target = canal or interaction.channel
+        perms = target.permissions_for(interaction.guild.me) if interaction.guild and interaction.guild.me else None
+        if perms is not None and not (perms.send_messages and perms.embed_links):
+            return await _say(interaction, f"❌ No tengo permiso para enviar mensajes con embeds en {target.mention}.")
+        if not await self.run(wdb.get_setting, "feed_channel"):
+            await self.run(wdb.mark_all_announced)      # no publicar de golpe lo que salió mientras estaba desactivado
+        await self.run(wdb.set_setting, "feed_channel", str(target.id))
+        await _say(interaction, f"📣 Las tiradas se anuncian en {target.mention} (jugador, carta, rareza y probabilidad).")
+
+    @wj.command(name="canal-encargos", description="(Council) Fija el canal privado del Council donde llegan los canjes")
+    @app_commands.describe(canal="Canal de encargos (por defecto, este canal)")
+    async def council_channel(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        if not await self._council(interaction):
+            return
+        target = canal or interaction.channel
+        await self.run(wdb.set_setting, "council_channel", str(target.id))
+        await _say(interaction, f"📨 Los canjes de Wujupón llegan a {target.mention}.")
 
     @wj.command(name="regalar-tiradas", description="(Council) Regala tiradas (o quita, con número negativo)")
     @app_commands.describe(usuario="Persona", cantidad="Tiradas (negativo para quitar)", motivo="Motivo")
@@ -602,6 +623,48 @@ class WujuponCog(commands.Cog):
         cur = (current or "").lower()
         return [app_commands.Choice(name=f"{wdb.RARITIES[p.rarity][1]} {p.name}"[:100], value=p.key)
                 for p in prizes if cur in p.name.lower() or cur in p.key][:25]
+
+    @wj.command(name="carta-agregar", description="(Council) Crea una carta nueva (la entrega el Council)")
+    @app_commands.describe(nombre="Nombre de la carta", rareza="Rareza", probabilidad="Probabilidad en % (ej: 0,5)",
+                           descripcion="Qué da la carta y sus condiciones", afecta_a_otro="Sí si el premio afecta a otra persona")
+    @app_commands.choices(rareza=[app_commands.Choice(name=f"{e} {n}", value=k) for k, (n, e, _) in wdb.RARITIES.items()])
+    async def add_card(self, interaction: discord.Interaction, nombre: str, rareza: app_commands.Choice[str], probabilidad: str,
+                       descripcion: Optional[str] = None, afecta_a_otro: Optional[bool] = False):
+        if not await self._council(interaction):
+            return
+        try:
+            weight = wdb.parse_chance(probabilidad)
+            p = await self.run(wdb.add_prize, actor_id=interaction.user.id, name=nombre, description=descripcion or "",
+                               rarity=rareza.value, weight=weight, third_party=bool(afecta_a_otro))
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        total = await self.run(wdb.enabled_total)
+        warn = ""
+        if total != wdb.TOTAL_WEIGHT:
+            warn = (f"\n⚠️ Las probabilidades habilitadas ahora suman **{wdb.chance_text(total)}**: cada carta sale en proporción "
+                    f"a su peso, así que la chance real de esta es **{wdb.chance_text(p.weight, total)}** y las demás bajan un poco. "
+                    "Deshabilitá otra con `/wujupon premio` si querés volver al 100 %.")
+        await _say(interaction, f"✅ Carta creada: {p.rarity_label} **{p.name}** ({wdb.chance_text(p.weight)}).{warn}",
+                   embed=card_embed(p, 0, p.weight, total or wdb.TOTAL_WEIGHT, title="🆕 Vista previa"))
+
+    @wj.command(name="carta-editar", description="(Council) Cambia el nombre y/o la descripción de una carta")
+    @app_commands.describe(carta="Carta", nombre="Nombre nuevo (opcional)", descripcion="Descripción nueva (opcional; «quitar» la borra)")
+    @app_commands.autocomplete(carta=prize_autocomplete)
+    async def edit_card(self, interaction: discord.Interaction, carta: str, nombre: Optional[str] = None,
+                        descripcion: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            before, after = await self.run(wdb.edit_prize, carta, actor_id=interaction.user.id, name=nombre, description=descripcion)
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        total = await self.run(wdb.enabled_total) or wdb.TOTAL_WEIGHT
+        lines = ["✅ Carta actualizada (también las que ya tiene la gente en el inventario)."]
+        if nombre is not None:
+            lines.append(f"Nombre: ~~{before.name}~~ → **{after.name}**")
+        if descripcion is not None:
+            lines.append("Descripción: " + (f"«{after.description[:300]}»" if after.description else "quitada"))
+        await _say(interaction, "\n".join(lines), embed=card_embed(after, 0, after.weight, total, title="✏️ Vista previa"))
 
     @wj.command(name="dar-carta", description="(Council) Da una carta de un premio a una persona")
     @app_commands.describe(usuario="Persona", premio="Premio", motivo="Motivo")
