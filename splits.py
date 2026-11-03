@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import economy_db as eco
+import botsettings as bs
 import splits_db as sdb
 import ctautil as cu
 import killboard_db as kbdb
@@ -18,6 +19,7 @@ from deposits import is_council
 from guildshop import can_manage
 
 SPLIT_CHANNEL_ID = 1558630638066602094
+bs.register("split", "Canal de splits", SPLIT_CHANNEL_ID, "Acá se publican los paneles de los splits y los registros de CTA cancelada")
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD, GREY, GREEN = 0xF1C40F, 0x95A5A6, 0x2ECC71
 MENTION_RE = re.compile(r"<@!?(\d+)>")
@@ -590,8 +592,13 @@ class LooterModal(discord.ui.Modal):
 # ============================================================
 class SplitsCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, channel_id: int = SPLIT_CHANNEL_ID):
-        self.bot, self.db_path, self.guild_id, self.channel_id = bot, db_path, guild_id, channel_id
+        self.bot, self.db_path, self.guild_id, self._channel_id = bot, db_path, guild_id, channel_id
         self._locks: Dict[int, asyncio.Lock] = {}
+
+    @property
+    def channel_id(self) -> int:
+        """Canal de splits: el que fijó un administrador con /config o, si no, el de siempre."""
+        return bs.override("split") or self._channel_id
 
     async def cog_load(self):
         await self.run(sdb.init_schema)

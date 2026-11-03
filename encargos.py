@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import botsettings as bs
 import encargos_db as edb
 from guildshop import can_manage, COUNCIL_ROLE_ID
 
@@ -17,6 +18,8 @@ TASK_LOG_CHANNEL_ID = int(os.getenv("TASK_LOG_CHANNEL_ID", "1566014626309873776"
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 TASKS_CHANNEL_ID = int(os.getenv("TASKS_CHANNEL_ID", "1565986098679644270"))
+bs.register("task_log", "Registro de tareas terminadas", TASK_LOG_CHANNEL_ID, "Acá queda el registro de cada tarea terminada o cancelada")
+bs.register("tasks", "Panel de tareas", TASKS_CHANNEL_ID, "Canal donde se publican las tareas del Staff")
 COACHING_ROLE_ID = int(os.getenv("COACHING_ROLE_ID", "1566691393726980167"))
 STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
 
@@ -180,7 +183,7 @@ class EncargosCog(commands.Cog):
                      for_role: Optional[int] = None) -> edb.Task:
         """Crea una tarea (la usan /encargar y los avisos automáticos, como el del combatlog de una CTA).
         Etiqueta al Staff (salvo ping_staff=False) y, además, a los roles y personas indicados."""
-        t = await self.run(edb.create_task, guild_id=self.guild_id, channel_id=channel_id or TASKS_CHANNEL_ID, text=text, created_by=created_by,
+        t = await self.run(edb.create_task, guild_id=self.guild_id, channel_id=channel_id or bs.get("tasks"), text=text, created_by=created_by,
                            publish_at=publish_at, source=source, link=link, ping_roles=ping_roles, ping_users=ping_users, ping_staff=ping_staff,
                            for_role=for_role)
         if t.status == "scheduled" and (t.publish_at or 0) <= datetime.now(timezone.utc).timestamp():
@@ -385,7 +388,7 @@ class EncargosCog(commands.Cog):
             except Exception as exc:
                 print(f"Tarea {t.id}: cancelada pero no pude borrar el panel: {exc!r}")
         try:
-            log = await self._channel(TASK_LOG_CHANNEL_ID)
+            log = await self._channel(bs.get("task_log"))
             if log is not None:
                 await log.send(f"🗑️ Tarea #{t.id} {who}.\n> {t.text[:300]}", allowed_mentions=NO_MENTIONS)
         except Exception:
@@ -404,7 +407,7 @@ class EncargosCog(commands.Cog):
     async def log_done(self, t: edb.Task) -> bool:
         """Deja el registro de la tarea terminada en el canal de logs. False si no se pudo (entonces el panel NO se borra)."""
         try:
-            ch = await self._channel(TASK_LOG_CHANNEL_ID)
+            ch = await self._channel(bs.get("task_log"))
             if ch is None:
                 return False
             await ch.send(content=f"✅ Tarea #{t.id} terminada por <@{t.done_by}>", embed=self.embed(t), allowed_mentions=NO_MENTIONS)
