@@ -64,6 +64,7 @@ class Giveaway:
     valid_count: int = 0
     winners: List[int] = field(default_factory=list)
     entrants: Set[int] = field(default_factory=set)
+    auto_role: bool = False                        # anota solo a todos los que tengan el rol (al crear y de nuevo al sortear)
     bal: int = 0                                   # si es > 0, balance que se acredita a CADA ganador al sortear
     role_id: Optional[int] = None                 # si está, solo participan (y pueden ganar) quienes tengan ese rol
 
@@ -85,6 +86,7 @@ def init_schema(db_path: str) -> None:
         _ensure_column(conn, "giveaways", "winners_json", "TEXT")
         _ensure_column(conn, "giveaways", "role_id", "INTEGER")
         _ensure_column(conn, "giveaways", "bal", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "giveaways", "auto_role", "INTEGER NOT NULL DEFAULT 0")
         with write_tx(conn):               # un reclamo sin resultado guardado no dejó nada hecho: se puede reclamar de nuevo
             conn.execute("UPDATE giveaways SET state = 'open' WHERE state = 'drawing'")
     finally:
@@ -101,19 +103,20 @@ def _build(conn, r) -> Giveaway:
     return Giveaway(int(r["message_id"]), r["prize"], _dt(r["end_at"]).astimezone(timezone.utc), int(r["channel_id"]), int(r["creator_id"]),
                     int(r["guild_id"]), max(1, int(r["winners_count"] or 1)), r["state"] or "open", r["outcome"], int(r["valid_count"] or 0),
                     [int(w) for w in json.loads(r["winners_json"] or "[]")], entrants,
+                    bool(r["auto_role"]) if "auto_role" in r.keys() else False,
                     int(r["bal"] or 0) if "bal" in r.keys() else 0,
                     int(r["role_id"]) if "role_id" in r.keys() and r["role_id"] else None)
 
 
 def create(db_path: str, *, message_id: int, prize: str, end_at: datetime, channel_id: int, creator_id: int, guild_id: int,
-           winners_count: int = 1, role_id: Optional[int] = None, bal: int = 0) -> Giveaway:
+           winners_count: int = 1, role_id: Optional[int] = None, bal: int = 0, auto_role: bool = False) -> Giveaway:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count, state, role_id, bal) "
-                         "VALUES (?,?,?,?,?,?,?, 'open', ?, ?)",
+            conn.execute("INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count, state, role_id, bal, auto_role) "
+                         "VALUES (?,?,?,?,?,?,?, 'open', ?, ?, ?)",
                          (message_id, prize, end_at.astimezone(timezone.utc).isoformat(), channel_id, creator_id, guild_id,
-                          max(1, min(MAX_WINNERS, int(winners_count))), int(role_id) if role_id else None, max(0, int(bal or 0))))
+                          max(1, min(MAX_WINNERS, int(winners_count))), int(role_id) if role_id else None, max(0, int(bal or 0)), 1 if (auto_role and role_id) else 0))
             return _build(conn, conn.execute("SELECT * FROM giveaways WHERE message_id = ?", (message_id,)).fetchone())
     finally:
         conn.close()
@@ -149,6 +152,23 @@ def add_entrant(db_path: str, message_id: int, user_id: int, now: Optional[datet
                 return "closed"
             cur = conn.execute("INSERT OR IGNORE INTO giveaway_entrants(message_id, user_id) VALUES (?, ?)", (message_id, int(user_id)))
             return "ok" if cur.rowcount == 1 else "already"
+    finally:
+        conn.close()
+
+
+def add_entrants_bulk(db_path: str, message_id: int, user_ids, now: Optional[datetime] = None) -> int:
+    """Anota a muchos de una vez (sorteo con «anotar a todos los del rol»). Devuelve cuántos eran nuevos; 0 si ya no está abierto."""
+    now = now or datetime.now(timezone.utc)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT state, end_at FROM giveaways WHERE message_id = ?", (message_id,)).fetchone()
+            if r is None or (r["state"] or "open") != "open" or now >= _dt(r["end_at"]):
+                return 0
+            n = 0
+            for uid in dict.fromkeys(int(u) for u in user_ids):
+                n += conn.execute("INSERT OR IGNORE INTO giveaway_entrants(message_id, user_id) VALUES (?, ?)", (message_id, uid)).rowcount
+            return n
     finally:
         conn.close()
 

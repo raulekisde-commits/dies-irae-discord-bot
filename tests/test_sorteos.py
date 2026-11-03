@@ -23,9 +23,9 @@ class SorteoBase(DiscordBase):
         self.guild.members.append(self.staff)
         self.cog = run(sg.setup_sorteos(self.bot, self.db, GUILD_ID, STAFF_ROLE))
 
-    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None, bal=None):
+    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None, bal=None, anotar_rol=False):
         i = self.inter(user or self.staff)
-        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol, bal))
+        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol, bal, anotar_rol))
         return i
 
     def msg(self):
@@ -103,6 +103,40 @@ class RolTests(SorteoBase):
 
     def test_tiempo_enorme_rechazado(self):
         self.assertIn("Tiempo inválido", self.create(tiempo="999999999:00").text)
+
+
+class AnotarRolTests(SorteoBase):
+    def setUp(self):
+        super().setUp()
+        self.r_vip = discord.Role(777000000000000001, "VIP", self.guild)
+        self.guild.roles.append(self.r_vip)
+        self.alice.roles.append(self.r_vip)
+        self.bob.roles.append(self.r_vip)
+
+    def test_sin_rol_no_se_puede(self):
+        self.assertIn("elegir también el **rol**", self.create(anotar_rol=True).text)
+        self.assertEqual(len([m for m in self.panelch.sent if m.embeds]), 0)
+
+    def test_anota_a_todos_los_del_rol_al_crear(self):
+        i = self.create(rol=self.r_vip, anotar_rol=True)
+        self.assertIn("Anotados con el rol: 2", i.text)
+        m = self.msg()
+        self.assertEqual(sorted(sdb.get(self.db, m.id).entrants), sorted([self.alice.id, self.bob.id]))
+        self.assertTrue(sdb.get(self.db, m.id).auto_role)
+
+    def test_al_sortear_entran_los_que_recibieron_el_rol_despues(self):
+        self.create(rol=self.r_vip, anotar_rol=True, winners=3)
+        m = self.msg()
+        self.staff.roles.append(self.r_vip)                    # lo recibe mientras corre el sorteo
+        self.past(m.id)
+        run(self.cog.process_due())
+        txt = [x.content for x in self.panelch.sent if x.content][-1]
+        for u in (self.alice, self.bob, self.staff):
+            self.assertIn(f"<@{u.id}>", txt)
+
+    def test_sin_la_opcion_no_anota_a_nadie(self):
+        self.create(rol=self.r_vip)
+        self.assertEqual(sdb.count_entrants(self.db, self.msg().id), 0)
 
 
 class BalTests(SorteoBase):
