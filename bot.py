@@ -146,6 +146,13 @@ except Exception:
     async def setup_alters(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar alters.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from bombs import setup_bombs
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_bombs(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar bombs.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from rolesmgmt import setup_rolesmgmt
 except Exception:
     import traceback as _tb
@@ -578,6 +585,7 @@ class MyBot(commands.Bot):
             await _safe_setup("wujupon", setup_wujupon, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
+            await _safe_setup("bombs", setup_bombs, self, DB_PATH, GUILD_ID)
             await _safe_setup("rolesmgmt", setup_rolesmgmt, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
@@ -6655,6 +6663,9 @@ HELP_SECTIONS = [
         ("/canal salidas [canal] [desactivar]", "Council / Admin", "Define el canal donde se registra quién se fue, qué roles tenía y qué cuenta de Albion tenía registrada."),
         ("/reaction-roles crear · agregar · quitar · eliminar · listar", "Council / Admin", "Mensajes de roles por reacción: `crear nombre` publica el panel y `agregar nombre rol emoji` suma un rol. Quien reacciona recibe el rol y al sacar la reacción se lo quita (si ya lo tenía, no pasa nada)."),
         ("/invitados", "Staff", "Lista los invitados actuales con quién los invitó y el motivo."),
+        ("/bomb crear|editar|eliminar", "Council", "Define cada bomb: nombre, rol y caller (editar cambia cualquiera de los tres; eliminar borra la bomb y opcionalmente saca el rol)."),
+        ("/bomb agregar|sacar bomb usuario", "Staff / Reclutador / Council", "Agrega o saca a alguien de una bomb: le da o le quita el rol y queda guardado quién lo agregó."),
+        ("/bomb listar [bomb]", "Staff / Reclutador / Council / Callers", "Lista las bombs (rol, caller, integrantes) o los integrantes de una, con quién los agregó."),
         ("/invitar-premium usuario quien_es personaje_de_albion", "Council", "Invitación premium: se registra, pierde Public (e Invitado), recibe Miembro y queda registrado quién lo invitó."),
         ("/invitados-premium", "Staff", "Lista los invitados premium actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings, casino, economía y zvz-vods)."),
