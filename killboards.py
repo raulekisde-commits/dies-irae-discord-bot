@@ -17,6 +17,7 @@ import registration_db as rdb
 import splits_db as sdb
 from dbutil import connect
 from guildshop import can_manage
+from paging import PagedView, chunk
 
 NO_MENTIONS = discord.AllowedMentions.none()
 GUILD_NAME = os.getenv("ALBION_GUILD_NAME", "Smogg")
@@ -593,18 +594,26 @@ class KillboardCog(commands.Cog):
         await _say(interaction, txt)
 
     # ---------- tops ----------
-    async def top_embed(self, key: str) -> discord.Embed:
+    async def top_pages(self, key: str) -> List[discord.Embed]:
+        """Ranking completo de a 10 por página (para los botones Anterior / Siguiente)."""
         title, _field, _desc, unit = kb.TOP_KEYS[key]
-        rows = await self.run(kb.top, key, 10)
+        rows = await self.run(kb.top, key, 1000)
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = []
         for i, (name, value, d) in enumerate(rows, start=1):
             v = f"{value:,.0f}".replace(",", ".")
             extra = f" ({d['first5_pct']:.0f}% de sus peleas)" if key == "first5" else ""
             lines.append(f"{medals.get(i, f'`{i:>2}.`')} **{discord.utils.escape_markdown(name)}** — {v} {unit}{extra}")
-        emb = discord.Embed(title=f"{title} · {GUILD_NAME}", description="\n".join(lines) or "Todavía no hay killboards cargados.", color=discord.Color.gold())
-        emb.set_footer(text="Solo cuentan los killboards cargados por el staff")
-        return emb
+        groups = chunk(lines, 10)
+        pages = []
+        for n, group in enumerate(groups, start=1):
+            emb = discord.Embed(title=f"{title} · {GUILD_NAME}", description="\n".join(group) or "Todavía no hay killboards cargados.", color=discord.Color.gold())
+            emb.set_footer(text="Solo cuentan los killboards cargados por el staff" + (f" · Página {n}/{len(groups)}" if len(groups) > 1 else ""))
+            pages.append(emb)
+        return pages
+
+    async def top_embed(self, key: str) -> discord.Embed:
+        return (await self.top_pages(key))[0]
 
     def _cooldown(self, user_id: int) -> bool:
         now = time.time()
@@ -629,7 +638,16 @@ class KillboardCog(commands.Cog):
             return
         if self._cooldown(interaction.user.id):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
-        await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
+        pages = await self.top_pages(key)
+        if len(pages) > 1:
+            view = PagedView(pages, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=pages[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=pages[0], allowed_mentions=NO_MENTIONS)
 
     async def _roles_field(self, guild, discord_id: int, names) -> Optional[str]:
         """Top 3 de roles jugados con su %: cuenta todas las CTA cerradas en las que la persona estuvo anotada (haya killboard o no)."""

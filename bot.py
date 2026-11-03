@@ -1,5 +1,6 @@
 # ================== BOT ==================
 import discord
+from paging import PagedView
 from discord.ext import commands, tasks
 from discord import app_commands
 import os
@@ -6570,7 +6571,11 @@ async def _top_command(ctx: commands.Context, key: str):
     if now - _top_last_use.get(ctx.author.id, 0.0) < 15:
         return await ctx.reply("⏳ Esperá unos segundos antes de volver a usar este comando.", mention_author=False, delete_after=15)
     _top_last_use[ctx.author.id] = now
-    await ctx.send(embed=await cog.top_embed(key), allowed_mentions=discord.AllowedMentions.none())
+    pages = await cog.top_pages(key)
+    if len(pages) > 1:
+        await ctx.send(embed=pages[0], view=PagedView(pages, owner_id=ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+    else:
+        await ctx.send(embed=pages[0], allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="topkills")
