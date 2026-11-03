@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import asyncio
 import random
 import sqlite3
+import botsettings as bs
 import json
 from decimal import Decimal
 from economy import setup_economy
@@ -95,6 +96,13 @@ except Exception:
     _imp_err = _tb.format_exc()
     async def setup_sorteos(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar sorteos.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
+    from configpanel import setup_config
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_config(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar configpanel.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
     from warnings_sys import setup_warnings
 except Exception:
@@ -322,6 +330,7 @@ def init_database():
 
 
 init_database()
+bs.configure(DB_PATH)
 
 # ================== CONFIG ==================
 GUILD_ID = 1257878770841288724
@@ -333,6 +342,7 @@ PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "agregarlista", "agregarlistamit
 EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
+bs.register("log", "Logs generales del bot", LOG_CHANNEL_ID, "Registro general de acciones del bot (staff, reclutamiento, etc.)")
 
 RECRUITER_ROLE_ID = 1257896905099444354
 CONTENT_CREATOR_ROLE_ID = 1258562816512884808     # puede usar /content (iniciar CTA de content)
@@ -562,6 +572,7 @@ class MyBot(commands.Bot):
             await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
+            await _safe_setup("config", setup_config, self, DB_PATH, GUILD_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
@@ -718,10 +729,10 @@ def is_cta_manager(member) -> bool:
 
 # ---------- UTILIDADES ----------
 async def send_log(guild: discord.Guild, message: str):
-    channel = guild.get_channel(LOG_CHANNEL_ID)
+    channel = guild.get_channel(bs.get("log"))
     if channel is None:
         try:
-            channel = await guild.fetch_channel(LOG_CHANNEL_ID)
+            channel = await guild.fetch_channel(bs.get("log"))
         except Exception:
             return
     try:
@@ -982,7 +993,7 @@ def find_open_foco_channel(guild: discord.Guild, user_id: int) -> Optional[disco
     return None
 
 async def send_foco_log(guild: discord.Guild, message: str):
-    target_id = FOCO_LOG_CHANNEL_ID if FOCO_LOG_CHANNEL_ID and FOCO_LOG_CHANNEL_ID != 0 else LOG_CHANNEL_ID
+    target_id = FOCO_LOG_CHANNEL_ID if FOCO_LOG_CHANNEL_ID and FOCO_LOG_CHANNEL_ID != 0 else bs.get("log")
     channel = guild.get_channel(target_id)
     if channel is None:
         try:
@@ -1711,7 +1722,7 @@ class RecruitView(discord.ui.View):
 
         # LOG
         try:
-            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+            log_channel = interaction.guild.get_channel(bs.get("log")) or await interaction.guild.fetch_channel(bs.get("log"))
         except Exception:
             log_channel = None
 
@@ -1756,7 +1767,7 @@ class RecruitView(discord.ui.View):
                 pass
 
         try:
-            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+            log_channel = interaction.guild.get_channel(bs.get("log")) or await interaction.guild.fetch_channel(bs.get("log"))
             await log_channel.send(embed=recruit_record_embed("❌ POSTULACIÓN RECHAZADA", discord.Color.red(), member, interaction.user,
                                                               getattr(interaction, "message", None)),
                                    allowed_mentions=discord.AllowedMentions.none())
@@ -1775,7 +1786,7 @@ class RecruitView(discord.ui.View):
     async def close_ticket(self, interaction: discord.Interaction):
         member = await self._get_applicant(interaction)
         try:
-            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID) or await interaction.guild.fetch_channel(LOG_CHANNEL_ID)
+            log_channel = interaction.guild.get_channel(bs.get("log")) or await interaction.guild.fetch_channel(bs.get("log"))
             await log_channel.send(embed=recruit_record_embed("🔒 POSTULACIÓN CERRADA", discord.Color.dark_grey(), member, interaction.user,
                                                               getattr(interaction, "message", None)),
                                    allowed_mentions=discord.AllowedMentions.none())
@@ -3005,7 +3016,9 @@ except Exception as _exc:                         # si splits.py no está, el re
 # TAB SELL / CALCULAR SPLIT
 # ============================================================
 SPLIT_PANEL_CHANNEL_ID = 1557432820257923183
+bs.register("split_panel", "Panel de venta de tabs (/tabsell)", SPLIT_PANEL_CHANNEL_ID, "")
 SPLIT_LOG_CHANNEL_ID = 1557434386775932969
+bs.register("split_log", "Registro de ventas de tabs (/tabsell)", SPLIT_LOG_CHANNEL_ID, "")
 SPLIT_SELLER_ROLE_IDS = {1257896709246423083, 1257896977220501557}
 SPLIT_PING_ROLE_ID = 1468314531825713338
 SPLIT_DEFAULT_DISCOUNT = 15.0
@@ -3050,7 +3063,7 @@ async def _get_channel(guild: discord.Guild, channel_id: int):
 
 
 async def find_split_log_message(guild: discord.Guild, panel_msg: discord.Message) -> Optional[discord.Message]:
-    log_ch = await _get_channel(guild, SPLIT_LOG_CHANNEL_ID)
+    log_ch = await _get_channel(guild, bs.get("split_log"))
     if not isinstance(log_ch, discord.TextChannel):
         return None
 
@@ -3199,11 +3212,11 @@ async def tabsell(
 
     await interaction.response.defer(ephemeral=True)
 
-    panel_ch = await _get_channel(interaction.guild, SPLIT_PANEL_CHANNEL_ID)
+    panel_ch = await _get_channel(interaction.guild, bs.get("split_panel"))
     if not isinstance(panel_ch, discord.TextChannel):
         return await interaction.followup.send("❌ No encontré el canal de paneles.", ephemeral=True)
 
-    log_ch = await _get_channel(interaction.guild, SPLIT_LOG_CHANNEL_ID)
+    log_ch = await _get_channel(interaction.guild, bs.get("split_log"))
     if not isinstance(log_ch, discord.TextChannel):
         return await interaction.followup.send("❌ No encontré el canal de logs.", ephemeral=True)
 
@@ -3269,6 +3282,9 @@ import copy
 import contextlib
 import ctautil as cu
 CONTENT_CHANNEL_ID = int(os.getenv("CONTENT_CHANNEL_ID", "0")) or cu.CTA_CHANNEL_ID      # canal donde se publica /content (por defecto, el de CTA)
+bs.register("cta", "Canal de CTA", cu.CTA_CHANNEL_ID, "Acá se publican las CTA (/cta)")
+bs.register("content", "Canal de content", lambda: CONTENT_CHANNEL_ID if CONTENT_CHANNEL_ID != cu.CTA_CHANNEL_ID else bs.get("cta"),
+            "Acá se publican los /content (si no se elige, el mismo de CTA)")
 import ctavoice as cv
 
 CTA_EMOJIS_DEFAULT = {
@@ -4092,6 +4108,7 @@ async def cta_create_split_task(run: dict):
 
 
 COMBATLOG_CHANNEL_ID = int(os.getenv("COMBATLOG_CHANNEL_ID", "1562975589756043364"))
+bs.register("combatlog", "Paneles de combatlog", COMBATLOG_CHANNEL_ID, "Acá se publica el panel para enviar el combatlog de una CTA")
 COMBATLOG_LINK_RE = re.compile(r"https?://\S+")
 
 
@@ -4106,12 +4123,12 @@ async def cta_create_combatlog_panel(run: dict) -> Optional[str]:
     guild = bot.get_guild(int(run["guild_id"]))
     if guild is None:
         return None
-    ch = guild.get_channel(COMBATLOG_CHANNEL_ID)
+    ch = guild.get_channel(bs.get("combatlog"))
     if ch is None:
         try:
-            ch = await bot.fetch_channel(COMBATLOG_CHANNEL_ID)
+            ch = await bot.fetch_channel(bs.get("combatlog"))
         except Exception:
-            print(f"CTA #{run_id}: no encuentro el canal de combatlog ({COMBATLOG_CHANNEL_ID}).")
+            print(f"CTA #{run_id}: no encuentro el canal de combatlog ({bs.get("combatlog")}).")
             return None
     title = cta_run_title(run)
     cta_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}"
@@ -4216,7 +4233,9 @@ async def cta_create_track_split(run_id: int):
 
 
 STATS_CHANNEL_ID = int(os.getenv("STATS_CHANNEL_ID", str(cu.STATS_CHANNEL_ID)))
+bs.register("stats", "Panel de stats de las CTA", STATS_CHANNEL_ID, "Acá se publica el panel y el hilo de stats al cerrar una CTA")
 BOMB_CHANNEL_ID = int(os.getenv("BOMB_CHANNEL_ID", str(cu.BOMB_CHANNEL_ID)))
+bs.register("bomb", "Paneles de Bomb", BOMB_CHANNEL_ID, "Acá se publica el panel (con su hilo) para anotar a los Bomb")
 BOMB_ROLE_ID = int(os.getenv("BOMB_ROLE_ID", str(cu.BOMB_ROLE_ID)))
 
 
@@ -4297,12 +4316,12 @@ async def cta_open_bomb_panel(interaction: discord.Interaction, run_id: Optional
     try:
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        ch = guild.get_channel(BOMB_CHANNEL_ID) if guild else None
+        ch = guild.get_channel(bs.get("bomb")) if guild else None
         if ch is None:
             try:
-                ch = await bot.fetch_channel(BOMB_CHANNEL_ID)
+                ch = await bot.fetch_channel(bs.get("bomb"))
             except Exception:
-                return await interaction.followup.send(f"❌ No encuentro el canal de Bomb (<#{BOMB_CHANNEL_ID}>).", ephemeral=True)
+                return await interaction.followup.send(f"❌ No encuentro el canal de Bomb (<#{bs.get("bomb")}>).", ephemeral=True)
         n = len(await asyncio.to_thread(cu.bomb_panels, DB_PATH, run_id)) + 1
         try:
             msg = await ch.send(content=f"<@&{BOMB_ROLE_ID}>", embed=cta_bomb_embed(run, [], n), view=BombPanelView(),
@@ -4549,12 +4568,12 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
     guild = bot.get_guild(int(run["guild_id"]))
     if guild is None:
         return "⚠️ No pude crear el panel de stats (no veo el servidor)."
-    ch = guild.get_channel(STATS_CHANNEL_ID)
+    ch = guild.get_channel(bs.get("stats"))
     if ch is None:
         try:
-            ch = await bot.fetch_channel(STATS_CHANNEL_ID)
+            ch = await bot.fetch_channel(bs.get("stats"))
         except Exception:
-            return f"⚠️ No encuentro el canal de stats (<#{STATS_CHANNEL_ID}>)."
+            return f"⚠️ No encuentro el canal de stats (<#{bs.get("stats")}>)."
     title = cta_run_title(run)
     people = await asyncio.to_thread(cu.positions, DB_PATH, run_id)
     by_role: dict = {}
@@ -6009,7 +6028,7 @@ compo_ver_builds.autocomplete("build")(cta_build_autocomplete)
 async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_override: Optional[str], creator_id: int, *, scheduled: bool = False,
                       kind: str = "cta"):
     """Publica la CTA en el canal fijo de CTA (o, si es de content, en el de content). Devuelve (run_id, error_text)."""
-    channel_id = CONTENT_CHANNEL_ID if kind == "content" else cu.CTA_CHANNEL_ID
+    channel_id = bs.get("content") if kind == "content" else bs.get("cta")
     channel = guild.get_channel(channel_id)
     if channel is None:
         try:
@@ -6120,14 +6139,14 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
                                       title=" ".join(titulo.split()) if titulo and titulo.strip() else None, publish_at=at, created_by=interaction.user.id)
         cta_audit(interaction.guild_id, interaction.user.id, "cta_scheduled", None, f"id={sid}; composition={comp['name']}; at={at.isoformat()}")
         return await interaction.response.send_message(
-            f"⏰ CTA **{comp['name']}** programada para <t:{int(at.timestamp())}:f> (<t:{int(at.timestamp())}:R>) en <#{cu.CTA_CHANNEL_ID}>, con @everyone y @here. "
+            f"⏰ CTA **{comp['name']}** programada para <t:{int(at.timestamp())}:f> (<t:{int(at.timestamp())}:R>) en <#{bs.get("cta")}>, con @everyone y @here. "
             "Si el bot está apagado a esa hora, se descarta.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     run_id, err = await cta_publish(interaction.guild, comp, minutes, titulo, interaction.user.id)
     if err:
         return await interaction.followup.send(err, ephemeral=True)
     run = cta_run_get(run_id)
-    await interaction.followup.send(f"✅ **{cta_run_title(run)}** publicada en <#{cu.CTA_CHANNEL_ID}>.", ephemeral=True)
+    await interaction.followup.send(f"✅ **{cta_run_title(run)}** publicada en <#{bs.get("cta")}>.", ephemeral=True)
 
 
 cta_command.autocomplete("nombre")(cta_name_autocomplete)
@@ -6159,7 +6178,7 @@ async def content_command(interaction: discord.Interaction, nombre: str, tiempo:
     if err:
         return await interaction.followup.send(err, ephemeral=True)
     cta_audit(interaction.guild_id, interaction.user.id, "content_created", run_id, f"composition={comp['name']}")
-    await interaction.followup.send(f"✅ **{cta_run_title(cta_run_get(run_id))}** publicada en <#{CONTENT_CHANNEL_ID}>.", ephemeral=True)
+    await interaction.followup.send(f"✅ **{cta_run_title(cta_run_get(run_id))}** publicada en <#{bs.get("content")}>.", ephemeral=True)
 
 
 content_command.autocomplete("nombre")(cta_name_autocomplete)
@@ -6470,6 +6489,7 @@ HELP_SECTIONS = [
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content: igual que /cta pero sin Bomb ni tareas de combatlog. Quien la lanza puede terminarla o cancelarla con los botones."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
+        ("/config", "Administrador", "Panel para cambiar, sin tocar código, los canales del bot (logs, CTA, content, tareas, splits…) y qué roles pueden usar cada comando de economía/casino. Los cambios valen al instante y quedan avisados en el canal de logs."),
         ("/cta-admin activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta-admin programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
         ("/cta-admin cancelar-programada programada", "Staff, Caller, Council", "Cancela una CTA programada antes de que se publique (elegila de la lista). Queda registrado en el canal de logs."),

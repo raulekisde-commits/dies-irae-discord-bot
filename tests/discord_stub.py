@@ -536,6 +536,18 @@ class UserSelect(RoleSelect):
     pass
 
 
+class ChannelSelect(RoleSelect):
+    def __init__(self, *, channel_types=None, **kw):
+        super().__init__(**kw)
+        self.channel_types = channel_types or []
+
+
+class ChannelType:
+    text = "text"
+    news = "news"
+    forum = "forum"
+
+
 class TextInput(Item):
     def __init__(self, *, label, style=TextStyle.short, placeholder=None, default=None, required=True, min_length=None, max_length=None, custom_id=None):
         self.label, self.style, self.placeholder, self.default = label, style, placeholder, default
@@ -657,9 +669,10 @@ def install():
 
     ui = types.ModuleType("discord.ui")
     ui.View, ui.Button, ui.Select, ui.RoleSelect, ui.Modal, ui.TextInput, ui.Item = View, Button, Select, RoleSelect, Modal, TextInput, Item
-    ui.UserSelect = UserSelect
+    ui.UserSelect, ui.ChannelSelect = UserSelect, ChannelSelect
     ui.button, ui.select = _button, _select
     d.ui = ui
+    d.ChannelType = ChannelType
 
     ac = types.ModuleType("discord.app_commands")
     ac.command, ac.describe, ac.choices = _app_command, _passthrough_decorator, _choices
