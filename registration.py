@@ -794,6 +794,91 @@ class RegistrationCog(commands.Cog):
         for n, chunk in enumerate(self._chunks(lines)):
             await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    # ---------- /limpiar-miembros (Admin): saca el rol Miembro a quien no tiene cuenta enlazada ----------
+    def _premium_ids(self) -> set:
+        """Invitados premium activos (tabla de invitados.py); vacío si la tabla no existe."""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            try:
+                return {int(r[0]) for r in conn.execute("SELECT user_id FROM guests WHERE active=1 AND kind='premium'")}
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return set()
+
+    async def _unlinked_members(self, guild) -> list:
+        """Con rol Miembro y sin personaje enlazado. Nunca toca bots, administradores, Staff, Council, invitados premium ni aceptados en espera."""
+        role = guild.get_role(self.member_role_id) if self.member_role_id else None
+        if role is None:
+            return []
+        linked = {r.discord_id for r in await self.run(rdb.all_registrations)}
+        pending = {p.discord_id for p in await self.run(rdb.list_pending_recruits)}
+        premium = await asyncio.to_thread(self._premium_ids)
+        out = []
+        for m in role.members:
+            perms = getattr(m, "guild_permissions", None)
+            if getattr(m, "bot", False) or (perms is not None and perms.administrator) or can_admin_registro(m):
+                continue
+            if m.id in linked or m.id in pending or m.id in premium:
+                continue
+            out.append(m)
+        return sorted(out, key=lambda m: m.display_name.casefold())
+
+    @app_commands.command(name="limpiar-miembros", description="(Admin) Saca el rol Miembro a quienes no tienen cuenta de Albion enlazada")
+    @app_commands.describe(dar_public="Darles el rol Public al sacarles Miembro (por defecto sí)")
+    @app_commands.guild_only()
+    async def limpiar_miembros(self, interaction: discord.Interaction, dar_public: Optional[bool] = True):
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if not (perms is not None and perms.administrator):
+            return await _say(interaction, "🔒 Solo los administradores pueden usar este comando.")
+        guild = interaction.guild
+        role = guild.get_role(self.member_role_id) if self.member_role_id else None
+        if role is None:
+            return await _say(interaction, "❌ No encuentro el rol Miembro en el servidor.")
+        await interaction.response.defer(ephemeral=True)
+        targets = await self._unlinked_members(guild)
+        if not targets:
+            return await interaction.followup.send("✅ Todos los que tienen el rol Miembro tienen cuenta enlazada.", ephemeral=True)
+        names = ", ".join(f"<@{m.id}>" for m in targets)
+        if len(names) > 1500:
+            names = names[:1500].rsplit(",", 1)[0] + f", … (+{len(targets)} en total)"
+        public_txt = " y se les da **Public**" if dar_public else ""
+        actor = interaction.user
+
+        async def yes(i: discord.Interaction):
+            await i.response.edit_message(content=f"⏳ Sacando el rol Miembro a {len(targets)} personas…", view=None)
+            public = guild.get_role(self.public_role_id) if (dar_public and self.public_role_id) else None
+            linked = {r.discord_id for r in await self.run(rdb.all_registrations)}   # se vuelve a revisar por si alguien se registró recién
+            done, skipped, failed = [], 0, []
+            for m in targets:
+                if m.id in linked or role not in getattr(m, "roles", []):
+                    skipped += 1
+                    continue
+                try:
+                    await m.remove_roles(role, reason=f"/limpiar-miembros por {actor} ({actor.id}): sin cuenta de Albion enlazada")
+                    if public is not None and public not in m.roles:
+                        await m.add_roles(public, reason="/limpiar-miembros: vuelve a Public")
+                    done.append(m)
+                except discord.HTTPException:
+                    failed.append(m)
+                await asyncio.sleep(0.3)
+            await self.run(rdb.audit, actor.id, "bulk_remove_member", None, None, f"sacados={len(done)} fallidos={len(failed)} omitidos={skipped}")
+            msg = f"✅ Se les sacó el rol **{role.name}** a **{len(done)}** personas{public_txt if done else ''}."
+            if skipped:
+                msg += f"\nℹ️ {skipped} se omitieron (se registraron o ya no tenían el rol)."
+            if failed:
+                msg += f"\n⚠️ No pude cambiarle los roles a {len(failed)} (revisá que mi rol esté por encima): " + ", ".join(f"<@{m.id}>" for m in failed)[:800]
+            await i.edit_original_response(content=msg)
+            await self.audit_log(f"🧹 <@{actor.id}> usó `/limpiar-miembros`: se sacó el rol Miembro a **{len(done)}** personas sin cuenta enlazada"
+                                 + (f" ({len(failed)} fallaron)" if failed else "") + ".")
+
+        await interaction.followup.send(
+            f"🧹 **{len(targets)}** personas tienen el rol **{role.name}** y no tienen cuenta de Albion enlazada. Si confirmás, se les saca el rol{public_txt}.\n"
+            f"No se tocan bots, administradores, Staff, Council, invitados premium ni aceptados esperando entrar a la guild. "
+            f"El balance y las estadísticas **no** se pierden.\n\n{names}",
+            view=YesNoView(actor.id, yes, f"Sacar Miembro a {len(targets)}"), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     @app_commands.command(name="sincronizar-apodos", description="(Staff) Revisa que cada apodo sea el personaje de Albion y corrige los que no")
     @app_commands.describe(solo_ver="true: solo muestra qué cambiaría, sin tocar ningún apodo (por defecto false)")
     @app_commands.guild_only()
