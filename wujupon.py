@@ -4,6 +4,7 @@ La lógica y la persistencia viven en wujupon_db.py. Todo lo personal responde e
 no se llene de mensajes. Las tiradas se anuncian en un canal público configurable.
 """
 import asyncio
+import io
 import traceback
 from typing import Callable, List, Optional
 
@@ -18,6 +19,7 @@ from guildshop import COUNCIL_ROLE_ID, can_manage
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD = 0xF1C40F
 SPIN_FRAMES = ("🎰 Girando el Wujupón…", "🎰 ✨ ✨ ✨")
+PHOTO_SECONDS = 60             # la foto de un premio se borra pasado este tiempo
 SPIN_CLEANUP_SECONDS = 60      # los mensajes privados de cada tirada se borran solos pasado este tiempo
 
 
@@ -335,6 +337,7 @@ class WujuponCog(commands.Cog):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self.anim_delay = 0.8
         self.cleanup_delay = SPIN_CLEANUP_SECONDS
+        self.photo_delay = PHOTO_SECONDS
         self._cleanups: set = set()
         self._locks: dict = {}
 
@@ -355,16 +358,17 @@ class WujuponCog(commands.Cog):
         for t in list(self._cleanups):
             t.cancel()
 
-    def _cleanup_later(self, interaction: discord.Interaction, *extra_messages):
+    def _cleanup_later(self, interaction: discord.Interaction, *extra_messages, delay: Optional[float] = None):
         """Borra a los `cleanup_delay` segundos la respuesta privada de esta interacción (y los followups dados).
         Es solo visual: la carta ya está guardada en el inventario. Si el bot se reinicia antes, el mensaje queda
         (Discord igual lo saca al cerrar o recargar el cliente)."""
-        if not self.cleanup_delay or self.cleanup_delay <= 0:
+        wait = self.cleanup_delay if delay is None else delay
+        if not wait or wait <= 0:
             return
 
         async def go():
             try:
-                await asyncio.sleep(self.cleanup_delay)
+                await asyncio.sleep(wait)
                 try:
                     await interaction.delete_original_response()
                 except Exception:
@@ -568,6 +572,8 @@ class WujuponCog(commands.Cog):
         async with self._lock(user.id):
             res = await self.run(wdb.redeem, card_id=card_id, user_id=user.id, details=details,
                                  request_key=f"redeem:{interaction.id}", guild_id=self.guild_id)
+        if res.status == "auto" and res.message == "photo":
+            return await self.deliver_photo(interaction, res.prize, card_id)
         if res.status == "auto":
             return await _say(interaction, f"✨ **{res.prize.name}** canjeada.\n{res.message}")
         if res.status == "pending":
@@ -578,6 +584,56 @@ class WujuponCog(commands.Cog):
         if res.status == "duplicate":
             return await _say(interaction, "ℹ️ Ese canje ya se procesó.")
         await _say(interaction, f"❌ {res.message}")
+
+    # ---------------- premio con foto ----------------
+    @staticmethod
+    def _is_nsfw(channel) -> bool:
+        fn = getattr(channel, "is_nsfw", None)
+        try:
+            return bool(fn()) if callable(fn) else bool(getattr(channel, "nsfw", False))
+        except Exception:
+            return False
+
+    async def deliver_photo(self, interaction: discord.Interaction, prize: wdb.Prize, card_id: int):
+        """La carta ya se consumió. Manda la foto como spoiler en un canal +18 y la borra a los PHOTO_SECONDS.
+        Si no se puede mandar, la carta vuelve al inventario."""
+        asset = await self.run(wdb.get_asset, wdb.PHOTO_ASSET)
+        error = None
+        try:
+            if asset is None:
+                error = "Todavía no se cargó la foto de este premio."
+            elif self._is_nsfw(interaction.channel):
+                f = discord.File(io.BytesIO(asset[1]), filename=f"SPOILER_{asset[0]}")
+                await _say(interaction, f"🔞 **{prize.name}** · se borra en {self.photo_delay} s.", file=f)
+                self._cleanup_later(interaction, delay=self.photo_delay)
+                return
+            else:
+                ch = await self._channel("nsfw_channel")
+                if ch is None or not self._is_nsfw(ch):
+                    error = "No hay un canal +18 configurado para este premio. Avisale al Council."
+                else:
+                    f = discord.File(io.BytesIO(asset[1]), filename=f"SPOILER_{asset[0]}")
+                    msg = await ch.send(f"🔞 {interaction.user.mention} canjeó **{prize.name}** · se borra en {self.photo_delay} s.",
+                                        file=f, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                    self._delete_later(msg, self.photo_delay)
+                    return await _say(interaction, f"🔞 Tu premio está en {ch.mention} (se borra en {self.photo_delay} s).")
+        except Exception:
+            traceback.print_exc()
+            error = "No pude mandar la foto."
+        await self.run(wdb.return_card, card_id=card_id, actor_id=self.bot.user.id if self.bot.user else 0,
+                       reason=f"Entrega fallida: {error}")
+        await _say(interaction, f"❌ {error} Tu carta volvió al inventario.")
+
+    def _delete_later(self, message, delay: float):
+        async def go():
+            try:
+                await asyncio.sleep(delay)
+                await message.delete()
+            except Exception:
+                pass
+        task = asyncio.create_task(go())
+        self._cleanups.add(task)
+        task.add_done_callback(self._cleanups.discard)
 
     # ---------------- encargos del Council ----------------
     async def _channel(self, setting: str):
@@ -955,6 +1011,51 @@ class WujuponCog(commands.Cog):
         await self.run(wdb.log_action, interaction.user.id, "publish_prizes", ref=str(target.id))
         await _say(interaction, f"✅ Lista de premios publicada en {target.mention}. Si después cambiás cartas o probabilidades, "
                                 "volvé a publicarla: este mensaje no se actualiza solo.")
+
+    @wj.command(name="foto-premio", description="(Admin) Carga o cambia la imagen del premio «Foto de la cola de Gendarme»")
+    @app_commands.describe(imagen="Imagen (png, jpg, gif o webp; hasta 8 MB)", quitar="Sí = borrar la imagen cargada")
+    async def set_photo(self, interaction: discord.Interaction, imagen: Optional[discord.Attachment] = None,
+                        quitar: Optional[bool] = False):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador puede cargar la imagen del premio.")
+        if quitar:
+            done = await self.run(wdb.delete_asset, wdb.PHOTO_ASSET, interaction.user.id)
+            return await _say(interaction, "🗑️ Imagen borrada. El premio no se puede canjear hasta que cargues otra." if done
+                              else "ℹ️ No había ninguna imagen cargada.")
+        if imagen is None:
+            has = await self.run(wdb.get_asset, wdb.PHOTO_ASSET)
+            return await _say(interaction, "✅ Hay una imagen cargada. Para cambiarla, adjuntá otra en `imagen`." if has
+                              else "❌ Adjuntá la imagen en `imagen`.")
+        name = (getattr(imagen, "filename", "") or "foto.png").lower()
+        ctype = (getattr(imagen, "content_type", "") or "").lower()
+        if not (ctype.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))):
+            return await _say(interaction, "❌ El archivo tiene que ser una imagen (png, jpg, gif o webp).")
+        if (getattr(imagen, "size", 0) or 0) > wdb.MAX_ASSET_BYTES:
+            return await _say(interaction, "❌ La imagen tiene que pesar menos de 8 MB.")
+        try:
+            data = await imagen.read()
+            ext = name.rsplit(".", 1)[-1] if "." in name else "png"
+            await self.run(wdb.set_asset, wdb.PHOTO_ASSET, filename=f"premio.{ext}", content=data, actor_id=interaction.user.id)
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        except Exception:
+            traceback.print_exc()
+            return await _say(interaction, "❌ No pude leer la imagen. Probá de nuevo.")
+        nsfw = await self.run(wdb.get_setting, "nsfw_channel")
+        await _say(interaction, "✅ Imagen cargada. Se guarda solo en la base del bot (no en GitHub)."
+                   + ("" if nsfw else "\n⚠️ Falta el canal +18: configuralo con `/wujupon canal-nsfw`."))
+
+    @wj.command(name="canal-nsfw", description="(Admin) Canal +18 donde se entregan los premios con foto")
+    @app_commands.describe(canal="Canal marcado como +18 (por defecto, este canal)")
+    async def set_nsfw_channel(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador.")
+        target = canal or interaction.channel
+        if not self._is_nsfw(target):
+            return await _say(interaction, f"❌ {target.mention} no está marcado como canal +18. Activalo en la configuración del canal "
+                                           "(«Canal con restricción de edad») y probá de nuevo.")
+        await self.run(wdb.set_setting, "nsfw_channel", str(target.id))
+        await _say(interaction, f"🔞 Los premios con foto se entregan en {target.mention}.")
 
     @wj.command(name="limpiar-cartas", description="(Admin) Borra TODAS las cartas de todos los jugadores")
     @app_commands.describe(tambien_tiradas="Sí = también deja en 0 las tiradas sin usar de todos")

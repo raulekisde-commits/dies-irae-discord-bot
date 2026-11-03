@@ -350,6 +350,7 @@ INFO_STAFF["wujupon"] = (
     "marcá **Completado**; si no corresponde, **Rechazar** (nunca vuelven al inventario).\n\n"
     "**Solo Admin**\n"
     "• `/wujupon publicar-premios [canal]` — lista pública de premios (no se actualiza sola).\n"
+    "• `/wujupon foto-premio imagen` y `/wujupon canal-nsfw` — imagen del premio con foto (se entrega como spoiler en el canal +18 y se borra a los 60 s).\n"
     "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra todas las cartas sin usar de todos y anula los encargos abiertos (pide confirmación).")
 
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
