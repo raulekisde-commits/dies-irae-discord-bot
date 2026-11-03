@@ -2419,7 +2419,7 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
     bot_member = guild.get_member(bot.user.id) if bot.user else None
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True),
         recruiter_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
     }
     if bot_member:
