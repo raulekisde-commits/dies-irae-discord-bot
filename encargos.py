@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 
 import botsettings as bs
 import encargos_db as edb
+from paging import PagedView, chunk
 from guildshop import can_manage, COUNCIL_ROLE_ID
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -234,18 +235,29 @@ class EncargosCog(commands.Cog):
         await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
 
     async def send_top(self, interaction: discord.Interaction):
-        """Lo usa `/top tareas`: quién aceptó y quién cerró más tareas del staff."""
+        """Lo usa `/top tareas`: quién finalizó más tareas del staff, de a 10 por página (botón Siguiente)."""
         if not can_take(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council y el rol Opinólogo pueden ver este ranking.")
-        taken, done = await self.run(edb.top_users)
+        _, done = await self.run(edb.top_users, 1000)
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-        def lines(rows):
-            return "\n".join(f"{medals.get(i, f'`{i}.`')} <@{u}> — **{n}**" for i, (u, n) in enumerate(rows, start=1)) or "Todavía no hay datos."
-        emb = discord.Embed(title="🏆 Top tareas", color=discord.Color.gold())
-        emb.add_field(name="✋ Más tareas aceptadas", value=lines(taken), inline=True)
-        emb.add_field(name="✅ Más tareas cerradas", value=lines(done), inline=True)
-        await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
+        pages = chunk(list(enumerate(done, start=1)), 10)
+        embeds = []
+        for n, page in enumerate(pages, start=1):
+            emb = discord.Embed(title="🏆 Top tareas — finalizadas", color=discord.Color.gold(),
+                                description="\n".join(f"{medals.get(i, f'`{i}.`')} <@{u}> — **{c}**" for i, (u, c) in page)
+                                or "Todavía nadie finalizó tareas.")
+            if len(pages) > 1:
+                emb.set_footer(text=f"Página {n}/{len(pages)}")
+            embeds.append(emb)
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
 
     # ---------- botones ----------
     async def _task(self, interaction) -> Optional[edb.Task]:

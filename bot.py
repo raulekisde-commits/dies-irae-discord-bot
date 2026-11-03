@@ -1782,6 +1782,10 @@ class RecruitView(discord.ui.View):
         active_applications.pop(member.id, None)
         delete_ticket_image(member.id)
 
+        enc = bot.get_cog("EncargosCog")
+        if enc is not None:                                    # cerrar una postulación cuenta como tarea hecha para /top tareas
+            who = member.display_name if member else "postulante"
+            await enc.record_done(f"Aceptar la postulación de {who}", interaction.user.id, f"recruit:{interaction.channel.id}")
         try:
             await interaction.channel.delete(reason=f"Postulación aceptada por {interaction.user}")
         except Exception:
@@ -1819,6 +1823,10 @@ class RecruitView(discord.ui.View):
             active_applications.pop(member.id, None)
             delete_ticket_image(member.id)
 
+        enc = bot.get_cog("EncargosCog")
+        if enc is not None:                                    # cerrar una postulación cuenta como tarea hecha para /top tareas
+            who = member.display_name if member else "postulante"
+            await enc.record_done(f"Rechazar la postulación de {who}", interaction.user.id, f"recruit:{interaction.channel.id}")
         try:
             await interaction.channel.delete(reason=f"Postulación rechazada por {interaction.user}")
         except Exception:
