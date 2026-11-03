@@ -615,21 +615,35 @@ class RegistrationCog(commands.Cog):
                   "ambiguous": "hay varios personajes con ese nombre en distintos servidores de Albion"}.get(look.kind)
         c = None if manual else look.character
         name = c.name if c else _clean_name(nick)
-        try:
-            await self.run(rdb.admin_link, member.id, name, recruiter.id, char_id=c.char_id if c else None, region=c.region if c else None,
-                           guild_name=(c.guild or None) if c else None, method="recruitment" if c else "admin_override")
-        except rdb.RegError as exc:
-            return False, f"{exc}", False
-        in_guild = ((bool(self.required_guild) and c.guild.casefold() == self.required_guild.casefold()) if c else False) or name.casefold() in self.roster
+        # Si ya estaba registrado (p. ej. entró como invitado con /invitar o usó /registrar), se usa ese registro en vez de fallar.
+        existing = await self.run(rdb.get_registration, member.id)
+        if existing is not None:
+            if c is None or c.name.casefold() != existing.char_name.casefold():
+                c = None
+            manual = None
+            name = existing.char_name
+        else:
+            try:
+                await self.run(rdb.admin_link, member.id, name, recruiter.id, char_id=c.char_id if c else None, region=c.region if c else None,
+                               guild_name=(c.guild or None) if c else None, method="recruitment" if c else "admin_override")
+            except rdb.RegError as exc:
+                return False, f"{exc}", False
+        in_guild = ((bool(self.required_guild) and bool(c.guild) and c.guild.casefold() == self.required_guild.casefold()) if c else False) or name.casefold() in self.roster
         safe = discord.utils.escape_markdown(name)
-        if manual:
+        if existing is not None:
+            await self.audit_log(f"🧾 <@{recruiter.id}> aceptó a <@{member.id}> (ya estaba registrado como **{safe}**).")
+        elif manual:
             await self.audit_log(f"⚠️ <@{recruiter.id}> aceptó a <@{member.id}> y lo vinculó **a mano** como **{safe}** ({manual}).")
         else:
             await self.audit_log(f"🧾 <@{recruiter.id}> aceptó y registró a <@{member.id}> como **{safe}**.")
         warn = f"\n⚠️ {manual[0].upper() + manual[1:]}: quedó vinculado **a mano** (como `/admin_vincular`) con el nick del ticket. Revisá que esté bien escrito." if manual else ""
-        if in_guild and await self.grant_recruit_roles(member, role_id, role_name, name, recruiter.id, extra_role_ids):
-            return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
-        await self.run(rdb.add_pending_recruit, member.id, name, c.char_id if c else None, role_id, role_name, recruiter.id, tuple(extra_role_ids))
+        if in_guild:
+            if await self.grant_recruit_roles(member, role_id, role_name, name, recruiter.id, extra_role_ids):
+                return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
+            return False, (f"quedó registrado como **{safe}** y está en la guild, pero **no pude darle los roles** "
+                           "(revisá que el rol del bot esté por encima de Miembro y de los roles de CTA)."), False
+        pend_id = existing.char_id if existing is not None else (c.char_id if c else None)
+        await self.run(rdb.add_pending_recruit, member.id, name, pend_id, role_id, role_name, recruiter.id, tuple(extra_role_ids))
         try:
             await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}**. Entrá a la guild en el juego con tu personaje "
                               f"**{name}**: apenas el bot te vea adentro, te da los roles automáticamente (puede tardar hasta unos 10 minutos).")

@@ -429,12 +429,20 @@ class InvitadosCog(commands.Cog):
             return await _say(interaction, "❌ El sistema de registro no está disponible ahora. Probá más tarde.")
         await interaction.response.defer(ephemeral=True)
         look = await reg_cog.lookup_character(personaje_de_albion, any_guild=True)
-        if look.kind == "error":
-            return await _say(interaction, "❌ No pude consultar la API de Albion ahora. Probá de nuevo en unos minutos.")
-        if look.kind == "none":
-            return await _say(interaction, f"❌ No encontré ningún personaje llamado **{discord.utils.escape_markdown(personaje_de_albion.strip())}**. Escribilo exactamente como aparece en el juego.")
-        if look.kind == "ambiguous":
-            return await _say(interaction, "❌ Hay varios personajes con ese nombre en distintos servidores de Albion. Pedile a un administrador que use `/admin_vincular`.")
+        # Registro forzado: si la API no responde, no lo encuentra o hay homónimos, se registra igual con el nombre escrito (sin ID, como /admin_vincular).
+        manual = {"error": "la API de Albion no respondió", "none": "no encontré ese personaje en la API de Albion",
+                  "ambiguous": "hay varios personajes con ese nombre en distintos servidores de Albion"}.get(look.kind)
+        if manual:
+            import registration as _reg
+            name = _reg._clean_name(personaje_de_albion)
+            if not name:
+                return await _say(interaction, "❌ Nombre de personaje inválido.")
+            c = _reg.Character(char_id=None, name=name, region=None, guild="", alliance="", kill_fame=0, death_fame=0)
+            view = ConfirmInviteView(self, me.id, usuario, reason, c)
+            return await interaction.followup.send(
+                f"⚠️ {manual[0].upper() + manual[1:]}. Si confirmás, {usuario.mention} queda registrado **a mano** como "
+                f"**{discord.utils.escape_markdown(name)}** (revisá que esté bien escrito; `/sincronizar-registros` completa el ID después).",
+                view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
         if look.kind != "ok":
             return await _say(interaction, "❌ No pude validar ese personaje.")
         c = look.character
@@ -465,7 +473,8 @@ class InvitadosCog(commands.Cog):
             return err
         reg_cog = self.bot.get_cog("RegistrationCog")
         try:
-            await self.run(rdb.admin_link, usuario.id, c.name, inviter.id, char_id=c.char_id, region=c.region, guild_name=c.guild, method="guest_invite")
+            await self.run(rdb.admin_link, usuario.id, c.name, inviter.id, char_id=c.char_id or None, region=c.region or None, guild_name=c.guild or None,
+                           method="guest_invite" if c.char_id else "admin_override")
         except rdb.RegError as exc:
             return f"❌ {exc}"
         guest_role = guild.get_role(GUEST_ROLE_ID)
