@@ -34,7 +34,8 @@ RARITIES: Dict[str, Tuple[str, str, int]] = {      # clave → (nombre, emoji, c
 RARITY_ORDER = list(RARITIES)
 
 # Handlers automáticos implementados. Las cartas «Bot» sin handler todavía se canjean por encargo al Council.
-AUTO_HANDLERS = ("wuju", "embo", "sell_cooldown")
+AUTO_HANDLERS = ("wuju", "embo", "sell_cooldown", "photo")
+PHOTO_ASSET = "gendarme_photo"       # imagen que se guarda en la base (nunca en el repositorio)
 
 # (clave, nombre, rareza, peso/100.000, origen Bot|Staff, handler, cantidad, costo, moneda del costo, afecta a terceros,
 #  descripción, forzada)
@@ -50,8 +51,8 @@ CATALOG = [
      "En el próximo /cta te podés anotar en el rol que quieras.", 0),
     ("sell_cooldown", "Cancelar cooldown de cobro", "common", 7000, "Bot", "sell_cooldown", 0, 0, "", 0,
      "Te saca el cooldown de «Cobrar balance». Si no tenés cooldown, la carta no se gasta.", 0),
-    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 7000, "Bot", None, 0, 0, "", 0,
-     "Te llega un mensaje temporal con la foto.", 0),
+    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 7000, "Bot", "photo", 0, 0, "", 0,
+     "Te llega la foto en el canal +18, como spoiler, y se borra a los 60 s.", 0),
     ("wuju_100k", "100.000 Wuju Coins", "common", 3500, "Bot", "wuju", 100_000, 100_000, "wuju", 0,
      "Se acreditan al instante en tu balance.", 0),
     ("embo_50", "50 de embo", "common", 1500, "Bot", "embo", 50, 50, "embo", 0,
@@ -304,6 +305,13 @@ CREATE TABLE IF NOT EXISTS wjp_requests (
     updated_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_wjp_requests_user ON wjp_requests(user_id);
+CREATE TABLE IF NOT EXISTS wjp_assets (           -- imágenes de premios, subidas por un admin desde Discord
+    key         TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    content     BLOB NOT NULL,
+    uploaded_by INTEGER NOT NULL,
+    uploaded_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS wjp_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id   INTEGER NOT NULL,
@@ -707,6 +715,43 @@ def bought_today(db_path: str, user_id: int) -> int:
         conn.close()
 
 
+MAX_ASSET_BYTES = 8 * 1024 * 1024
+
+
+def set_asset(db_path: str, key: str, *, filename: str, content: bytes, actor_id: int) -> None:
+    if not content or len(content) > MAX_ASSET_BYTES:
+        raise WujuponError("La imagen tiene que pesar menos de 8 MB.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT OR REPLACE INTO wjp_assets(key, filename, content, uploaded_by, uploaded_at) VALUES (?,?,?,?,?)",
+                         (key, filename, sqlite3.Binary(content), actor_id, utcnow_iso()))
+            _log(conn, actor_id, "asset_set", ref=key, detail=f"{filename} · {len(content)} bytes")
+    finally:
+        conn.close()
+
+
+def get_asset(db_path: str, key: str) -> Optional[Tuple[str, bytes]]:
+    conn = _open(db_path)
+    try:
+        r = conn.execute("SELECT filename, content FROM wjp_assets WHERE key = ?", (key,)).fetchone()
+        return (r["filename"], bytes(r["content"])) if r else None
+    finally:
+        conn.close()
+
+
+def delete_asset(db_path: str, key: str, actor_id: int) -> bool:
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            n = conn.execute("DELETE FROM wjp_assets WHERE key = ?", (key,)).rowcount
+            if n:
+                _log(conn, actor_id, "asset_deleted", ref=key)
+            return n > 0
+    finally:
+        conn.close()
+
+
 def get_setting(db_path: str, key: str) -> Optional[str]:
     conn = _open(db_path)
     try:
@@ -1095,6 +1140,12 @@ def _run_handler(conn, prize: Prize, card: Card, *, guild_id: int, req_key: str)
         ch = embo_db.tx_apply(conn, user_id=card.user_id, mode="add", amount=prize.amount, actor_id=card.user_id,
                               request_key=f"wjp:card:{card.id}", reason=f"Wujupón: {prize.name}", kind="wujupon_prize")
         return f"Se acreditaron **{eco.format_amount(prize.amount)} de embo**. Balance de embo: {eco.format_amount(ch.after)}."
+    if prize.handler == "photo":
+        # la carta se consume acá; el envío lo hace la capa de Discord y, si falla, devuelve la carta
+        if conn.execute("SELECT 1 FROM wjp_assets WHERE key = ?", (PHOTO_ASSET,)).fetchone() is None:
+            raise _Abort(RedeemResult("no_effect", "Todavía no se cargó la foto de este premio. Tu carta sigue en el inventario.",
+                                      prize=prize))
+        return "photo"
     if prize.handler == "sell_cooldown":
         import deposits_db
         if not deposits_db.tx_reset_sell_cooldown(conn, guild_id, card.user_id):

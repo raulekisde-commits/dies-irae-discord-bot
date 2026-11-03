@@ -369,7 +369,7 @@ class CatalogoV2Tests(DbBase):
     def test_nada_nuevo_es_automatico(self):
         auto = {c[0] for c in wdb.CATALOG if c[5]}
         self.assertEqual(auto, {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
-                                "wuju_15m", "embo_1000"})
+                                "wuju_15m", "embo_1000", "gendarme_photo"})   # la foto la pidió el usuario explícitamente
 
     def test_descripciones_y_nombres_cortos(self):
         for c in wdb.CATALOG:
@@ -757,6 +757,95 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.sell_cooldown_cmd.callback(self.cog, i, self.alice, quitar, None))
         self.assertIn("ya puede cobrar", i.text)
         self.assertEqual(ddb.sell_cooldown_remaining(self.db, GUILD_ID, self.alice.id), 0)
+
+    class _Att:
+        def __init__(self, data=b"\x89PNGfake", filename="foto.png", content_type="image/png"):
+            self.data, self.filename, self.content_type, self.size = data, filename, content_type, len(data)
+
+        async def read(self):
+            return self.data
+
+    def _nsfw(self, ch, value=True):
+        ch.is_nsfw = lambda: value
+        return ch
+
+    def test_foto_premio_solo_admin_y_canal_nsfw(self):
+        i = self.inter(self.council)
+        run(self.cog.set_photo.callback(self.cog, i, self._Att(), False))
+        self.assertIn("Solo el dueño", i.text)
+        self.assertIsNone(wdb.get_asset(self.db, wdb.PHOTO_ASSET))
+        i = self.inter(self.admin)
+        run(self.cog.set_photo.callback(self.cog, i, self._Att(filename="x.txt", content_type="text/plain"), False))
+        self.assertIn("tiene que ser una imagen", i.text)
+        i = self.inter(self.admin)
+        run(self.cog.set_photo.callback(self.cog, i, self._Att(), False))
+        self.assertIn("Imagen cargada", i.text)
+        self.assertIn("canal-nsfw", i.text)
+        self.assertEqual(wdb.get_asset(self.db, wdb.PHOTO_ASSET)[1], b"\x89PNGfake")
+        # el canal tiene que ser +18
+        i = self.inter(self.admin, self._nsfw(self.feedch, False))
+        run(self.cog.set_nsfw_channel.callback(self.cog, i, None))
+        self.assertIn("no está marcado como canal +18", i.text)
+        i = self.inter(self.admin, self._nsfw(self.feedch, True))
+        run(self.cog.set_nsfw_channel.callback(self.cog, i, None))
+        self.assertEqual(wdb.get_setting(self.db, "nsfw_channel"), str(FEED_CH))
+        i = self.inter(self.admin)
+        run(self.cog.set_photo.callback(self.cog, i, None, True))
+        self.assertIn("Imagen borrada", i.text)
+        self.assertIsNone(wdb.get_asset(self.db, wdb.PHOTO_ASSET))
+
+    def test_canjear_foto(self):
+        import asyncio
+        self.cog.photo_delay = 0.01
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="gendarme_photo", reason="t")
+        # sin imagen: la carta no se gasta
+        i = self.inter(self.alice)
+        run(self.cog.do_redeem(i, cid, ""))
+        self.assertIn("no se cargó la foto", i.text)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")
+        wdb.set_asset(self.db, wdb.PHOTO_ASSET, filename="premio.png", content=b"img", actor_id=1)
+        # con imagen pero sin canal +18: vuelve al inventario
+        i = self.inter(self.alice)
+        run(self.cog.do_redeem(i, cid, ""))
+        self.assertIn("canal +18", i.text)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")
+        # con canal +18 configurado: se publica como spoiler y se borra sola
+        self._nsfw(self.feedch, True)
+        wdb.set_setting(self.db, "nsfw_channel", str(FEED_CH))
+        i = self.inter(self.alice)
+
+        async def go():
+            await self.cog.do_redeem(i, cid, "")
+            msg = self.feedch.sent[-1]
+            self.assertFalse(msg.deleted)
+            await asyncio.sleep(0.05)
+            self.assertTrue(msg.deleted)
+        run(go())
+        self.assertIn("Tu premio está en", i.text)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "consumed")
+        self.assertIn(self.alice.mention, self.feedch.sent[-1].content)
+
+    def test_foto_en_canal_nsfw_es_privada(self):
+        import asyncio
+        self.cog.photo_delay = 0.01
+        wdb.set_asset(self.db, wdb.PHOTO_ASSET, filename="premio.png", content=b"img", actor_id=1)
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="gendarme_photo", reason="t")
+        i = self.inter(self.alice, self._nsfw(self.feedch, True))
+        i.deleted = 0
+
+        async def delete_original_response():
+            i.deleted += 1
+        i.delete_original_response = delete_original_response
+
+        async def go():
+            await self.cog.do_redeem(i, cid, "")
+            await asyncio.sleep(0.05)
+        run(go())
+        content, kw = i.response.sent[0]
+        self.assertTrue(kw.get("ephemeral"))
+        self.assertEqual(kw["file"].filename, "SPOILER_premio.png")
+        self.assertEqual(i.deleted, 1)
+        self.assertEqual(self.feedch.sent, [])
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")
