@@ -92,10 +92,15 @@ INFO_TEXTS = {
 }
 
 INFO_STAFF = {
-    "invitados": ("• `/invitados` — lista todos los invitados activos con quién los invitó, cuándo y el motivo. `/invitados-premium` — lo mismo para los premium.\n"
-                  "• `/invitar-premium usuario quien_es personaje_de_albion` (Council) — registra a la persona, le da **Miembro**, le saca Public (e Invitado si lo era) y guarda quién la invitó. Si pierde el rol Miembro, deja de aparecer en la lista.\n"
+    "invitados": ("**🎟️ Invitado común** (`/invitar`, rol Legacy)\n"
+                  "• `/invitados` — lista todos los invitados activos con quién los invitó, cuándo y el motivo.\n"
                   "• Al invitar, el bot registra al invitado como si hubiera usado `/registrar`, le saca el rol **Public** y le pone **Invitado**.\n"
-                  "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n"
+                  "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n\n"
+                  "**⭐ Invitación premium** (solo **Council**)\n"
+                  "• `/invitar-premium usuario quien_es personaje_de_albion` — la persona entra directo con el rol **Miembro**: se la registra (aunque la API de Albion no encuentre el personaje), se le saca **Public** y queda guardado quién la invitó y el motivo.\n"
+                  "• Si ya era **invitado común**, pasa a premium: se le saca el rol Invitado y se mantiene el registro que tenía.\n"
+                  "• `/invitados-premium` — lista los invitados premium activos con quién los invitó, cuándo y el motivo.\n"
+                  "• `/quien-invito` muestra si la invitación fue premium. Si pierde el rol **Miembro**, deja de aparecer en la lista (queda como histórico).\n\n"
                   "• Quien invita queda como responsable: si hay problemas, revisá `/quien-invito` o la lista para saber a quién consultar."),
     "warnings": ("• `/warning usuario razon` — pone un warning. Queda guardado quién lo puso, cuándo y por qué. La respuesta la ve solo quien ejecuta el comando.\n"
                  "• `/warnings usuario` — lista los warnings de esa persona (fecha, quién y motivo). La respuesta es privada, como la del resto de los comandos de warnings.\n"
