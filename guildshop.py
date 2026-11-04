@@ -21,6 +21,7 @@ NO_MENTIONS = discord.AllowedMentions.none()
 PING_ROLE = discord.AllowedMentions(roles=True, users=True, everyone=False)
 TOP_LIMIT = 25
 CLOSE_DELAY_SECONDS = 5
+SALE_CLOSE_DELAY_SECONDS = 120          # después de confirmar una venta, el canal del ticket se borra solo a los 2 minutos
 GOLD = 0xF1C40F
 
 
@@ -205,7 +206,9 @@ class GuildShopCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self.close_delay = CLOSE_DELAY_SECONDS
+        self.sale_close_delay = SALE_CLOSE_DELAY_SECONDS
         self._top_lock = asyncio.Lock()
+        self._tasks: set = set()
 
     # ---------- infraestructura ----------
     async def cog_load(self):
@@ -215,6 +218,67 @@ class GuildShopCog(commands.Cog):
         self.bot.add_view(ConfirmSaleView(self))
         self.bot.add_view(SoldTicketView(self))
         self.bot.add_view(DiscountTicketView(self))
+        self._spawn(self._after_ready())
+
+    async def cog_unload(self):
+        for t in list(self._tasks):
+            t.cancel()
+
+    def _spawn(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def _after_ready(self):
+        """Al iniciar: actualiza el texto del panel del shop y borra los canales de ventas que quedaron sin borrar."""
+        try:
+            wait = getattr(self.bot, "wait_until_ready", None)
+            if wait is not None:
+                await wait()
+            await self.refresh_shop_panel()
+            await self.sweep_sold_channels()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            traceback.print_exc()
+
+    async def refresh_shop_panel(self):
+        """Edita el panel del shop ya publicado con el texto actual (no hace falta volver a publicarlo). Nunca lanza."""
+        try:
+            found = await self.run(gdb.get_panel, self.guild_id, "shop")
+            if not found:
+                return
+            ch = self.bot.get_channel(found[0]) or await self.bot.fetch_channel(found[0])
+            msg = await ch.fetch_message(found[1])
+            await msg.edit(embed=self.shop_embed(), view=ShopPanelView(self))
+        except Exception as exc:
+            print(f"⚠️ Guild Shop: no pude actualizar el panel del shop: {exc!r}")
+
+    async def sweep_sold_channels(self):
+        """Canales de tickets vendidos que siguen existiendo (por ejemplo, si el bot se reinició durante los 2 minutos)."""
+        from datetime import datetime, timezone
+        rows = await self.run(gdb.recent_sold_channels, self.guild_id)
+        now = datetime.now(timezone.utc)
+        for channel_id, closed_at in rows:
+            ch = self.bot.get_channel(channel_id)
+            if ch is None:
+                continue
+            try:
+                done = datetime.fromisoformat(str(closed_at).replace("Z", "+00:00"))
+                done = done if done.tzinfo else done.replace(tzinfo=timezone.utc)
+                left = max(0.0, self.sale_close_delay - (now - done).total_seconds())
+            except ValueError:
+                left = 0.0
+            self._spawn(self._delete_after(ch, left))
+
+    async def _delete_after(self, channel, delay: float):
+        try:
+            if delay:
+                await asyncio.sleep(delay)
+            await self._try_delete(channel)
+        except asyncio.CancelledError:
+            pass
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -281,6 +345,10 @@ class GuildShopCog(commands.Cog):
         emb.description = (
             "Comprá ítems directamente a la guild.\n\n"
             "**🏷️ Todos los ítems tienen un 10% de descuento.**\n\n"
+            "**🎟️ Tickets de descuento**\n"
+            + "\n".join(f"• **{gdb.format_pct(bp)}** de descuento hasta {gdb.eco.format_amount(cap)} (lo que pase, al 10%)."
+                        for bp, cap in gdb.TICKETS.values())
+            + "\nSe consiguen en **Wujupón**. Si tenés uno, al abrir el ticket el bot te pregunta si querés usarlo.\n\n"
             "**Cómo funciona**\n"
             "1. Tocá **Comprar**, elegí si pagás con **Wuju Coins** o **Silver** y escribí la lista de todo lo que querés (con cantidades).\n"
             "2. Se abre un ticket privado y se avisa a los **Seller**.\n"
@@ -655,7 +723,8 @@ class GuildShopCog(commands.Cog):
         done.add_field(name="Descuento", value=gdb.format_pct(p.discount_bp) + (" · 🎟️ con ticket" if p.uses_card else ""), inline=True)
         if p.currency == "wuju":
             done.add_field(name="Balance del comprador", value=f"{self.wuju(result.balance_before)} → {self.wuju(result.balance_after)}", inline=False)
-        done.set_footer(text="Venta confirmada: este canal se cierra automáticamente.")
+        done.set_footer(text=f"Venta confirmada: este canal se borra solo en {max(1, round(self.sale_close_delay / 60))} minutos."
+                         if self.sale_close_delay >= 60 else "Venta confirmada: este canal se borra solo en unos segundos.")
         try:
             await interaction.channel.send(embed=done, allowed_mentions=NO_MENTIONS)
         except Exception:
@@ -674,7 +743,7 @@ class GuildShopCog(commands.Cog):
         log.add_field(name="Lista de compra", value=t.items[:1000], inline=False)
         await self.log(interaction.guild, log)
         await self.refresh_top_panel(interaction.guild)
-        await self._delete_later(interaction.channel)             # una vez confirmada la venta se cierra solo (sin otro botón)
+        self._spawn(self._delete_after(interaction.channel, self.sale_close_delay))   # se borra solo, sin esperar ningún botón
 
     async def on_cancel_pressed(self, interaction: discord.Interaction):
         if interaction.guild is None or not can_sell(interaction.user):

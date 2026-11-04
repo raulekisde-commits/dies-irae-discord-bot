@@ -307,6 +307,7 @@ class ShopDiscordTests(unittest.TestCase):
         run(economy.setup_economy(self.bot, self.db, GUILD_ID, MEMBER_ROLE, STAFF_ROLE))
         self.cog = run(gs.setup_guildshop(self.bot, self.db, GUILD_ID))
         self.cog.close_delay = 0
+        self.cog.sale_close_delay = 0
 
     def tearDown(self):
         self.tmp.cleanup()
