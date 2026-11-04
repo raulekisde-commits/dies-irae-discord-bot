@@ -73,7 +73,8 @@ INFO_TEXTS = {
                  "**Splits**\n"
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
                  "**Guild Shop**\n"
-                 "• Podés comprar ítems en el **Guild Shop** con un **10% de descuento**: creás un ticket desde el panel del shop y un Seller te atiende.\n\n"
+                 "• Podés comprar ítems en el **Guild Shop** con un **10% de descuento**: creás un ticket desde el panel del shop y un Seller te atiende.\n"
+                 "• Con un 🎟️ **ticket de descuento** de Wujupón, esa compra tiene **20%** sobre los primeros 50M: el bot te pregunta al abrir el ticket.\n\n"
                  "**Cambiar tu balance**\n"
                  "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
     "zvz-vods": ("🎥 ZvZ y VODs (coaching)",

@@ -369,7 +369,7 @@ class CatalogoV2Tests(DbBase):
     def test_nada_nuevo_es_automatico(self):
         auto = {c[0] for c in wdb.CATALOG if c[5]}
         self.assertEqual(auto, {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
-                                "wuju_15m", "embo_1000", "gendarme_photo"})   # la foto la pidió el usuario explícitamente
+                                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount"})   # pedidos explícitamente
 
     def test_descripciones_y_nombres_cortos(self):
         for c in wdb.CATALOG:
@@ -435,6 +435,15 @@ class CatalogoV2Tests(DbBase):
         wdb.init_schema(self.db)
         self.assertEqual(wdb.get_prize(self.db, "bad_embo_15").rarity, "common")
         self.assertEqual(wdb.get_prize(self.db, "caerleon_port").name, "Mía")
+
+    def test_cambios_v5(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual(p["premium_30m"].weight, 20)
+        self.assertEqual(p["freeze_24h"].name, "Congelar balance 72 h")
+        self.assertEqual((p["mute_chat_180"].name, p["mute_voice_180"].name), ("Mute de chat 24 h", "Mute de voice 24 h"))
+        self.assertEqual(p["plot_tax0"].name, "Tax 0 en plots 48 h")
+        self.assertEqual((p["shop_discount"].rarity, p["shop_discount"].weight), ("epic", 300))
+        self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
     def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
         conn = connect(self.db)

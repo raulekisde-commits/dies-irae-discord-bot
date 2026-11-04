@@ -34,7 +34,8 @@ RARITIES: Dict[str, Tuple[str, str, int]] = {      # clave → (nombre, emoji, c
 RARITY_ORDER = list(RARITIES)
 
 # Handlers automáticos implementados. Las cartas «Bot» sin handler todavía se canjean por encargo al Council.
-AUTO_HANDLERS = ("wuju", "embo", "sell_cooldown", "photo")
+AUTO_HANDLERS = ("wuju", "embo", "sell_cooldown", "photo", "shop_ticket")
+SHOP_TICKET_PRIZE = "shop_discount"  # se usa desde el Guild Shop, no con «Canjear»
 PHOTO_ASSET = "gendarme_photo"       # imagen que se guarda en la base (nunca en el repositorio)
 
 # (clave, nombre, rareza, peso/100.000, origen Bot|Staff, handler, cantidad, costo, moneda del costo, afecta a terceros,
@@ -126,20 +127,22 @@ CATALOG = [
      "Tres ítems del loot por un valor estimado de 7M.", 0),
     ("repair_4m", "Ticket de reparación (4M)", "epic", 700, "Staff", None, 0, 4_000_000, "silver", 0,
      "Te cubren la reparación hasta 4M.", 0),
-    ("ava_replace", "Reemplazo en Avalonian", "epic", 900, "Staff", None, 0, 0, "", 1,
+    ("ava_replace", "Reemplazo en Avalonian", "epic", 800, "Staff", None, 0, 0, "", 1,
      "Reemplazás a alguien en una Avalonian antes de que salga.", 0),
     ("caerleon_port", "Porte a Caerleon", "epic", 600, "Staff", None, 0, 0, "", 0,
      "Te portean a Caerleon.", 0),
-    ("plot_tax0", "Tax 0 en plots 24 h", "epic", 800, "Staff", None, 0, 0, "", 0,
-     "Tus plots sin tax durante 24 horas.", 0),
+    ("plot_tax0", "Tax 0 en plots 48 h", "epic", 800, "Staff", None, 0, 0, "", 0,
+     "Tus plots sin tax durante 48 horas.", 0),
     ("alter_ho_24h", "Permisos de alter en el HO 24 h", "epic", 700, "Staff", None, 0, 0, "", 0,
      "Un alter tuyo tiene permisos en el HO durante 24 horas.", 0),
-    ("duel_1v1", "Duelo 1v1 especial", "epic", 1400, "Bot", None, 0, 0, "", 1,
+    ("shop_discount", "🎟️ Ticket de descuento Guild Shop", "epic", 300, "Bot", "shop_ticket", 0, 5_000_000, "silver", 0,
+     "En una compra del Guild Shop el descuento pasa de 10 % a 20 % (hasta 50M). Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
+    ("duel_1v1", "Duelo 1v1 especial", "epic", 1300, "Bot", None, 0, 0, "", 1,
      "Retás a alguien del Top 10 de apostado; se anuncia con @here. Tiene 24 h para aceptar o pierde el 5 % de su balance. "
      "Tope 200M." + SHIELD_NOTE, 0),
     ("ho_house", "Casa del HO", "epic", 400, "Staff", None, 0, 0, "", 0,
      "Reclamás una casa del HO.", 0),
-    ("lootsplit_remove", "Sacar del lootsplit", "epic", 800, "Staff", None, 0, 0, "", 1,
+    ("lootsplit_remove", "Sacar del lootsplit", "epic", 700, "Staff", None, 0, 0, "", 1,
      "Sacás a un jugador del lootsplit de la última CTA." + SHIELD_NOTE, 0),
     ("weapon_73", "Arma 7.3 del Guild Shop (8M)", "epic", 600, "Staff", None, 0, 8_000_000, "silver", 0,
      "Un arma 7.3 del Guild Shop de hasta 8M.", 0),
@@ -207,25 +210,25 @@ CATALOG = [
     ("bad_cd_24h", "☠️ Cooldown de cobro +24 h", "legendary", 100, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 24 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔴 Míticas — 0,2 %
-    ("premium_30m", "Premium de Albion (30M VAL)", "mythic", 70, "Staff", None, 0, 30_000_000, "val", 0,
+    ("premium_30m", "Premium de Albion (30M VAL)", "mythic", 20, "Staff", None, 0, 30_000_000, "val", 0,
      "Un premio equivalente a Premium de Albion (30M VAL).", 0),
-    ("freeze_24h", "Congelar balance 24 h", "mythic", 40, "Bot", None, 0, 0, "", 1,
-     "Durante 24 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
+    ("freeze_24h", "Congelar balance 72 h", "mythic", 50, "Bot", None, 0, 0, "", 1,
+     "Durante 72 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
     ("guild_kick", "Kick de la guild", "mythic", 30, "Staff", None, 0, 0, "", 1,
      "Sacás a un miembro de la guild. Requiere aprobación del Council." + SHIELD_NOTE, 0),
-    ("coinflip_nolimit", "Coinflip sin límite", "mythic", 10, "Bot", None, 0, 0, "", 0,
+    ("coinflip_nolimit", "Coinflip sin límite", "mythic", 30, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino sin tope de apuesta. Rigen todas las reglas del coinflip.", 0),
-    ("mute_chat_180", "Mute de chat 3 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
-     "Le muteás el chat a un jugador por 3 horas." + SHIELD_NOTE, 0),
-    ("mute_voice_180", "Mute de voice 3 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
-     "Muteás a un jugador en el voice por 3 horas." + SHIELD_NOTE, 0),
-    ("shield_4d", "🛡️ Escudo 4 días", "mythic", 20, "Bot", None, 0, 0, "", 0,
+    ("mute_chat_180", "Mute de chat 24 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
+     "Le muteás el chat a un jugador por 24 horas." + SHIELD_NOTE, 0),
+    ("mute_voice_180", "Mute de voice 24 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
+     "Muteás a un jugador en el voice por 24 horas." + SHIELD_NOTE, 0),
+    ("shield_4d", "🛡️ Escudo 4 días", "mythic", 40, "Bot", None, 0, 0, "", 0,
      "Durante 4 días nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
-CATALOG_VERSION = 4
+CATALOG_VERSION = 5
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -234,6 +237,8 @@ CATALOG_CHANGES = {
         "custom_bomb", "freeze_24h", "coinflip_nolimit"),
     4: ("bad_wuju_100k", "bad_embo_15", "bad_selfmute_chat_5", "bad_selfmute_voice_5", "casino_block", "flex_cta",
         "sell_cooldown", "gendarme_photo", "mute_15", "voice_mute_15", "undo_coinflip", "shield_3h", "party1_slot"),
+    5: ("premium_30m", "freeze_24h", "mute_chat_180", "mute_voice_180", "plot_tax0", "shield_4d", "coinflip_nolimit",
+        "duel_1v1", "lootsplit_remove", "ava_replace", "shop_discount"),
 }
 
 SCHEMA = """
@@ -1164,6 +1169,9 @@ def _run_handler(conn, prize: Prize, card: Card, *, guild_id: int, req_key: str)
             raise _Abort(RedeemResult("no_effect", "Todavía no se cargó la foto de este premio. Tu carta sigue en el inventario.",
                                       prize=prize))
         return "photo"
+    if prize.handler == "shop_ticket":
+        raise _Abort(RedeemResult("no_effect", "🎟️ Este ticket se usa al comprar en el **Guild Shop**: abrí un ticket de compra y el bot "
+                                               "te pregunta si querés usarlo. La carta sigue en tu inventario.", prize=prize))
     if prize.handler == "sell_cooldown":
         import deposits_db
         if not deposits_db.tx_reset_sell_cooldown(conn, guild_id, card.user_id):
