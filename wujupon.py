@@ -899,6 +899,30 @@ class WujuponCog(commands.Cog):
         p = await self.run(wdb.get_prize, premio)
         await _say(interaction, f"✅ Carta `#{card_id}` **{p.name}** agregada al inventario de {usuario.mention}.")
 
+    @wj.command(name="dar-ticket", description="(Council) Da tickets de descuento del Guild Shop (20 % hasta 20M o 30 % hasta 35M)")
+    @app_commands.describe(usuario="Persona", tipo="Qué ticket", cantidad="Cuántos (1 a 20)", motivo="Motivo")
+    @app_commands.choices(tipo=[app_commands.Choice(name="20 % hasta 20M", value="shop_discount"),
+                                app_commands.Choice(name="30 % hasta 35M", value="shop_discount_30")])
+    async def give_ticket(self, interaction: discord.Interaction, usuario: discord.Member, tipo: app_commands.Choice[str],
+                          cantidad: Optional[int] = 1, motivo: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        cantidad = cantidad or 1
+        if not 1 <= cantidad <= 20:
+            return await _say(interaction, "❌ La cantidad tiene que estar entre 1 y 20.")
+        if usuario.bot:
+            return await _say(interaction, "❌ No se le pueden dar tickets a un bot.")
+        reason = (motivo or "Ticket de descuento dado por el Council")[:300]
+        ids = []
+        try:
+            for _ in range(cantidad):
+                ids.append(await self.run(wdb.give_card, actor_id=interaction.user.id, user_id=usuario.id, prize_key=tipo.value,
+                                          reason=reason))
+        except wdb.WujuponError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        await _say(interaction, f"🎟️ {usuario.mention} recibió **{cantidad}** ticket(s) de descuento de **{tipo.name}** "
+                                f"({', '.join(f'#{i}' for i in ids)}). Los ve en 🎒 Mi inventario y se usan al abrir un ticket en el Guild Shop.")
+
     @wj.command(name="devolver-carta", description="(Council) Devuelve al inventario una carta usada (mal usada, bug, etc.)")
     @app_commands.describe(carta="Número de carta (#)", motivo="Motivo")
     async def give_back(self, interaction: discord.Interaction, carta: int, motivo: Optional[str] = None):

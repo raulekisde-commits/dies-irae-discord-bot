@@ -19,10 +19,19 @@ LOG_CHANNEL_KEY = "guildshop_log_channel_id"
 MOV_PURCHASE = "guildshop_purchase"
 CURRENCIES = ("wuju", "silver")
 
-# Ticket de descuento (carta de Wujupón «shop_discount»): 20 % en vez de 10 % sobre los primeros 50M de la compra.
+# Tickets de descuento (cartas de Wujupón): reemplazan el 10 % normal por un % mayor sobre los primeros N de la compra.
+# clave del premio → (descuento en bp, tope de la compra al que se aplica)
+TICKETS = {
+    "shop_discount": (2000, 20_000_000),      # 20 % hasta 20M
+    "shop_discount_30": (3000, 35_000_000),   # 30 % hasta 35M
+}
 TICKET_PRIZE = "shop_discount"
-TICKET_DISCOUNT_BP = 2000
-TICKET_CAP = 50_000_000
+TICKET_DISCOUNT_BP, TICKET_CAP = TICKETS[TICKET_PRIZE]
+
+
+def ticket_label(prize_key: str) -> str:
+    bp, cap = TICKETS[prize_key]
+    return f"{format_pct(bp)} hasta {eco.format_amount(cap)}"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS gshop_tickets (
@@ -239,30 +248,46 @@ def discard_ticket(db_path: str, ticket_id: int) -> None:
 # ============================================================
 # Ticket de descuento (carta de Wujupón)
 # ============================================================
-def offer_with_ticket(gross: int) -> Tuple[int, int]:
-    """(descuento efectivo en bp, neto) con el ticket: 20 % hasta TICKET_CAP y el 10 % normal sobre lo que pase."""
+def offer_with_ticket(gross: int, prize_key: str = TICKET_PRIZE) -> Tuple[int, int]:
+    """(descuento efectivo en bp, neto) con el ticket: su % hasta su tope y el 10 % normal sobre lo que pase."""
+    bp_ticket, cap = TICKETS[prize_key]
     gross = int(gross)
-    covered = min(gross, TICKET_CAP)
+    covered = min(gross, cap)
     rest = gross - covered
-    net = compute_net(covered, TICKET_DISCOUNT_BP) + compute_net(rest, DEFAULT_DISCOUNT_BP)
+    net = compute_net(covered, bp_ticket) + compute_net(rest, DEFAULT_DISCOUNT_BP)
     bp = 0 if gross <= 0 else round((gross - net) * 10000 / gross)
     return int(bp), int(net)
 
 
-def discount_cards_available(db_path: str, user_id: int) -> int:
-    """Cuántas cartas «Ticket de descuento» disponibles tiene la persona (0 si Wujupón no está instalado)."""
+def discount_cards_available(db_path: str, user_id: int) -> dict:
+    """{clave del ticket: cantidad} de las cartas de descuento disponibles (vacío si no tiene o Wujupón no está)."""
     conn = connect(db_path)
     try:
         try:
-            return int(conn.execute("SELECT COUNT(*) FROM wjp_cards WHERE user_id = ? AND prize_key = ? AND status = 'available'",
-                                    (user_id, TICKET_PRIZE)).fetchone()[0])
+            rows = conn.execute(f"SELECT prize_key, COUNT(*) AS n FROM wjp_cards WHERE user_id = ? AND status = 'available' "
+                                f"AND prize_key IN ({','.join('?' * len(TICKETS))}) GROUP BY prize_key", (user_id, *TICKETS)).fetchall()
         except sqlite3.OperationalError:
-            return 0
+            return {}
+        return {r["prize_key"]: int(r["n"]) for r in rows if int(r["n"]) > 0}
     finally:
         conn.close()
 
 
-def attach_discount_card(db_path: str, ticket_id: int, buyer_id: int) -> str:
+def ticket_card_prize(db_path: str, ticket_id: int) -> Optional[str]:
+    """Clave del ticket de descuento reservado para este ticket de compra (None si no usa)."""
+    conn = connect(db_path)
+    try:
+        try:
+            r = conn.execute("SELECT c.prize_key FROM gshop_tickets t JOIN wjp_cards c ON c.id = t.wjp_card_id WHERE t.id = ?",
+                             (ticket_id,)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return r["prize_key"] if r and r["prize_key"] in TICKETS else None
+    finally:
+        conn.close()
+
+
+def attach_discount_card(db_path: str, ticket_id: int, buyer_id: int, prize_key: str = TICKET_PRIZE) -> str:
     """Reserva una carta «Ticket de descuento» del comprador para este ticket.
     Devuelve ok | already | none | closed | pending (ya hay una oferta calculada sin el ticket)."""
     conn = connect(db_path)
@@ -276,8 +301,10 @@ def attach_discount_card(db_path: str, ticket_id: int, buyer_id: int) -> str:
             if conn.execute("SELECT 1 FROM gshop_pending WHERE ticket_id = ?", (ticket_id,)).fetchone():
                 return "pending"
             try:
+                if prize_key not in TICKETS:
+                    return "none"
                 r = conn.execute("SELECT id FROM wjp_cards WHERE user_id = ? AND prize_key = ? AND status = 'available' ORDER BY id LIMIT 1",
-                                 (buyer_id, TICKET_PRIZE)).fetchone()
+                                 (buyer_id, prize_key)).fetchone()
             except sqlite3.OperationalError:
                 r = None
             if r is None:
@@ -323,9 +350,10 @@ def _consume_card(conn, t: "Ticket", sale_id: int, extra_discount: int) -> None:
         moved = conn.execute("UPDATE wjp_cards SET status = 'consumed', updated_at = ? WHERE id = ? AND status = 'reserved'",
                              (now, t.wjp_card_id)).rowcount
         if moved:
+            key = conn.execute("SELECT prize_key FROM wjp_cards WHERE id = ?", (t.wjp_card_id,)).fetchone()["prize_key"]
             conn.execute("INSERT OR IGNORE INTO wjp_requests(request_key, card_id, user_id, prize_key, details, status, note, "
                          "created_at, updated_at) VALUES (?,?,?,?,?,'auto',?,?,?)",
-                         (f"guildshop:{t.id}", t.wjp_card_id, t.buyer_id, TICKET_PRIZE, f"Guild Shop ticket #{t.id} · venta #{sale_id}",
+                         (f"guildshop:{t.id}", t.wjp_card_id, t.buyer_id, key, f"Guild Shop ticket #{t.id} · venta #{sale_id}",
                           f"Descuento extra: {extra_discount}", now, now))
     except sqlite3.OperationalError:
         pass

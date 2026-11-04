@@ -35,7 +35,7 @@ RARITY_ORDER = list(RARITIES)
 
 # Handlers automáticos implementados. Las cartas «Bot» sin handler todavía se canjean por encargo al Council.
 AUTO_HANDLERS = ("wuju", "embo", "sell_cooldown", "photo", "shop_ticket")
-SHOP_TICKET_PRIZE = "shop_discount"  # se usa desde el Guild Shop, no con «Canjear»
+SHOP_TICKET_PRIZES = ("shop_discount", "shop_discount_30")  # se usan desde el Guild Shop, no con «Canjear»
 PHOTO_ASSET = "gendarme_photo"       # imagen que se guarda en la base (nunca en el repositorio)
 
 # (clave, nombre, rareza, peso/100.000, origen Bot|Staff, handler, cantidad, costo, moneda del costo, afecta a terceros,
@@ -135,8 +135,8 @@ CATALOG = [
      "Tus plots sin tax durante 48 horas.", 0),
     ("alter_ho_24h", "Permisos de alter en el HO 24 h", "epic", 700, "Staff", None, 0, 0, "", 0,
      "Un alter tuyo tiene permisos en el HO durante 24 horas.", 0),
-    ("shop_discount", "🎟️ Ticket de descuento Guild Shop", "epic", 300, "Bot", "shop_ticket", 0, 5_000_000, "silver", 0,
-     "En una compra del Guild Shop el descuento pasa de 10 % a 20 % (hasta 50M). Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
+    ("shop_discount", "🎟️ Ticket de descuento 20 % (Guild Shop)", "epic", 300, "Bot", "shop_ticket", 0, 2_000_000, "silver", 0,
+     "En una compra del Guild Shop el descuento pasa de 10 % a 20 % hasta 20M. Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
     ("duel_1v1", "Duelo 1v1 especial", "epic", 1300, "Bot", None, 0, 0, "", 1,
      "Retás a alguien del Top 10 de apostado; se anuncia con @here. Tiene 24 h para aceptar o pierde el 5 % de su balance. "
      "Tope 200M." + SHIELD_NOTE, 0),
@@ -189,9 +189,9 @@ CATALOG = [
      + SHIELD_NOTE, 0),
     ("deny_cta", "Denegar una CTA", "legendary", 300, "Staff", None, 0, 0, "", 1,
      "Un jugador no puede ir a una CTA." + SHIELD_NOTE, 0),
-    ("guild_desc_1d", "Descripción de la guild 1 día", "legendary", 200, "Staff", None, 0, 0, "", 0,
+    ("guild_desc_1d", "Descripción de la guild 1 día", "legendary", 100, "Staff", None, 0, 0, "", 0,
      "Elegís la descripción de la guild durante 1 día.", 0),
-    ("staff_build", "Elegirle la build a un staff", "legendary", 250, "Staff", None, 0, 0, "", 1,
+    ("staff_build", "Elegirle la build a un staff", "legendary", 220, "Staff", None, 0, 0, "", 1,
      "Elegís la build que va a usar alguien del staff." + SHIELD_NOTE, 0),
     ("craft_alter_7d", "Alter de crafteo 7 días", "legendary", 400, "Staff", None, 0, 0, "", 0,
      "Un alter de crafteo durante 7 días.", 0),
@@ -203,6 +203,8 @@ CATALOG = [
      "Muteás a un jugador en el voice por 1 hora." + SHIELD_NOTE, 0),
     ("shield_24h", "🛡️ Escudo 24 h", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Durante 24 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
+    ("shop_discount_30", "🎟️ Ticket de descuento 30 % (Guild Shop)", "legendary", 130, "Bot", "shop_ticket", 0, 7_000_000, "silver", 0,
+     "En una compra del Guild Shop el descuento pasa de 10 % a 30 % hasta 35M. Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
     ("purge_shield", "💥 Purgar escudo", "legendary", 150, "Bot", None, 0, 0, "", 1,
      "Le rompés el escudo a otro jugador. No funciona contra los inmunes. Si no tiene escudo, no se gasta.", 0),
     ("wjp_freeze_24h", "❄️ Congelar Wujupón 24 h", "legendary", 150, "Bot", None, 0, 0, "", 1,
@@ -228,7 +230,7 @@ CATALOG = [
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
-CATALOG_VERSION = 5
+CATALOG_VERSION = 6
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -239,6 +241,7 @@ CATALOG_CHANGES = {
         "sell_cooldown", "gendarme_photo", "mute_15", "voice_mute_15", "undo_coinflip", "shield_3h", "party1_slot"),
     5: ("premium_30m", "freeze_24h", "mute_chat_180", "mute_voice_180", "plot_tax0", "shield_4d", "coinflip_nolimit",
         "duel_1v1", "lootsplit_remove", "ava_replace", "shop_discount"),
+    6: ("shop_discount", "shop_discount_30", "guild_desc_1d", "staff_build"),
 }
 
 SCHEMA = """

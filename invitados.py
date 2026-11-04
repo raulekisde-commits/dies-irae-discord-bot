@@ -74,7 +74,8 @@ INFO_TEXTS = {
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
                  "**Guild Shop**\n"
                  "• Podés comprar ítems en el **Guild Shop** con un **10% de descuento**: creás un ticket desde el panel del shop y un Seller te atiende.\n"
-                 "• Con un 🎟️ **ticket de descuento** de Wujupón, esa compra tiene **20%** sobre los primeros 50M: el bot te pregunta al abrir el ticket.\n\n"
+                 "• Con un 🎟️ **ticket de descuento** de Wujupón (**20%** hasta 20M o **30%** hasta 35M) esa compra tiene más descuento: "
+                 "el bot te pregunta al abrir el ticket.\n\n"
                  "**Cambiar tu balance**\n"
                  "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
     "zvz-vods": ("🎥 ZvZ y VODs (coaching)",
@@ -343,7 +344,8 @@ INFO_STAFF["wujupon"] = (
     "• `/wujupon premio carta activo` — habilita o deshabilita una carta.\n"
     "• Si las habilitadas no suman 100 %, salen en proporción a su peso (el bot avisa).\n\n"
     "**Jugadores**\n"
-    "• `/wujupon regalar-tiradas usuario cantidad` (negativo = quitar) · `/wujupon dar-carta usuario premio`.\n"
+    "• `/wujupon regalar-tiradas usuario cantidad` (negativo = quitar) · `/wujupon dar-carta usuario premio` · "
+    "`/wujupon dar-ticket usuario tipo [cantidad]` (tickets de descuento del Guild Shop).\n"
     "• `/wujupon devolver-carta numero` — vuelve una carta usada al inventario. Si era automática, lo entregado no se descuenta.\n"
     "• `/wujupon inventario usuario` · `/wujupon encargos` · `/wujupon historial [usuario]` · `/wujupon registro`.\n"
     "• **Encargos**: **Tomar** → **Aprobar** → **Completado**. **Rechazar** pregunta si se devuelve la carta.\n"

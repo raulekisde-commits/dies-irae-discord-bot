@@ -61,7 +61,7 @@ class CatalogTests(unittest.TestCase):
                   for c in wdb.CATALOG]
         exp = wdb.expected_cost(prizes)
         silver = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE
-        self.assertAlmostEqual(silver + exp["val"], 396_600, places=3)      # margen ≈ 20,7 % con la tirada a 500.000
+        self.assertAlmostEqual(silver + exp["val"], 396_700, places=3)      # margen ≈ 20,7 % con la tirada a 500.000
         self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
     def test_texto_de_chance(self):
@@ -369,7 +369,7 @@ class CatalogoV2Tests(DbBase):
     def test_nada_nuevo_es_automatico(self):
         auto = {c[0] for c in wdb.CATALOG if c[5]}
         self.assertEqual(auto, {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
-                                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount"})   # pedidos explícitamente
+                                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount", "shop_discount_30"})   # pedidos explícitamente
 
     def test_descripciones_y_nombres_cortos(self):
         for c in wdb.CATALOG:

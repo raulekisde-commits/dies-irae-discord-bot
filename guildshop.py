@@ -92,13 +92,25 @@ class DiscountTicketView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Usar ticket de descuento", style=discord.ButtonStyle.success, custom_id="gshop:ticket_use", emoji="🎟️")
+    @discord.ui.button(label="Usar ticket 20%", style=discord.ButtonStyle.success, custom_id="gshop:ticket_use", emoji="🎟️")
     async def use(self, interaction: discord.Interaction, button):
-        await self.cog.on_discount_choice(interaction, True)
+        await self.cog.on_discount_choice(interaction, "shop_discount")
+
+    @discord.ui.button(label="Usar ticket 30%", style=discord.ButtonStyle.success, custom_id="gshop:ticket_use30", emoji="🎟️")
+    async def use30(self, interaction: discord.Interaction, button):
+        await self.cog.on_discount_choice(interaction, "shop_discount_30")
 
     @discord.ui.button(label="No usar", style=discord.ButtonStyle.secondary, custom_id="gshop:ticket_skip")
     async def skip(self, interaction: discord.Interaction, button):
-        await self.cog.on_discount_choice(interaction, False)
+        await self.cog.on_discount_choice(interaction, None)
+
+    def only(self, owned) -> "DiscountTicketView":
+        """Deja solo los botones de los tickets que tiene el comprador (los callbacks siguen por custom_id)."""
+        keep = {"gshop:ticket_skip"} | {"gshop:ticket_use" if k == "shop_discount" else "gshop:ticket_use30" for k in owned}
+        for item in list(self.children):
+            if getattr(item, "custom_id", None) not in keep:
+                self.remove_item(item)
+        return self
 
 
 class ConfirmSaleView(discord.ui.View):
@@ -464,32 +476,32 @@ class GuildShopCog(commands.Cog):
     # ---------- ticket de descuento (carta de Wujupón) ----------
     async def _offer_discount_ticket(self, channel, buyer):
         try:
-            n = await self.run(gdb.discount_cards_available, buyer.id)
-            if n <= 0:
+            owned = await self.run(gdb.discount_cards_available, buyer.id)
+            if not owned:
                 return
-            pct = gdb.format_pct(gdb.TICKET_DISCOUNT_BP)
-            await channel.send(f"🎟️ {buyer.mention}, tenés **{n}** ticket(s) de descuento de Wujupón. ¿Querés usar uno en esta compra?\n"
-                               f"El descuento pasa de **{gdb.format_pct(gdb.DEFAULT_DISCOUNT_BP)}** a **{pct}** sobre los primeros "
-                               f"**{eco.format_amount(gdb.TICKET_CAP)}** de la compra. "
-                               "Si el ticket se cierra sin venta, la carta vuelve a tu inventario.",
-                               view=DiscountTicketView(self), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            lines = "\n".join(f"• **{gdb.ticket_label(k)}** — tenés {n}" for k, n in sorted(owned.items()))
+            await channel.send(f"🎟️ {buyer.mention}, tenés tickets de descuento de Wujupón. ¿Querés usar uno en esta compra?\n{lines}\n"
+                               f"Reemplaza el **{gdb.format_pct(gdb.DEFAULT_DISCOUNT_BP)}** normal hasta ese monto; lo que pase sigue al "
+                               f"{gdb.format_pct(gdb.DEFAULT_DISCOUNT_BP)}. Si el ticket se cierra sin venta, la carta vuelve a tu inventario.",
+                               view=DiscountTicketView(self).only(owned),
+                               allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         except Exception:
             traceback.print_exc()
 
-    async def on_discount_choice(self, interaction: discord.Interaction, use: bool):
+    async def on_discount_choice(self, interaction: discord.Interaction, prize_key: Optional[str]):
         ticket = await self.run(gdb.get_ticket_by_channel, interaction.channel.id)
         if ticket is None or ticket.status != "open":
             return await _reply(interaction, "ℹ️ Este ticket ya fue cerrado o vendido.")
         if interaction.user.id != ticket.buyer_id:
             return await _reply(interaction, "❌ Solo el comprador puede elegir si usa su ticket de descuento.")
-        if not use:
+        if not prize_key:
             return await self._finish_msg(interaction, "Sin ticket de descuento: la compra va con el descuento normal.", view=None)
-        status = await self.run(gdb.attach_discount_card, ticket.id, interaction.user.id)
+        status = await self.run(gdb.attach_discount_card, ticket.id, interaction.user.id, prize_key)
         texts = {
-            "ok": f"🎟️ {interaction.user.mention} usa un **ticket de descuento**: {gdb.format_pct(gdb.TICKET_DISCOUNT_BP)} sobre los primeros "
-                  f"{eco.format_amount(gdb.TICKET_CAP)}. El Seller no tiene que cargar el descuento: lo calcula el bot.",
+            "ok": f"🎟️ {interaction.user.mention} usa un **ticket de descuento de {gdb.ticket_label(prize_key)}**. "
+                  "El Seller no tiene que cargar el descuento: lo calcula el bot.",
             "already": "ℹ️ Este ticket ya tiene un ticket de descuento aplicado.",
-            "none": "❌ Ya no tenés tickets de descuento disponibles.",
+            "none": "❌ Ya no tenés ese ticket de descuento.",
             "pending": "❌ Ya hay una venta esperando confirmación. Que el Seller la cancele y volvé a tocar el botón.",
             "closed": "ℹ️ Este ticket ya fue cerrado o vendido.",
         }
@@ -567,9 +579,10 @@ class GuildShopCog(commands.Cog):
             gross, bp, net = gdb.build_offer(total_text, discount_text)
         except gdb.ShopError as exc:
             return await _reply(interaction, f"❌ {exc}")
-        uses_card = bool(ticket.wjp_card_id)
-        if uses_card:                            # ticket de descuento: el bot calcula el descuento (20 % hasta 50M, 10 % el resto)
-            bp, net = gdb.offer_with_ticket(gross)
+        card_prize = await self.run(gdb.ticket_card_prize, ticket.id) if ticket.wjp_card_id else None
+        uses_card = card_prize is not None
+        if uses_card:                            # ticket de descuento: el bot calcula el descuento (su % hasta su tope, 10 % el resto)
+            bp, net = gdb.offer_with_ticket(gross, card_prize)
         if currency == "wuju":
             if await self.run(eco.is_frozen, ticket.buyer_id):
                 return await _reply(interaction, f"🧊 El balance de <@{ticket.buyer_id}> está congelado (tiene un ticket de Cobrar balance abierto). No se hizo ningún cambio.")
@@ -585,8 +598,7 @@ class GuildShopCog(commands.Cog):
         emb.add_field(name="Descuento", value=gdb.format_pct(bp), inline=True)
         emb.add_field(name="A cobrar", value=f"**{self.money_of(currency, net)}**", inline=True)
         if uses_card:
-            emb.add_field(name="🎟️ Ticket de descuento", value=f"{gdb.format_pct(gdb.TICKET_DISCOUNT_BP)} sobre los primeros "
-                                                              f"{eco.format_amount(gdb.TICKET_CAP)} (el resto al "
+            emb.add_field(name="🎟️ Ticket de descuento", value=f"{gdb.ticket_label(card_prize)} (el resto al "
                                                               f"{gdb.format_pct(gdb.DEFAULT_DISCOUNT_BP)}). Se usa al confirmar.", inline=False)
         if currency == "wuju":
             emb.add_field(name="Se descuenta del balance del comprador", value="Al confirmar se le restan estos Wuju Coins.", inline=False)
