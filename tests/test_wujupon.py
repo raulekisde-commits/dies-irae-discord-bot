@@ -893,6 +893,42 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual(i.deleted, 1)
         self.assertEqual(self.feedch.sent, [])
 
+    def test_pausa_solo_admin_y_bloquea_compra_tirada_y_canje(self):
+        run(self.cog.publish_panel(self.inter(self.council)))
+        panel = self.panelch.sent[-1]
+        i = self.inter(self.council)
+        run(self.cog.pause.callback(self.cog, i, True, None))
+        self.assertIn("Solo el dueño", i.text)
+        self.assertIsNone(wdb.get_setting(self.db, "paused"))
+        i = self.inter(self.admin)
+        run(self.cog.pause.callback(self.cog, i, True, "Mantenimiento"))
+        self.assertIn("pausado", i.text)
+        self.assertIn("PAUSADO", panel.embeds[0].title)
+        self.fund(self.alice, wdb.DEFAULT_PRICE * 2)
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="wuju_100k", reason="t")
+        for action in (lambda i: self.cog.do_buy(i, "1"), self.cog.do_spin, self.cog.open_buy,
+                       lambda i: self.cog.start_redeem(i, cid), lambda i: self.cog.do_redeem(i, cid, "")):
+            i = self.inter(self.alice)
+            run(action(i))
+            self.assertIn("pausado", i.text)
+            self.assertIn("Mantenimiento", i.text)
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 1)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")
+        self.assertEqual(eco.get_balance(self.db, self.alice.id), wdb.DEFAULT_PRICE * 2)
+        # el inventario se puede ver igual
+        i = self.inter(self.alice)
+        run(self.cog.show_inventory(i))
+        self.assertIn("Inventario", i.response.sent[0][1]["embed"].title)
+        # reanudar
+        i = self.inter(self.admin)
+        run(self.cog.pause.callback(self.cog, i, False, None))
+        self.assertIn("reanudado", i.text)
+        self.assertNotIn("PAUSADO", panel.embeds[0].title)
+        i = self.inter(self.alice)
+        run(self.cog.do_spin(i))
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 0)
+
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")
         emb = run(self.ecog.bal_embed(self.alice))
