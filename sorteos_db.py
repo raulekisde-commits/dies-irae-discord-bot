@@ -67,6 +67,7 @@ class Giveaway:
     auto_role: bool = False                        # anota solo a todos los que tengan el rol (al crear y de nuevo al sortear)
     bal: int = 0                                   # si es > 0, balance que se acredita a CADA ganador al sortear
     role_id: Optional[int] = None                 # si está, solo participan (y pueden ganar) quienes tengan ese rol
+    spins: int = 0                                 # si es > 0, tiradas de Wujupón que recibe CADA ganador al sortear
 
 
 def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
@@ -87,6 +88,7 @@ def init_schema(db_path: str) -> None:
         _ensure_column(conn, "giveaways", "role_id", "INTEGER")
         _ensure_column(conn, "giveaways", "bal", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "giveaways", "auto_role", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "giveaways", "spins", "INTEGER NOT NULL DEFAULT 0")
         with write_tx(conn):               # un reclamo sin resultado guardado no dejó nada hecho: se puede reclamar de nuevo
             conn.execute("UPDATE giveaways SET state = 'open' WHERE state = 'drawing'")
     finally:
@@ -105,18 +107,21 @@ def _build(conn, r) -> Giveaway:
                     [int(w) for w in json.loads(r["winners_json"] or "[]")], entrants,
                     bool(r["auto_role"]) if "auto_role" in r.keys() else False,
                     int(r["bal"] or 0) if "bal" in r.keys() else 0,
-                    int(r["role_id"]) if "role_id" in r.keys() and r["role_id"] else None)
+                    int(r["role_id"]) if "role_id" in r.keys() and r["role_id"] else None,
+                    int(r["spins"] or 0) if "spins" in r.keys() else 0)
 
 
 def create(db_path: str, *, message_id: int, prize: str, end_at: datetime, channel_id: int, creator_id: int, guild_id: int,
-           winners_count: int = 1, role_id: Optional[int] = None, bal: int = 0, auto_role: bool = False) -> Giveaway:
+           winners_count: int = 1, role_id: Optional[int] = None, bal: int = 0, auto_role: bool = False,
+           spins: int = 0) -> Giveaway:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            conn.execute("INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count, state, role_id, bal, auto_role) "
-                         "VALUES (?,?,?,?,?,?,?, 'open', ?, ?, ?)",
+            conn.execute("INSERT INTO giveaways(message_id, prize, end_at, channel_id, creator_id, guild_id, winners_count, state, role_id, bal, auto_role, spins) "
+                         "VALUES (?,?,?,?,?,?,?, 'open', ?, ?, ?, ?)",
                          (message_id, prize, end_at.astimezone(timezone.utc).isoformat(), channel_id, creator_id, guild_id,
-                          max(1, min(MAX_WINNERS, int(winners_count))), int(role_id) if role_id else None, max(0, int(bal or 0)), 1 if (auto_role and role_id) else 0))
+                          max(1, min(MAX_WINNERS, int(winners_count))), int(role_id) if role_id else None, max(0, int(bal or 0)), 1 if (auto_role and role_id) else 0,
+                          max(0, int(spins or 0))))
             return _build(conn, conn.execute("SELECT * FROM giveaways WHERE message_id = ?", (message_id,)).fetchone())
     finally:
         conn.close()

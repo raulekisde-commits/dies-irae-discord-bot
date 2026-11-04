@@ -96,6 +96,8 @@ class SorteosCog(commands.Cog):
                             color=discord.Color.gold() if not finished else discord.Color.dark_grey())
         emb.add_field(name="🎁 Premio", value=f"`{g.prize}`", inline=False)
         emb.add_field(name="🏆 Ganadores", value=str(g.winners_count), inline=True)
+        if g.spins:
+            emb.add_field(name="🎰 Tiradas de Wujupón por ganador", value=str(g.spins), inline=True)
         if g.bal:
             emb.add_field(name="💰 Balance por ganador", value=f"`{eco.format_amount(g.bal)}`", inline=True)
         if g.role_id:
@@ -127,11 +129,12 @@ class SorteosCog(commands.Cog):
                            ganadores=f"Cantidad de ganadores (1 a {sdb.MAX_WINNERS}). Por defecto 1",
                            rol="(Opcional) Si lo ponés, solo pueden anotarse y ganar quienes tengan este rol",
                            anotar_rol="Con «rol»: anota solo a todos los que tengan ese rol (no hace falta tocar el botón)",
-                           bal="(Opcional) Balance que se le acredita a cada ganador al sortear (ej: 5.000.000 o 5m)")
+                           bal="(Opcional) Balance que se le acredita a cada ganador al sortear (ej: 5.000.000 o 5m)",
+                           tiradas="(Opcional) Total de tiradas de Wujupón a repartir entre los ganadores (ej: 5 tiradas y 5 ganadores = 1 c/u)")
     @app_commands.guild_only()
     async def sorteo(self, interaction: discord.Interaction, premio: str, tiempo: str,
                      ganadores: app_commands.Range[int, 1, sdb.MAX_WINNERS] = 1, rol: Optional[discord.Role] = None, bal: Optional[str] = None,
-                     anotar_rol: bool = False):
+                     anotar_rol: bool = False, tiradas: Optional[app_commands.Range[int, 1, 1000]] = None):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await _say(interaction, "❌ Este comando solo funciona dentro del servidor.")
         if not self._can_create(interaction.user):
@@ -154,11 +157,17 @@ class SorteosCog(commands.Cog):
                 bal_amount = eco.parse_amount_short(bal)
             except eco.AmountError as exc:
                 return await _say(interaction, f"❌ Balance inválido: {exc}")
+        spins_each = 0
+        if tiradas:
+            if int(tiradas) % int(ganadores):
+                return await _say(interaction, f"❌ Las **{tiradas}** tiradas tienen que repartirse en partes iguales entre los "
+                                               f"**{ganadores}** ganadores (ej: 5 tiradas y 5 ganadores = 1 cada uno).")
+            spins_each = int(tiradas) // int(ganadores)
         end_at = datetime.now(timezone.utc) + timedelta(hours=h, minutes=m)
         await interaction.response.defer(ephemeral=True)
         role_id = rol.id if rol is not None else None
         draft = sdb.Giveaway(0, premio.strip(), end_at, interaction.channel.id, interaction.user.id, interaction.guild.id, int(ganadores), "open",
-                             bal=bal_amount, role_id=role_id)
+                             bal=bal_amount, role_id=role_id, spins=spins_each)
         try:
             msg = await interaction.channel.send(embed=self.embed(draft), view=GiveawayJoinView(self))
         except Exception:
@@ -166,7 +175,8 @@ class SorteosCog(commands.Cog):
             return await _say(interaction, "❌ No pude publicar el sorteo. Revisá que el bot pueda enviar mensajes en este canal.")
         try:
             await self.run(sdb.create, message_id=msg.id, prize=draft.prize, end_at=end_at, channel_id=interaction.channel.id,
-                           creator_id=interaction.user.id, guild_id=interaction.guild.id, winners_count=int(ganadores), role_id=role_id, bal=bal_amount, auto_role=bool(anotar_rol))
+                           creator_id=interaction.user.id, guild_id=interaction.guild.id, winners_count=int(ganadores), role_id=role_id, bal=bal_amount, auto_role=bool(anotar_rol),
+                           spins=spins_each)
         except Exception:
             traceback.print_exc()
             try:
@@ -182,6 +192,7 @@ class SorteosCog(commands.Cog):
         await _say(interaction, f"✅ Sorteo creado. Premio: `{draft.prize}` · Ganadores: {ganadores}"
                              + (f" · Solo con el rol {rol.name}" if rol is not None else "")
                              + (f" · Balance por ganador: {eco.format_amount(bal_amount)}" if bal_amount else "")
+                             + (f" · Tiradas de Wujupón por ganador: {spins_each}" if spins_each else "")
                              + (f" · Anotados con el rol: {auto_n}" if anotar_rol else "") + f" · Termina: <t:{int(end_at.timestamp())}:R>")
 
     async def auto_enroll(self, message_id: int, guild: discord.Guild, role_id: int) -> int:
@@ -347,6 +358,16 @@ class SorteosCog(commands.Cog):
                     except Exception:
                         traceback.print_exc()
             text += f"\n💰 Se acreditó **{eco.format_amount(g.bal)}** a cada ganador."
+        if g.spins and g.winners:
+            import wujupon_db as wdb
+            try:                                               # idempotente por ganador: un reintento no las vuelve a dar
+                await asyncio.to_thread(wdb.gift_spins_many, self.db_path, actor_id=g.creator_id, user_ids=g.winners,
+                                        count=g.spins, request_key=f"sorteo:{g.message_id}:tiradas",
+                                        reason=f"Premio del sorteo #{g.message_id}")
+            except Exception:
+                traceback.print_exc()
+                return False
+            text += f"\n🎰 Cada ganador recibió **{g.spins}** tirada(s) de Wujupón."
         try:
             msg = await ch.fetch_message(g.message_id)
             await msg.edit(embed=self.embed(g, entrants=len(g.entrants), winners=g.winners or None, finished=True, note=note),

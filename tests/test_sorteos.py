@@ -189,6 +189,30 @@ class BalTests(SorteoBase):
         self.assertEqual(self.balance(self.alice), 0)
 
 
+class TiradasTests(SorteoBase):
+    def create_t(self, winners, tiradas):
+        i = self.inter(self.staff)
+        run(self.cog.sorteo.callback(self.cog, i, "Tiradas", "1:00", winners, None, None, False, tiradas))
+        return i
+
+    def test_reparte_en_partes_iguales_una_sola_vez(self):
+        import wujupon_db as wdb
+        self.assertIn("Tiradas de Wujupón por ganador: 1", self.create_t(2, 2).text)
+        m = self.msg()
+        self.assertEqual(sdb.get(self.db, m.id).spins, 1)
+        self.join(self.alice); self.join(self.bob)
+        self.past(m.id)
+        run(self.cog.process_due())
+        self.assertEqual((wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), (1, 1))
+        self.assertIn("tirada(s) de Wujupón", [x.content for x in self.panelch.sent if x.content][-1])
+        run(self.cog.process_due())
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 1)              # no se vuelve a dar
+
+    def test_tienen_que_repartirse_iguales(self):
+        self.assertIn("partes iguales", self.create_t(2, 5).text)
+        self.assertEqual(len([m for m in self.panelch.sent if m.embeds]), 0)
+
+
 class JoinTests(SorteoBase):
     def test_member_required(self):
         self.create()
