@@ -138,8 +138,8 @@ CATALOG = [
     ("shop_discount", "🎟️ Ticket de descuento 20 % (Guild Shop)", "epic", 300, "Bot", "shop_ticket", 0, 2_000_000, "silver", 0,
      "En una compra del Guild Shop el descuento pasa de 10 % a 20 % hasta 20M. Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
     ("duel_1v1", "Duelo 1v1 especial", "epic", 1300, "Bot", None, 0, 0, "", 1,
-     "Retás a alguien del Top 10 de apostado; se anuncia con @here. Tiene 24 h para aceptar o pierde el 5 % de su balance. "
-     "Tope 200M." + SHIELD_NOTE, 0),
+     "Retás a alguien del Top 10 de apostado (hasta 100M); se anuncia con @here. Tiene 24 h para aceptar: si rechaza o no "
+     "responde, te paga el 5 % de la apuesta." + SHIELD_NOTE, 0),
     ("ho_house", "Casa del HO", "epic", 400, "Staff", None, 0, 0, "", 0,
      "Reclamás una casa del HO.", 0),
     ("lootsplit_remove", "Sacar del lootsplit", "epic", 700, "Staff", None, 0, 0, "", 1,
@@ -254,6 +254,12 @@ EFFECT_HANDLERS = {
 # Cartas de CTA (wujupon_cta): las dos primeras se usan solas al anotarse; la de Staff se canjea.
 CTA_HANDLERS = {"flex_cta": "cta:free", "party1_slot": "cta:p1", "party_switch": "cta:staff"}
 EFFECT_HANDLERS.update(CTA_HANDLERS)
+# Grupo C: coinflip con tope (0 = sin límite) y duelo especial
+EFFECT_HANDLERS.update({"undo_coinflip": "efx:coinflip:10000000", "coinflip_15m": "efx:coinflip:15000000",
+                        "coinflip_20m": "efx:coinflip:20000000", "coinflip_nolimit": "efx:coinflip:0", "duel_1v1": "efx:duel"})
+DUEL_MAX = 100_000_000
+DUEL_PENALTY_BP = 500              # 5 % de la apuesta
+DUEL_HOURS = 24
 CATALOG = [c[:5] + (EFFECT_HANDLERS.get(c[0], c[5]),) + c[6:] for c in CATALOG]
 
 
@@ -265,7 +271,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 7
+CATALOG_VERSION = 8
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -278,6 +284,7 @@ CATALOG_CHANGES = {
         "duel_1v1", "lootsplit_remove", "ava_replace", "shop_discount"),
     6: ("shop_discount", "shop_discount_30", "guild_desc_1d", "staff_build"),
     7: ("bad_wuju_100k", "bad_wuju_300k", "bad_embo_15", "bad_embo_30"),   # pueden dejar el balance en negativo
+    8: ("duel_1v1",),                                                       # tope 100M y penalidad del 5 % de la apuesta
 }
 
 SCHEMA = """

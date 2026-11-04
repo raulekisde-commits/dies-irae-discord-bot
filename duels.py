@@ -111,9 +111,16 @@ class DuelsCog(commands.Cog):
         emb.description = (f"<@{d.challenger_id}> retó a <@{d.challenged_id}> por **{self.money(d.stake)}**.\n"
                            f"<@{d.challenger_id}> es **cara** y <@{d.challenged_id}> es **cruz**: se tira la moneda y **el que sale se queda con todo**.")
         emb.add_field(name="💰 Pozo si acepta", value=self.money(d.stake * 2), inline=True)
+        if d.penalty:
+            emb.add_field(name="⚖️ Si rechaza o no responde", value=f"le paga {self.money(d.penalty)} al retador", inline=True)
         emb.add_field(name="⏳ Vence", value=f"<t:{int(d.ends_at)}:R> (<t:{int(d.ends_at)}:T>)", inline=True)
         emb.set_footer(text=f"Duelo #{d.id} · solo {'la persona retada'} puede responder")
         return emb
+
+    def _penalty_text(self, d: Optional[ddb.Duel]) -> str:
+        if d is None or not d.penalty:
+            return ""
+        return f"\n⚖️ Duelo especial: <@{d.challenged_id}> le pagó **{self.money(d.penalty_paid)}** de penalidad a <@{d.challenger_id}>."
 
     def closed_embed(self, d: ddb.Duel, text: str, color: int) -> discord.Embed:
         emb = discord.Embed(title=f"⚔️ Duelo 1v1 — {text}", color=color)
@@ -262,7 +269,8 @@ class DuelsCog(commands.Cog):
             await interaction.response.edit_message(embed=self.closed_embed(res.duel, "rechazado", RED), view=None)
             ch = interaction.channel
             if ch is not None:
-                await ch.send(taunt(DECLINE_TAUNTS, d) + "\n_Se devolvió la apuesta._", allowed_mentions=both_mentions(d))
+                await ch.send(taunt(DECLINE_TAUNTS, d) + "\n_Se devolvió la apuesta._" + self._penalty_text(res.duel),
+                              allowed_mentions=both_mentions(d))
         except Exception:
             traceback.print_exc()
             await _say(interaction, "❌ Ocurrió un error.")
@@ -280,7 +288,8 @@ class DuelsCog(commands.Cog):
                 if ch is not None and d.message_id:
                     msg = await ch.fetch_message(d.message_id)
                     await msg.edit(embed=self.closed_embed(d, "sin respuesta", GREY), view=None)
-                    await ch.send(taunt(TIMEOUT_TAUNTS, d) + "\n_Se devolvió la apuesta._", allowed_mentions=both_mentions(d))
+                    await ch.send(taunt(TIMEOUT_TAUNTS, d) + "\n_Se devolvió la apuesta._" + self._penalty_text(d),
+                                  allowed_mentions=both_mentions(d))
             except Exception as exc:
                 print(f"ℹ️ Duelos: no pude cerrar el panel #{d.id}: {exc!r}")
         return done

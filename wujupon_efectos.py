@@ -16,6 +16,10 @@ from discord.ext import commands, tasks
 
 import casino_db
 import deposits_db
+import duels_db
+import economy_db as eco
+import games_db
+import stats_db
 import wujupon_cta
 import efectos_db as edb
 import wujupon_db as wdb
@@ -127,6 +131,38 @@ class StaffCardView(discord.ui.View):
         await interaction.response.send_modal(StaffNumberModal(self.cog, self.card_id, self.run_id, staff))
 
 
+class AmountModal(discord.ui.Modal, title="Cantidad a apostar"):
+    cantidad = discord.ui.TextInput(label="Cantidad", placeholder="10m", max_length=20)
+
+    def __init__(self, cog: "EfectosCog", card_id: int, limit: int, target):
+        super().__init__()
+        self.cog, self.card_id, self.limit, self.target = cog, card_id, limit, target
+        self.cantidad.label = f"Cantidad (máximo {eco.format_amount(limit)})" if limit else "Cantidad (sin límite)"
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.play_card(interaction, self.card_id, self.limit, str(self.cantidad.value), self.target)
+
+
+class DuelTargetView(discord.ui.View):
+    def __init__(self, cog: "EfectosCog", owner_id: int, card_id: int):
+        super().__init__(timeout=120)
+        self.cog, self.owner_id, self.card_id = cog, owner_id, card_id
+        sel = discord.ui.UserSelect(placeholder="Elegí a quién retás", min_values=1, max_values=1)
+        sel.callback = lambda inter, s=sel: self._pick(inter, s.values[0] if s.values else None)
+        self.add_item(sel)
+
+    async def interaction_check(self, interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Esto no es tuyo.")
+            return False
+        return True
+
+    async def _pick(self, interaction, target):
+        if target is None:
+            return await _say(interaction, "❌ Elegí a alguien.")
+        await interaction.response.send_modal(AmountModal(self.cog, self.card_id, wdb.DUEL_MAX, target))
+
+
 class EfectosCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
@@ -212,6 +248,14 @@ class EfectosCog(commands.Cog):
         action, value = prize.effect
         if action in ("casino_open", "casino_close"):
             return await self._casino(interaction, card, prize, action == "casino_open")
+        if action == "coinflip":
+            return await interaction.response.send_modal(AmountModal(self, card.id, int(value or 0), None))
+        if action == "duel":
+            if not await self.run(wdb.get_setting, "duel_channel"):
+                return await _say(interaction, "❌ Todavía no hay canal de anuncios para los duelos (`/wujupon-efectos canal-duelos`). "
+                                               "Tu carta no se gastó.")
+            return await _say(interaction, f"⚔️ **{prize.name}**: elegí a quién retás (tiene que estar en el Top 10 de apostado).",
+                              view=DuelTargetView(self, interaction.user.id, card.id))
         if action in edb.TARGETED:
             if action in ROLE_SETTING and await self._role(action) is None:
                 return await _say(interaction, "❌ Todavía no están configurados los roles de mute (`/wujupon-efectos roles-mute`). "
@@ -321,6 +365,109 @@ class EfectosCog(commands.Cog):
         await self.announce(f"🎴 <@{interaction.user.id}> puso a {staff.mention} en la {label} de la CTA #{run_id}.", staff.id,
                             f"🎴 {interaction.user.display_name} usó una carta de Wujupón: te toca jugar en la {label} de la CTA #{run_id}.")
 
+    # ---------------- coinflip con tope y duelo especial ----------------
+    async def play_card(self, interaction: discord.Interaction, card_id: int, limit: int, amount_text: str, target=None):
+        """Coinflip (target None) o duelo especial. Si algo falla, la carta no se gasta."""
+        card = await self.run(wdb.get_card, card_id)
+        if card is None or card.user_id != interaction.user.id or card.status != "available":
+            return await _say(interaction, "❌ Esa carta ya no está disponible.")
+        prize = await self.run(wdb.get_prize, card.prize_key)
+        try:
+            amount = eco.parse_amount_short(str(amount_text).strip())
+        except eco.AmountError as exc:
+            return await _say(interaction, f"❌ {exc} Tu carta no se gastó.")
+        top = limit or eco.MAX_AMOUNT
+        if not 1 <= amount <= top:
+            return await _say(interaction, f"❌ El máximo con esta carta es {eco.format_amount(top)}. Tu carta no se gastó.")
+        me = interaction.user
+        ids = (me.id,) if target is None else (me.id, target.id)
+        blocked = await self.run(casino_db.block_reason, self.guild_id, *ids)
+        if blocked:
+            return await _say(interaction, f"{blocked}\nTu carta no se gastó.")
+        if not await self.run(edb.reserve_card, card_id, me.id):
+            return await _say(interaction, "❌ Esa carta ya no está disponible.")
+        try:
+            if target is None:
+                await self._card_coinflip(interaction, card_id, prize, amount, top)
+            else:
+                await self._card_duel(interaction, card_id, prize, amount, target)
+        except Exception:
+            traceback.print_exc()
+            await self.run(edb.release_card, card_id)
+            await _say(interaction, "❌ Ocurrió un error. Tu carta no se gastó.")
+
+    async def _card_coinflip(self, interaction, card_id: int, prize, amount: int, top: int):
+        games = self.bot.get_cog("GamesCog")
+        cid = await self.run(eco.get_command_channel, "coinflip")
+        channel = (self.bot.get_channel(int(cid)) if cid else None) or interaction.channel
+        if games is None or channel is None:
+            await self.run(edb.release_card, card_id)
+            return await _say(interaction, "❌ El casino no está disponible. Tu carta no se gastó.")
+        created = await self.run(games_db.create_game, kind="coinflip", guild_id=self.guild_id, channel_id=channel.id,
+                                 creator_id=interaction.user.id, stake=amount, max_stake=top)
+        if not created.ok:
+            await self.run(edb.release_card, card_id)
+            if created.code == "live":
+                return await _say(interaction, "❌ Ya hay un coinflip en curso: esperá a que termine. Tu carta no se gastó.")
+            return await _say(interaction, f"❌ No tenés saldo suficiente ({eco.format_amount(created.balance)}). Tu carta no se gastó.")
+        game = created.game
+        from games import CoinAcceptView
+        try:
+            msg = await channel.send(f"🎴 Coinflip de carta de Wujupón (**{prize.name}**)", embed=games.panel_embed(game),
+                                     view=CoinAcceptView(games), allowed_mentions=NO_MENTIONS)
+        except Exception:
+            await self.run(games_db.abort_unpublished, game.id)
+            await self.run(edb.release_card, card_id)
+            return await _say(interaction, "❌ No pude publicar el coinflip. Se te devolvió la entrada y la carta.")
+        await self.run(games_db.set_message, game.id, msg.id)
+        await self.run(edb.bind_game, card_id, game.id, interaction.user.id)
+        await _say(interaction, f"🪙 Coinflip por **{eco.format_amount(amount)}** publicado en {channel.mention}. Si nadie lo acepta, "
+                                "se te devuelve la entrada y la carta.")
+
+    async def _card_duel(self, interaction, card_id: int, prize, amount: int, target):
+        me = interaction.user
+        top10 = {s.user_id for s in (await self.run(stats_db.top_by, "wagered"))[:10]}
+        problem = None
+        if target.bot or target.id == me.id:
+            problem = "No podés retar a un bot ni a vos mismo."
+        elif target.id not in top10:
+            problem = f"{target.mention} no está en el Top 10 de los que más apostaron."
+        elif amount > wdb.DUEL_MAX:
+            problem = f"El máximo del duelo especial es {eco.format_amount(wdb.DUEL_MAX)}."
+        elif await self.run(edb.is_immune, target.id) or await self.run(edb.active_until, target.id, "shield") is not None:
+            problem = f"{target.mention} es inmune o tiene escudo."
+        ch = None
+        if problem is None:
+            cid = await self.run(wdb.get_setting, "duel_channel")
+            ch = self.bot.get_channel(int(cid)) if cid else None
+            duels = self.bot.get_cog("DuelsCog")
+            if ch is None or duels is None:
+                problem = "El canal de duelos o el módulo de duelos no está disponible."
+        if problem:
+            await self.run(edb.release_card, card_id)
+            return await _say(interaction, f"❌ {problem} Tu carta no se gastó.")
+        penalty = amount * wdb.DUEL_PENALTY_BP // 10000
+        res = await self.run(duels_db.create_duel, guild_id=self.guild_id, channel_id=ch.id, challenger_id=me.id,
+                             challenged_id=target.id, stake=amount, duration=wdb.DUEL_HOURS * 3600, penalty=penalty)
+        if res.code != "ok":
+            await self.run(edb.release_card, card_id)
+            who = "No tenés" if res.code == "funds" else f"{target.mention} no tiene"
+            return await _say(interaction, f"❌ {who} saldo suficiente ({eco.format_amount(res.balance)}). Tu carta no se gastó.")
+        duel = res.duel
+        from duels import DuelView
+        try:
+            msg = await ch.send(f"@here ⚔️ **Duelo 1v1 especial**: {me.mention} retó a {target.mention} por "
+                                f"**{eco.format_amount(amount)}**. Tiene 24 h para aceptar; si rechaza o no responde, le paga "
+                                f"**{eco.format_amount(penalty)}**.", embed=duels.panel_embed(duel), view=DuelView(duels),
+                                allowed_mentions=discord.AllowedMentions(everyone=True, users=[target]))
+        except Exception:
+            await self.run(duels_db.abort_unpublished, duel.id)
+            await self.run(edb.release_card, card_id)
+            return await _say(interaction, "❌ No pude publicar el duelo. Se te devolvió la apuesta y la carta.")
+        await self.run(duels_db.set_message, duel.id, msg.id)
+        await self.run(edb.finish_reserved, card_id, me.id, prize.key, f"Duelo #{duel.id} contra {target.id} por {amount}")
+        await _say(interaction, f"⚔️ Duelo publicado en {ch.mention}.")
+
     # ---------------- cartas malas ----------------
     async def apply_forced(self, card_id: int, user_id: int, prize: "wdb.Prize") -> str:
         """Aplica una carta mala recién salida. Devuelve el texto para el jugador."""
@@ -348,6 +495,7 @@ class EfectosCog(commands.Cog):
             for e in await self.run(edb.expire_due):
                 await self._set_role(e.user_id, e.kind, False)
             await self.run(wujupon_cta.settle)               # cartas de CTA reservadas: se consumen o vuelven al inventario
+            await self.run(edb.settle_games)                 # coinflips de cartas: jugado → se consume; sin rival → vuelve
         except Exception:
             traceback.print_exc()
 
@@ -419,6 +567,14 @@ class EfectosCog(commands.Cog):
             await self._set_role(e.user_id, e.kind, False)
         await _say(interaction, f"✅ Se cortaron {len(ended)} efecto(s) de {usuario.mention}." if ended
                    else f"ℹ️ {usuario.mention} no tenía efectos activos.")
+
+    @efx.command(name="canal-duelos", description="(Council) Canal de anuncios donde se publican los duelos 1v1 especiales (con @here)")
+    async def canal_duelos(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        if not await self._council(interaction):
+            return
+        target = canal or interaction.channel
+        await self.run(wdb.set_setting, "duel_channel", str(target.id))
+        await _say(interaction, f"⚔️ Los duelos especiales se publican en {target.mention} (con @here).")
 
     @efx.command(name="canal", description="(Council) Canal donde se anuncian los efectos que se usan contra otros")
     async def canal(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):

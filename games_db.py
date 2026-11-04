@@ -85,11 +85,13 @@ def set_panel_channel_id(db_path: str, kind: str, channel_id: int) -> None:
     eco.set_setting(db_path, panel_channel_key(kind), str(int(channel_id)))
 
 
-def validate_stake(amount: int) -> int:
+def validate_stake(amount: int, max_stake: Optional[int] = None) -> int:
+    """`max_stake`: tope distinto al normal (cartas de Wujupón «Coinflip hasta X»)."""
+    top = max_stake or MAX_STAKE
     if amount < 1:
         raise GameError("La cantidad tiene que ser mayor a 0.")
-    if amount > MAX_STAKE:
-        raise GameError(f"El máximo por entrada es {eco.format_amount(MAX_STAKE)}.")
+    if amount > top:
+        raise GameError(f"El máximo por entrada es {eco.format_amount(top)}.")
     return amount
 
 
@@ -215,12 +217,12 @@ class CreateResult:
 
 
 def create_game(db_path: str, *, kind: str, guild_id: int, channel_id: int, creator_id: int, stake: int,
-                now: Optional[float] = None, side: Optional[str] = None) -> CreateResult:
+                now: Optional[float] = None, side: Optional[str] = None, max_stake: Optional[int] = None) -> CreateResult:
     if kind not in KINDS:
         raise ValueError("tipo inválido")
     if side is not None and (kind != "coinflip" or side not in SIDES):
         raise GameError("El lado tiene que ser `cara` o `cruz` (y solo vale en el coinflip).")
-    validate_stake(stake)
+    validate_stake(stake, max_stake)
     now = time.time() if now is None else now
     conn = connect(db_path)
     try:

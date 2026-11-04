@@ -416,3 +416,84 @@ def tx_casino_changed(conn, opened: bool) -> None:
 
 def tx_balance_frozen(conn, user_id: int) -> bool:
     return tx_has(conn, user_id, "freeze_balance")
+
+
+# ============================================================
+# Coinflip con tope y duelo especial (grupo C)
+# ============================================================
+GAMES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS wjp_card_games (
+    card_id  INTEGER PRIMARY KEY,
+    game_id  INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL
+);
+"""
+
+
+def reserve_card(db_path: str, card_id: int, owner_id: int) -> bool:
+    """La carta queda reservada mientras se arma el juego (nadie la puede usar dos veces a la vez)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("UPDATE wjp_cards SET status = 'reserved', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'available'",
+                                (utcnow_iso(), card_id, owner_id)).rowcount == 1
+    finally:
+        conn.close()
+
+
+def release_card(db_path: str, card_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE wjp_cards SET status = 'available', updated_at = ? WHERE id = ? AND status = 'reserved'",
+                         (utcnow_iso(), card_id))
+            _safe(lambda: conn.execute("DELETE FROM wjp_card_games WHERE card_id = ?", (card_id,)), None)
+    finally:
+        conn.close()
+
+
+def finish_reserved(db_path: str, card_id: int, owner_id: int, prize_key: str, note: str) -> None:
+    """Carta reservada → usada (duelo creado / coinflip jugado), con registro."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("UPDATE wjp_cards SET status = 'consumed', updated_at = ? WHERE id = ? AND status = 'reserved'",
+                            (utcnow_iso(), card_id)).rowcount:
+                _record(conn, card_id, owner_id, prize_key, note)
+                _log(conn, owner_id, f"efx_{prize_key}", owner_id, f"card:{card_id}", note)
+    finally:
+        conn.close()
+
+
+def bind_game(db_path: str, card_id: int, game_id: int, owner_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        conn.executescript(GAMES_SCHEMA)
+        with write_tx(conn):
+            conn.execute("INSERT OR REPLACE INTO wjp_card_games(card_id, game_id, owner_id) VALUES (?,?,?)", (card_id, game_id, owner_id))
+    finally:
+        conn.close()
+
+
+def settle_games(db_path: str) -> List[Tuple[int, str]]:
+    """Coinflips de cartas ya terminados: si se jugó, la carta se consume; si nadie aceptó, vuelve al inventario."""
+    conn = connect(db_path)
+    out = []
+    try:
+        conn.executescript(GAMES_SCHEMA)
+        with write_tx(conn):
+            rows = _safe(lambda: conn.execute(
+                "SELECT b.card_id, b.owner_id, g.status, c.prize_key FROM wjp_card_games b JOIN games g ON g.id = b.game_id "
+                "JOIN wjp_cards c ON c.id = b.card_id WHERE g.status != 'open'").fetchall(), [])
+            now = utcnow_iso()
+            for r in rows:
+                played = r["status"] == "done"
+                conn.execute("UPDATE wjp_cards SET status = ?, updated_at = ? WHERE id = ? AND status = 'reserved'",
+                             ("consumed" if played else "available", now, r["card_id"]))
+                if played:
+                    _record(conn, int(r["card_id"]), int(r["owner_id"]), r["prize_key"], "Coinflip jugado")
+                conn.execute("DELETE FROM wjp_card_games WHERE card_id = ?", (r["card_id"],))
+                out.append((int(r["card_id"]), "consumed" if played else "released"))
+        return out
+    finally:
+        conn.close()
