@@ -374,6 +374,18 @@ CREATE TABLE IF NOT EXISTS wjp_assets (           -- imágenes de premios, subid
     uploaded_by INTEGER NOT NULL,
     uploaded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wjp_daily_roles (      -- tiradas gratis por día según el rol (se usa la mayor de sus roles)
+    role_id    INTEGER PRIMARY KEY,
+    spins      INTEGER NOT NULL,
+    updated_by INTEGER,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS wjp_daily_used (       -- tiradas gratis usadas por día UTC (lo no usado vence solo)
+    user_id INTEGER NOT NULL,
+    day     TEXT NOT NULL,
+    used    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+);
 CREATE TABLE IF NOT EXISTS wjp_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id   INTEGER NOT NULL,
@@ -937,6 +949,85 @@ def eco_balance(conn, user_id: int) -> int:
     return int(r["balance"]) if r else 0
 
 
+def gift_spins_many(db_path: str, *, actor_id: int, user_ids: List[int], count: int, request_key: str, reason: str) -> int:
+    """Regala (o quita) tiradas a varias personas en una sola transacción. Devuelve a cuántas se les aplicó.
+    Al quitar, a quien no tiene tantas se le deja en 0."""
+    if count == 0 or abs(count) > 1000:
+        raise WujuponError("La cantidad de tiradas tiene que estar entre 1 y 1000.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            done = 0
+            now = utcnow_iso()
+            for uid in dict.fromkeys(int(u) for u in user_ids):
+                key = f"{request_key}:{uid}"
+                if conn.execute("SELECT 1 FROM wjp_ops WHERE request_key = ?", (key,)).fetchone():
+                    continue
+                delta = count if count > 0 else -min(-count, _spins(conn, uid))
+                if delta:
+                    _add_spins(conn, uid, delta)
+                conn.execute("INSERT INTO wjp_ops(request_key, kind, user_id, actor_id, spins, cost, reason, created_at) "
+                             "VALUES (?,?,?,?,?,0,?,?)", (key, "gift", uid, actor_id, delta, reason, now))
+                done += 1
+            _log(conn, actor_id, "gift_spins_role" if count > 0 else "remove_spins_role", None, request_key,
+                 f"{count} × {done} personas · {reason}")
+            return done
+    finally:
+        conn.close()
+
+
+# ---------------- tiradas diarias gratis ----------------
+def _today() -> str:
+    return _day_start_iso()[:10]
+
+
+def set_daily_role(db_path: str, role_id: int, spins: int, actor_id: int) -> None:
+    """spins = 0 saca el rol de la lista."""
+    if not 0 <= spins <= 100:
+        raise WujuponError("Las tiradas diarias tienen que estar entre 0 y 100.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            if spins:
+                conn.execute("INSERT OR REPLACE INTO wjp_daily_roles(role_id, spins, updated_by, updated_at) VALUES (?,?,?,?)",
+                             (role_id, spins, actor_id, utcnow_iso()))
+            else:
+                conn.execute("DELETE FROM wjp_daily_roles WHERE role_id = ?", (role_id,))
+            _log(conn, actor_id, "daily_spins_role", None, f"role:{role_id}", str(spins))
+    finally:
+        conn.close()
+
+
+def list_daily_roles(db_path: str) -> List[Tuple[int, int]]:
+    conn = _open(db_path)
+    try:
+        return [(int(r["role_id"]), int(r["spins"])) for r in conn.execute("SELECT * FROM wjp_daily_roles ORDER BY spins DESC")]
+    finally:
+        conn.close()
+
+
+def _allowance(conn, role_ids) -> int:
+    ids = [int(r) for r in role_ids]
+    if not ids:
+        return 0
+    r = conn.execute(f"SELECT MAX(spins) FROM wjp_daily_roles WHERE role_id IN ({','.join('?' * len(ids))})", ids).fetchone()
+    return int(r[0] or 0)
+
+
+def _used_today(conn, user_id: int) -> int:
+    r = conn.execute("SELECT used FROM wjp_daily_used WHERE user_id = ? AND day = ?", (user_id, _today())).fetchone()
+    return int(r["used"]) if r else 0
+
+
+def free_spins_left(db_path: str, user_id: int, role_ids) -> int:
+    """Tiradas gratis que le quedan hoy (día UTC)."""
+    conn = _open(db_path)
+    try:
+        return max(0, _allowance(conn, role_ids) - _used_today(conn, user_id))
+    finally:
+        conn.close()
+
+
 def gift_spins(db_path: str, *, actor_id: int, user_id: int, count: int, request_key: str, reason: str) -> int:
     """Regala (count > 0) o quita (count < 0) tiradas. Devuelve las tiradas resultantes."""
     if count == 0 or abs(count) > 1000:
@@ -982,7 +1073,8 @@ def draw(prizes: List[Prize], rng=None) -> Tuple[Prize, int]:
     return prizes[-1], total
 
 
-def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Random] = None) -> PullResult:
+def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Random] = None, role_ids=()) -> PullResult:
+    """`role_ids`: roles de la persona, para las tiradas diarias gratis (se usan antes que las compradas)."""
     conn = _open(db_path)
     try:
         with write_tx(conn):
@@ -991,13 +1083,19 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                 pr = conn.execute("SELECT * FROM wjp_prizes WHERE key = ?", (prev["prize_key"],)).fetchone()
                 return PullResult("duplicate", _prize(pr), int(prev["card_id"]), int(prev["id"]), int(prev["weight"]),
                                   int(prev["total_weight"]), _spins(conn, user_id))
-            if _spins(conn, user_id) <= 0:
+            free = max(0, _allowance(conn, role_ids) - _used_today(conn, user_id))
+            if free <= 0 and _spins(conn, user_id) <= 0:
                 return PullResult("no_spins")
             prizes = [_prize(r) for r in conn.execute("SELECT * FROM wjp_prizes WHERE enabled = 1 ORDER BY sort").fetchall()]
             if not prizes:
                 return PullResult("empty")
             prize, total = draw(prizes, rng)
-            left = _add_spins(conn, user_id, -1)
+            if free > 0:                                # primero las gratis del día (lo que no se usa, vence)
+                conn.execute("INSERT INTO wjp_daily_used(user_id, day, used) VALUES (?,?,1) "
+                             "ON CONFLICT(user_id, day) DO UPDATE SET used = used + 1", (user_id, _today()))
+                left = _spins(conn, user_id)
+            else:
+                left = _add_spins(conn, user_id, -1)
             now = utcnow_iso()
             card_id = conn.execute("INSERT INTO wjp_cards(user_id, prize_key, status, source, created_at, updated_at) "
                                    "VALUES (?,?,'available','pull',?,?)", (user_id, prize.key, now, now)).lastrowid
