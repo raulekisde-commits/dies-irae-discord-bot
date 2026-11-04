@@ -1388,6 +1388,66 @@ def get_stats(db_path: str) -> Stats:
         conn.close()
 
 
+@dataclass
+class MoneyStats:
+    given: int          # lo que entregó Wujupón (cartas buenas)
+    removed: int        # lo que sacaron las cartas malas (positivo)
+    cards_given: int
+    cards_removed: int
+
+    @property
+    def net(self) -> int:
+        return self.given - self.removed
+
+
+def _since(days: Optional[int]) -> str:
+    if not days:
+        return ""
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
+
+
+def money_stats(db_path: str, days: Optional[int] = None) -> Tuple[MoneyStats, MoneyStats]:
+    """(Wuju Coins, embo) que movió Wujupón: lo dado por cartas buenas y lo quitado por cartas malas."""
+    conn = _open(db_path)
+    since = _since(days)
+    try:
+        def agg(table: str) -> MoneyStats:
+            rows = {r["kind"]: r for r in conn.execute(
+                f"SELECT kind, COALESCE(SUM(delta), 0) AS total, COUNT(*) AS n FROM {table} "
+                f"WHERE kind IN ('wujupon_prize', 'wujupon_penalty') AND created_at >= ? GROUP BY kind", (since,))}
+            g, b = rows.get("wujupon_prize"), rows.get("wujupon_penalty")
+            return MoneyStats(int(g["total"]) if g else 0, -int(b["total"]) if b else 0, int(g["n"]) if g else 0, int(b["n"]) if b else 0)
+        return agg("eco_movements"), agg("embo_movements")
+    finally:
+        conn.close()
+
+
+@dataclass
+class PrizeCostRow:
+    prize: Prize
+    count: int
+
+    @property
+    def total(self) -> int:
+        return self.count * self.prize.cost
+
+
+def delivered_prizes(db_path: str, days: Optional[int] = None) -> List[PrizeCostRow]:
+    """Premios entregados (canje automático o encargo completado), con su costo máximo de catálogo.
+    No incluye Wuju Coins ni embo (esos van en money_stats)."""
+    conn = _open(db_path)
+    since = _since(days)
+    try:
+        rows = conn.execute(
+            "SELECT p.*, COUNT(*) AS n FROM wjp_requests r JOIN wjp_prizes p ON p.key = r.prize_key "
+            "WHERE r.status IN ('auto', 'delivered') AND r.updated_at >= ? AND p.cost_currency NOT IN ('wuju', 'embo') "
+            "GROUP BY p.key ORDER BY p.cost * COUNT(*) DESC, COUNT(*) DESC", (since,)).fetchall()
+        return [PrizeCostRow(_prize(r), int(r["n"])) for r in rows]
+    finally:
+        conn.close()
+
+
 def silver_equivalent(by_currency: Dict[str, int]) -> int:
     """Wuju = silver 1:1, embo = 10.000. VAL no se convierte (se informa aparte)."""
     return (by_currency.get("wuju", 0) + by_currency.get("silver", 0) + by_currency.get("embo", 0) * EMBO_SILVER_VALUE)
