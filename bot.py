@@ -1736,8 +1736,8 @@ class RecruitView(discord.ui.View):
             await respond_ephemeral(interaction, f"✅ {reg_text}")
             try:
                 if roles_pending:
-                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}**. Falta que entre a la guild en el juego como "
-                                                   f"**{discord.utils.escape_markdown(nick)}**: recibe los roles automáticamente al aparecer adentro. ⚔️")
+                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️ Ya tiene sus roles; falta que entre "
+                                                   f"a la guild en el juego como **{discord.utils.escape_markdown(nick)}**.")
                 else:
                     await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
             except Exception:
@@ -1765,7 +1765,7 @@ class RecruitView(discord.ui.View):
 
         if log_channel:
             embed = recruit_record_embed(
-                "✅ POSTULACIÓN ACEPTADA" + (" (roles pendientes de ingreso)" if roles_pending else ""),
+                "✅ POSTULACIÓN ACEPTADA" + (" (falta confirmar ingreso a la guild)" if roles_pending else ""),
                 discord.Color.green(), member, interaction.user, getattr(interaction, "message", None),
                 extra=[("🎭 Rol asignado", role_name, False)])
 
