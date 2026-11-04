@@ -71,7 +71,7 @@ CATALOG = [
     ("clean_voice", "🧹 Limpiar mute de voice", "common", 1500, "Bot", None, 0, 0, "", 0,
      "Te saca un mute de voice (también el autosilencio). Si no tenés, no se gasta.", 0),
     ("bad_wuju_100k", "☠️ −100.000 Wuju Coins", "common", 1200, "Bot", None, 100_000, -100_000, "wuju", 0,
-     "Carta mala: se te descuentan 100.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+     "Carta mala: se te descuentan 100.000, aunque tu balance quede en negativo. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_embo_15", "☠️ −15 de embo", "common", 800, "Bot", None, 15, -15, "embo", 0,
      "Carta mala: se te descuentan 15 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_chat_5", "☠️ Te silenciás el chat 5 min", "common", 600, "Bot", None, 0, 0, "", 0,
@@ -109,7 +109,7 @@ CATALOG = [
     ("wjp_freeze_1h", "❄️ Congelar Wujupón 1 h", "rare", 1000, "Bot", None, 0, 0, "", 1,
      "Durante 1 h el jugador no puede tirar, comprar ni usar cartas. No pierde nada." + SHIELD_NOTE, 0),
     ("bad_wuju_300k", "☠️ −300.000 Wuju Coins", "rare", 600, "Bot", None, 300_000, -300_000, "wuju", 0,
-     "Carta mala: se te descuentan 300.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+     "Carta mala: se te descuentan 300.000, aunque tu balance quede en negativo. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_embo_30", "☠️ −30 de embo", "rare", 400, "Bot", None, 30, -30, "embo", 0,
      "Carta mala: se te descuentan 30 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_chat_15", "☠️ Te silenciás el chat 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
@@ -230,7 +230,7 @@ CATALOG = [
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
-CATALOG_VERSION = 6
+CATALOG_VERSION = 7
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -242,6 +242,7 @@ CATALOG_CHANGES = {
     5: ("premium_30m", "freeze_24h", "mute_chat_180", "mute_voice_180", "plot_tax0", "shield_4d", "coinflip_nolimit",
         "duel_1v1", "lootsplit_remove", "ava_replace", "shop_discount"),
     6: ("shop_discount", "shop_discount_30", "guild_desc_1d", "staff_build"),
+    7: ("bad_wuju_100k", "bad_wuju_300k"),                       # pueden dejar el balance en negativo
 }
 
 SCHEMA = """

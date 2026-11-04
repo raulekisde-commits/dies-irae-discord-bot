@@ -445,6 +445,17 @@ class CatalogoV2Tests(DbBase):
         self.assertEqual((p["shop_discount"].rarity, p["shop_discount"].weight), ("epic", 300))
         self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
+    def test_migracion_v7_cartas_malas_de_wuju_pueden_dejar_negativo(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_prizes SET description = 'vieja', desc_edited = 1 WHERE key IN ('bad_wuju_100k', 'bad_wuju_300k')")
+        conn.execute("UPDATE wjp_settings SET value = '6' WHERE key = 'catalog_version'")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        for k in ("bad_wuju_100k", "bad_wuju_300k"):
+            self.assertIn("negativo", wdb.get_prize(self.db, k).description, k)
+        self.assertIn("sin bajar de 0", wdb.get_prize(self.db, "bad_embo_15").description)      # el embo no cambia
+
     def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
         conn = connect(self.db)
         conn.execute("INSERT INTO wjp_prizes(key, name, rarity, weight, origin, cost_currency, enabled, sort) "
