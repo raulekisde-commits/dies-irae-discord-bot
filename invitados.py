@@ -357,6 +357,31 @@ INFO_STAFF["wujupon"] = (
     "• `/wujupon foto-premio` y `/wujupon canal-nsfw` — imagen del premio con foto (spoiler en el canal +18, se borra a los 60 s).\n"
     "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra las cartas sin usar de todos y anula los encargos abiertos.")
 
+# Segunda página de /info-staff (se manda en el mismo mensaje, como otro embed)
+INFO_STAFF_PAGE2 = {
+    "wujupon": (
+        "**✨ Efectos automáticos de las cartas** — grupo `/wujupon-efectos`\n"
+        "Las cartas de mute, congelar, escudo, limpiezas, casino y las ☠️ cartas malas las aplica el bot solo. Si la carta afecta a otro, "
+        "el jugador elige a quién con un selector privado.\n\n"
+        "**Montaje** (una vez)\n"
+        "• `/wujupon-efectos roles-mute` (Admin) — crea **Muteado chat** y **Muteado voice** y los aplica en todos los canales. "
+        "Si creás canales nuevos, volvé a usarlo.\n"
+        "• `/wujupon-efectos canal [canal]` (Council) — canal donde se anuncia cada carta usada contra otro (al afectado le llega un MD).\n\n"
+        "**Control**\n"
+        "• `/wujupon-efectos ver [usuario]` (Council) — efectos activos y hasta cuándo.\n"
+        "• `/wujupon-efectos quitar usuario` (Council) — corta todos sus efectos (saca los roles de mute).\n"
+        "• `/wujupon-efectos inmunes agregar|quitar usuario` (Admin) · `inmunes ver` (Council) — nadie les puede usar cartas "
+        "y las cartas malas no les afectan.\n\n"
+        "**Reglas**\n"
+        "• Contra un inmune o alguien con 🛡️ escudo, la carta no se gasta. Tampoco contra bots.\n"
+        "• 🧊 Congelar balance: no puede apostar, usar give-money, comprar en el Guild Shop ni en Wujupón, ni cobrar. Los splits le llegan igual.\n"
+        "• ❄️ Congelar Wujupón: no puede comprar, tirar ni usar cartas.\n"
+        "• 🚫 Bloqueo de casino: dura hasta que el casino se cierre y se vuelva a abrir.\n"
+        "• ☠️ Cartas malas: se aplican al salir; −Wuju y −embo pueden dejar el balance en negativo.\n"
+        "• Los efectos sobreviven a los reinicios: al volver, el bot repone o saca los roles solo.\n"
+        "• Siguen por encargo al Council: cartas de CTA, coinflips con tope y duelo."),
+}
+
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
 
@@ -680,6 +705,15 @@ class InvitadosCog(commands.Cog):
     INFO_CHOICES = [app_commands.Choice(name=n, value=n) for n in ("splits", "zvz", "reclutamiento", "registro", "timers", "stats", "economia", "casino", "zvz-vods", "invitados", "warnings", "alters", "roles", "wujupon")]
 
     @staticmethod
+    def info_staff_page2(value: str) -> Optional[discord.Embed]:
+        """Segunda página de /info-staff para los temas que no entran en una sola (límite de 4000 caracteres por embed)."""
+        text = INFO_STAFF_PAGE2.get(value)
+        if not text:
+            return None
+        title, _ = INFO_TEXTS[value]
+        return discord.Embed(title=f"{title} · Staff (2/2)", description=text[:4000], color=discord.Color.gold())
+
+    @staticmethod
     def info_embed(value: str, staff: bool) -> discord.Embed:
         title, text = INFO_TEXTS[value]
         if staff:
@@ -703,7 +737,10 @@ class InvitadosCog(commands.Cog):
         if not (can_manage(me) or STAFF_ROLE_ID in _roles(me)):
             return await _say(interaction, "🔒 Solo el Staff y el Council pueden usar `/info-staff`.")
         value = getattr(tema, "value", tema)
-        await interaction.response.send_message(embed=self.info_embed(value, True), ephemeral=True)
+        page2 = self.info_staff_page2(value)
+        if page2 is None:
+            return await interaction.response.send_message(embed=self.info_embed(value, True), ephemeral=True)
+        await interaction.response.send_message(embeds=[self.info_embed(value, True), page2], ephemeral=True)
 
     # ---------- si pierde el rol Invitado (p. ej. lo hacen miembro) el registro queda como histórico ----------
     @commands.Cog.listener()
