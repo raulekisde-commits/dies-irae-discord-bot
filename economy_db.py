@@ -132,6 +132,7 @@ MOVEMENT_LABELS = {
     "roulette_bet": "Apuesta de ruleta",
     "roulette_win": "Premio de ruleta",
     "roulette_refund": "Devolución de ruleta",
+    "embo_purchase": "Compra de embo",
 }
 
 

@@ -466,7 +466,7 @@ class CambioMonedaTests(DiscordBase):
     # ---- /panel group ----
     def test_panel_group_has_both_subcommands(self):
         self.assertEqual(pn.PanelsCog.panel.name, "panel")
-        self.assertEqual(set(pn.PanelsCog.panel.commands), {"apuestas", "cambiomoneda", "reclutamiento", "foco", "shop", "coaching", "wujupon"})
+        self.assertEqual(set(pn.PanelsCog.panel.commands), {"apuestas", "cambiomoneda", "reclutamiento", "foco", "shop", "coaching", "wujupon", "embo"})
 
     def test_panel_command_delegates_and_reports_missing_modules(self):
         cog = run(pn.setup_panels(self.bot, GUILD_ID))
