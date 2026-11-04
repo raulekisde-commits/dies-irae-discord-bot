@@ -538,6 +538,19 @@ def set_panel(db_path: str, guild_id: int, kind: str, channel_id: int, message_i
         conn.close()
 
 
+def recent_sold_channels(db_path: str, guild_id: int, days: int = 2) -> List[Tuple[int, str]]:
+    """(canal, cuándo se vendió) de los tickets vendidos en los últimos días."""
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT channel_id, closed_at FROM gshop_tickets WHERE guild_id = ? AND status = 'sold' AND closed_at >= ?",
+                            (guild_id, since)).fetchall()
+        return [(int(r["channel_id"]), r["closed_at"]) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_log_channel_id(db_path: str) -> Optional[int]:
     v = eco.get_setting(db_path, LOG_CHANNEL_KEY)
     return int(v) if v and v.isdigit() else None
