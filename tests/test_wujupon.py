@@ -1010,6 +1010,18 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.alice)
         run(self.cog.show_inventory(i))
         self.assertIn("Inventario", i.response.sent[0][1]["embed"].title)
+        # y la lista de premios también
+        i = self.inter(self.alice)
+        run(self.cog.show_prizes(i))
+        self.assertTrue(i.response.sent[0][1]["embeds"])
+        self.assertIn("Los premios se pueden ver igual", str(panel.embeds[0].fields[-1]))
+        i = self.inter(self.alice)
+        run(self.cog.do_spin(i))                                 # el aviso de pausa trae el botón «Ver premios»
+        view = i.response.sent[-1][1]["view"]
+        self.assertIsInstance(view, wj.PrizesButtonView)
+        i = self.inter(self.alice)
+        run(view.prizes.callback(i))
+        self.assertTrue(i.response.sent[0][1]["embeds"])
         # reanudar
         i = self.inter(self.admin)
         run(self.cog.pause.callback(self.cog, i, False, None))

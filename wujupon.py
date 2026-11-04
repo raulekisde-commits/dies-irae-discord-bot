@@ -193,6 +193,18 @@ class PanelView(discord.ui.View):
         await self.cog.show_requests(interaction)
 
 
+class PrizesButtonView(discord.ui.View):
+    """Botón «Ver premios» en el aviso de pausa (la lista se puede ver aunque Wujupón esté pausado)."""
+
+    def __init__(self, cog: "WujuponCog"):
+        super().__init__(timeout=300)
+        self.cog = cog
+
+    @discord.ui.button(label="Ver premios", style=discord.ButtonStyle.secondary, emoji="📜")
+    async def prizes(self, interaction, button):
+        await self.cog.show_prizes(interaction)
+
+
 class BuyModal(discord.ui.Modal, title="Comprar tiradas de Wujupón"):
     cantidad = discord.ui.TextInput(label="¿Cuántas tiradas?", placeholder="1", default="1", max_length=3)
 
@@ -416,7 +428,8 @@ class WujuponCog(commands.Cog):
                                                     for k, (n, e, _) in wdb.RARITIES.items()), inline=True)
         if paused:
             reason = await self.run(wdb.get_setting, "paused_reason")
-            emb.add_field(name="⏸️ Pausado", value=(reason or "Por ahora no se puede comprar, tirar ni canjear.")[:1000], inline=False)
+            emb.add_field(name="⏸️ Pausado", value=((reason or "Por ahora no se puede comprar, tirar ni canjear.")[:900]
+                                                              + "\n📜 Los premios se pueden ver igual."), inline=False)
         emb.set_footer(text="Las tiradas se anuncian en el canal de Wujupón.")
         return emb
 
@@ -460,7 +473,8 @@ class WujuponCog(commands.Cog):
             return False
         reason = await self.run(wdb.get_setting, "paused_reason")
         await _say(interaction, "⏸️ **Wujupón está pausado** por la administración." + (f"\nMotivo: {reason}" if reason else "")
-                   + "\nTus tiradas y cartas no se pierden: podés ver tu inventario y tus solicitudes.")
+                   + "\nTus tiradas y cartas no se pierden: podés ver tu inventario, tus solicitudes y la lista de premios.",
+                   view=PrizesButtonView(self))
         return True
 
     async def open_buy(self, interaction: discord.Interaction):
