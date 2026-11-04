@@ -451,9 +451,30 @@ class CatalogoV2Tests(DbBase):
         p = {x.key: x for x in wdb.list_prizes(self.db)}
         self.assertEqual(p["premium_30m"].weight, 20)
         self.assertEqual(p["freeze_24h"].name, "Congelar balance 72 h")
-        self.assertEqual((p["mute_chat_180"].name, p["mute_voice_180"].name), ("Mute de chat 24 h", "Mute de voice 24 h"))
+        self.assertEqual((p["mute_chat_180"].name, p["mute_voice_180"].name), ("Mute de chat 48 h", "Mute de voice 48 h"))
         self.assertEqual(p["plot_tax0"].name, "Tax 0 en plots 48 h")
         self.assertEqual((p["shop_discount"].rarity, p["shop_discount"].weight), ("epic", 300))
+        self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
+
+    def test_cambios_v9(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual((p["duel_1v1"].rarity, p["duel_1v1"].weight), ("legendary", 150))
+        self.assertEqual((p["weapon_73"].rarity, p["party1_slot"].rarity), ("legendary", "epic"))
+        self.assertEqual((p["weapon_63"].cost, p["chest_63"].cost, p["chest_63"].rarity), (2_000_000, 2_000_000, "epic"))
+        self.assertEqual([p[k].handler for k in ("mute_chat_5", "voice_mute_15", "mute_chat_30", "mute_voice_60", "mute_chat_180",
+                                                 "bad_selfmute_chat_5", "bad_selfmute_voice_15")],
+                         ["efx:mute_chat:15", "efx:mute_voice:45", "efx:mute_chat:120", "efx:mute_voice:360",
+                          "efx:mute_chat:2880", "efx:mute_chat:15", "efx:mute_voice:45"])
+
+    def test_migracion_v9_actualiza_rarezas(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_prizes SET rarity = 'epic', weight = 1300, odds_edited = 1 WHERE key = 'duel_1v1'")
+        conn.execute("UPDATE wjp_settings SET value = '8' WHERE key = 'catalog_version'")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        p = wdb.get_prize(self.db, "duel_1v1")
+        self.assertEqual((p.rarity, p.weight), ("legendary", 150))
         self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
     def test_migracion_v7_cartas_malas_de_wuju_pueden_dejar_negativo(self):

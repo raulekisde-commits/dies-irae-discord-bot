@@ -372,7 +372,7 @@ INFO_STAFF_PAGE2 = {
         "• `/wujupon-efectos roles-mute` (Admin) — crea **Muteado chat** y **Muteado voice** y los aplica en todos los canales. "
         "Si creás canales nuevos, volvé a usarlo.\n"
         "• `/wujupon-efectos canal [canal]` (Council) — canal donde se anuncia cada carta usada contra otro (al afectado le llega un MD).\n"
-        "• `/wujupon-efectos canal-duelos [canal]` (Council) — canal de anuncios para los duelos especiales (con @here).\n\n"
+        "• `/wujupon-efectos canal-duelos [canal]` (Council) — canal de anuncios para los duelos especiales (con mención al rol Ludópata).\n\n"
         "**Control**\n"
         "• `/wujupon-efectos ver [usuario]` (Council) — efectos activos y hasta cuándo.\n"
         "• `/wujupon-efectos quitar usuario` (Council) — corta todos sus efectos (saca los roles de mute).\n"
@@ -394,7 +394,7 @@ INFO_STAFF_PAGE2 = {
         "\n**🪙 Coinflip y ⚔️ duelo por carta**\n"
         "• **Coinflip hasta 10M / 15M / 20M / sin límite**: el jugador pone la cantidad (puede pasar el máximo normal) y se publica "
         "un coinflip del casino con todas sus reglas. Si nadie lo acepta, se devuelve la entrada y la carta.\n"
-        "• **Duelo 1v1 especial**: solo contra alguien del Top 10 de apostado, hasta 100M. Se publica con @here en el canal de "
+        "• **Duelo 1v1 especial**: solo contra alguien del Top 10 de apostado, hasta 100M. Se publica mencionando al rol Ludópata en el canal de "
         "`/wujupon-efectos canal-duelos`. El retado tiene 24 h: si rechaza o no responde, le paga el 5 % de la apuesta al retador."),
 }
 

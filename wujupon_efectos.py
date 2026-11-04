@@ -26,6 +26,7 @@ import wujupon_db as wdb
 from guildshop import can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
+LUDOPATA_ROLE_ID = 1565464173096214669   # rol que se menciona al publicar un duelo especial
 ROLE_NAMES = {"mute_chat": "Muteado chat", "mute_voice": "Muteado voice"}
 ROLE_SETTING = {"mute_chat": "mute_chat_role", "mute_voice": "mute_voice_role"}
 
@@ -456,10 +457,10 @@ class EfectosCog(commands.Cog):
         duel = res.duel
         from duels import DuelView
         try:
-            msg = await ch.send(f"@here ⚔️ **Duelo 1v1 especial**: {me.mention} retó a {target.mention} por "
+            msg = await ch.send(f"<@&{LUDOPATA_ROLE_ID}> ⚔️ **Duelo 1v1 especial**: {me.mention} retó a {target.mention} por "
                                 f"**{eco.format_amount(amount)}**. Tiene 24 h para aceptar; si rechaza o no responde, le paga "
                                 f"**{eco.format_amount(penalty)}**.", embed=duels.panel_embed(duel), view=DuelView(duels),
-                                allowed_mentions=discord.AllowedMentions(everyone=True, users=[target]))
+                                allowed_mentions=discord.AllowedMentions(everyone=False, users=[target], roles=[discord.Object(LUDOPATA_ROLE_ID)]))
         except Exception:
             await self.run(duels_db.abort_unpublished, duel.id)
             await self.run(edb.release_card, card_id)
@@ -568,13 +569,13 @@ class EfectosCog(commands.Cog):
         await _say(interaction, f"✅ Se cortaron {len(ended)} efecto(s) de {usuario.mention}." if ended
                    else f"ℹ️ {usuario.mention} no tenía efectos activos.")
 
-    @efx.command(name="canal-duelos", description="(Council) Canal de anuncios donde se publican los duelos 1v1 especiales (con @here)")
+    @efx.command(name="canal-duelos", description="(Council) Canal de anuncios donde se publican los duelos 1v1 especiales (con mención a Ludópata)")
     async def canal_duelos(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
         if not await self._council(interaction):
             return
         target = canal or interaction.channel
         await self.run(wdb.set_setting, "duel_channel", str(target.id))
-        await _say(interaction, f"⚔️ Los duelos especiales se publican en {target.mention} (con @here).")
+        await _say(interaction, f"⚔️ Los duelos especiales se publican en {target.mention} (con mención al rol Ludópata).")
 
     @efx.command(name="canal", description="(Council) Canal donde se anuncian los efectos que se usan contra otros")
     async def canal(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
