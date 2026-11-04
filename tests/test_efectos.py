@@ -73,6 +73,20 @@ class EfectosTests(DiscordBase):
         run(self.cog.expire_loop.fn(self.cog))
         self.assertNotIn(self.r_chat, self.bob.roles)
 
+    def test_muteado_de_chat_no_puede_escribir_aunque_otro_rol_lo_permita(self):
+        self.use("mute_15", self.bob)
+        ch = self.efxch
+        m_bob = discord.Message(ch, "hola", author=self.bob)
+        m_alice = discord.Message(ch, "hola", author=self.alice)
+        run(self.cog.on_message(m_bob))
+        run(self.cog.on_message(m_alice))
+        self.assertTrue(m_bob.deleted)
+        self.assertFalse(m_alice.deleted)
+        self.bob.roles.remove(self.r_chat)                     # se le sacó el mute: ya no se borra
+        m2 = discord.Message(ch, "chau", author=self.bob)
+        run(self.cog.on_message(m2))
+        self.assertFalse(m2.deleted)
+
     def test_mute_de_voice(self):
         self.use("voice_mute_15", self.bob)
         self.assertIn(self.r_voice, self.bob.roles)

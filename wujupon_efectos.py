@@ -7,6 +7,7 @@
 """
 import asyncio
 import os
+import time
 import traceback
 from typing import Optional
 
@@ -167,6 +168,8 @@ class EfectosCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self._tasks: set = set()
+        self._chat_role_id: Optional[int] = None
+        self._chat_role_at = -1e9
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -210,6 +213,26 @@ class EfectosCog(commands.Cog):
         rid = await self.run(wdb.get_setting, ROLE_SETTING[kind])
         g = self.guild()
         return g.get_role(int(rid)) if (rid and g) else None
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """En Discord, si otro rol de la persona tiene «Enviar mensajes» permitido en un canal, ese permitir le gana al
+        denegar de «Muteado chat» y puede escribir igual. Con el mute de chat puesto, el bot borra lo que escriba."""
+        author = message.author
+        if message.guild is None or message.guild.id != self.guild_id or getattr(author, "bot", False):
+            return
+        roles = getattr(author, "roles", None) or []
+        if not roles:
+            return
+        now = time.monotonic()
+        if now - self._chat_role_at > 60:                      # id del rol cacheado 1 min (evita leer la DB en cada mensaje)
+            rid = await self.run(wdb.get_setting, ROLE_SETTING["mute_chat"])
+            self._chat_role_id, self._chat_role_at = (int(rid) if rid else None), now
+        if self._chat_role_id and any(r.id == self._chat_role_id for r in roles):
+            try:
+                await message.delete()
+            except Exception:
+                pass
 
     async def _set_role(self, user_id: int, kind: str, on: bool) -> bool:
         if kind not in ROLE_SETTING:
