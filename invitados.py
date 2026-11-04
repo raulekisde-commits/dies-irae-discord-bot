@@ -68,7 +68,7 @@ INFO_TEXTS = {
                  "**Comandos**\n"
                  "• `/bal` — ver tu saldo (o el de otra persona).\n"
                  "• `/give-money usuario cantidad [motivo]` — le pasás monedas a otra persona de tu saldo (el bot te pide confirmar antes de enviar).\n"
-                 "• En `/bal` también ves tu **balance de embo** (embotelladas de Albion), que lleva el Staff.\n"
+                 "• En `/bal` también ves tu **Balance Energías Embotelladas** (embo), que lleva el Staff. `/top embo` muestra quién debe más embo.\n"
                  "• `/verhistorial [usuario] [completo]` — tus últimos movimientos (te llegan por mensaje privado); con `completo` recibís el historial entero en un archivo CSV.\n\n"
                  "**Splits**\n"
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
@@ -117,6 +117,7 @@ INFO_STAFF = {
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
                  "• `/eco embo add|remove|set usuario cantidad [motivo]` — balance de embo (Admin o rol con `/eco perms-comando comando:embo`). Puede quedar en negativo (igual que los Wuju Coins).\n"
+                 "• `/eco embo icono emoji` (Admin) — cambia el icono del embo (emoji del servidor o común); `quitar` vuelve a 🍾.\n"
                  "• `/eco embo importar-historico archivo` (Admin) — carga al balance de embo todos los movimientos del archivo (Fecha y hora / Jugador / Motivo / Cantidad) a quien tenga ese personaje registrado y lista los jugadores no encontrados. Subir el mismo archivo otra vez no duplica nada.\n"
                  "• `/eco embo cargar-dia archivo [fecha]` (Staff) — todos los días a las 00:00 UTC se crea un encargo para cargar las embotelladas del día anterior. Se sube el log (Date / Player / Reason / Amount): solo se toman las filas de ese día, se listan los no encontrados y el encargo se cierra solo. Sin `fecha` toma el encargo pendiente más viejo (o ayer).\n"
                  "• `/eco set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco eco-stats` (Staff) — total de monedas en el servidor. `/eco historico-bal reset` (Admin) — pone en cero el balance histórico.\n"

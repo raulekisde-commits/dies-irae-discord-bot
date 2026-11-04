@@ -111,6 +111,16 @@ def apply(db_path: str, *, user_id: int, mode: str, amount: int, actor_id: int, 
         conn.close()
 
 
+def debtors(db_path: str, limit: int = 1000) -> List[Tuple[int, int]]:
+    """[(discord_id, balance)] de quienes tienen el balance de embo en negativo, de la mayor deuda a la menor."""
+    conn = connect(db_path)
+    try:
+        return [(int(r["user_id"]), int(r["balance"])) for r in
+                conn.execute("SELECT user_id, balance FROM embo_accounts WHERE balance < 0 ORDER BY balance ASC, user_id LIMIT ?", (limit,))]
+    finally:
+        conn.close()
+
+
 def history(db_path: str, user_id: int, limit: int = 15) -> List[Tuple[str, int, int, str, str]]:
     """(fecha, delta, balance_after, kind, reason) más recientes primero."""
     init_schema(db_path)
