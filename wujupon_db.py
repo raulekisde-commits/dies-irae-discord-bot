@@ -230,6 +230,38 @@ CATALOG = [
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
+# Cartas con efecto automático (efectos_db / wujupon_efectos): clave → handler «efx:<acción>[:<valor>]».
+# Mutes, escudos y congelamientos en minutos; cartas malas de Wuju/embo con el monto y de cooldown en horas.
+EFFECT_HANDLERS = {
+    "casino_block": "efx:casino_block", "casino_open": "efx:casino_open", "casino_close": "efx:casino_close",
+    "mute_chat_5": "efx:mute_chat:5", "mute_15": "efx:mute_chat:15", "mute_chat_30": "efx:mute_chat:30",
+    "mute_chat_60": "efx:mute_chat:60", "mute_chat_180": "efx:mute_chat:1440",
+    "mute_voice_5": "efx:mute_voice:5", "voice_mute_15": "efx:mute_voice:15", "mute_voice_30": "efx:mute_voice:30",
+    "mute_voice_60": "efx:mute_voice:60", "mute_voice_180": "efx:mute_voice:1440",
+    "freeze_30m": "efx:freeze_balance:30", "freeze_2h": "efx:freeze_balance:120", "freeze_12h": "efx:freeze_balance:720",
+    "freeze_24h": "efx:freeze_balance:4320",
+    "wjp_freeze_1h": "efx:freeze_wujupon:60", "wjp_freeze_6h": "efx:freeze_wujupon:360", "wjp_freeze_24h": "efx:freeze_wujupon:1440",
+    "shield_1h": "efx:shield:60", "shield_3h": "efx:shield:180", "shield_12h": "efx:shield:720", "shield_24h": "efx:shield:1440",
+    "shield_4d": "efx:shield:5760",
+    "purge_shield": "efx:purge",
+    "clean_chat": "efx:clean_chat", "clean_voice": "efx:clean_voice", "clean_freeze": "efx:clean_freeze", "clean_all": "efx:clean_all",
+    "bad_wuju_100k": "efx:wuju:100000", "bad_wuju_300k": "efx:wuju:300000", "bad_embo_15": "efx:embo:15", "bad_embo_30": "efx:embo:30",
+    "bad_selfmute_chat_5": "efx:mute_chat:5", "bad_selfmute_chat_15": "efx:mute_chat:15",
+    "bad_selfmute_voice_5": "efx:mute_voice:5", "bad_selfmute_voice_15": "efx:mute_voice:15",
+    "bad_cd_4h": "efx:cooldown:4", "bad_cd_8h": "efx:cooldown:8", "bad_cd_12h": "efx:cooldown:12", "bad_cd_24h": "efx:cooldown:24",
+    "bad_cd_48h": "efx:cooldown:48",
+}
+CATALOG = [c[:5] + (EFFECT_HANDLERS.get(c[0], c[5]),) + c[6:] for c in CATALOG]
+
+
+def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]]:
+    """'efx:mute_chat:15' → ('mute_chat', 15.0) · 'efx:purge' → ('purge', None) · otro → None."""
+    if not handler or not handler.startswith("efx:"):
+        return None
+    parts = handler.split(":")
+    return parts[1], (float(parts[2]) if len(parts) > 2 else None)
+
+
 CATALOG_VERSION = 7
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
@@ -374,7 +406,11 @@ class Prize:
 
     @property
     def automatic(self) -> bool:
-        return self.handler in AUTO_HANDLERS
+        return self.handler in AUTO_HANDLERS or (self.handler or "").startswith("efx:")
+
+    @property
+    def effect(self):
+        return parse_effect(self.handler)
 
     @property
     def rarity_label(self) -> str:
@@ -958,7 +994,10 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                    "VALUES (?,?,?,?,?,?,?,?)",
                                    (request_key, user_id, prize.key, prize.rarity, prize.weight, total, card_id, now)).lastrowid
             req_id = None
-            if prize.forced:
+            if prize.forced and prize.automatic:
+                # carta mala automática: queda reservada y la aplica el bot enseguida (wujupon_efectos.apply_forced)
+                conn.execute("UPDATE wjp_cards SET status = 'reserved' WHERE id = ?", (card_id,))
+            elif prize.forced:
                 # Carta mala: no se guarda para «usar»; queda reservada y va directo al Council para que la aplique
                 # (hasta que el bot lo haga solo). Si el jugador tenía escudo, el Council la rechaza y se consume.
                 conn.execute("UPDATE wjp_cards SET status = 'reserved' WHERE id = ?", (card_id,))
@@ -1167,6 +1206,8 @@ def _run_handler(conn, prize: Prize, card: Card, *, guild_id: int, req_key: str)
         ch = embo_db.tx_apply(conn, user_id=card.user_id, mode="add", amount=prize.amount, actor_id=card.user_id,
                               request_key=f"wjp:card:{card.id}", reason=f"Wujupón: {prize.name}", kind="wujupon_prize")
         return f"Se acreditaron **{eco.format_amount(prize.amount)} de embo**. Balance de embo: {eco.format_amount(ch.after)}."
+    if prize.effect:
+        raise _Abort(RedeemResult("no_effect", "Esta carta se usa desde 🎒 Mi inventario con el botón Canjear.", prize=prize))
     if prize.handler == "photo":
         # la carta se consume acá; el envío lo hace la capa de Discord y, si falla, devuelve la carta
         if conn.execute("SELECT 1 FROM wjp_assets WHERE key = ?", (PHOTO_ASSET,)).fetchone() is None:

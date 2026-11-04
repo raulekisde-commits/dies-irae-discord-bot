@@ -343,22 +343,15 @@ class ProbabilidadLimiteLimpiezaTests(DbBase):
 
 
 class CatalogoV2Tests(DbBase):
-    def test_carta_mala_va_directo_al_council(self):
+    def test_carta_mala_queda_reservada_para_aplicarse_sola(self):
         wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
         r = wdb.pull(self.db, 5, "p", rng=FixedRng(offset_of("bad_wuju_300k")))
         self.assertEqual(r.prize.key, "bad_wuju_300k")
-        self.assertTrue(r.prize.forced)
-        self.assertIsNotNone(r.request_id)
+        self.assertTrue(r.prize.forced and r.prize.effect)
+        self.assertIsNone(r.request_id)                       # ya no va al Council: la aplica el bot
         self.assertEqual(wdb.get_card(self.db, r.card_id).status, "reserved")
-        self.assertEqual(wdb.get_request(self.db, r.request_id).status, "pending")
-        # no se puede «canjear» desde el inventario
         self.assertEqual(wdb.redeem(self.db, card_id=r.card_id, user_id=5, details="", request_key="x", guild_id=GUILD_ID).status,
                          "not_available")
-        # aunque el Council pida devolverla, una carta mala nunca vuelve al inventario
-        ch = wdb.reject_request(self.db, r.request_id, 77, refund=True, note="tenía escudo")
-        self.assertFalse(ch.request.refunded)
-        self.assertEqual(wdb.get_card(self.db, r.card_id).status, "consumed")
-        self.assertEqual(eco.get_balance(self.db, 5), 0)          # nada automático: no se descontó solo
 
     def test_cartas_buenas_no_crean_encargo_solas(self):
         wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
@@ -366,10 +359,14 @@ class CatalogoV2Tests(DbBase):
         self.assertIsNone(r.request_id)
         self.assertEqual(wdb.get_card(self.db, r.card_id).status, "available")
 
-    def test_nada_nuevo_es_automatico(self):
+    def test_cartas_automaticas(self):
         auto = {c[0] for c in wdb.CATALOG if c[5]}
-        self.assertEqual(auto, {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
-                                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount", "shop_discount_30"})   # pedidos explícitamente
+        base = {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
+                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount", "shop_discount_30"}
+        self.assertEqual(auto, base | set(wdb.EFFECT_HANDLERS))
+        # las de CTA, coinflips y duelo siguen por encargo al Council
+        for k in ("flex_cta", "party1_slot", "party_switch", "undo_coinflip", "coinflip_15m", "duel_1v1"):
+            self.assertNotIn(k, auto)
 
     def test_descripciones_y_nombres_cortos(self):
         for c in wdb.CATALOG:
@@ -599,7 +596,7 @@ class WujuponDiscordTests(DiscordBase):
 
     def test_mensajes_de_tirada_se_borran_solos(self):
         import asyncio
-        self.cog.cleanup_delay = 0.01
+        self.cog.cleanup_delay = 0.3
         wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
         i = self._spy_delete(self.inter(self.alice))
         i2 = self._spy_delete(self.inter(self.alice))
@@ -608,7 +605,7 @@ class WujuponDiscordTests(DiscordBase):
             await self.cog.do_spin(i)             # con tirada: carta
             await self.cog.do_spin(i2)            # sin tiradas: aviso
             self.assertEqual((i.deleted, i2.deleted), (0, 0))
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.5)
         run(go())
         self.assertEqual((i.deleted, i2.deleted), (1, 1))
         self.assertIn("se borra en", i.response.sent[0][1]["embed"].footer)
@@ -818,8 +815,10 @@ class WujuponDiscordTests(DiscordBase):
         small = [discord.Embed(title=str(n)) for n in range(23)]
         self.assertEqual([len(g) for g in wj.pack_embeds(small)], [10, 10, 3])
 
-    def test_carta_mala_se_publica_en_el_council(self):
-        import random as _r
+    def test_carta_mala_se_aplica_sola(self):
+        import embo_db
+        import wujupon_efectos as we
+        run(we.setup_efectos(self.bot, self.db, GUILD_ID))
         wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
         orig = wdb.draw
         wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("bad_embo_15")))
@@ -829,8 +828,9 @@ class WujuponDiscordTests(DiscordBase):
         finally:
             wdb.draw = orig
         self.assertIn("Carta mala", i.response.sent[0][1]["embed"].footer)
-        msg = self.councilch.sent[-1]
-        self.assertIn("−15 de embo", str(msg.embeds[0].fields))
+        self.assertEqual(embo_db.get_balance(self.db, self.alice.id), -15)     # el embo puede quedar negativo
+        self.assertIn("15 de embo", i.text)
+        self.assertEqual(self.councilch.sent, [])
 
     def test_comando_cooldown_cobro(self):
         sumar = discord.app_commands.Choice(name="Sumar horas", value="sumar")

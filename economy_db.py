@@ -551,8 +551,8 @@ class InsufficientFunds(Exception):
 # (apostar, anotarse a juegos, comprar tickets de rifa, dar coins, comprar en la Guild Shop). Lo que ya estaba en juego sigue su curso y
 # los premios/devoluciones se acreditan igual; el retiro que hace el Council en el ticket tampoco se bloquea.
 # ------------------------------------------------------------
-FROZEN_TEXT = ("🧊 Tu balance está **congelado** mientras tengas abierto un ticket de **Cobrar balance**: no podés apostar ni mover "
-               "tu balance hasta que se cierre el ticket.")
+FROZEN_TEXT = ("🧊 Tu balance está **congelado** (ticket de **Cobrar balance** abierto o carta de Wujupón): no podés apostar ni mover "
+               "tu balance hasta que se descongele.")
 FROZEN_BLOCKED_TYPES = frozenset({"bet_stake", "duel_stake", "dice_stake", "coinflip_stake", "raffle_ticket", "roulette_bet", "transfer_out", "guildshop_purchase",
                                   "wujupon_purchase"})
 
@@ -563,8 +563,16 @@ class BalanceFrozen(Exception):
 
 def _frozen_conn(conn, user_id: int) -> bool:
     try:
-        return conn.execute("SELECT 1 FROM cm_tickets WHERE user_id = ? AND kind = 'sell' AND status = 'open' LIMIT 1", (user_id,)).fetchone() is not None
+        if conn.execute("SELECT 1 FROM cm_tickets WHERE user_id = ? AND kind = 'sell' AND status = 'open' LIMIT 1", (user_id,)).fetchone():
+            return True
     except sqlite3.OperationalError as exc:              # todavía no existe la tabla de tickets: nadie está congelado
+        if "no such table" not in str(exc):
+            raise
+    try:                                                 # carta de Wujupón «Congelar balance» (los splits le llegan igual)
+        import time
+        return conn.execute("SELECT 1 FROM wjp_effects WHERE user_id = ? AND kind = 'freeze_balance' AND active = 1 AND until > ? LIMIT 1",
+                            (user_id, time.time())).fetchone() is not None
+    except sqlite3.OperationalError as exc:
         if "no such table" in str(exc):
             return False
         raise

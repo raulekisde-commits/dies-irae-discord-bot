@@ -90,6 +90,13 @@ except Exception:
     async def setup_wujupon(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar wujupon.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from wujupon_efectos import setup_efectos
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_efectos(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar wujupon_efectos.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from coaching import setup_coaching
 except Exception:
     import traceback as _tb
@@ -583,6 +590,7 @@ class MyBot(commands.Bot):
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("coaching", setup_coaching, self, DB_PATH, GUILD_ID)
             await _safe_setup("wujupon", setup_wujupon, self, DB_PATH, GUILD_ID)
+            await _safe_setup("wujupon_efectos", setup_efectos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
             await _safe_setup("bombs", setup_bombs, self, DB_PATH, GUILD_ID)

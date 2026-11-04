@@ -52,6 +52,9 @@ def set_open(db_path: str, guild_id: int, open_: bool, actor_id: int) -> bool:
             current = True if r is None else bool(r["is_open"])
             conn.execute("INSERT OR REPLACE INTO casino_state(guild_id, is_open, changed_by, changed_at) VALUES (?,?,?,?)",
                          (guild_id, 1 if open_ else 0, actor_id, utcnow_iso()))
+            if current != open_:
+                import efectos_db                        # bloqueos de casino por carta de Wujupón: cerrar los arma, abrir los termina
+                efectos_db.tx_casino_changed(conn, open_)
             return current != open_
     finally:
         conn.close()
@@ -99,8 +102,9 @@ def block_reason(db_path: str, guild_id: int, *user_ids: int, check_open: bool =
     puede crear nada nuevo, pero lo que ya empezó se puede terminar. La lista negra se aplica siempre."""
     if check_open and not is_open(db_path, guild_id):
         return CLOSED_TEXT
+    import efectos_db
     for uid in user_ids:
-        if is_banned(db_path, guild_id, uid):
+        if is_banned(db_path, guild_id, uid) or efectos_db.active_until(db_path, uid, "casino_block") is not None:
             return BANNED_TEXT if len(user_ids) == 1 else f"🚫 <@{uid}> está bloqueado del casino: no puede participar."
     for uid in user_ids:
         if eco.is_frozen(db_path, uid):

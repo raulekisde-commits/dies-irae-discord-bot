@@ -34,7 +34,7 @@ def money(n: int) -> str:
 
 def prize_mode(p: wdb.Prize) -> str:
     if p.forced:
-        return "☠️ se aplica sola (por ahora la aplica el Council)"
+        return "☠️ se aplica sola" if p.effect else "☠️ se aplica sola (por ahora la aplica el Council)"
     if p.automatic:
         return "🤖 automático"
     if p.origin == "Bot":
@@ -57,7 +57,8 @@ def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: st
     if p.third_party:
         emb.add_field(name="⚠️", value="Afecta a otra persona: el Council puede rechazarla si no corresponde.", inline=False)
     if p.forced:
-        emb.set_footer(text="Carta mala: no va a tu inventario; se le avisó al Council para aplicarla.")
+        emb.set_footer(text="Carta mala: no va a tu inventario; se aplica sola." if p.effect
+                       else "Carta mala: no va a tu inventario; se le avisó al Council para aplicarla.")
     else:
         emb.set_footer(text="Guardala en tu inventario y canjeala cuando quieras desde 🎒 Mi inventario.")
     return emb
@@ -444,7 +445,13 @@ class WujuponCog(commands.Cog):
 
     # ---------------- comprar ----------------
     async def _paused(self, interaction: discord.Interaction) -> bool:
-        """True (y avisa) si un admin pausó Wujupón: no se compra, no se tira y no se canjea."""
+        """True (y avisa) si un admin pausó Wujupón o si a esta persona le congelaron Wujupón con una carta."""
+        import efectos_db
+        frozen = await self.run(efectos_db.active_until, interaction.user.id, "freeze_wujupon")
+        if frozen is not None:
+            await _say(interaction, f"❄️ Tenés **Wujupón congelado** por una carta hasta <t:{int(frozen)}:t>: no podés comprar, tirar ni "
+                                    "usar cartas. No perdés nada.")
+            return True
         if not await self.run(wdb.get_setting, "paused"):
             return False
         reason = await self.run(wdb.get_setting, "paused_reason")
@@ -503,7 +510,8 @@ class WujuponCog(commands.Cog):
         final = card_embed(res.prize, res.card_id, res.weight, res.total_weight, show_desc=res.prize.forced)
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
         if self.cleanup_delay:
-            first = ("Carta mala: se le avisó al Council para aplicarla" if res.prize.forced
+            first = (("Carta mala: se aplicó sola" if res.prize.effect else "Carta mala: se le avisó al Council para aplicarla")
+                     if res.prize.forced
                      else "Ya quedó guardada en 🎒 Mi inventario")
             final.set_footer(text=f"{first} · este mensaje se borra en {self.cleanup_delay} s.")
         view = SpinAgainView(self, user.id, res.spins_left)
@@ -526,6 +534,13 @@ class WujuponCog(commands.Cog):
         self._cleanup_later(interaction, extra)
         if res.request_id:
             await self.publish_request(res.request_id)   # carta mala: el loop de 60 s lo reintenta si falla
+        elif res.prize.forced and res.prize.effect:
+            efx = self.bot.get_cog("EfectosCog")         # carta mala automática (si no está cargado, se aplica al reiniciar)
+            if efx is not None:
+                msg = await efx.apply_forced(res.card_id, user.id, res.prize)
+                if msg:
+                    extra = await _say(interaction, msg)
+                    self._cleanup_later(interaction, extra)
         try:
             await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
         except Exception:
@@ -588,6 +603,11 @@ class WujuponCog(commands.Cog):
         if card is None or card.user_id != interaction.user.id or card.status != "available":
             return await _say(interaction, "❌ Esa carta ya no está disponible.")
         p = await self.run(wdb.get_prize, card.prize_key)
+        if p.effect:                                    # cartas con efecto automático (mutes, escudos, congelamientos…)
+            efx = self.bot.get_cog("EfectosCog")
+            if efx is None:
+                return await _say(interaction, "❌ El módulo de efectos no está cargado. Tu carta no se gastó.")
+            return await efx.start_use(interaction, card, p)
         if p.automatic:
             return await self.do_redeem(interaction, card_id, "")
         await interaction.response.send_modal(RedeemModal(self, card_id, required=p.third_party))
