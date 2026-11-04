@@ -386,7 +386,7 @@ class CatalogoV2Tests(DbBase):
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "flex_cta")
-        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 7000))
+        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 6200))
         # una edición posterior del Council se mantiene en los reinicios siguientes
         wdb.edit_prize(self.db, "flex_cta", actor_id=1, name="Flex", description="Mía")
         wdb._ready.discard(self.db)
@@ -396,14 +396,14 @@ class CatalogoV2Tests(DbBase):
 
     def test_migracion_v3_solo_toca_las_cartas_que_cambiaron(self):
         conn = connect(self.db)
-        conn.execute("UPDATE wjp_prizes SET name = 'Flex de antes', name_edited = 1 WHERE key = 'flex_cta'")
+        conn.execute("UPDATE wjp_prizes SET name = 'Casa de antes', name_edited = 1 WHERE key = 'ho_house'")
         conn.execute("UPDATE wjp_prizes SET rarity = 'legendary', weight = 100, name = 'Kick viejo', name_edited = 1, odds_edited = 1 "
                      "WHERE key = 'guild_kick'")
         conn.execute("UPDATE wjp_settings SET value = '2' WHERE key = 'catalog_version'")
         conn.close()
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
-        self.assertEqual(wdb.get_prize(self.db, "flex_cta").name, "Flex de antes")        # no cambió en v3: se respeta
+        self.assertEqual(wdb.get_prize(self.db, "ho_house").name, "Casa de antes")        # no cambió en v3 ni v4: se respeta
         k = wdb.get_prize(self.db, "guild_kick")
         self.assertEqual((k.name, k.rarity, k.weight), ("Kick de la guild", "mythic", 30))   # cambió en v3: toma lo nuevo
 
@@ -416,6 +416,25 @@ class CatalogoV2Tests(DbBase):
         self.assertEqual(p["plot_tax0"].rarity, "epic")
         self.assertEqual((p["alter_ho_24h"].rarity, p["alter_ho_24h"].origin), ("epic", "Staff"))
         self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
+
+    def test_cambios_v4_cartas_malas_comunes(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        for k in ("bad_wuju_100k", "bad_embo_15", "bad_selfmute_chat_5", "bad_selfmute_voice_5"):
+            self.assertEqual(p[k].rarity, "common", k)
+        for k in ("bad_wuju_300k", "bad_embo_30", "bad_selfmute_chat_15", "bad_selfmute_voice_15"):
+            self.assertEqual(p[k].rarity, "rare", k)
+        self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
+
+    def test_migracion_v4_desde_v3(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_prizes SET rarity = 'rare', odds_edited = 1 WHERE key = 'bad_embo_15'")
+        conn.execute("UPDATE wjp_prizes SET name = 'Mía', name_edited = 1 WHERE key = 'caerleon_port'")
+        conn.execute("UPDATE wjp_settings SET value = '3' WHERE key = 'catalog_version'")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        self.assertEqual(wdb.get_prize(self.db, "bad_embo_15").rarity, "common")
+        self.assertEqual(wdb.get_prize(self.db, "caerleon_port").name, "Mía")
 
     def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
         conn = connect(self.db)
@@ -720,7 +739,7 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.council)
         run(self.cog.odds_card.callback(self.cog, i, "flex_cta", "10", leg))
         self.assertIn("Legendaria", i.text)
-        self.assertIn("103 %", i.text)                                 # avisa que ya no suma 100 %
+        self.assertIn("103,8 %", i.text)                               # avisa que ya no suma 100 %
         p = wdb.get_prize(self.db, "flex_cta")
         self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
 
