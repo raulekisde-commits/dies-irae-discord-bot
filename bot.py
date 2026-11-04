@@ -55,6 +55,13 @@ except Exception:
     async def setup_deposits(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar deposits.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from embo_tickets import setup_embo_tickets
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_embo_tickets(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar embo_tickets.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from casino import setup_casino
 except Exception:
     import traceback as _tb
@@ -583,6 +590,7 @@ class MyBot(commands.Bot):
             await _safe_setup("games", setup_games, self, DB_PATH, GUILD_ID)
             await _safe_setup("rankings", setup_rankings, self, DB_PATH, GUILD_ID)
             await _safe_setup("deposits", setup_deposits, self, DB_PATH, GUILD_ID)
+            await _safe_setup("embo_tickets", setup_embo_tickets, self, DB_PATH, GUILD_ID)
             await _safe_setup("casino", setup_casino, self, DB_PATH, GUILD_ID)
             await _safe_setup("duels", setup_duels, self, DB_PATH, GUILD_ID)
             await _safe_setup("raffles", setup_raffles, self, DB_PATH, GUILD_ID)

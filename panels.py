@@ -1,4 +1,4 @@
-"""Grupo /panel: publica paneles en el canal (apuestas, cambiomoneda, reclutamiento, foco, shop, coaching, wujupon)."""
+"""Grupo /panel: publica paneles en el canal (apuestas, cambiomoneda, reclutamiento, foco, shop, coaching, wujupon, embo)."""
 import traceback
 from typing import Optional
 
@@ -70,6 +70,14 @@ class PanelsCog(commands.Cog):
         if cog is None:
             return await self._missing(interaction, "Wujupón")
         await cog.publish_panel(interaction)                       # valida que sea Council/Admin
+
+    @panel.command(name="embo", description="(Council) Publica el panel para comprar embo o saldar la deuda de embo")
+    @app_commands.describe(canal="Canal donde publicarlo (por defecto, este canal)")
+    async def embo(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        cog = self.bot.get_cog("EmboTicketsCog")
+        if cog is None:
+            return await self._missing(interaction, "embo")
+        await cog.publish_panel(interaction, canal)                # valida que sea Council
 
 
 async def setup_panels(bot: commands.Bot, guild_id: int) -> PanelsCog:
