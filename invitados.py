@@ -155,7 +155,7 @@ INFO_TEXTS.update({
                       "• Buscá el panel de reclutamiento y tocá el botón para postularte.\n"
                       "• Completás un formulario: tu nick exacto en Albion, rol main, otros roles que sabés jugar, horarios UTC, gremio anterior, si podés grabar tus CTAs, idioma y si tenés amigos en la guild que te puedan vouchear.\n"
                       "• Se abre un canal privado donde solo vos y los reclutadores ven tu postulación. Pueden hacerte preguntas ahí.\n"
-                      "• Si te aceptan, tu cuenta queda **registrada** con ese personaje y recibís los roles apenas aparezcas dentro de la guild en el juego, así que acordate de pedir la invitación en Albion.\n"
+                      "• Si te aceptan, tu cuenta queda **registrada** con ese personaje y recibís los roles en el momento; acordate de pedir la invitación a la guild en Albion.\n"
                       "• Si te rechazan, te llega un mensaje privado y podés volver a aplicar más adelante."),
     "timers": ("⏱️ Timers de recursos",
                "Los timers avisan cuándo sale un recurso en un mapa.\n\n"
@@ -249,7 +249,7 @@ INFO_STAFF.update({
                       "1. Leé el resumen: nick, rol main, otros roles, horarios, gremio anterior, si graba CTAs, idioma y **amigos en la guild** (para vouch). Hablá con la persona en el canal.\n"
                       "2. Tocá **✔ Aceptar**. El bot te pregunta qué **roles de CTA** darle (el main viene preseleccionado) y si le das el rol **Observación**. Confirmá.\n"
                       "3. El bot **registra** al postulante con su nick de Albion (`/info-staff registro`).\n"
-                      "4. Si ya está en la guild, recibe al instante **Miembro** + los roles elegidos y se le saca **Public**. Si todavía no, los recibe **automáticamente** cuando aparezca dentro de la guild. Si pasan 14 días sin entrar, se cancela la espera.\n"
+                      "4. Recibe al instante **Miembro** + los roles elegidos y se le saca **Public**. Si todavía no figura dentro de la guild, queda en `/reclutas-pendientes` hasta que el bot lo vea adentro.\n"
                       "5. Revisá los pendientes con `/reclutas-pendientes`.\n\n"
                       "**Rechazar / Cerrar**\n"
                       "• **❌ Rechazar** manda un mensaje privado al postulante, deja registro en el canal de logs y borra el canal.\n"
@@ -284,7 +284,7 @@ INFO_STAFF.update({
                  "• `/limpiar-miembros [dar_public]` (Admin) — muestra quiénes tienen **Miembro** sin cuenta enlazada y, si confirmás, les saca el rol (y les da Public, salvo `dar_public:false`). No toca bots, admins, Staff, Council, invitados premium ni aceptados en espera. No borra balance ni estadísticas.\n"
                  "• `/sincronizar-registros` — vuelve a buscar en Albion los registros que quedaron sin ID (vínculos con `/admin_vincular` hechos con la API caída o con el nombre sin verificar), los vincula bien y corrige el apodo; lista los que no pudo verificar. `/sincronizar-apodos` solo revisa apodos.\n"
                  "• `/sincronizar-apodos` — revisa que cada apodo sea el personaje y corrige los que no.\n"
-                 "• `/reclutas-pendientes` — aceptados que todavía no entraron a la guild.\n"
+                 "• `/reclutas-pendientes` — aceptados (ya con roles) que todavía no figuran dentro de la guild.\n"
                  "• `/recuperar-lista` y `/recuperar @persona` — los últimos 5 registrados que se fueron del servidor; si vuelve, devuelve registro, roles y apodo.\n"
                  "• `/estado-api` (Admin) — revisa si la API de Albion responde. Si no registra a nadie, empezá por acá.\n"
                  "• `/canal registro` y `/registro_obligatorio` (Admin) — canal de avisos y exigir (o no) estar registrado.\n"

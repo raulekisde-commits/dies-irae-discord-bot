@@ -45,7 +45,6 @@ HTTP_TIMEOUT = 20
 HTTP_RETRIES = 2                          # reintentos ante errores temporales del servidor de Albion
 HTTP_RETRY_DELAY = 1.5
 RETRY_STATUS = {429, 500, 502, 503, 504}
-RECRUIT_PENDING_DAYS = 14                # si no entra a la guild en este tiempo, se cancela la espera
 ROSTER_REFRESH_MINUTES = 30            # cada cuánto se vuelve a bajar la lista de miembros de la guild
 ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h aunque la API falle; recién después se vuelve a consultar en vivo
 ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
@@ -648,8 +647,8 @@ class RegistrationCog(commands.Cog):
 
     # ---------- reclutamiento: registro al aceptar y roles recién cuando entra a la guild ----------
     async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter, extra_role_ids=()) -> tuple:
-        """Registra al postulante con su nick de Albion. Devuelve (ok, texto, roles_dados_ya).
-        Si el personaje ya figura en la guild, se dan los roles en el momento; si no, quedan PENDIENTES hasta que aparezca en la lista."""
+        """Registra al postulante con su nick de Albion y le da los roles en el momento. Devuelve (ok, texto, ya_esta_en_la_guild).
+        Si el personaje todavía no figura en la guild, queda en /reclutas-pendientes hasta que el bot lo vea adentro (sin vencimiento)."""
         look = await self.lookup_character(nick, any_guild=True)
         # Si la API no responde, no encuentra el personaje o no puede saber cuál de varios homónimos es, no se frena la aceptación: se vincula
         # a mano con el nick del ticket, igual que /admin_vincular (queda marcado como vínculo administrativo y auditado).
@@ -680,20 +679,20 @@ class RegistrationCog(commands.Cog):
         else:
             await self.audit_log(f"🧾 <@{recruiter.id}> aceptó y registró a <@{member.id}> como **{safe}**.")
         warn = f"\n⚠️ {manual[0].upper() + manual[1:]}: quedó vinculado **a mano** (como `/admin_vincular`) con el nick del ticket. Revisá que esté bien escrito." if manual else ""
-        if in_guild:
-            if await self.grant_recruit_roles(member, role_id, role_name, name, recruiter.id, extra_role_ids):
-                return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
-            return False, (f"quedó registrado como **{safe}** y está en la guild, pero **no pude darle los roles** "
+        if not await self.grant_recruit_roles(member, role_id, role_name, name, recruiter.id, extra_role_ids):
+            return False, (f"quedó registrado como **{safe}**, pero **no pude darle los roles** "
                            "(revisá que el rol del bot esté por encima de Miembro y de los roles de CTA)."), False
+        if in_guild:
+            return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
         pend_id = existing.char_id if existing is not None else (c.char_id if c else None)
         await self.run(rdb.add_pending_recruit, member.id, name, pend_id, role_id, role_name, recruiter.id, tuple(extra_role_ids))
         try:
-            await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}**. Entrá a la guild en el juego con tu personaje "
-                              f"**{name}**: apenas el bot te vea adentro, te da los roles automáticamente (puede tardar hasta unos 10 minutos).")
+            await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}** y ya tenés tus roles. "
+                              f"Acordate de entrar a la guild en el juego con tu personaje **{name}**.")
         except Exception:
             pass
-        return True, (f"Registrado como **{safe}**. ⏳ **Todavía no está en la guild**: los roles se le dan solos cuando "
-                      f"aparezca adentro (se revisa cada 10 min).{warn}"), False
+        return True, (f"Registrado como **{safe}**: roles entregados. ⏳ **Todavía no figura en la guild**: queda en "
+                      f"`/reclutas-pendientes` hasta que el bot lo vea adentro.{warn}"), False
 
     async def grant_recruit_roles(self, member: discord.Member, role_id: int, role_name: str, char_name: str, recruiter_id=None, extra_role_ids=()) -> bool:
         guild = member.guild
@@ -718,7 +717,7 @@ class RegistrationCog(commands.Cog):
             traceback.print_exc()
             return False
         nick_msg = await self.apply_nickname(member, char_name)
-        await self.audit_log(f"✅ <@{member.id}> ya está en la guild como **{discord.utils.escape_markdown(char_name)}**: roles entregados ({role_name}). {nick_msg}")
+        await self.audit_log(f"✅ <@{member.id}> (**{discord.utils.escape_markdown(char_name)}**): roles entregados ({role_name}). {nick_msg}")
         return True
 
     async def check_pending_recruits(self):
@@ -730,28 +729,18 @@ class RegistrationCog(commands.Cog):
         guild = self.bot.get_guild(self.guild_id)
         if guild is None:
             return
-        from datetime import datetime, timedelta, timezone
+        member_role = guild.get_role(self.member_role_id) if self.member_role_id else None
         for p in pending:
             member = guild.get_member(p.discord_id)
             if member is None:
                 await self.run(rdb.remove_pending_recruit, p.discord_id, None, "la persona ya no está en el servidor")
                 continue
+            if member_role is not None and member_role not in member.roles:      # aceptados antes de este cambio: ya no esperan, se les dan ahora
+                await self.grant_recruit_roles(member, p.role_id, p.role_name, p.char_name, p.recruiter_id, p.extra_role_ids)
             if p.char_name.casefold() in self.roster:
-                if await self.grant_recruit_roles(member, p.role_id, p.role_name, p.char_name, p.recruiter_id, p.extra_role_ids):
-                    await self.run(rdb.remove_pending_recruit, p.discord_id, None, "ingresó a la guild: roles entregados")
-                    try:
-                        await member.send(f"🎉 Ya te vimos dentro de la guild: te di los roles de **{p.role_name}**. ¡Bienvenido!")
-                    except Exception:
-                        pass
-                continue
-            try:
-                age = datetime.now(timezone.utc) - datetime.strptime(p.created_at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
-            if age > timedelta(days=RECRUIT_PENDING_DAYS):
-                await self.run(rdb.remove_pending_recruit, p.discord_id, None, f"venció a los {RECRUIT_PENDING_DAYS} días sin ingresar")
-                await self.audit_log(f"⌛ <@{p.discord_id}> ({discord.utils.escape_markdown(p.char_name)}) no entró a la guild en {RECRUIT_PENDING_DAYS} días: "
-                                     "se canceló la espera (sigue registrado, sin roles).")
+                await self.run(rdb.remove_pending_recruit, p.discord_id, None, "confirmado dentro de la guild")
+                await self.audit_log(f"🎮 <@{p.discord_id}> ya figura dentro de la guild como **{discord.utils.escape_markdown(p.char_name)}**: "
+                                     "sale de la lista de pendientes.")
 
     @tasks.loop(minutes=10)
     async def recruit_loop(self):
@@ -764,16 +753,16 @@ class RegistrationCog(commands.Cog):
     async def _recruit_ready(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="reclutas-pendientes", description="(Staff) Aceptados que todavía no entraron a la guild (sin roles)")
+    @app_commands.command(name="reclutas-pendientes", description="(Staff) Aceptados que todavía no figuran dentro de la guild")
     @app_commands.guild_only()
     async def reclutas_pendientes(self, interaction: discord.Interaction):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
         pending = await self.run(rdb.list_pending_recruits)
         if not pending:
-            return await _say(interaction, "✅ No hay aceptados esperando ingresar a la guild.")
+            return await _say(interaction, "✅ Todos los aceptados ya figuran dentro de la guild.")
         lines = [f"• <@{p.discord_id}> → **{discord.utils.escape_markdown(p.char_name)}** ({p.role_name}) · aceptado {p.created_at[:10]}" for p in pending]
-        await interaction.response.send_message("⏳ **Aceptados sin entrar a la guild todavía:**\n" + "\n".join(lines)[:1800], ephemeral=True,
+        await interaction.response.send_message("⏳ **Aceptados (ya con roles) que todavía no figuran dentro de la guild:**\n" + "\n".join(lines)[:1800], ephemeral=True,
                                                 allowed_mentions=NO_MENTIONS)
 
     @staticmethod

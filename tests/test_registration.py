@@ -395,34 +395,40 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertIn(self.r_member, self.alice.roles)
         self.assertIn("**1** personas", j.response.edits[-1]["content"])
 
-    def test_recruit_accept_registers_but_waits_for_guild_entry(self):
+    def test_recruit_accept_gives_roles_now_and_waits_confirmation(self):
         self._recruit_setup()
         ok, text, granted = run(self.cog.accept_recruit(self.newbie, "Forastero", self.r_main.id, "Tank", self.council))
         self.assertEqual((ok, granted), (True, False))
-        self.assertIn("Todavía no está en la guild", text)
-        self.assertEqual(rdb.get_registration(self.db, self.newbie.id).method, "recruitment")      # ya queda registrado
-        self.assertNotIn(self.r_member, self.newbie.roles)                                         # pero SIN roles
-        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)
+        self.assertIn("Todavía no figura en la guild", text)
+        self.assertEqual(rdb.get_registration(self.db, self.newbie.id).method, "recruitment")      # queda registrado
+        self.assertIn(self.r_member, self.newbie.roles)                                            # y con roles al instante
+        self.assertIn(self.r_main, self.newbie.roles)
+        self.assertNotIn(self.r_public, self.newbie.roles)
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)                               # en la lista de confirmación
         run(self.cog.check_pending_recruits())                                                     # sigue sin figurar en la guild
-        self.assertNotIn(self.r_main, self.newbie.roles)
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)
         self.members_in_guild = [{"Id": "id-forastero", "Name": "Forastero", "GuildName": "Smogg"}]  # ahora entró
+        run(self.cog.check_pending_recruits())
+        self.assertEqual(rdb.list_pending_recruits(self.db), [])
+
+    def test_old_pending_recruit_without_roles_gets_them(self):
+        self._recruit_setup()
+        rdb.admin_link(self.db, self.newbie.id, "Forastero", self.council.id)
+        rdb.add_pending_recruit(self.db, self.newbie.id, "Forastero", None, self.r_main.id, "Tank", self.council.id)
         run(self.cog.check_pending_recruits())
         self.assertIn(self.r_member, self.newbie.roles)
         self.assertIn(self.r_main, self.newbie.roles)
-        self.assertNotIn(self.r_public, self.newbie.roles)
-        self.assertEqual(rdb.list_pending_recruits(self.db), [])
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)                               # sigue esperando confirmación
 
-    def test_recruit_extra_roles_wait_for_guild_entry(self):
+    def test_recruit_extra_roles_given_at_once(self):
         self._recruit_setup()
         extra = discord.Role(7003, "Observacion", self.guild)
         self.guild.roles.append(extra)
         ok, _t, granted = run(self.cog.accept_recruit(self.newbie, "Forastero", self.r_main.id, "Tank, Observación", self.council, (extra.id,)))
         self.assertEqual((ok, granted), (True, False))
-        self.assertEqual(rdb.list_pending_recruits(self.db)[0].extra_role_ids, (extra.id,))      # se guarda para cuando entre
-        self.members_in_guild = [{"Id": "id-forastero", "Name": "Forastero", "GuildName": "Smogg"}]
-        run(self.cog.check_pending_recruits())
-        self.assertIn(extra, self.newbie.roles)
+        self.assertIn(extra, self.newbie.roles)                                                    # Observación y CTA al instante
         self.assertIn(self.r_main, self.newbie.roles)
+        self.assertIn(self.r_member, self.newbie.roles)
 
     def test_recruit_already_in_guild_gets_roles_immediately(self):
         self._recruit_setup()
@@ -438,7 +444,7 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertIn("a mano", text)
         reg = rdb.get_registration(self.db, self.newbie.id)
         self.assertEqual((reg.char_name, reg.method, reg.char_id), ("NoExiste", "admin_override", None))   # como /admin_vincular, sin ID
-        self.assertNotIn(self.r_member, self.newbie.roles)                                                  # los roles esperan a que entre
+        self.assertIn(self.r_member, self.newbie.roles)                                                     # roles al instante
         self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)
 
     def test_recruit_with_api_down_is_linked_by_hand(self):
@@ -452,7 +458,8 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertEqual((ok, granted), (True, False))
         self.assertIn("no respondió", text)
         self.assertEqual(rdb.get_registration(self.db, self.newbie.id).method, "admin_override")
-        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)                                # los roles esperan a que aparezca en la lista
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)                                # queda para confirmar el ingreso
+        self.assertIn(self.r_member, self.newbie.roles)
 
     def test_recruit_with_homonyms_is_linked_by_hand(self):
         self._recruit_setup()
