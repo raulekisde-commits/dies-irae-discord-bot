@@ -244,7 +244,7 @@ class CartasEditablesTests(DbBase):
         wdb._ready.discard(self.db)          # simula un reinicio del bot: vuelve a sembrar el catálogo
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "caerleon_port")
-        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 800))
+        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 600))
         _, cleared = wdb.edit_prize(self.db, "caerleon_port", actor_id=1, description="quitar")
         self.assertEqual(cleared.description, "")
 
@@ -272,13 +272,13 @@ class CartasEditablesTests(DbBase):
 class ProbabilidadLimiteLimpiezaTests(DbBase):
     def test_cambiar_probabilidad_y_rareza_sobrevive_reinicio(self):
         before, after = wdb.set_prize_odds(self.db, "caerleon_port", actor_id=1, weight=2000, rarity="legendary")
-        self.assertEqual((before.weight, before.rarity), (800, "epic"))
+        self.assertEqual((before.weight, before.rarity), (600, "epic"))
         self.assertEqual((after.weight, after.rarity), (2000, "legendary"))
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "caerleon_port")
         self.assertEqual((p.weight, p.rarity), (2000, "legendary"))
-        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 1200)
+        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 1400)
         self.assertEqual(wdb.rarity_totals(self.db)["legendary"], 4600 + 2000)
 
     def test_cambiar_probabilidad_cambia_el_sorteo(self):
@@ -393,6 +393,29 @@ class CatalogoV2Tests(DbBase):
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "flex_cta")
         self.assertEqual((p.name, p.description), ("Flex", "Mía"))
+
+    def test_migracion_v3_solo_toca_las_cartas_que_cambiaron(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_prizes SET name = 'Flex de antes', name_edited = 1 WHERE key = 'flex_cta'")
+        conn.execute("UPDATE wjp_prizes SET rarity = 'legendary', weight = 100, name = 'Kick viejo', name_edited = 1, odds_edited = 1 "
+                     "WHERE key = 'guild_kick'")
+        conn.execute("UPDATE wjp_settings SET value = '2' WHERE key = 'catalog_version'")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        self.assertEqual(wdb.get_prize(self.db, "flex_cta").name, "Flex de antes")        # no cambió en v3: se respeta
+        k = wdb.get_prize(self.db, "guild_kick")
+        self.assertEqual((k.name, k.rarity, k.weight), ("Kick de la guild", "mythic", 30))   # cambió en v3: toma lo nuevo
+
+    def test_cambios_v3_del_catalogo(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual(p["guild_kick"].rarity, "mythic")
+        self.assertEqual((p["cta_free_mount"].name, p["cta_free_mount"].rarity), ("CTA con montura de combate libre", "legendary"))
+        self.assertIn("la ponés vos", p["cta_free_mount"].description)
+        self.assertEqual(p["mount_escort"].name, "Montura libre en un porte de la guild")
+        self.assertEqual(p["plot_tax0"].rarity, "epic")
+        self.assertEqual((p["alter_ho_24h"].rarity, p["alter_ho_24h"].origin), ("epic", "Staff"))
+        self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
     def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
         conn = connect(self.db)
