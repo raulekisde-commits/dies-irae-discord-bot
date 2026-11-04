@@ -61,7 +61,7 @@ class CatalogTests(unittest.TestCase):
                   for c in wdb.CATALOG]
         exp = wdb.expected_cost(prizes)
         silver = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE
-        self.assertAlmostEqual(silver + exp["val"], 396_700, places=3)      # margen ≈ 20,7 % con la tirada a 500.000
+        self.assertAlmostEqual(silver + exp["val"], 294_200, places=3)      # margen ≈ 41 % con la tirada a 500.000 (v10)
         self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
     def test_texto_de_chance(self):
@@ -465,6 +465,11 @@ class CatalogoV2Tests(DbBase):
                                                  "bad_selfmute_chat_5", "bad_selfmute_voice_15")],
                          ["efx:mute_chat:15", "efx:mute_voice:45", "efx:mute_chat:120", "efx:mute_voice:360",
                           "efx:mute_chat:2880", "efx:mute_chat:15", "efx:mute_voice:45"])
+
+    def test_cambios_v10_las_caras_con_menos_chance(self):
+        p = {x.key: x.weight for x in wdb.list_prizes(self.db)}
+        self.assertEqual([p[k] for k in ("wuju_15m", "weapon_83", "embo_1000", "weapon_73")], [100, 100, 100, 150])
+        self.assertEqual([p[k] for k in ("mute_chat_60", "mute_voice_60", "purge_shield", "bad_cd_24h")], [450, 300, 300, 250])
 
     def test_migracion_v9_actualiza_rarezas(self):
         conn = connect(self.db)

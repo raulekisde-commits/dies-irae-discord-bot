@@ -171,14 +171,14 @@ CATALOG = [
     ("bad_cd_12h", "☠️ Cooldown de cobro +12 h", "epic", 300, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 12 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🟠 Legendarias — 4,6 %
-    ("weapon_73", "Arma 7.3 del Guild Shop (8M)", "legendary", 300, "Staff", None, 0, 8_000_000, "silver", 0,
+    ("weapon_73", "Arma 7.3 del Guild Shop (8M)", "legendary", 150, "Staff", None, 0, 8_000_000, "silver", 0,
      "Un arma 7.3 del Guild Shop de hasta 8M.", 0),
     ("duel_1v1", "Duelo 1v1 especial", "legendary", 150, "Bot", None, 0, 0, "", 1,
      "Retás a alguien del Top 10 de apostado (hasta 100M); se avisa al rol Ludópata. Tiene 24 h para aceptar: si rechaza o no "
      "responde, te paga el 5 % de la apuesta." + SHIELD_NOTE, 0),
-    ("weapon_83", "Arma 8.3 (hasta 12M)", "legendary", 250, "Staff", None, 0, 12_000_000, "silver", 0,
+    ("weapon_83", "Arma 8.3 (hasta 12M)", "legendary", 100, "Staff", None, 0, 12_000_000, "silver", 0,
      "Un arma 8.3 de hasta 12M.", 0),
-    ("wuju_15m", "Jackpot 15M Wuju Coins", "legendary", 450, "Bot", "wuju", 15_000_000, 15_000_000, "wuju", 0,
+    ("wuju_15m", "Jackpot 15M Wuju Coins", "legendary", 100, "Bot", "wuju", 15_000_000, 15_000_000, "wuju", 0,
      "Se acreditan al instante en tu balance.", 0),
     ("regear_full_5m", "Reequipo completo (5M)", "legendary", 400, "Staff", None, 0, 5_000_000, "silver", 0,
      "Reequipo completo para una CTA, con presupuesto de hasta 5M.", 0),
@@ -186,7 +186,7 @@ CATALOG = [
      "Armás una bomb con 5 personas a elección.", 0),
     ("cta_free_mount", "CTA con montura de combate libre", "legendary", 200, "Staff", None, 0, 0, "", 0,
      "Vas a una CTA con la montura de combate que quieras. La montura la ponés vos, no el staff.", 0),
-    ("embo_1000", "1.000 de embo", "legendary", 300, "Bot", "embo", 1000, 1000, "embo", 0,
+    ("embo_1000", "1.000 de embo", "legendary", 100, "Bot", "embo", 1000, 1000, "embo", 0,
      "Se acreditan al instante en tu balance de embo.", 0),
     ("freeze_12h", "Congelar balance 12 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Durante 12 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
@@ -201,19 +201,19 @@ CATALOG = [
      "Un alter de crafteo durante 7 días.", 0),
     ("coinflip_20m", "Coinflip hasta 20M", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 20M. Rigen todas las reglas del coinflip.", 0),
-    ("mute_chat_60", "Mute de chat 6 h", "legendary", 100, "Bot", None, 0, 0, "", 1,
+    ("mute_chat_60", "Mute de chat 6 h", "legendary", 450, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 6 horas." + SHIELD_NOTE, 0),
-    ("mute_voice_60", "Mute de voice 6 h", "legendary", 100, "Bot", None, 0, 0, "", 1,
+    ("mute_voice_60", "Mute de voice 6 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Muteás a un jugador en el voice por 6 horas." + SHIELD_NOTE, 0),
     ("shield_24h", "🛡️ Escudo 24 h", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Durante 24 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("shop_discount_30", "🎟️ Ticket de descuento 30 % (Guild Shop)", "legendary", 130, "Bot", "shop_ticket", 0, 7_000_000, "silver", 0,
      "En una compra del Guild Shop el descuento pasa de 10 % a 30 % hasta 35M. Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
-    ("purge_shield", "💥 Purgar escudo", "legendary", 150, "Bot", None, 0, 0, "", 1,
+    ("purge_shield", "💥 Purgar escudo", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Le rompés el escudo a otro jugador. No funciona contra los inmunes. Si no tiene escudo, no se gasta.", 0),
     ("wjp_freeze_24h", "❄️ Congelar Wujupón 24 h", "legendary", 150, "Bot", None, 0, 0, "", 1,
      "Durante 24 h el jugador no puede tirar, comprar ni usar cartas. No pierde nada." + SHIELD_NOTE, 0),
-    ("bad_cd_24h", "☠️ Cooldown de cobro +24 h", "legendary", 100, "Bot", None, 0, 0, "", 0,
+    ("bad_cd_24h", "☠️ Cooldown de cobro +24 h", "legendary", 250, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 24 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔴 Míticas — 0,2 %
     ("premium_30m", "Premium de Albion (30M VAL)", "mythic", 20, "Staff", None, 0, 30_000_000, "val", 0,
@@ -275,7 +275,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 9
+CATALOG_VERSION = 10
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -293,6 +293,7 @@ CATALOG_CHANGES = {
         "free_build_p1", "coinflip_20m", "custom_bomb", "staff_build", "craft_alter_7d", "mute_chat_5", "mute_voice_5",
         "mute_15", "voice_mute_15", "mute_chat_30", "mute_voice_30", "mute_chat_60", "mute_voice_60", "mute_chat_180",
         "mute_voice_180", "bad_selfmute_chat_5", "bad_selfmute_voice_5", "bad_selfmute_chat_15", "bad_selfmute_voice_15"),
+    10: ("wuju_15m", "mute_chat_60", "weapon_83", "bad_cd_24h", "embo_1000", "mute_voice_60", "weapon_73", "purge_shield"),
 }
 
 SCHEMA = """
