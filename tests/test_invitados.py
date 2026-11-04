@@ -79,10 +79,12 @@ class Tests(InvBase):
             i.confirmed_text = "\n".join(str(e.get("content")) for e in j.response.edits)
         return i
 
-    def test_premium_only_council(self):
-        self.assertIn("Council", self.prem(self.leg, self.newbie).text)
-        self.assertIn("Council", self.prem(self.stf, self.newbie).text)
+    def test_premium_only_staff_council(self):
+        self.assertIn("Staff** y el **Council", self.prem(self.leg, self.newbie).text)
+        self.assertIn("Staff** y el **Council", self.prem(self.alice, self.newbie).text)
         self.assertNotIn(iv.MIEMBRO_ROLE_ID, [r.id for r in self.newbie.roles])
+        self.prem(self.stf, self.newbie)                                   # el Staff sí puede
+        self.assertIn(iv.MIEMBRO_ROLE_ID, [r.id for r in self.newbie.roles])
 
     def test_premium_gives_member_and_lists(self):
         i = self.prem(self.council, self.newbie)
