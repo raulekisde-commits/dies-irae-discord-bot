@@ -40,6 +40,11 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(duels)")}
+        if "penalty" not in cols:                 # duelo especial de Wujupón: lo que pierde el retado si rechaza o no responde
+            conn.execute("ALTER TABLE duels ADD COLUMN penalty INTEGER NOT NULL DEFAULT 0")
+        if "penalty_paid" not in cols:
+            conn.execute("ALTER TABLE duels ADD COLUMN penalty_paid INTEGER NOT NULL DEFAULT 0")
     finally:
         conn.close()
 
@@ -61,6 +66,8 @@ class Duel:
     ends_at: float
     winner_id: Optional[int]
     side: Optional[str]
+    penalty: int = 0
+    penalty_paid: int = 0
 
     @property
     def is_open(self) -> bool:
@@ -72,7 +79,8 @@ def _row(r) -> Optional[Duel]:
         return None
     return Duel(int(r["id"]), int(r["guild_id"]), int(r["channel_id"]), int(r["message_id"]) if r["message_id"] is not None else None,
                 int(r["challenger_id"]), int(r["challenged_id"]), int(r["stake"]), r["status"], float(r["ends_at"]),
-                int(r["winner_id"]) if r["winner_id"] is not None else None, r["side"])
+                int(r["winner_id"]) if r["winner_id"] is not None else None, r["side"],
+                int(r["penalty"]) if "penalty" in r.keys() else 0, int(r["penalty_paid"]) if "penalty_paid" in r.keys() else 0)
 
 
 def get_duel(db_path: str, duel_id: int) -> Optional[Duel]:
@@ -114,7 +122,9 @@ class CreateResult:
 
 
 def create_duel(db_path: str, *, guild_id: int, channel_id: int, challenger_id: int, challenged_id: int, stake: int,
-                now: Optional[float] = None) -> CreateResult:
+                now: Optional[float] = None, duration: Optional[float] = None, penalty: int = 0) -> CreateResult:
+    """`duration` y `penalty`: duelo especial de Wujupón (24 h para responder; si rechaza o no responde, el retado
+    le paga `penalty` al retador)."""
     import time
     now = time.time() if now is None else now
     if challenger_id == challenged_id:
@@ -130,9 +140,10 @@ def create_duel(db_path: str, *, guild_id: int, channel_id: int, challenger_id: 
             if theirs < stake:
                 return CreateResult(False, "target_funds", None, theirs)
             cur = conn.execute(
-                "INSERT INTO duels(guild_id, channel_id, challenger_id, challenged_id, stake, status, created_at, ends_at) "
-                "VALUES (?,?,?,?,?, 'open', ?, ?)",
-                (guild_id, channel_id, challenger_id, challenged_id, stake, utcnow_iso(), now + DURATION_SECONDS))
+                "INSERT INTO duels(guild_id, channel_id, challenger_id, challenged_id, stake, status, created_at, ends_at, penalty) "
+                "VALUES (?,?,?,?,?, 'open', ?, ?, ?)",
+                (guild_id, channel_id, challenger_id, challenged_id, stake, utcnow_iso(), now + (duration or DURATION_SECONDS),
+                 max(0, int(penalty))))
             did = int(cur.lastrowid)
             rel = f"duel:{did}"
             op = eco.tx_new_operation(conn, kind="remove", actor_id=challenger_id, request_key=f"duel:{did}:stake:{challenger_id}",
@@ -164,6 +175,22 @@ def _refund(conn: sqlite3.Connection, d: Duel, new_status: str) -> None:
     eco.tx_move(conn, op_id=op, user_id=d.challenger_id, delta=d.stake, mov_type="duel_refund", reason=f"Duelo 1v1 #{d.id}: devolución",
                 actor_id=d.challenger_id, related_id=rel)
     conn.execute("UPDATE duels SET status = ?, resolved_at = ? WHERE id = ?", (new_status, utcnow_iso(), d.id))
+    if d.penalty > 0 and new_status in ("declined", "expired"):
+        # duelo especial: el retado le paga la penalidad al retador (no lo deja en negativo)
+        have = _balance(conn, d.challenged_id)
+        pay = max(0, min(d.penalty, have))
+        if pay:
+            op_out = eco.tx_new_operation(conn, kind="remove", actor_id=d.challenged_id, request_key=f"duel:{d.id}:penalty:out",
+                                          total_amount=pay, target_count=1, reason=f"Duelo 1v1 #{d.id}: penalidad por no aceptar",
+                                          related_id=rel)
+            eco.tx_move(conn, op_id=op_out, user_id=d.challenged_id, delta=-pay, mov_type="duel_penalty",
+                        reason=f"Duelo 1v1 #{d.id}: penalidad por no aceptar", actor_id=d.challenged_id, related_id=rel)
+            op_in = eco.tx_new_operation(conn, kind="add", actor_id=d.challenger_id, request_key=f"duel:{d.id}:penalty:in",
+                                         total_amount=pay, target_count=1, reason=f"Duelo 1v1 #{d.id}: penalidad cobrada",
+                                         related_id=rel)
+            eco.tx_move(conn, op_id=op_in, user_id=d.challenger_id, delta=pay, mov_type="duel_penalty_in",
+                        reason=f"Duelo 1v1 #{d.id}: penalidad cobrada", actor_id=d.challenger_id, related_id=rel)
+        conn.execute("UPDATE duels SET penalty_paid = ? WHERE id = ?", (pay, d.id))
 
 
 @dataclass

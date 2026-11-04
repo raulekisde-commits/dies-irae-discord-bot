@@ -90,6 +90,13 @@ except Exception:
     async def setup_wujupon(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar wujupon.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from wujupon_efectos import setup_efectos
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_efectos(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar wujupon_efectos.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from coaching import setup_coaching
 except Exception:
     import traceback as _tb
@@ -583,6 +590,7 @@ class MyBot(commands.Bot):
             await _safe_setup("encargos", setup_encargos, self, DB_PATH, GUILD_ID)
             await _safe_setup("coaching", setup_coaching, self, DB_PATH, GUILD_ID)
             await _safe_setup("wujupon", setup_wujupon, self, DB_PATH, GUILD_ID)
+            await _safe_setup("wujupon_efectos", setup_efectos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
             await _safe_setup("bombs", setup_bombs, self, DB_PATH, GUILD_ID)
@@ -2608,6 +2616,35 @@ async def panel_foco_slash(interaction: discord.Interaction):    # se usa desde 
 
 # /panel reclutamiento y /panel foco viven en el grupo /panel (panels.py); acá solo se registran sus funciones
 bot.panel_handlers = {"reclutamiento": panel_slash, "foco": panel_foco_slash}
+
+
+def cta_wujupon_open_runs(guild_id: int) -> list:
+    """CTA abiertas (para la carta «Staff a tu elección»): [(id, título)]."""
+    rows = db_fetchall("SELECT * FROM cta_runs WHERE guild_id=? AND status='open' AND final_state IS NULL ORDER BY closes_at", (guild_id,))
+    return [(int(r["id"]), cta_run_title(dict(r))) for r in rows]
+
+
+def cta_wujupon_slot(run_id: int, number: int):
+    """(clave, texto) de la posición `number` de una CTA abierta, o None si no existe."""
+    run = cta_run_get(run_id)
+    if not run or run["status"] != "open":
+        return None
+    slot = cta_slot_by_number(json.loads(run["snapshot_json"])["slots"], number)
+    if slot is None:
+        return None
+    return cta_slot_key(slot), f"posición {number} · {slot['role_name']} (Party {slot['party_no']})"
+
+
+def cta_wujupon_assign(run_id: int, target_id: int, slot_key: str, actor_id: int):
+    code, extra = cta_staff_assign(run_id, target_id, slot_key, actor_id)
+    if code in ("assigned", "moved"):
+        run = cta_run_get(run_id)
+        cta_audit(int(run["guild_id"]), actor_id, "wujupon_staff_card", run_id, f"{slot_key}; member={target_id}")
+        cta_request_board_refresh(run_id)
+    return code, extra
+
+
+bot.cta_hooks = {"open_runs": cta_wujupon_open_runs, "slot": cta_wujupon_slot, "assign": cta_wujupon_assign}
 
 
 # ============================================================
@@ -4960,10 +4997,15 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if slot is None:
         await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {total}.")
         return True
-    error = cta_legacy_error(member, slot, snapshot, run) or cta_access_error(member, slot, message.guild)
+    legacy_err = cta_legacy_error(member, slot, snapshot, run)
+    access_err = cta_access_error(member, slot, message.guild)
+    error = legacy_err or access_err
     if error:
-        await cta_reply_short(message, error)
-        return True
+        # cartas de Wujupón «Anotación libre en CTA» / «Slot libre en Party 1»: si tiene una, se le ofrece usarla en esta CTA
+        import wujupon_cta
+        if not await wujupon_cta.offer_or_error(DB_PATH, message, member, run_id, int(slot["party_no"]), bool(legacy_err),
+                                                bool(access_err), error, lambda: cta_handle_thread_message(message)):
+            return True
     try:
         code, extra = cta_try_signup(run_id, member.id, cta_slot_key(slot))
     except sqlite3.Error as exc:

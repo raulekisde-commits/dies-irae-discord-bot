@@ -287,6 +287,10 @@ class DepositsCog(commands.Cog):
         wait = await self.run(ddb.sell_cooldown_remaining, interaction.guild.id, interaction.user.id)
         if wait > 0:
             return await _reply(interaction, self._cooldown_text(wait))
+        import efectos_db
+        frozen = await self.run(efectos_db.active_until, interaction.user.id, "freeze_balance")
+        if frozen is not None:
+            return await _reply(interaction, f"🧊 Tu balance está congelado por una carta de Wujupón hasta <t:{int(frozen)}:t>: no podés cobrar.")
         balance = await self.run(eco.get_balance, interaction.user.id)
         if balance <= 0:
             return await _reply(interaction, f"❌ No tenés Wuju Coins para vender. Tu balance: {self.money(balance)}.")

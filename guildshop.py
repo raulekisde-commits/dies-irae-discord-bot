@@ -653,7 +653,7 @@ class GuildShopCog(commands.Cog):
             bp, net = gdb.offer_with_ticket(gross, card_prize)
         if currency == "wuju":
             if await self.run(eco.is_frozen, ticket.buyer_id):
-                return await _reply(interaction, f"🧊 El balance de <@{ticket.buyer_id}> está congelado (tiene un ticket de Cobrar balance abierto). No se hizo ningún cambio.")
+                return await _reply(interaction, f"🧊 El balance de <@{ticket.buyer_id}> está congelado (ticket de Cobrar balance abierto o carta de Wujupón). No se hizo ningún cambio.")
             balance = await self.run(eco.get_balance, ticket.buyer_id)
             if balance < net:
                 return await _reply(interaction,
@@ -705,7 +705,7 @@ class GuildShopCog(commands.Cog):
                                                 "volvé a cargar la venta con el descuento normal.")
             return
         if result.status == "frozen":
-            await self._finish_msg(interaction, "🧊 El balance del comprador está congelado (tiene un ticket de Cobrar balance abierto). No se cobró nada.")
+            await self._finish_msg(interaction, "🧊 El balance del comprador está congelado (ticket de Cobrar balance abierto o carta de Wujupón). No se cobró nada.")
             return
         if result.status == "funds":
             p = result.pending

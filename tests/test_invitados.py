@@ -186,6 +186,19 @@ class Tests(InvBase):
         self.assertIsNone(run(memberguard.button_block_reason(self.bot, self.newbie)))        # el casino se habilita aparte con /eco perms-comando
         self.assertIn("miembros", run(memberguard.button_block_reason(self.bot, self.outsider)))
 
+    def test_info_staff_wujupon_tiene_segunda_pagina(self):
+        i = self.inter(self.council)
+        run(self.cog.info_staff.callback(self.cog, i, discord.app_commands.Choice(name="wujupon", value="wujupon")))
+        embeds = [kw["embed"] for _, kw in i.response.sent]                # dos mensajes, uno por página
+        self.assertEqual(len(embeds), 2)
+        self.assertIn("/wujupon-efectos", embeds[1].description)
+        self.assertIn("Cartas de CTA", embeds[1].description)
+        for e in embeds:
+            self.assertLessEqual(len(e), 6000)
+        i = self.inter(self.council)                     # los temas sin segunda página siguen con un solo embed
+        run(self.cog.info_staff.callback(self.cog, i, discord.app_commands.Choice(name="casino", value="casino")))
+        self.assertIn("embed", i.response.sent[0][1])
+
     def test_info(self):
         i = self.inter(self.alice)
         run(self.cog.info.callback(self.cog, i, discord.app_commands.Choice(name="invitados", value="invitados")))
