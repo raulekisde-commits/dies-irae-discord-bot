@@ -6668,7 +6668,7 @@ HELP_SECTIONS = [
         ("/bomb agregar|sacar bomb usuario", "Staff / Reclutador / Council", "Agrega o saca a alguien de una bomb: le da o le quita el rol y queda guardado quién lo agregó."),
         ("/bomb cargar bomb", "Staff / Reclutador / Council", "Anota en la lista de la bomb a todos los que ya tienen su rol pero no fueron agregados con el comando (quedan como agregados por quien lo usa)."),
         ("/bomb listar [bomb]", "Staff / Reclutador / Council / Callers", "Lista las bombs (rol, caller, integrantes) o los integrantes de una, con quién los agregó."),
-        ("/invitar-premium usuario quien_es personaje_de_albion", "Council", "Invitación premium: se registra, pierde Public (e Invitado), recibe Miembro y queda registrado quién lo invitó."),
+        ("/invitar-premium usuario quien_es personaje_de_albion", "Staff / Council", "Invitación premium: se registra, pierde Public (e Invitado), recibe Miembro y queda registrado quién lo invitó."),
         ("/invitados-premium", "Staff", "Lista los invitados premium actuales con quién los invitó y el motivo."),
         ("/info tema", "Todos", "Explica cómo funciona un sistema del servidor (invitados, warnings, casino, economía y zvz-vods)."),
         ("/mi_registro", "Miembros", "Ver tu personaje vinculado."),

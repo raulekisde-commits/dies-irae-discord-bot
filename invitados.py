@@ -41,7 +41,7 @@ INFO_TEXTS = {
                   "• Solo quienes tienen el rol **Legacy** pueden invitar con `/invitar usuario motivo`.\n"
                   "• Al invitar tenés que indicar el nombre exacto de su personaje de Albion: el bot lo busca, te muestra el personaje y vos confirmás que es tu amigo.\n"
                   "• El invitado recibe el rol **Invitado** y tiene acceso a la economía; el casino se le habilita aparte.\n"
-                  "• El **Council** puede hacer una **invitación premium** con `/invitar-premium`: la persona entra directo con el rol **Miembro**.\n"
+                  "• El **Staff** y el **Council** pueden hacer una **invitación premium** con `/invitar-premium`: la persona entra directo con el rol **Miembro**.\n"
                   "• Cualquier miembro puede ver quién invitó a alguien con `/quien-invito usuario`.\n"
                   "• Quien invita responde por su invitado."),
     "warnings": ("⚠️ Sistema de warnings",
@@ -96,7 +96,7 @@ INFO_STAFF = {
                   "• `/invitados` — lista todos los invitados activos con quién los invitó, cuándo y el motivo.\n"
                   "• Al invitar, el bot registra al invitado como si hubiera usado `/registrar`, le saca el rol **Public** y le pone **Invitado**.\n"
                   "• Si el invitado pierde el rol Invitado (p. ej. lo hacen miembro), el registro queda como histórico y deja de aparecer en la lista.\n\n"
-                  "**⭐ Invitación premium** (solo **Council**)\n"
+                  "**⭐ Invitación premium** (**Staff** y **Council**)\n"
                   "• `/invitar-premium usuario quien_es personaje_de_albion` — la persona entra directo con el rol **Miembro**: se la registra (aunque la API de Albion no encuentre el personaje), se le saca **Public** y queda guardado quién la invitó y el motivo.\n"
                   "• Si ya era **invitado común**, pasa a premium: se le saca el rol Invitado y se mantiene el registro que tenía.\n"
                   "• `/invitados-premium` — lista los invitados premium activos con quién los invitó, cuándo y el motivo.\n"
@@ -495,13 +495,13 @@ class InvitadosCog(commands.Cog):
         await self._start_invite(interaction, usuario, quien_es, personaje_de_albion, premium=False)
 
     # ---------- /invitar-premium ----------
-    @app_commands.command(name="invitar-premium", description="(Council) Invitación premium: entra directo con el rol Miembro y queda quién lo invitó")
+    @app_commands.command(name="invitar-premium", description="(Staff/Council) Invitación premium: entra directo con el rol Miembro y queda quién lo invitó")
     @app_commands.describe(usuario="La persona de Discord que invitás", quien_es="Quién es / por qué lo invitás",
                            personaje_de_albion="Nombre exacto de su personaje en Albion (se registra igual que con /registrar)")
     @app_commands.guild_only()
     async def invitar_premium(self, interaction: discord.Interaction, usuario: discord.Member, quien_es: str, personaje_de_albion: str):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el **Council** puede hacer invitaciones premium.")
+        if not (can_manage(interaction.user) or STAFF_ROLE_ID in _roles(interaction.user)):
+            return await _say(interaction, "🔒 Solo el **Staff** y el **Council** pueden hacer invitaciones premium.")
         await self._start_invite(interaction, usuario, quien_es, personaje_de_albion, premium=True)
 
     async def _start_invite(self, interaction: discord.Interaction, usuario: discord.Member, quien_es: str, personaje_de_albion: str, premium: bool):
