@@ -224,10 +224,38 @@ class EfectosCog(commands.Cog):
                 await member.add_roles(role, reason="Wujupón: carta")
             else:
                 await member.remove_roles(role, reason="Wujupón: venció o se limpió")
-            return True
         except Exception:
             traceback.print_exc()
             return False
+        if kind == "mute_voice":
+            await self._bounce_voice(member)
+        return True
+
+    async def _bounce_voice(self, member) -> None:
+        """Discord aplica el cambio de «Hablar» recién cuando la persona cambia de canal: si está en voice, la movemos a otro
+        canal y la devolvemos al que estaba. Mejor esfuerzo (necesita «Mover miembros»)."""
+        current = getattr(getattr(member, "voice", None), "channel", None)
+        if current is None:
+            return
+        g = getattr(member, "guild", None) or self.guild()
+        seen, others = set(), []
+        for c in [getattr(g, "afk_channel", None)] + list(getattr(g, "voice_channels", None) or []):
+            if c is not None and c.id != current.id and c.id not in seen:
+                seen.add(c.id)
+                others.append(c)
+        for other in others[:3]:                               # si no puede entrar a uno, prueba con otro
+            try:
+                await member.move_to(other, reason="Wujupón: aplicar mute de voice")
+            except Exception:
+                continue
+            for _ in range(2):
+                try:
+                    await member.move_to(current, reason="Wujupón: vuelve a su canal")
+                    return
+                except Exception:
+                    traceback.print_exc()
+                    await asyncio.sleep(1)
+            return
 
     async def announce(self, text: str, target_id: Optional[int] = None, dm: Optional[str] = None):
         try:

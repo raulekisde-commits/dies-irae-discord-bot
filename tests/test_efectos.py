@@ -77,6 +77,25 @@ class EfectosTests(DiscordBase):
         self.use("voice_mute_15", self.bob)
         self.assertIn(self.r_voice, self.bob.roles)
 
+    def test_mute_de_voice_lo_mueve_y_lo_devuelve(self):
+        here = discord.VoiceChannel(990001, self.guild, "Party")
+        afk = discord.VoiceChannel(990002, self.guild, "AFK")
+        self.guild.afk_channel, self.guild.voice_channels = afk, [here, afk]
+        moves = []
+
+        async def move_to(ch, reason=None):
+            moves.append(ch.name)
+        self.bob.voice = type("V", (), {"channel": here})()
+        self.bob.move_to = move_to
+        cid, _ = self.use("voice_mute_15", self.bob)
+        self.assertEqual(moves, ["AFK", "Party"])
+        conn = connect(self.db)                                 # al vencer, también lo reconecta para que pueda hablar
+        conn.execute("UPDATE wjp_effects SET until = ? WHERE user_id = ?", (time.time() - 1, self.bob.id))
+        conn.close()
+        run(self.cog.expire_loop.fn(self.cog))
+        self.assertNotIn(self.r_voice, self.bob.roles)
+        self.assertEqual(moves, ["AFK", "Party", "AFK", "Party"])
+
     def test_sin_roles_configurados_la_carta_no_se_gasta(self):
         wdb.set_setting(self.db, "mute_chat_role", None)
         cid = self.card("mute_15")
