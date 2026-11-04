@@ -447,14 +447,25 @@ class CatalogoV2Tests(DbBase):
 
     def test_migracion_v7_cartas_malas_de_wuju_pueden_dejar_negativo(self):
         conn = connect(self.db)
-        conn.execute("UPDATE wjp_prizes SET description = 'vieja', desc_edited = 1 WHERE key IN ('bad_wuju_100k', 'bad_wuju_300k')")
+        conn.execute("UPDATE wjp_prizes SET description = 'vieja', desc_edited = 1 "
+                     "WHERE key IN ('bad_wuju_100k', 'bad_wuju_300k', 'bad_embo_15', 'bad_embo_30')")
         conn.execute("UPDATE wjp_settings SET value = '6' WHERE key = 'catalog_version'")
         conn.close()
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
-        for k in ("bad_wuju_100k", "bad_wuju_300k"):
+        for k in ("bad_wuju_100k", "bad_wuju_300k", "bad_embo_15", "bad_embo_30"):
             self.assertIn("negativo", wdb.get_prize(self.db, k).description, k)
-        self.assertIn("sin bajar de 0", wdb.get_prize(self.db, "bad_embo_15").description)      # el embo no cambia
+
+    def test_embo_puede_quedar_negativo(self):
+        import embo_db
+        embo_db.apply(self.db, user_id=1, mode="add", amount=10, actor_id=9, request_key="e1", reason="x")
+        ch = embo_db.apply(self.db, user_id=1, mode="remove", amount=30, actor_id=9, request_key="e2", reason="carta mala")
+        self.assertEqual((ch.before, ch.after), (10, -20))
+        self.assertEqual(embo_db.get_balance(self.db, 1), -20)
+        ch = embo_db.apply(self.db, user_id=1, mode="set", amount=-5, actor_id=9, request_key="e3", reason="fijar")
+        self.assertEqual(ch.after, -5)
+        with self.assertRaises(embo_db.EmboError):
+            embo_db.apply(self.db, user_id=1, mode="remove", amount=0, actor_id=9, request_key="e4", reason="x")
 
     def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
         conn = connect(self.db)
@@ -543,9 +554,9 @@ class EmboDbTests(DbBase):
         self.assertTrue(embo_db.apply(self.db, user_id=5, mode="add", amount=50, actor_id=1, request_key="a", reason="").duplicate)
         self.assertEqual(embo_db.get_balance(self.db, 5), 7)
 
-    def test_no_queda_negativo(self):
-        with self.assertRaises(embo_db.EmboError):
-            embo_db.apply(self.db, user_id=5, mode="remove", amount=1, actor_id=1, request_key="a", reason="")
+    def test_quitar_puede_dejar_negativo(self):
+        ch = embo_db.apply(self.db, user_id=5, mode="remove", amount=1, actor_id=1, request_key="a", reason="")
+        self.assertEqual((ch.before, ch.after), (0, -1))
 
 
 # ============================================================

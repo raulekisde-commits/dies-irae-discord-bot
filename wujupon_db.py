@@ -73,7 +73,7 @@ CATALOG = [
     ("bad_wuju_100k", "☠️ −100.000 Wuju Coins", "common", 1200, "Bot", None, 100_000, -100_000, "wuju", 0,
      "Carta mala: se te descuentan 100.000, aunque tu balance quede en negativo. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_embo_15", "☠️ −15 de embo", "common", 800, "Bot", None, 15, -15, "embo", 0,
-     "Carta mala: se te descuentan 15 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+     "Carta mala: se te descuentan 15 de embo, aunque tu balance quede en negativo. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_chat_5", "☠️ Te silenciás el chat 5 min", "common", 600, "Bot", None, 0, 0, "", 0,
      "Carta mala: quedás muteado del chat 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_voice_5", "☠️ Te silenciás el voice 5 min", "common", 600, "Bot", None, 0, 0, "", 0,
@@ -111,7 +111,7 @@ CATALOG = [
     ("bad_wuju_300k", "☠️ −300.000 Wuju Coins", "rare", 600, "Bot", None, 300_000, -300_000, "wuju", 0,
      "Carta mala: se te descuentan 300.000, aunque tu balance quede en negativo. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_embo_30", "☠️ −30 de embo", "rare", 400, "Bot", None, 30, -30, "embo", 0,
-     "Carta mala: se te descuentan 30 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+     "Carta mala: se te descuentan 30 de embo, aunque tu balance quede en negativo. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_chat_15", "☠️ Te silenciás el chat 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
      "Carta mala: quedás muteado del chat 15 minutos. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_voice_15", "☠️ Te silenciás el voice 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
@@ -242,7 +242,7 @@ CATALOG_CHANGES = {
     5: ("premium_30m", "freeze_24h", "mute_chat_180", "mute_voice_180", "plot_tax0", "shield_4d", "coinflip_nolimit",
         "duel_1v1", "lootsplit_remove", "ava_replace", "shop_discount"),
     6: ("shop_discount", "shop_discount_30", "guild_desc_1d", "staff_build"),
-    7: ("bad_wuju_100k", "bad_wuju_300k"),                       # pueden dejar el balance en negativo
+    7: ("bad_wuju_100k", "bad_wuju_300k", "bad_embo_15", "bad_embo_30"),   # pueden dejar el balance en negativo
 }
 
 SCHEMA = """
