@@ -196,6 +196,7 @@ class EconomyCog(commands.Cog):
         self.default_roles = {"bal": {member_role_id, self.guest_role_id}, "top": {member_role_id, self.guest_role_id},
                               "stats": {member_role_id, self.guest_role_id}}
         self._emoji_raw: Optional[str] = None
+        self._embo_emoji: Optional[str] = None
         self._log_lock = asyncio.Lock()
         self._csv_last: dict = {}
 
@@ -204,6 +205,7 @@ class EconomyCog(commands.Cog):
         await self._db(eco.init_schema)
         await self._db(embo_db.init_schema)
         self._emoji_raw = await self._db(eco.get_setting, "currency_emoji")
+        self._embo_emoji = await self._db(eco.get_setting, "embo_emoji")
         self.retry_pending_logs.start()
         self.embo_daily_task.start()
 
@@ -222,6 +224,11 @@ class EconomyCog(commands.Cog):
             return None
         emoji = self.bot.get_emoji(parsed[1])
         return str(emoji) if emoji else None   # None => el emoji ya no está disponible
+
+    @property
+    def embo_icon(self) -> str:
+        """Icono del embo: el configurado con /eco embo icono, o 🍾 por defecto."""
+        return self._embo_emoji or embo_db.EMOJI
 
     def money(self, amount: int, signed: bool = False) -> str:
         text = eco.format_amount(amount)
@@ -469,7 +476,7 @@ class EconomyCog(commands.Cog):
         emb.description = f"{target.mention}\n\n**Balance actual**\n# {self.money(balance)}"
         emb.add_field(name="📈 Balance histórico", value=self.money(lifetime), inline=False)
         embo = await self._db(embo_db.get_balance, target.id)
-        emb.add_field(name=f"{embo_db.EMOJI} Balance de embo", value=f"{eco.format_amount(embo)} embo", inline=False)
+        emb.add_field(name=f"{self.embo_icon} Balance Energías Embotelladas", value=f"{eco.format_amount(embo)} embo", inline=False)
         gamble = await self._db(stats_db.get_user_stats, target.id)
         emb.add_field(name="🎲 Total apostado", value=self.money(gamble.wagered), inline=True)
         # Mismos números que los paneles «Top ganado» / «Top perdido» de /panel apuestas (ganado − perdido): positivo o negativo.
@@ -690,7 +697,8 @@ class EconomyCog(commands.Cog):
                    + [app_commands.Choice(name="🎲 Winrate (dados y coinflip)", value="winrate"),
                       app_commands.Choice(name="🔥 Rachas de coinflip", value="racha"),
                       app_commands.Choice(name="🛠️ Tareas del staff", value="tareas"),
-                      app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach")])
+                      app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach"),
+                      app_commands.Choice(name="🍾 Embo: mayor deuda", value="embo")])
 
     @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
     @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
@@ -722,12 +730,39 @@ class EconomyCog(commands.Cog):
             if other is None:
                 return await self._ephemeral(interaction, "❌ El ranking de tareas no está disponible ahora.")
             return await other.send_top(interaction)
+        if key == "embo":
+            return await self.send_top_embo_debt(interaction)
         if key == "coach":
             other = self.bot.get_cog("EncargosCog")
             if other is None:
                 return await self._ephemeral(interaction, "❌ El ranking de coaches no está disponible ahora.")
             return await other.send_top_coach(interaction)
         await self._ephemeral(interaction, "❌ Tipo de top desconocido.")
+
+    async def send_top_embo_debt(self, interaction: discord.Interaction):
+        """`/top embo`: quién debe más embo (balance negativo), de a 10 por página."""
+        from paging import PagedView, chunk
+        rows = await self._db(embo_db.debtors)
+        total = sum(b for _u, b in rows)
+        pages = chunk(list(enumerate(rows, start=1)), 10)
+        embeds = []
+        for n, page in enumerate(pages, start=1):
+            emb = discord.Embed(title=f"{self.embo_icon} Top embo — mayor deuda", color=discord.Color.red(),
+                                description="\n".join(f"`{i}.` <@{u}> — **-{eco.format_amount(-b)}** embo" for i, (u, b) in page)
+                                or "✅ Nadie debe embo.")
+            if rows:
+                emb.set_footer(text=f"{len(rows)} con deuda · total -{eco.format_amount(-total)} embo"
+                                    + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else ""))
+            embeds.append(emb)
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
 
     eco_g = app_commands.Group(name="eco", description="Administración de Wuju Coins y permisos económicos", guild_only=True)
 
@@ -1096,7 +1131,7 @@ class EconomyCog(commands.Cog):
             verb = {"add": "Agregado", "remove": "Retirado", "set": "Fijado"}[mode]
             await self._ephemeral(interaction, f"✅ {verb}. Balance de embo de {usuario.mention}: "
                                                f"**{eco.format_amount(ch.before)} → {eco.format_amount(ch.after)}**.")
-            emb = discord.Embed(title=f"{embo_db.EMOJI} Embo · {verb.lower()}", color=discord.Color.teal())
+            emb = discord.Embed(title=f"{self.embo_icon} Embo · {verb.lower()}", color=discord.Color.teal())
             emb.add_field(name="Ejecutado por", value=member.mention, inline=True)
             emb.add_field(name="Usuario", value=usuario.mention, inline=True)
             emb.add_field(name="Antes → Ahora", value=f"{eco.format_amount(ch.before)} → **{eco.format_amount(ch.after)}**", inline=False)
@@ -1120,6 +1155,30 @@ class EconomyCog(commands.Cog):
     @app_commands.describe(usuario="Persona", cantidad="Nuevo balance de embo (puede ser negativo)", motivo="Motivo (opcional)")
     async def embo_set(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
         await self._embo_op(interaction, "set", usuario, cantidad, motivo)
+
+    @embo_g.command(name="icono", description="(Admin) Cambia el icono del embo (emoji del servidor o común). 'quitar' vuelve a 🍾")
+    @app_commands.describe(icono="Emoji (ej: :embo: o 🍾). Escribí 'quitar' para volver al de siempre.")
+    async def embo_icono(self, interaction: discord.Interaction, icono: str):
+        if not await self._require_admin(interaction):
+            return
+        value = icono.strip()
+        if value.casefold() in ("quitar", "borrar", "reset", "ninguno"):
+            await self._db(eco.set_setting, "embo_emoji", None)
+            self._embo_emoji = None
+            return await self._ephemeral(interaction, f"✅ Icono del embo restablecido: {embo_db.EMOJI}")
+        parsed = eco.parse_custom_emoji(value)
+        if parsed is not None:
+            raw, emoji_id = parsed
+            if self.bot.get_emoji(emoji_id) is None:
+                return await self._ephemeral(interaction, "❌ No puedo usar ese emoji: tiene que pertenecer a un servidor donde esté el bot.")
+        elif not value or len(value) > 8 or any(ch.isalnum() or ch in "<>:@#" for ch in value):
+            return await self._ephemeral(interaction, "❌ Tiene que ser un emoji: uno del servidor (elegilo de la lista al escribir `:`) "
+                                                      "o uno común como 🍾.")
+        else:
+            raw = value
+        await self._db(eco.set_setting, "embo_emoji", raw)
+        self._embo_emoji = raw
+        await self._ephemeral(interaction, f"✅ Icono del embo actualizado: {raw}")
 
     # ---------- importar movimientos del log de embotelladas ----------
     EMBO_TASK_PREFIX = "embo:dia:"
@@ -1150,7 +1209,7 @@ class EconomyCog(commands.Cog):
         except embo_db.EmboError as exc:
             return await self._ephemeral(interaction, f"❌ {exc} No se cargó nada.")
         day_txt = f" del **{only_day[8:10]}/{only_day[5:7]}/{only_day[:4]}** (UTC)" if only_day else ""
-        lines = [f"{embo_db.EMOJI} **{title}**{day_txt}",
+        lines = [f"{self.embo_icon} **{title}**{day_txt}",
                  f"• Movimientos{' de ese día' if only_day else ''}: **{res.rows}** · cargados ahora: **{res.applied}** · "
                  f"ya estaban cargados: **{res.duplicates}** · jugadores: **{len(res.users)}**"]
         if only_day:
@@ -1171,7 +1230,7 @@ class EconomyCog(commands.Cog):
             await interaction.followup.send(head, ephemeral=True, allowed_mentions=NO_MENTIONS,
                                             file=discord.File(io.BytesIO(("Jugador\tMovimientos\tTotal\n" + body).encode("utf-8")),
                                                               filename="embo_no_encontrados.tsv"))
-        emb = discord.Embed(title=f"{embo_db.EMOJI} Embo · {title.lower()}", color=discord.Color.teal())
+        emb = discord.Embed(title=f"{self.embo_icon} Embo · {title.lower()}", color=discord.Color.teal())
         emb.add_field(name="Ejecutado por", value=interaction.user.mention, inline=True)
         if only_day:
             emb.add_field(name="Día", value=only_day, inline=True)

@@ -114,5 +114,46 @@ class EmboImportTests(DiscordBase):
         self.assertEqual(edb.find_by_source(self.db, f"embo:dia:{day}").status, "done")
 
 
+class EmboIconoYTopTests(DiscordBase):
+    def call(self, cmd, who, *a):
+        i = self.inter(who)
+        run(getattr(self.ecog, cmd).callback(self.ecog, i, *a))
+        return i.text
+
+    def test_icono_solo_admin_comun_personalizado_y_quitar(self):
+        self.assertIn("solo para el propietario", self.call("embo_icono", self.council, "🧪"))
+        self.assertEqual(self.ecog.embo_icon, "🍾")
+        self.assertIn("actualizado: 🧪", self.call("embo_icono", self.admin, "🧪"))
+        self.assertEqual(self.ecog.embo_icon, "🧪")
+        self.assertIn("Tiene que ser un emoji", self.call("embo_icono", self.admin, "hola"))
+        self.assertIn("No puedo usar", self.call("embo_icono", self.admin, "<:embo:123456789012345678>"))
+        self.bot.emojis[123456789012345678] = discord.Emoji(123456789012345678, "embo")
+        self.call("embo_icono", self.admin, "<:embo:123456789012345678>")
+        self.assertEqual(self.ecog.embo_icon, "<:embo:123456789012345678>")
+        emb = run(self.ecog.bal_embed(self.alice))
+        self.assertIn("<:embo:123456789012345678> Balance Energías Embotelladas", [f[0] for f in emb.fields])
+        self.assertIn("restablecido", self.call("embo_icono", self.admin, "quitar"))
+        self.assertEqual(self.ecog.embo_icon, "🍾")
+        import economy_db as eco                                                    # queda guardado (sobrevive reinicios)
+        self.assertIsNone(eco.get_setting(self.db, "embo_emoji"))
+
+    def test_top_embo_por_mayor_deuda(self):
+        i = self.inter(self.alice)
+        run(self.ecog.send_top_embo_debt(i))
+        self.assertIn("Nadie debe embo", str(i.response.sent[-1][1]["embed"].description))
+        for uid, amount, key in ((self.alice.id, 5, "a"), (self.bob.id, 30, "b"), (self.council.id, 12, "c")):
+            embo_db.apply(self.db, user_id=uid, mode="remove", amount=amount, actor_id=1, request_key=key, reason="")
+        embo_db.apply(self.db, user_id=self.admin.id, mode="add", amount=50, actor_id=1, request_key="d", reason="")
+        self.assertEqual(embo_db.debtors(self.db), [(self.bob.id, -30), (self.council.id, -12), (self.alice.id, -5)])
+        i = self.inter(self.alice)
+        run(self.ecog.send_top_embo_debt(i))
+        emb = i.response.sent[-1][1]["embed"]
+        lines = emb.description.split("\n")
+        self.assertEqual(lines[0], f"`1.` <@{self.bob.id}> — **-30** embo")
+        self.assertEqual(len(lines), 3)                                             # quien tiene saldo positivo no aparece
+        self.assertIn("total -47", emb.footer.text if hasattr(emb.footer, "text") else str(emb.footer))
+        self.assertIn("embo", [c.value for c in self.ecog.TOP_CHOICES])
+
+
 if __name__ == "__main__":
     unittest.main()
