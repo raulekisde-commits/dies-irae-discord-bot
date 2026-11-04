@@ -52,7 +52,40 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "sincronizar-registros",
-                   "canal registro", "registro_obligatorio", "sin-albion", "sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
+                   "canal registro", "registro_obligatorio", "sin-albion", "sin-discord", "guild-sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
+
+
+MAX_EXPORT_BYTES = 2_000_000
+
+
+def parse_guild_export(data: bytes) -> List[str]:
+    """Nombres de personaje del archivo que exporta Albion con la lista de la guild
+    ("Character Name"  "Last Seen"  "Roles", separado por tabs o comas; UTF-8 o UTF-16)."""
+    import csv
+    import io
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16")
+    else:
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return []
+    delim = "\t" if "\t" in lines[0] else ("," if "," in lines[0] else ";")
+    rows = list(csv.reader(io.StringIO("\n".join(lines)), delimiter=delim))
+    col = 0
+    if rows and any("character" in (c or "").casefold() for c in rows[0]):
+        col = next(i for i, c in enumerate(rows[0]) if "character" in (c or "").casefold())
+        rows = rows[1:]
+    seen, out = set(), []
+    for r in rows:
+        name = (r[col] if len(r) > col else "").strip().strip('"').strip()
+        if name and name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+    return out
 
 
 class RegistrationRequired(commands.CheckFailure):
@@ -1094,6 +1127,61 @@ class RegistrationCog(commands.Cog):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
         if done:
             await self.audit_log(f"🔎 <@{interaction.user.id}> completó el ID de **{len(done)}** registro(s) con `/sincronizar-registros`.")
+
+    @app_commands.command(name="guild-sin-discord", description="(Staff) Con el archivo de la guild de Albion: quiénes están en la guild y no en Discord (mensaje público)")
+    @app_commands.describe(archivo="Archivo exportado de la lista de la guild (Character Name / Last Seen / Roles)")
+    @app_commands.guild_only()
+    async def guild_sin_discord(self, interaction: discord.Interaction, archivo: discord.Attachment):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        if (getattr(archivo, "size", 0) or 0) > MAX_EXPORT_BYTES:
+            return await _say(interaction, "❌ El archivo es demasiado grande (máx. 2 MB).")
+        await interaction.response.defer(ephemeral=False)
+        try:
+            names = parse_guild_export(await archivo.read())
+        except Exception:
+            traceback.print_exc()
+            return await interaction.followup.send("❌ No pude leer el archivo. Tiene que ser el export de la guild (Character Name / Last Seen / Roles).",
+                                                   ephemeral=True)
+        if not names:
+            return await interaction.followup.send("❌ No encontré nombres de personaje en el archivo.", ephemeral=True)
+        guild = interaction.guild
+        role = guild.get_role(self.member_role_id) if self.member_role_id else None
+        regs = await self.run(rdb.all_registrations)
+        by_name = {r.char_name.casefold(): r.discord_id for r in regs}
+        alters = set()
+        try:
+            import alters_db
+            conn = alters_db.connect(self.db_path)
+            try:
+                alters = {r[0].casefold() for r in conn.execute("SELECT alter_name FROM alters")}
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        sin_discord, sin_rol, n_alters = [], [], 0
+        for n in names:
+            uid = by_name.get(n.casefold())
+            if uid is None:
+                if n.casefold() in alters:
+                    n_alters += 1
+                else:
+                    sin_discord.append(n)
+                continue
+            m = guild.get_member(uid)
+            if m is None or (role is not None and role not in m.roles):
+                sin_rol.append((n, uid, m is None))
+        esc = discord.utils.escape_markdown
+        lines = [f"🎮 **Guild vs Discord** — {len(names)} personajes en el archivo.", "",
+                 f"**❌ En la guild pero sin Discord registrado ({len(sin_discord)})**"]
+        lines += [f"• {esc(n)}" for n in sorted(sin_discord, key=str.casefold)] or ["✅ Ninguno."]
+        if sin_rol:
+            lines += ["", f"**⚠️ Registrados pero sin el rol {role.name if role else 'Miembro'} ({len(sin_rol)})**"]
+            lines += [f"• {esc(n)} → <@{uid}>" + (" (ya no está en el servidor)" if gone else "") for n, uid, gone in sorted(sin_rol, key=lambda x: x[0].casefold())]
+        if n_alters:
+            lines += ["", f"ℹ️ {n_alters} son alters enlazados con `/alter` y no se listan."]
+        for chunk in self._chunks(lines):
+            await interaction.followup.send(chunk, ephemeral=False, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="sin-discord", description="(Staff) Jugadores de la guild de Albion que todavía no tienen Discord vinculado")
     @app_commands.guild_only()

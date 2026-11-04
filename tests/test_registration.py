@@ -334,6 +334,39 @@ class RegistrationDiscordTests(DiscordBase):
         self._search = self.cog.fetch_json
         self.cog.fetch_json = fake
 
+    def test_guild_sin_discord_con_archivo(self):
+        import types
+        export = ('"Character Name"\t"Last Seen"\t"Roles"\n'
+                  '"Daitza"\t"11/04/2026 01:34:00"\t"Officer;Siphoned;Recruiter;Attack perms;Council;Guild Master"\n'
+                  '"Ramirinho74"\t"Online"\t""\n'
+                  '"GLEACHECL"\t"Online"\t"Officer;Siphoned;Council"\n'
+                  '"CraftAlt"\t"Online"\t""\n'
+                  '"MatiPCK"\t"Online"\t"Siphoned;Recruiter\n')
+        self.assertEqual(rg.parse_guild_export(export.encode("utf-16")), ["Daitza", "Ramirinho74", "GLEACHECL", "CraftAlt", "MatiPCK"])
+        self.assertEqual(rg.parse_guild_export(export.encode("utf-8")), ["Daitza", "Ramirinho74", "GLEACHECL", "CraftAlt", "MatiPCK"])
+        self.cog.member_role_id = self.r_member.id
+        rdb.admin_link(self.db, self.alice.id, "Daitza", self.council.id)          # registrada y con Miembro → no aparece
+        rdb.admin_link(self.db, self.outsider.id, "GLEACHECL", self.council.id)    # registrado sin Miembro → aviso aparte
+        import alters_db
+        alters_db.init_schema(self.db)
+        alters_db.add_alter(self.db, self.alice.id, "CraftAlt", self.council.id)  # alter enlazado → no se lista
+
+        async def read():
+            return export.encode("utf-16")
+        archivo = types.SimpleNamespace(size=len(export) * 2, filename="guild.txt", read=read)
+        i = self.inter(self.alice)
+        run(self.cog.guild_sin_discord.callback(self.cog, i, archivo))
+        self.assertIn("el Council o los administradores", i.text)
+        i = self.inter(self.council)
+        run(self.cog.guild_sin_discord.callback(self.cog, i, archivo))
+        out = i.text
+        self.assertIn("sin Discord registrado (2)", out)
+        self.assertIn("Ramirinho74", out); self.assertIn("MatiPCK", out)
+        self.assertNotIn("• Daitza", out)
+        self.assertIn(f"GLEACHECL → <@{self.outsider.id}>", out)
+        self.assertIn("1 son alters", out)
+        self.assertTrue(all(x[1].get("ephemeral") is False for x in i.response.sent))   # mensaje público
+
     def test_limpiar_miembros(self):
         self._recruit_setup()
         self.admin.roles.append(self.r_member)
