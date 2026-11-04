@@ -76,15 +76,13 @@ CATALOG = [
      "Le muteás el chat a un jugador por 15 minutos." + SHIELD_NOTE, 0),
     ("voice_mute_15", "Mute de voice 15 min", "rare", 1500, "Bot", None, 0, 0, "", 1,
      "Muteás a un jugador en el voice por 15 minutos." + SHIELD_NOTE, 0),
-    ("undo_coinflip", "Coinflip hasta 10M", "rare", 4000, "Bot", None, 0, 0, "", 0,
+    ("undo_coinflip", "Coinflip hasta 10M", "rare", 5000, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 10M. Rigen todas las reglas del coinflip.", 0),
-    ("casino_open", "Abrir el casino", "rare", 2000, "Bot", None, 0, 0, "", 0,
+    ("casino_open", "Abrir el casino", "rare", 2500, "Bot", None, 0, 0, "", 0,
      "Abrís el casino si está cerrado.", 0),
-    ("casino_close", "Cerrar el casino", "rare", 2000, "Bot", None, 0, 0, "", 0,
+    ("casino_close", "Cerrar el casino", "rare", 2500, "Bot", None, 0, 0, "", 0,
      "Cerrás el casino si está abierto.", 0),
-    ("plot_tax0", "Tax 0 en plots 24 h", "rare", 2500, "Staff", None, 0, 0, "", 0,
-     "Tus plots sin tax durante 24 horas.", 0),
-    ("free_build_p1", "Build libre en Party PRIO 1", "rare", 2000, "Staff", None, 0, 0, "", 0,
+    ("free_build_p1", "Build libre en Party PRIO 1", "rare", 2500, "Staff", None, 0, 0, "", 0,
      "En Party PRIO 1 jugás con la build que quieras.", 0),
     ("party1_slot", "Slot libre en Party 1", "rare", 2500, "Bot", None, 0, 0, "", 0,
      "Te anotás en Party 1 en cualquier rol libre, sin la espera de 5 min de Legacy.", 0),
@@ -122,22 +120,26 @@ CATALOG = [
     # 🟣 Épicas — 15,2 %
     ("regear_4m", "Reequipo próxima CTA (4M)", "epic", 600, "Staff", None, 0, 4_000_000, "silver", 0,
      "Te reequipan para la próxima CTA con un presupuesto de hasta 4M.", 0),
-    ("mount_escort", "Porte con montura y escolta", "epic", 850, "Staff", None, 0, 0, "", 0,
-     "Un porte con montura libre y escolta del staff.", 0),
+    ("mount_escort", "Montura libre en un porte de la guild", "epic", 850, "Staff", None, 0, 0, "", 0,
+     "En un porte de la guild vas con la montura que quieras.", 0),
     ("loot_3_items", "Tres ítems de loot (7M)", "epic", 500, "Staff", None, 0, 7_000_000, "silver", 0,
      "Tres ítems del loot por un valor estimado de 7M.", 0),
     ("repair_4m", "Ticket de reparación (4M)", "epic", 700, "Staff", None, 0, 4_000_000, "silver", 0,
      "Te cubren la reparación hasta 4M.", 0),
-    ("ava_replace", "Reemplazo en Avalonian", "epic", 1100, "Staff", None, 0, 0, "", 1,
+    ("ava_replace", "Reemplazo en Avalonian", "epic", 900, "Staff", None, 0, 0, "", 1,
      "Reemplazás a alguien en una Avalonian antes de que salga.", 0),
-    ("caerleon_port", "Porte a Caerleon", "epic", 800, "Staff", None, 0, 0, "", 0,
+    ("caerleon_port", "Porte a Caerleon", "epic", 600, "Staff", None, 0, 0, "", 0,
      "Te portean a Caerleon.", 0),
-    ("duel_1v1", "Duelo 1v1 especial", "epic", 1600, "Bot", None, 0, 0, "", 1,
+    ("plot_tax0", "Tax 0 en plots 24 h", "epic", 800, "Staff", None, 0, 0, "", 0,
+     "Tus plots sin tax durante 24 horas.", 0),
+    ("alter_ho_24h", "Permisos de alter en el HO 24 h", "epic", 700, "Staff", None, 0, 0, "", 0,
+     "Un alter tuyo tiene permisos en el HO durante 24 horas.", 0),
+    ("duel_1v1", "Duelo 1v1 especial", "epic", 1400, "Bot", None, 0, 0, "", 1,
      "Retás a alguien del Top 10 de apostado; se anuncia con @here. Tiene 24 h para aceptar o pierde el 5 % de su balance. "
      "Tope 200M." + SHIELD_NOTE, 0),
     ("ho_house", "Casa del HO", "epic", 400, "Staff", None, 0, 0, "", 0,
      "Reclamás una casa del HO.", 0),
-    ("lootsplit_remove", "Sacar del lootsplit", "epic", 1000, "Staff", None, 0, 0, "", 1,
+    ("lootsplit_remove", "Sacar del lootsplit", "epic", 800, "Staff", None, 0, 0, "", 1,
      "Sacás a un jugador del lootsplit de la última CTA." + SHIELD_NOTE, 0),
     ("weapon_73", "Arma 7.3 del Guild Shop (8M)", "epic", 600, "Staff", None, 0, 8_000_000, "silver", 0,
      "Un arma 7.3 del Guild Shop de hasta 8M.", 0),
@@ -148,10 +150,8 @@ CATALOG = [
     ("freeze_2h", "Congelar balance 2 h", "epic", 600, "Bot", None, 0, 0, "", 1,
      "Durante 2 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
-    ("split_no_join", "Split sin participar", "epic", 800, "Staff", None, 0, 0, "", 0,
+    ("split_no_join", "Split sin participar", "epic", 600, "Staff", None, 0, 0, "", 0,
      "Cobrás el split de una CTA del día sin haber ido.", 0),
-    ("cta_free_mount", "CTA con montura libre", "epic", 500, "Staff", None, 0, 0, "", 0,
-     "Vas a una CTA con la montura que quieras (la ponés vos).", 0),
     ("coinflip_15m", "Coinflip hasta 15M", "epic", 850, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 15M. Rigen todas las reglas del coinflip.", 0),
     ("morgana_chest", "Cofre de Morgana en el HO", "epic", 600, "Staff", None, 0, 0, "", 0,
@@ -169,16 +169,16 @@ CATALOG = [
     ("bad_cd_12h", "☠️ Cooldown de cobro +12 h", "epic", 300, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 12 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🟠 Legendarias — 4,6 %
-    ("guild_kick", "Kick de la guild", "legendary", 100, "Staff", None, 0, 0, "", 1,
-     "Sacás a un miembro de la guild. Requiere aprobación del Council." + SHIELD_NOTE, 0),
     ("weapon_83", "Arma 8.3 (hasta 12M)", "legendary", 250, "Staff", None, 0, 12_000_000, "silver", 0,
      "Un arma 8.3 de hasta 12M.", 0),
     ("wuju_15m", "Jackpot 15M Wuju Coins", "legendary", 450, "Bot", "wuju", 15_000_000, 15_000_000, "wuju", 0,
      "Se acreditan al instante en tu balance.", 0),
     ("regear_full_5m", "Reequipo completo (5M)", "legendary", 400, "Staff", None, 0, 5_000_000, "silver", 0,
      "Reequipo completo para una CTA, con presupuesto de hasta 5M.", 0),
-    ("custom_bomb", "Bomb personalizada", "legendary", 500, "Staff", None, 0, 0, "", 0,
+    ("custom_bomb", "Bomb personalizada", "legendary", 400, "Staff", None, 0, 0, "", 0,
      "Armás una bomb con 5 personas a elección.", 0),
+    ("cta_free_mount", "CTA con montura de combate libre", "legendary", 200, "Staff", None, 0, 0, "", 0,
+     "Vas a una CTA con la montura de combate que quieras. La montura la ponés vos, no el staff.", 0),
     ("embo_1000", "1.000 de embo", "legendary", 300, "Bot", "embo", 1000, 1000, "embo", 0,
      "Se acreditan al instante en tu balance de embo.", 0),
     ("freeze_12h", "Congelar balance 12 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
@@ -209,10 +209,12 @@ CATALOG = [
     # 🔴 Míticas — 0,2 %
     ("premium_30m", "Premium de Albion (30M VAL)", "mythic", 70, "Staff", None, 0, 30_000_000, "val", 0,
      "Un premio equivalente a Premium de Albion (30M VAL).", 0),
-    ("freeze_24h", "Congelar balance 24 h", "mythic", 60, "Bot", None, 0, 0, "", 1,
+    ("freeze_24h", "Congelar balance 24 h", "mythic", 40, "Bot", None, 0, 0, "", 1,
      "Durante 24 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
-    ("coinflip_nolimit", "Coinflip sin límite", "mythic", 20, "Bot", None, 0, 0, "", 0,
+    ("guild_kick", "Kick de la guild", "mythic", 30, "Staff", None, 0, 0, "", 1,
+     "Sacás a un miembro de la guild. Requiere aprobación del Council." + SHIELD_NOTE, 0),
+    ("coinflip_nolimit", "Coinflip sin límite", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino sin tope de apuesta. Rigen todas las reglas del coinflip.", 0),
     ("mute_chat_180", "Mute de chat 3 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 3 horas." + SHIELD_NOTE, 0),
@@ -223,7 +225,14 @@ CATALOG = [
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
-CATALOG_VERSION = 2
+CATALOG_VERSION = 3
+# Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
+# Versión 2 = catálogo completo nuevo (se resetean todas).
+CATALOG_CHANGES = {
+    3: ("guild_kick", "cta_free_mount", "mount_escort", "plot_tax0", "alter_ho_24h", "undo_coinflip", "casino_open",
+        "casino_close", "free_build_p1", "ava_replace", "duel_1v1", "lootsplit_remove", "split_no_join", "caerleon_port",
+        "custom_bomb", "freeze_24h", "coinflip_nolimit"),
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS wjp_prizes (
@@ -437,10 +446,17 @@ def init_schema(db_path: str) -> None:
         with write_tx(conn):
             conn.execute("CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT)")
             v = conn.execute("SELECT value FROM wjp_settings WHERE key = 'catalog_version'").fetchone()
-            if v is None or int(v["value"] or 0) < CATALOG_VERSION:
-                # Catálogo nuevo: se aplica completo (nombres, descripciones, probabilidades y rarezas), aunque el Council
-                # haya editado alguna carta del catálogo anterior. Las cartas creadas desde el bot no se tocan.
-                conn.execute("UPDATE wjp_prizes SET name_edited = 0, odds_edited = 0, desc_edited = 0 WHERE custom = 0")
+            current = int(v["value"] or 0) if v is not None else 0
+            if current < CATALOG_VERSION:
+                # Catálogo nuevo: las cartas que cambiaron toman lo del código (nombre, descripción, probabilidad y rareza)
+                # aunque el Council las haya editado. Las cartas creadas desde el bot no se tocan.
+                if current < 2:
+                    conn.execute("UPDATE wjp_prizes SET name_edited = 0, odds_edited = 0, desc_edited = 0 WHERE custom = 0")
+                else:
+                    keys_changed = sorted({k for ver, ks in CATALOG_CHANGES.items() if ver > current for k in ks})
+                    if keys_changed:
+                        conn.execute(f"UPDATE wjp_prizes SET name_edited = 0, odds_edited = 0, desc_edited = 0 "
+                                     f"WHERE custom = 0 AND key IN ({','.join('?' * len(keys_changed))})", keys_changed)
                 conn.execute("INSERT OR REPLACE INTO wjp_settings(key, value) VALUES ('catalog_version', ?)", (str(CATALOG_VERSION),))
             for i, (key, name, rarity, weight, origin, handler, amount, cost, cur, third, desc, forced) in enumerate(CATALOG):
                 # INSERT OR IGNORE: lo que el Council habilitó/deshabilitó se conserva; lo editado desde el bot no se pisa.

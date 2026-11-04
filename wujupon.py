@@ -42,11 +42,15 @@ def prize_mode(p: wdb.Prize) -> str:
     return "🛠️ lo entrega el Council"
 
 
-def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: str = "🎴 ¡Nueva carta!") -> discord.Embed:
+def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: str = "🎴 ¡Nueva carta!",
+               show_desc: bool = True) -> discord.Embed:
+    """show_desc=False: la descripción no se muestra (solo se ve desde 🎒 Mi inventario)."""
     emb = discord.Embed(title=title, color=p.color)
     emb.description = f"# {p.name}\n**{p.rarity_label}** · probabilidad **{wdb.chance_text(weight, total)}**"
-    if p.description:
+    if p.description and show_desc:
         emb.description += f"\n\n{p.description}"
+    elif p.description:
+        emb.description += "\n\n📖 Mirá qué hace en 🎒 **Mi inventario**."
     emb.add_field(name="Canje", value=prize_mode(p), inline=True)
     if card_id > 0:
         emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
@@ -82,8 +86,7 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
         name, emoji, color = wdb.RARITIES[rarity]
         share = sum(p.weight for p in group)
         lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'☠️' if p.forced else '🤖' if p.automatic else '🛠️'}"
-                 + (" · ⚠️ terceros" if p.third_party else "")
-                 + (f"\n  ↳ {p.description[:200]}" if p.description else "") for p in group]
+                 + (" · ⚠️ terceros" if p.third_party else "") for p in group]   # la descripción solo se ve en el inventario
         title = f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}"
         for n, block in enumerate(_chunk_lines(lines, 3900)):   # una rareza larga se parte en varios embeds
             out.append(discord.Embed(title=title if n == 0 else f"{title} (cont.)", color=color, description=block))
@@ -392,7 +395,8 @@ class WujuponCog(commands.Cog):
         limit = await self.run(wdb.get_daily_limit)
         totals = await self.run(wdb.rarity_totals)
         all_w = sum(totals.values()) or 1
-        emb = discord.Embed(title="🎰 WUJUPÓN", color=GOLD)
+        paused = await self.run(wdb.get_setting, "paused")
+        emb = discord.Embed(title="🎰 WUJUPÓN" + (" — ⏸️ PAUSADO" if paused else ""), color=0x95A5A6 if paused else GOLD)
         emb.description = (
             f"Comprá tiradas con **Wuju Coins** y conseguí cartas con premios.\n"
             f"Cada tirada cuesta **{money(price)}**."
@@ -405,6 +409,9 @@ class WujuponCog(commands.Cog):
             "Las cartas son de un solo uso. Todas las respuestas son privadas.")
         emb.add_field(name="Rarezas", value="\n".join(f"{e} {n} — {wdb.chance_text(totals.get(k, 0), all_w)}"
                                                     for k, (n, e, _) in wdb.RARITIES.items()), inline=True)
+        if paused:
+            reason = await self.run(wdb.get_setting, "paused_reason")
+            emb.add_field(name="⏸️ Pausado", value=(reason or "Por ahora no se puede comprar, tirar ni canjear.")[:1000], inline=False)
         emb.set_footer(text="Las tiradas se anuncian en el canal de Wujupón.")
         return emb
 
@@ -436,10 +443,23 @@ class WujuponCog(commands.Cog):
             traceback.print_exc()
 
     # ---------------- comprar ----------------
+    async def _paused(self, interaction: discord.Interaction) -> bool:
+        """True (y avisa) si un admin pausó Wujupón: no se compra, no se tira y no se canjea."""
+        if not await self.run(wdb.get_setting, "paused"):
+            return False
+        reason = await self.run(wdb.get_setting, "paused_reason")
+        await _say(interaction, "⏸️ **Wujupón está pausado** por la administración." + (f"\nMotivo: {reason}" if reason else "")
+                   + "\nTus tiradas y cartas no se pierden: podés ver tu inventario y tus solicitudes.")
+        return True
+
     async def open_buy(self, interaction: discord.Interaction):
+        if await self._paused(interaction):
+            return
         await interaction.response.send_modal(BuyModal(self))
 
     async def do_buy(self, interaction: discord.Interaction, text: str):
+        if await self._paused(interaction):
+            return
         try:
             count = int(text.strip().replace(".", "").replace(",", ""))
         except ValueError:
@@ -465,6 +485,8 @@ class WujuponCog(commands.Cog):
 
     # ---------------- tirar ----------------
     async def do_spin(self, interaction: discord.Interaction):
+        if await self._paused(interaction):
+            return
         user = interaction.user
         async with self._lock(user.id):
             res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}")
@@ -477,7 +499,8 @@ class WujuponCog(commands.Cog):
             msg = await _say(interaction, "❌ No hay premios habilitados en este momento.")
             return self._cleanup_later(interaction, msg)
         # la carta ya quedó guardada: la animación es solo visual (si el bot se reinicia acá, no se pierde nada)
-        final = card_embed(res.prize, res.card_id, res.weight, res.total_weight)
+        # las cartas malas no van al inventario: su descripción se muestra acá
+        final = card_embed(res.prize, res.card_id, res.weight, res.total_weight, show_desc=res.prize.forced)
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
         if self.cleanup_delay:
             first = ("Carta mala: se le avisó al Council para aplicarla" if res.prize.forced
@@ -559,6 +582,8 @@ class WujuponCog(commands.Cog):
 
     # ---------------- canjear ----------------
     async def start_redeem(self, interaction: discord.Interaction, card_id: int):
+        if await self._paused(interaction):
+            return
         card = await self.run(wdb.get_card, card_id)
         if card is None or card.user_id != interaction.user.id or card.status != "available":
             return await _say(interaction, "❌ Esa carta ya no está disponible.")
@@ -568,6 +593,8 @@ class WujuponCog(commands.Cog):
         await interaction.response.send_modal(RedeemModal(self, card_id, required=p.third_party))
 
     async def do_redeem(self, interaction: discord.Interaction, card_id: int, details: str):
+        if await self._paused(interaction):
+            return
         user = interaction.user
         async with self._lock(user.id):
             res = await self.run(wdb.redeem, card_id=card_id, user_id=user.id, details=details,
@@ -1056,6 +1083,27 @@ class WujuponCog(commands.Cog):
                                            "(«Canal con restricción de edad») y probá de nuevo.")
         await self.run(wdb.set_setting, "nsfw_channel", str(target.id))
         await _say(interaction, f"🔞 Los premios con foto se entregan en {target.mention}.")
+
+    @wj.command(name="pausa", description="(Admin) Pausa o reanuda Wujupón (comprar, tirar y canjear)")
+    @app_commands.describe(pausado="Sí = pausar · No = reanudar", motivo="Motivo que ven los jugadores (opcional)")
+    async def pause(self, interaction: discord.Interaction, pausado: bool, motivo: Optional[str] = None):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador puede pausar Wujupón.")
+        was = bool(await self.run(wdb.get_setting, "paused"))
+        if pausado:
+            await self.run(wdb.set_setting, "paused", "1")
+            await self.run(wdb.set_setting, "paused_reason", (motivo or "").strip()[:300] or None)
+        else:
+            await self.run(wdb.set_setting, "paused", None)
+            await self.run(wdb.set_setting, "paused_reason", None)
+        await self.run(wdb.log_action, interaction.user.id, "pause" if pausado else "resume", detail=(motivo or "")[:300])
+        await self.refresh_panel()
+        if pausado:
+            msg = ("⏸️ Wujupón pausado." if not was else "⏸️ Wujupón ya estaba pausado (motivo actualizado).")
+            msg += " Nadie puede comprar, tirar ni canjear. Se puede ver el inventario y el Council sigue resolviendo encargos."
+        else:
+            msg = "▶️ Wujupón reanudado." if was else "ℹ️ Wujupón no estaba pausado."
+        await _say(interaction, msg)
 
     @wj.command(name="limpiar-cartas", description="(Admin) Borra TODAS las cartas de todos los jugadores")
     @app_commands.describe(tambien_tiradas="Sí = también deja en 0 las tiradas sin usar de todos")

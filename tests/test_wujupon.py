@@ -244,7 +244,7 @@ class CartasEditablesTests(DbBase):
         wdb._ready.discard(self.db)          # simula un reinicio del bot: vuelve a sembrar el catálogo
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "caerleon_port")
-        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 800))
+        self.assertEqual((p.name, p.description, p.weight), ("Porte VIP a Caerleon", "Con escolta", 600))
         _, cleared = wdb.edit_prize(self.db, "caerleon_port", actor_id=1, description="quitar")
         self.assertEqual(cleared.description, "")
 
@@ -272,13 +272,13 @@ class CartasEditablesTests(DbBase):
 class ProbabilidadLimiteLimpiezaTests(DbBase):
     def test_cambiar_probabilidad_y_rareza_sobrevive_reinicio(self):
         before, after = wdb.set_prize_odds(self.db, "caerleon_port", actor_id=1, weight=2000, rarity="legendary")
-        self.assertEqual((before.weight, before.rarity), (800, "epic"))
+        self.assertEqual((before.weight, before.rarity), (600, "epic"))
         self.assertEqual((after.weight, after.rarity), (2000, "legendary"))
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "caerleon_port")
         self.assertEqual((p.weight, p.rarity), (2000, "legendary"))
-        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 1200)
+        self.assertEqual(wdb.enabled_total(self.db), wdb.TOTAL_WEIGHT + 1400)
         self.assertEqual(wdb.rarity_totals(self.db)["legendary"], 4600 + 2000)
 
     def test_cambiar_probabilidad_cambia_el_sorteo(self):
@@ -393,6 +393,29 @@ class CatalogoV2Tests(DbBase):
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "flex_cta")
         self.assertEqual((p.name, p.description), ("Flex", "Mía"))
+
+    def test_migracion_v3_solo_toca_las_cartas_que_cambiaron(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_prizes SET name = 'Flex de antes', name_edited = 1 WHERE key = 'flex_cta'")
+        conn.execute("UPDATE wjp_prizes SET rarity = 'legendary', weight = 100, name = 'Kick viejo', name_edited = 1, odds_edited = 1 "
+                     "WHERE key = 'guild_kick'")
+        conn.execute("UPDATE wjp_settings SET value = '2' WHERE key = 'catalog_version'")
+        conn.close()
+        wdb._ready.discard(self.db)
+        wdb.init_schema(self.db)
+        self.assertEqual(wdb.get_prize(self.db, "flex_cta").name, "Flex de antes")        # no cambió en v3: se respeta
+        k = wdb.get_prize(self.db, "guild_kick")
+        self.assertEqual((k.name, k.rarity, k.weight), ("Kick de la guild", "mythic", 30))   # cambió en v3: toma lo nuevo
+
+    def test_cambios_v3_del_catalogo(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual(p["guild_kick"].rarity, "mythic")
+        self.assertEqual((p["cta_free_mount"].name, p["cta_free_mount"].rarity), ("CTA con montura de combate libre", "legendary"))
+        self.assertIn("la ponés vos", p["cta_free_mount"].description)
+        self.assertEqual(p["mount_escort"].name, "Montura libre en un porte de la guild")
+        self.assertEqual(p["plot_tax0"].rarity, "epic")
+        self.assertEqual((p["alter_ho_24h"].rarity, p["alter_ho_24h"].origin), ("epic", "Staff"))
+        self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
     def test_premio_viejo_que_no_esta_en_el_codigo_se_deshabilita(self):
         conn = connect(self.db)
@@ -553,6 +576,23 @@ class WujuponDiscordTests(DiscordBase):
         run(go())
         self.assertEqual(i.deleted, 0)
 
+    def test_tirada_no_muestra_descripcion_salvo_carta_mala(self):
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=2, request_key="g", reason="t")
+        orig = wdb.draw
+        try:
+            wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("caerleon_port")))
+            i = self.inter(self.alice)
+            run(self.cog.do_spin(i))
+            desc = i.response.sent[0][1]["embed"].description
+            self.assertNotIn("Te portean a Caerleon", desc)
+            self.assertIn("Mi inventario", desc)
+            wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("bad_embo_15")))
+            i = self.inter(self.alice)
+            run(self.cog.do_spin(i))
+            self.assertIn("se te descuentan 15 de embo", i.response.sent[0][1]["embed"].description)
+        finally:
+            wdb.draw = orig
+
     def test_tirar_sin_tiradas(self):
         i = self.inter(self.alice)
         run(self.cog.do_spin(i))
@@ -648,10 +688,16 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.edit_card.callback(self.cog, i, key, "Skin premium", "Elegís cualquiera"))
         self.assertIn("Skin premium", i.text)
         self.assertEqual(wdb.get_prize(self.db, key).description, "Elegís cualquiera")
-        # la descripción aparece en Ver premios
+        # Ver premios
         i = self.inter(self.alice)
         run(self.cog.show_prizes(i))
-        self.assertIn("Elegís cualquiera", " ".join(e.description for e in i.response.sent[0][1]["embeds"]))
+        # la descripción NO aparece en Ver premios…
+        self.assertNotIn("Elegís cualquiera", " ".join(e.description for _, kw in i.response.sent for e in kw["embeds"]))
+        # …solo al abrir la carta desde el inventario
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key=key, reason="t")
+        i = self.inter(self.alice)
+        run(self.cog.show_card(i, cid))
+        self.assertIn("Elegís cualquiera", i.response.sent[0][1]["embed"].description)
 
     def test_comandos_precio_limite_y_probabilidad(self):
         run(self.cog.publish_panel(self.inter(self.council)))
@@ -711,7 +757,7 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual({e.title.split(" — ")[0] for e in embeds if "(cont.)" not in e.title},
                          {f"{em} {n.upper()}" for n, em, _ in wdb.RARITIES.values()})   # una sección por rareza
         self.assertTrue(all(len(e.description) <= 4096 for e in embeds))
-        self.assertIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))
+        self.assertNotIn("Te llevan a Caerleon", " ".join(e.description for e in embeds))   # la lista pública no muestra descripciones
         for m in msgs:
             self.assertLessEqual(sum(len(e) for e in m.embeds), 6000)
 
@@ -846,6 +892,42 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual(kw["file"].filename, "SPOILER_premio.png")
         self.assertEqual(i.deleted, 1)
         self.assertEqual(self.feedch.sent, [])
+
+    def test_pausa_solo_admin_y_bloquea_compra_tirada_y_canje(self):
+        run(self.cog.publish_panel(self.inter(self.council)))
+        panel = self.panelch.sent[-1]
+        i = self.inter(self.council)
+        run(self.cog.pause.callback(self.cog, i, True, None))
+        self.assertIn("Solo el dueño", i.text)
+        self.assertIsNone(wdb.get_setting(self.db, "paused"))
+        i = self.inter(self.admin)
+        run(self.cog.pause.callback(self.cog, i, True, "Mantenimiento"))
+        self.assertIn("pausado", i.text)
+        self.assertIn("PAUSADO", panel.embeds[0].title)
+        self.fund(self.alice, wdb.DEFAULT_PRICE * 2)
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="wuju_100k", reason="t")
+        for action in (lambda i: self.cog.do_buy(i, "1"), self.cog.do_spin, self.cog.open_buy,
+                       lambda i: self.cog.start_redeem(i, cid), lambda i: self.cog.do_redeem(i, cid, "")):
+            i = self.inter(self.alice)
+            run(action(i))
+            self.assertIn("pausado", i.text)
+            self.assertIn("Mantenimiento", i.text)
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 1)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")
+        self.assertEqual(eco.get_balance(self.db, self.alice.id), wdb.DEFAULT_PRICE * 2)
+        # el inventario se puede ver igual
+        i = self.inter(self.alice)
+        run(self.cog.show_inventory(i))
+        self.assertIn("Inventario", i.response.sent[0][1]["embed"].title)
+        # reanudar
+        i = self.inter(self.admin)
+        run(self.cog.pause.callback(self.cog, i, False, None))
+        self.assertIn("reanudado", i.text)
+        self.assertNotIn("PAUSADO", panel.embeds[0].title)
+        i = self.inter(self.alice)
+        run(self.cog.do_spin(i))
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 0)
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")

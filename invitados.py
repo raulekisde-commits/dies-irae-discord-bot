@@ -309,8 +309,8 @@ INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
     "**Botones del panel**\n"
     "• 🛒 **Comprar tiradas** — se descuentan de tu balance. Puede haber un límite de compras por día (se renueva a las 00:00 UTC).\n"
     "• 🎰 **Tirar Wujupón** — usa una tirada y te muestra la carta. El mensaje se borra solo a los 60 s, pero la carta ya queda guardada.\n"
-    "• 🎒 **Mi inventario** — tus cartas; elegí una y tocá **Canjear**.\n"
-    "• 📜 **Ver premios** — todas las cartas con su rareza, probabilidad y descripción.\n"
+    "• 🎒 **Mi inventario** — tus cartas: elegí una para ver qué hace y tocá **Canjear**.\n"
+    "• 📜 **Ver premios** — todas las cartas con su rareza y probabilidad.\n"
     "• 📨 **Mis solicitudes** — el estado de tus canjes con el Council.\n\n"
     "**Rarezas**: ⚪ Común · 🔵 Rara · 🟣 Épica · 🟠 Legendaria · 🔴 Mítica.\n\n"
     "**Canjes**\n"
@@ -322,7 +322,7 @@ INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
     "(por ahora las aplica el Council).\n\n"
     "**Tipos de carta**: 🛡️ escudos (nadie te puede usar cartas y te protegen de las malas) · 💥 purgar escudo · "
     "🧹 limpiezas (te sacan mutes o congelamientos) · ❄️ congelar Wujupón (el otro no puede tirar ni usar cartas). "
-    "Mirá el detalle de cada una en 📜 **Ver premios**.\n\n"
+    "Qué hace cada carta lo ves al abrirla en 🎒 **Mi inventario**.\n\n"
     "**Reglas**: cada carta se usa una sola vez. Si tenés el balance congelado no podés comprar tiradas. Cada tirada se anuncia en el canal "
     "de Wujupón con la carta, la rareza y la probabilidad.")
 INFO_STAFF["wujupon"] = (
@@ -335,24 +335,24 @@ INFO_STAFF["wujupon"] = (
     "• `/wujupon limite-diario cantidad` — compras por persona por día UTC (`0` = sin límite).\n"
     "• `/wujupon stats` — ingresos, entregado y pendiente por moneda.\n\n"
     "**Cartas**\n"
-    "• `/wujupon carta-agregar nombre rareza probabilidad [descripcion] [afecta_a_otro]` — carta nueva (la entrega el Council).\n"
+    "• `/wujupon carta-agregar` — carta nueva (la entrega el Council).\n"
     "• `/wujupon carta-editar carta [nombre] [descripcion]` — `quitar` borra la descripción.\n"
     "• `/wujupon carta-probabilidad carta [probabilidad] [rareza]` — cambia la chance o la mueve de tier.\n"
-    "• `/wujupon cooldown-cobro usuario accion [horas]` — suma horas, saca o muestra el cooldown de «Cobrar balance».\n"
+    "• `/wujupon cooldown-cobro` — suma, saca o muestra el cooldown de «Cobrar balance».\n"
     "• `/wujupon premio carta activo` — habilita o deshabilita una carta.\n"
     "• Si las habilitadas no suman 100 %, salen en proporción a su peso (el bot avisa).\n\n"
     "**Jugadores**\n"
     "• `/wujupon regalar-tiradas usuario cantidad` (negativo = quitar) · `/wujupon dar-carta usuario premio`.\n"
     "• `/wujupon devolver-carta numero` — vuelve una carta usada al inventario. Si era automática, lo entregado no se descuenta.\n"
     "• `/wujupon inventario usuario` · `/wujupon encargos` · `/wujupon historial [usuario]` · `/wujupon registro`.\n"
-    "• **Encargos**: en el canal del Council, **Tomar** → **Aprobar** → **Completado** (queda quién lo entregó). **Rechazar** pregunta si se "
-    "devuelve la carta.\n"
+    "• **Encargos**: **Tomar** → **Aprobar** → **Completado**. **Rechazar** pregunta si se devuelve la carta.\n"
     "• ☠️ **Cartas malas**: llegan solas como encargo. Aplicalas a mano (`/eco remove-money`, `/eco embo remove`, timeout, `/wujupon cooldown-cobro`) y "
     "marcá **Completado**; si no corresponde, **Rechazar** (nunca vuelven al inventario).\n\n"
     "**Solo Admin**\n"
     "• `/wujupon publicar-premios [canal]` — lista pública de premios (no se actualiza sola).\n"
-    "• `/wujupon foto-premio imagen` y `/wujupon canal-nsfw` — imagen del premio con foto (se entrega como spoiler en el canal +18 y se borra a los 60 s).\n"
-    "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra todas las cartas sin usar de todos y anula los encargos abiertos (pide confirmación).")
+    "• `/wujupon pausa pausado [motivo]` — pausa o reanuda comprar, tirar y canjear (el inventario se sigue viendo).\n"
+    "• `/wujupon foto-premio` y `/wujupon canal-nsfw` — imagen del premio con foto (spoiler en el canal +18, se borra a los 60 s).\n"
+    "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra las cartas sin usar de todos y anula los encargos abiertos.")
 
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
 
