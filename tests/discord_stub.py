@@ -35,7 +35,7 @@ class Color:
 
 
 for _name, _val in dict(green=0x2ECC71, red=0xE74C3C, gold=0xF1C40F, blurple=0x5865F2, light_grey=0x95A5A6,
-                        orange=0xE67E22, dark_grey=0x607D8B, blue=0x3498DB, yellow=0xFEE75C, purple=0x9B59B6).items():
+                        orange=0xE67E22, dark_grey=0x607D8B, blue=0x3498DB, yellow=0xFEE75C, purple=0x9B59B6, teal=0x1ABC9C).items():
     setattr(Color, _name, classmethod(lambda cls, v=_val: cls(v)))
 
 

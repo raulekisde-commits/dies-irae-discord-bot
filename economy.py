@@ -205,9 +205,11 @@ class EconomyCog(commands.Cog):
         await self._db(embo_db.init_schema)
         self._emoji_raw = await self._db(eco.get_setting, "currency_emoji")
         self.retry_pending_logs.start()
+        self.embo_daily_task.start()
 
     async def cog_unload(self):
         self.retry_pending_logs.cancel()
+        self.embo_daily_task.cancel()
 
     async def _db(self, fn: Callable, *args, **kwargs):
         """Las consultas SQLite corren en un hilo para no bloquear al bot."""
@@ -1115,9 +1117,152 @@ class EconomyCog(commands.Cog):
         await self._embo_op(interaction, "remove", usuario, cantidad, motivo)
 
     @embo_g.command(name="set", description="Deja el balance de embo de una persona EXACTAMENTE en el número indicado")
-    @app_commands.describe(usuario="Persona", cantidad="Nuevo balance de embo (0 o más)", motivo="Motivo (opcional)")
+    @app_commands.describe(usuario="Persona", cantidad="Nuevo balance de embo (puede ser negativo)", motivo="Motivo (opcional)")
     async def embo_set(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
         await self._embo_op(interaction, "set", usuario, cantidad, motivo)
+
+    # ---------- importar movimientos del log de embotelladas ----------
+    EMBO_TASK_PREFIX = "embo:dia:"
+    EMBO_FILE_MAX = 5_000_000
+
+    async def _embo_name_map(self) -> dict:
+        import registration_db as rdb
+        return {r.char_name.casefold(): r.discord_id for r in await self._db(rdb.all_registrations)}
+
+    async def _embo_import(self, interaction: discord.Interaction, archivo: discord.Attachment, *, kind: str,
+                           only_day: Optional[str], title: str):
+        """Lee el archivo, carga los movimientos y responde (privado) con el resumen y los jugadores no encontrados."""
+        if (getattr(archivo, "size", 0) or 0) > self.EMBO_FILE_MAX:
+            return await self._ephemeral(interaction, "❌ El archivo es demasiado grande (máx. 5 MB).")
+        await interaction.response.defer(ephemeral=True)
+        try:
+            movements = embo_db.parse_movements(await archivo.read())
+        except embo_db.EmboError as exc:
+            return await self._ephemeral(interaction, f"❌ {exc}")
+        except Exception:
+            traceback.print_exc()
+            return await self._ephemeral(interaction, "❌ No pude leer el archivo.")
+        if not movements:
+            return await self._ephemeral(interaction, "❌ No encontré movimientos en el archivo.")
+        try:
+            res = await self._db(embo_db.import_movements, movements, await self._embo_name_map(), actor_id=interaction.user.id,
+                                 kind=kind, only_day=only_day)
+        except embo_db.EmboError as exc:
+            return await self._ephemeral(interaction, f"❌ {exc} No se cargó nada.")
+        day_txt = f" del **{only_day[8:10]}/{only_day[5:7]}/{only_day[:4]}** (UTC)" if only_day else ""
+        lines = [f"{embo_db.EMOJI} **{title}**{day_txt}",
+                 f"• Movimientos{' de ese día' if only_day else ''}: **{res.rows}** · cargados ahora: **{res.applied}** · "
+                 f"ya estaban cargados: **{res.duplicates}** · jugadores: **{len(res.users)}**"]
+        if only_day:
+            lines.append(f"• Filas de otros días ignoradas: **{res.skipped_days}**")
+        if res.not_found:
+            nf = sorted(res.not_found.items(), key=lambda kv: kv[0].casefold())
+            lines.append(f"\n**❌ Jugadores no encontrados ({len(nf)})** — no tienen personaje registrado con ese nick, no se les cargó nada:")
+            lines += [f"• {discord.utils.escape_markdown(n)} · {c} mov. · {eco.format_amount(t) if t >= 0 else '-' + eco.format_amount(-t)} embo"
+                      for n, (c, t) in nf]
+        else:
+            lines.append("✅ Todos los jugadores con movimientos están registrados.")
+        text = "\n".join(lines)
+        if len(text) <= 1900:
+            await self._ephemeral(interaction, text)
+        else:
+            head = "\n".join(lines[:3]) + f"\n\n**❌ Jugadores no encontrados: {len(res.not_found)}** (lista completa en el archivo)."
+            body = "\n".join(f"{n}\t{c}\t{t}" for n, (c, t) in sorted(res.not_found.items(), key=lambda kv: kv[0].casefold()))
+            await interaction.followup.send(head, ephemeral=True, allowed_mentions=NO_MENTIONS,
+                                            file=discord.File(io.BytesIO(("Jugador\tMovimientos\tTotal\n" + body).encode("utf-8")),
+                                                              filename="embo_no_encontrados.tsv"))
+        emb = discord.Embed(title=f"{embo_db.EMOJI} Embo · {title.lower()}", color=discord.Color.teal())
+        emb.add_field(name="Ejecutado por", value=interaction.user.mention, inline=True)
+        if only_day:
+            emb.add_field(name="Día", value=only_day, inline=True)
+        emb.add_field(name="Resultado", value=f"{res.applied} cargados · {res.duplicates} repetidos · {len(res.users)} jugadores · "
+                                              f"{len(res.not_found)} no encontrados", inline=False)
+        await self._audit_note(emb)
+        if only_day:
+            enc = self.bot.get_cog("EncargosCog")
+            if enc is not None:
+                try:
+                    await enc.complete_by_source(f"{self.EMBO_TASK_PREFIX}{only_day}", interaction.user.id)
+                except Exception:
+                    traceback.print_exc()
+
+    @embo_g.command(name="importar-historico", description="(Admin) Carga al balance de embo todos los movimientos de un archivo")
+    @app_commands.describe(archivo="CSV con Fecha y hora / Jugador / Motivo / Cantidad (o Date / Player / Reason / Amount)")
+    async def embo_import_history(self, interaction: discord.Interaction, archivo: discord.Attachment):
+        if not is_admin_member(interaction.user):
+            return await self._ephemeral(interaction, "❌ Solo el dueño del servidor o un administrador puede importar el histórico de embo.")
+        await self._embo_import(interaction, archivo, kind="import", only_day=None, title="Histórico importado")
+
+    @staticmethod
+    def _parse_day(text: str, today: datetime) -> Optional[str]:
+        t = (text or "").strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(t, fmt).date().isoformat()
+            except ValueError:
+                pass
+        try:
+            d = datetime.strptime(f"{t}/{today.year}", "%d/%m/%Y")
+            if d.date() > today.date():
+                d = d.replace(year=today.year - 1)
+            return d.date().isoformat()
+        except ValueError:
+            return None
+
+    def _oldest_open_embo_day(self) -> Optional[str]:
+        import dbutil
+        conn = dbutil.connect(self.db_path)
+        try:
+            r = conn.execute("SELECT source FROM tasks WHERE source LIKE ? AND status IN ('scheduled','open','taken') ORDER BY source LIMIT 1",
+                             (self.EMBO_TASK_PREFIX + "%",)).fetchone()
+            return r["source"][len(self.EMBO_TASK_PREFIX):] if r else None
+        except Exception:
+            return None
+        finally:
+            conn.close()
+
+    @embo_g.command(name="cargar-dia", description="(Staff) Carga las embotelladas de UN día desde el log (ignora las filas de otros días)")
+    @app_commands.describe(archivo="Log de embotelladas: Date / Player / Reason / Amount",
+                           fecha="(Opcional) Día a cargar, DD/MM o AAAA-MM-DD. Por defecto: el encargo pendiente más viejo, o ayer (UTC)")
+    async def embo_load_day(self, interaction: discord.Interaction, archivo: discord.Attachment, fecha: Optional[str] = None):
+        if not await self.has_command_permission(interaction.user, "embo", staff_ok=True):
+            return await self._ephemeral(interaction, "❌ Solo el Staff, los administradores o un rol con `/eco perms-comando comando:embo` "
+                                                      "pueden cargar las embotelladas.")
+        now = datetime.now(timezone.utc)
+        if fecha:
+            day = self._parse_day(fecha, now)
+            if day is None:
+                return await self._ephemeral(interaction, "❌ Fecha inválida. Usá DD/MM o AAAA-MM-DD (ej: 04/11).")
+        else:
+            day = await asyncio.to_thread(self._oldest_open_embo_day) or (now - timedelta(days=1)).date().isoformat()
+        await self._embo_import(interaction, archivo, kind="import_dia", only_day=day, title="Embotelladas del día cargadas")
+
+    @tasks.loop(minutes=5)
+    async def embo_daily_task(self):
+        await self.ensure_embo_daily_task()
+
+    async def ensure_embo_daily_task(self):
+        """A partir de las 00:00 UTC crea (una sola vez por día) el encargo para que el Staff cargue las embotelladas del día anterior."""
+        try:
+            enc = self.bot.get_cog("EncargosCog")
+            if enc is None or getattr(self.bot, "user", None) is None:
+                return
+            import encargos_db as edb
+            day = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+            source = f"{self.EMBO_TASK_PREFIX}{day}"
+            if await asyncio.to_thread(edb.find_by_source, self.db_path, source) is not None:
+                return
+            nice = f"{day[8:10]}/{day[5:7]}/{day[:4]}"
+            await enc.create(text=f"🍾 Cargar las embotelladas del {nice} (UTC): exportá el log de embotelladas de la guild y subilo con "
+                                  f"/eco embo cargar-dia (archivo). Solo se cargan los movimientos de ese día; el bot avisa qué jugadores "
+                                  f"no encontró. La tarea se cierra sola al cargarlo.",
+                             created_by=self.bot.user.id, source=source)
+        except Exception:
+            traceback.print_exc()
+
+    @embo_daily_task.before_loop
+    async def _before_embo_daily(self):
+        await self.bot.wait_until_ready()
 
     historico_bal = app_commands.Group(name="historico-bal", description="Balance histórico de Wuju Coins", parent=eco_g)
 
