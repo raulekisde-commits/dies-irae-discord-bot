@@ -60,8 +60,6 @@ def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: st
     emb.add_field(name="Canje", value=prize_mode(p), inline=True)
     if card_id > 0:
         emb.add_field(name="Carta", value=f"`#{card_id}`", inline=True)
-    if p.third_party:
-        emb.add_field(name="⚠️", value="Afecta a otra persona: el Council puede rechazarla si no corresponde.", inline=False)
     if p.forced:
         emb.set_footer(text="Carta mala: no va a tu inventario; se aplica sola." if p.effect
                        else "Carta mala: no va a tu inventario; se le avisó al Council para aplicarla.")
@@ -93,7 +91,7 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
         name, emoji, color = wdb.RARITIES[rarity]
         share = sum(p.weight for p in group)
         lines = [f"• **{p.name}** — {wdb.chance_text(p.weight, total)} · {'☠️' if p.forced else '🤖' if p.automatic else '🛠️'}"
-                 + (" · ⚠️ terceros" if p.third_party else "") for p in group]   # la descripción solo se ve en el inventario
+                 for p in group]   # la descripción solo se ve en el inventario
         title = f"{emoji} {name.upper()} — {wdb.chance_text(share, total)}"
         for n, block in enumerate(_chunk_lines(lines, 3900)):   # una rareza larga se parte en varios embeds
             out.append(discord.Embed(title=title if n == 0 else f"{title} (cont.)", color=color, description=block))
@@ -128,7 +126,7 @@ def request_embed(req: wdb.Request, p: Optional[wdb.Prize]) -> discord.Embed:
     emb.add_field(name="Premio", value=f"{p.rarity_label} · **{p.name}**" if p else req.prize_key, inline=True)
     emb.add_field(name="Estado", value=wdb.STATUS_LABELS.get(req.status, req.status), inline=True)
     if p is not None:
-        benefit = prize_mode(p) + (" · ⚠️ afecta a otra persona" if p.third_party else "")
+        benefit = prize_mode(p)
         if p.description:
             benefit = f"{p.description[:800]}\n{benefit}"
         emb.add_field(name="Beneficio", value=benefit, inline=False)

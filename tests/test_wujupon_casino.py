@@ -121,7 +121,7 @@ class GrupoCTests(DiscordBase):
         i = self.inter(self.alice)
         run(self.cog.play_card(i, cid, wdb.DUEL_MAX, "20m", self.bob))
         msg = self.duelch.sent[-1]
-        self.assertIn("@here", msg.content)
+        self.assertIn("<@&1565464173096214669>", msg.content)
         self.assertIn("1,000,000", msg.content)                               # 5 % de 20M
         d = duels_db.find_by_message(self.db, msg.id)
         self.assertGreater(d.ends_at - time.time(), 23 * 3600)
