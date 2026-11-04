@@ -45,13 +45,13 @@ PHOTO_ASSET = "gendarme_photo"       # imagen que se guarda en la base (nunca en
 SHIELD_NOTE = " El escudo y los inmunes la bloquean."
 CATALOG = [
     # ⚪ Comunes — 45 %
-    ("casino_block", "Bloqueo de casino", "common", 6000, "Bot", None, 0, 0, "", 1,
+    ("casino_block", "Bloqueo de casino", "common", 5200, "Bot", None, 0, 0, "", 1,
      "Bloqueás a un jugador del casino hasta que el casino se cierre y se vuelva a abrir." + SHIELD_NOTE, 0),
-    ("flex_cta", "Anotación libre en CTA", "common", 7000, "Bot", None, 0, 0, "", 0,
+    ("flex_cta", "Anotación libre en CTA", "common", 6200, "Bot", None, 0, 0, "", 0,
      "En el próximo /cta te podés anotar en el rol que quieras.", 0),
-    ("sell_cooldown", "Cancelar cooldown de cobro", "common", 7000, "Bot", "sell_cooldown", 0, 0, "", 0,
+    ("sell_cooldown", "Cancelar cooldown de cobro", "common", 6200, "Bot", "sell_cooldown", 0, 0, "", 0,
      "Te saca el cooldown de «Cobrar balance». Si no tenés cooldown, la carta no se gasta.", 0),
-    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 7000, "Bot", "photo", 0, 0, "", 0,
+    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 6200, "Bot", "photo", 0, 0, "", 0,
      "Te llega la foto en el canal +18, como spoiler, y se borra a los 60 s.", 0),
     ("wuju_100k", "100.000 Wuju Coins", "common", 3500, "Bot", "wuju", 100_000, 100_000, "wuju", 0,
      "Se acreditan al instante en tu balance.", 0),
@@ -69,14 +69,22 @@ CATALOG = [
      "Te saca un mute de chat (también el autosilencio). Si no tenés, no se gasta.", 0),
     ("clean_voice", "🧹 Limpiar mute de voice", "common", 1500, "Bot", None, 0, 0, "", 0,
      "Te saca un mute de voice (también el autosilencio). Si no tenés, no se gasta.", 0),
+    ("bad_wuju_100k", "☠️ −100.000 Wuju Coins", "common", 1200, "Bot", None, 100_000, -100_000, "wuju", 0,
+     "Carta mala: se te descuentan 100.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_embo_15", "☠️ −15 de embo", "common", 800, "Bot", None, 15, -15, "embo", 0,
+     "Carta mala: se te descuentan 15 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_selfmute_chat_5", "☠️ Te silenciás el chat 5 min", "common", 600, "Bot", None, 0, 0, "", 0,
+     "Carta mala: quedás muteado del chat 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
+    ("bad_selfmute_voice_5", "☠️ Te silenciás el voice 5 min", "common", 600, "Bot", None, 0, 0, "", 0,
+     "Carta mala: quedás muteado del voice 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_cd_4h", "☠️ Cooldown de cobro +4 h", "common", 1000, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 4 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔵 Raras — 35 %
-    ("mute_15", "Mute de chat 15 min", "rare", 2500, "Bot", None, 0, 0, "", 1,
+    ("mute_15", "Mute de chat 15 min", "rare", 3100, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 15 minutos." + SHIELD_NOTE, 0),
-    ("voice_mute_15", "Mute de voice 15 min", "rare", 1500, "Bot", None, 0, 0, "", 1,
+    ("voice_mute_15", "Mute de voice 15 min", "rare", 2100, "Bot", None, 0, 0, "", 1,
      "Muteás a un jugador en el voice por 15 minutos." + SHIELD_NOTE, 0),
-    ("undo_coinflip", "Coinflip hasta 10M", "rare", 5000, "Bot", None, 0, 0, "", 0,
+    ("undo_coinflip", "Coinflip hasta 10M", "rare", 5600, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 10M. Rigen todas las reglas del coinflip.", 0),
     ("casino_open", "Abrir el casino", "rare", 2500, "Bot", None, 0, 0, "", 0,
      "Abrís el casino si está cerrado.", 0),
@@ -84,7 +92,7 @@ CATALOG = [
      "Cerrás el casino si está abierto.", 0),
     ("free_build_p1", "Build libre en Party PRIO 1", "rare", 2500, "Staff", None, 0, 0, "", 0,
      "En Party PRIO 1 jugás con la build que quieras.", 0),
-    ("party1_slot", "Slot libre en Party 1", "rare", 2500, "Bot", None, 0, 0, "", 0,
+    ("party1_slot", "Slot libre en Party 1", "rare", 3300, "Bot", None, 0, 0, "", 0,
      "Te anotás en Party 1 en cualquier rol libre, sin la espera de 5 min de Legacy.", 0),
     ("wuju_500k", "500.000 Wuju Coins", "rare", 4000, "Bot", "wuju", 500_000, 500_000, "wuju", 0,
      "Se acreditan al instante en tu balance.", 0),
@@ -93,26 +101,18 @@ CATALOG = [
     ("freeze_30m", "Congelar balance 30 min", "rare", 1000, "Bot", None, 0, 0, "", 1,
      "Durante 30 min el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
-    ("shield_3h", "🛡️ Escudo 3 h", "rare", 1500, "Bot", None, 0, 0, "", 0,
+    ("shield_3h", "🛡️ Escudo 3 h", "rare", 2100, "Bot", None, 0, 0, "", 0,
      "Durante 3 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("clean_freeze", "🧹 Limpiar congelamiento", "rare", 1000, "Bot", None, 0, 0, "", 0,
      "Te descongela el balance (si te lo congeló una carta). Si no estás congelado, no se gasta.", 0),
     ("wjp_freeze_1h", "❄️ Congelar Wujupón 1 h", "rare", 1000, "Bot", None, 0, 0, "", 1,
      "Durante 1 h el jugador no puede tirar, comprar ni usar cartas. No pierde nada." + SHIELD_NOTE, 0),
-    ("bad_wuju_100k", "☠️ −100.000 Wuju Coins", "rare", 1200, "Bot", None, 100_000, -100_000, "wuju", 0,
-     "Carta mala: se te descuentan 100.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
-    ("bad_embo_15", "☠️ −15 de embo", "rare", 800, "Bot", None, 15, -15, "embo", 0,
-     "Carta mala: se te descuentan 15 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
     ("bad_wuju_300k", "☠️ −300.000 Wuju Coins", "rare", 600, "Bot", None, 300_000, -300_000, "wuju", 0,
      "Carta mala: se te descuentan 300.000 (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
     ("bad_embo_30", "☠️ −30 de embo", "rare", 400, "Bot", None, 30, -30, "embo", 0,
      "Carta mala: se te descuentan 30 de embo (sin bajar de 0). Se aplica sola; el escudo la bloquea.", 1),
-    ("bad_selfmute_chat_5", "☠️ Te silenciás el chat 5 min", "rare", 600, "Bot", None, 0, 0, "", 0,
-     "Carta mala: quedás muteado del chat 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_chat_15", "☠️ Te silenciás el chat 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
      "Carta mala: quedás muteado del chat 15 minutos. Se aplica sola; el escudo la bloquea.", 1),
-    ("bad_selfmute_voice_5", "☠️ Te silenciás el voice 5 min", "rare", 600, "Bot", None, 0, 0, "", 0,
-     "Carta mala: quedás muteado del voice 5 minutos. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_selfmute_voice_15", "☠️ Te silenciás el voice 15 min", "rare", 400, "Bot", None, 0, 0, "", 0,
      "Carta mala: quedás muteado del voice 15 minutos. Se aplica sola; el escudo la bloquea.", 1),
     ("bad_cd_8h", "☠️ Cooldown de cobro +8 h", "rare", 500, "Bot", None, 0, 0, "", 0,
@@ -225,13 +225,15 @@ CATALOG = [
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
 ]
-CATALOG_VERSION = 3
+CATALOG_VERSION = 4
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
     3: ("guild_kick", "cta_free_mount", "mount_escort", "plot_tax0", "alter_ho_24h", "undo_coinflip", "casino_open",
         "casino_close", "free_build_p1", "ava_replace", "duel_1v1", "lootsplit_remove", "split_no_join", "caerleon_port",
         "custom_bomb", "freeze_24h", "coinflip_nolimit"),
+    4: ("bad_wuju_100k", "bad_embo_15", "bad_selfmute_chat_5", "bad_selfmute_voice_5", "casino_block", "flex_cta",
+        "sell_cooldown", "gendarme_photo", "mute_15", "voice_mute_15", "undo_coinflip", "shield_3h", "party1_slot"),
 }
 
 SCHEMA = """
