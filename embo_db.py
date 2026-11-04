@@ -5,7 +5,7 @@ doble evento no aplica dos veces la misma operación. El balance puede quedar ne
 cartas malas del Wujupón), igual que los Wuju Coins.
 """
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from dbutil import connect, utcnow_iso, write_tx
@@ -119,5 +119,117 @@ def history(db_path: str, user_id: int, limit: int = 15) -> List[Tuple[str, int,
         rows = conn.execute("SELECT created_at, delta, balance_after, kind, reason FROM embo_movements WHERE user_id = ? "
                             "ORDER BY id DESC LIMIT ?", (user_id, limit)).fetchall()
         return [(r["created_at"], int(r["delta"]), int(r["balance_after"]), r["kind"], r["reason"] or "") for r in rows]
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Importar movimientos del log de la guild (embotelladas depositadas / retiradas)
+# ============================================================
+@dataclass
+class Movement:
+    when: str            # "YYYY-MM-DD HH:MM:SS" (UTC, tal cual viene del log)
+    player: str
+    reason: str
+    amount: int          # con signo: Deposit +, Withdrawal −
+
+    @property
+    def day(self) -> str:
+        return self.when[:10]
+
+
+@dataclass
+class ImportResult:
+    rows: int = 0                                   # movimientos considerados (después del filtro por día)
+    applied: int = 0                                # cargados ahora
+    duplicates: int = 0                             # ya estaban cargados (mismo archivo subido otra vez)
+    users: dict = field(default_factory=dict)       # discord_id -> suma cargada
+    not_found: dict = field(default_factory=dict)   # nick -> [cantidad de movimientos, suma]
+    skipped_days: int = 0                           # filas de otros días (ignoradas)
+
+
+HEADER_ALIASES = {
+    "when": ("fecha y hora", "date", "fecha"),
+    "player": ("jugador", "player"),
+    "reason": ("motivo", "reason"),
+    "amount": ("cantidad", "amount"),
+}
+
+
+def parse_movements(data: bytes) -> List[Movement]:
+    """Lee el CSV/TSV del log de embotelladas. Acepta los dos formatos:
+    `Fecha y hora | Jugador | Motivo | Cantidad | ...` (export propio) y `"Date" "Player" "Reason" "Amount"` (log de Albion).
+    Separado por tabs, comas o punto y coma; UTF-8 o UTF-16. Lanza EmboError si no reconoce el encabezado."""
+    import csv
+    import io
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16")
+    else:
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        raise EmboError("El archivo está vacío.")
+    delim = "\t" if "\t" in lines[0] else ("," if lines[0].count(",") >= 3 else ";")
+    rows = list(csv.reader(io.StringIO("\n".join(lines)), delimiter=delim))
+    head = [(c or "").strip().strip('"').strip().casefold() for c in rows[0]]
+    cols = {}
+    for key, names in HEADER_ALIASES.items():
+        idx = next((i for i, c in enumerate(head) if c in names), None)
+        if idx is None:
+            raise EmboError("No reconozco el encabezado: tiene que tener las columnas Fecha y hora / Jugador / Motivo / Cantidad "
+                            "(o Date / Player / Reason / Amount).")
+        cols[key] = idx
+    out: List[Movement] = []
+    for r in rows[1:]:
+        cell = lambda k: (r[cols[k]] if len(r) > cols[k] else "").strip().strip('"').strip()
+        when, player, reason, raw = cell("when"), cell("player"), cell("reason"), cell("amount")
+        if not player or not when:
+            continue
+        try:
+            amount = int(raw.replace(".", "").replace(",", "").replace(" ", ""))
+        except ValueError:
+            continue
+        if amount == 0 or len(when) < 10:
+            continue
+        out.append(Movement(when=when[:19], player=player, reason=reason, amount=amount))
+    return out
+
+
+def import_movements(db_path: str, movements: List[Movement], name_to_user: dict, *, actor_id: int, kind: str,
+                     only_day: Optional[str] = None) -> ImportResult:
+    """Carga cada movimiento al balance de embo de quien tiene ese personaje registrado (name_to_user: nick casefold -> discord_id).
+    Cada movimiento se identifica por fecha+jugador+motivo+cantidad (+ cuántas veces se repite igual en el archivo), así subir
+    el mismo archivo dos veces, o el mismo día por el import histórico y por el diario, no lo carga de nuevo.
+    Con only_day ("YYYY-MM-DD") se ignoran las filas de otros días. Todo en una sola transacción."""
+    res = ImportResult()
+    seen: dict = {}
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            for m in movements:
+                if only_day and m.day != only_day:
+                    res.skipped_days += 1
+                    continue
+                res.rows += 1
+                base = f"{m.when}|{m.player.casefold()}|{m.reason.casefold()}|{m.amount}"
+                seen[base] = seen.get(base, 0) + 1
+                uid = name_to_user.get(m.player.casefold())
+                if uid is None:
+                    nf = res.not_found.setdefault(m.player, [0, 0])
+                    nf[0] += 1
+                    nf[1] += m.amount
+                    continue
+                ch = tx_apply(conn, user_id=uid, mode="add" if m.amount > 0 else "remove", amount=abs(m.amount), actor_id=actor_id,
+                              request_key=f"embomov:{base}|{seen[base]}", reason=f"{m.reason or 'Movimiento'} {m.when} ({m.player})",
+                              kind=kind)
+                if ch.duplicate:
+                    res.duplicates += 1
+                    continue
+                res.applied += 1
+                res.users[uid] = res.users.get(uid, 0) + m.amount
+        return res
     finally:
         conn.close()

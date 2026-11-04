@@ -6734,6 +6734,8 @@ HELP_SECTIONS = [
         ("/eco set-balance usuario cantidad", "Admin", "Deja el balance de una persona exactamente en ese número."),
         ("/eco eco-stats", "Staff", "Muestra el total de Wuju Coins cargado en el servidor."),
         ("/eco historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
+        ("/eco embo importar-historico archivo", "Admin", "Carga al balance de embo todos los movimientos del archivo a los jugadores registrados con ese nick y lista los no encontrados (sin duplicar si se sube dos veces)."),
+        ("/eco embo cargar-dia archivo [fecha]", "Staff", "Carga las embotelladas de un día desde el log de la guild (ignora otros días), lista los no encontrados y cierra el encargo diario de las 00:00 UTC."),
         ("/verhistorial [usuario] [completo]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. Con `completo:true` te llega TODO el historial como archivo CSV, solo visible para vos en el canal. El staff puede ver los de otra persona."),
         ("/timeradd material mapa tiempo [tier]", "Miembros registrados", "Agrega un timer (hora UTC en que sale; si ya hay uno igual con el mismo material, mapa, tier y hora, no lo duplica) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),
