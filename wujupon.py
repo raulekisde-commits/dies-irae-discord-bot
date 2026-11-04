@@ -508,10 +508,14 @@ class WujuponCog(commands.Cog):
         # la carta ya quedó guardada: la animación es solo visual (si el bot se reinicia acá, no se pierde nada)
         # las cartas malas no van al inventario: su descripción se muestra acá
         final = card_embed(res.prize, res.card_id, res.weight, res.total_weight, show_desc=res.prize.forced)
+        if res.credited:                                 # Wuju Coins / embo: ya se acreditaron
+            final.description = final.description.split("\n\n📖")[0] + f"\n\n✨ {res.credited}"
+            final.set_footer(text="Se acreditó al instante.")
         final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
         if self.cleanup_delay:
             first = (("Carta mala: se aplicó sola" if res.prize.effect else "Carta mala: se le avisó al Council para aplicarla")
                      if res.prize.forced
+                     else "Se acreditó al instante" if res.credited
                      else "Ya quedó guardada en 🎒 Mi inventario")
             final.set_footer(text=f"{first} · este mensaje se borra en {self.cleanup_delay} s.")
         view = SpinAgainView(self, user.id, res.spins_left)

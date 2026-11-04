@@ -316,7 +316,8 @@ INFO_TEXTS["wujupon"] = ("🎴 Wujupón (gachapon)",
     "• 📨 **Mis solicitudes** — el estado de tus canjes con el Council.\n\n"
     "**Rarezas**: ⚪ Común · 🔵 Rara · 🟣 Épica · 🟠 Legendaria · 🔴 Mítica.\n\n"
     "**Canjes**\n"
-    "• 🤖 **Automáticos** (Wuju Coins, embo, cancelar el cooldown de *Cobrar balance*): se aplican al instante.\n"
+    "• 💰 **Wuju Coins y embo**: se acreditan apenas salen.\n"
+    "• 🤖 Las demás cartas del bot se usan desde el inventario.\n"
     "• 🛠️ **Los entrega el Council**: se abre un encargo y la carta queda **reservada** hasta que lo resuelvan. Si lo rechazan, la carta "
     "puede volver a tu inventario.\n"
     "• ⚠️ Las cartas que afectan a otra persona necesitan aprobación del Council.\n"
@@ -349,17 +350,16 @@ INFO_STAFF["wujupon"] = (
     "• `/wujupon devolver-carta numero` — vuelve una carta usada al inventario. Si era automática, lo entregado no se descuenta.\n"
     "• `/wujupon inventario usuario` · `/wujupon encargos` · `/wujupon historial [usuario]` · `/wujupon registro`.\n"
     "• **Encargos**: **Tomar** → **Aprobar** → **Completado**. **Rechazar** pregunta si se devuelve la carta.\n"
-    "• ☠️ **Cartas malas**: llegan solas como encargo. Aplicalas a mano (`/eco remove-money`, `/eco embo remove`, timeout, `/wujupon cooldown-cobro`) y "
-    "marcá **Completado**; si no corresponde, **Rechazar** (nunca vuelven al inventario).\n\n"
-    "**Solo Admin**\n"
-    "• `/wujupon publicar-premios [canal]` — lista pública de premios (no se actualiza sola).\n"
-    "• `/wujupon pausa pausado [motivo]` — pausa o reanuda comprar, tirar y canjear (el inventario se sigue viendo).\n"
-    "• `/wujupon foto-premio` y `/wujupon canal-nsfw` — imagen del premio con foto (spoiler en el canal +18, se borra a los 60 s).\n"
-    "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra las cartas sin usar de todos y anula los encargos abiertos.")
+    "• ☠️ **Cartas malas** y 💰 **Wuju / embo**: las aplica el bot solo al salir (ver página 2).")
 
 # Segunda página de /info-staff (se manda en el mismo mensaje, como otro embed)
 INFO_STAFF_PAGE2 = {
     "wujupon": (
+    "**Solo Admin**\n"
+    "• `/wujupon publicar-premios [canal]` — lista pública de premios (no se actualiza sola).\n"
+    "• `/wujupon pausa pausado [motivo]` — pausa o reanuda comprar, tirar y canjear (el inventario se sigue viendo).\n"
+    "• `/wujupon foto-premio` y `/wujupon canal-nsfw` — imagen del premio con foto (spoiler en el canal +18, se borra a los 60 s).\n"
+    "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra las cartas sin usar de todos y anula los encargos abiertos.\n\n"
         "**✨ Efectos automáticos de las cartas** — grupo `/wujupon-efectos`\n"
         "Las cartas de mute, congelar, escudo, limpiezas, casino y las ☠️ cartas malas las aplica el bot solo. Si la carta afecta a otro, "
         "el jugador elige a quién con un selector privado.\n\n"

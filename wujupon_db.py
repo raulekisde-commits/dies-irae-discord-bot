@@ -965,6 +965,7 @@ class PullResult:
     total_weight: int = 0
     spins_left: int = 0
     request_id: Optional[int] = None  # carta mala: encargo creado solo para el Council
+    credited: str = ""                # cartas de Wuju / embo: se acreditan apenas salen (texto del resultado)
 
 
 def draw(prizes: List[Prize], rng=None) -> Tuple[Prize, int]:
@@ -1004,7 +1005,16 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                    "VALUES (?,?,?,?,?,?,?,?)",
                                    (request_key, user_id, prize.key, prize.rarity, prize.weight, total, card_id, now)).lastrowid
             req_id = None
-            if prize.forced and prize.automatic:
+            credited = ""
+            if prize.handler in ("wuju", "embo") and not prize.forced:
+                # Wuju Coins / embo: se acreditan apenas salen (motivo «Wujupón: <carta>»); no pasan por el inventario
+                conn.execute("UPDATE wjp_cards SET status = 'consumed' WHERE id = ?", (card_id,))
+                credited = _run_handler(conn, prize, Card(int(card_id), user_id, prize.key, "consumed", "pull"),
+                                        guild_id=0, req_key=request_key)
+                conn.execute("INSERT INTO wjp_requests(request_key, card_id, user_id, prize_key, details, status, note, "
+                             "created_at, updated_at) VALUES (?,?,?,?,'','auto',?,?,?)",
+                             (f"pull:{request_key}", card_id, user_id, prize.key, credited, now, now))
+            elif prize.forced and prize.automatic:
                 # carta mala automática: queda reservada y la aplica el bot enseguida (wujupon_efectos.apply_forced)
                 conn.execute("UPDATE wjp_cards SET status = 'reserved' WHERE id = ?", (card_id,))
             elif prize.forced:
@@ -1017,7 +1027,7 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                        "☠️ Carta mala: aplicarla al jugador que la sacó (salvo que tenga escudo o sea inmune).",
                                        now, now)).lastrowid
             return PullResult("ok", prize, int(card_id), int(pull_id), prize.weight, total, left,
-                              int(req_id) if req_id else None)
+                              int(req_id) if req_id else None, credited)
     finally:
         conn.close()
 

@@ -113,11 +113,26 @@ class WujuponDbTests(DbBase):
 
     def test_tirada_consume_una_y_crea_carta(self):
         wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
-        r = wdb.pull(self.db, 5, "p1", rng=FixedRng(offset_of("wuju_2m")))
-        self.assertEqual((r.status, r.prize.key, r.spins_left), ("ok", "wuju_2m", 0))
+        r = wdb.pull(self.db, 5, "p1", rng=FixedRng(offset_of("caerleon_port")))
+        self.assertEqual((r.status, r.prize.key, r.spins_left), ("ok", "caerleon_port", 0))
         self.assertEqual(wdb.pull(self.db, 5, "p1").status, "duplicate")
         self.assertEqual(wdb.pull(self.db, 5, "p2").status, "no_spins")
         self.assertEqual(wdb.inventory(self.db, 5)[0].available, 1)
+
+    def test_wuju_y_embo_se_acreditan_al_salir(self):
+        import embo_db
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=2, request_key="g", reason="t")
+        r = wdb.pull(self.db, 5, "p1", rng=FixedRng(offset_of("wuju_2m")))
+        self.assertIn("2,000,000", r.credited)
+        self.assertEqual(eco.get_balance(self.db, 5), 2_000_000)
+        self.assertEqual(wdb.get_card(self.db, r.card_id).status, "consumed")
+        self.assertEqual(wdb.inventory(self.db, 5), [])
+        hist = eco.get_history(self.db, 5)
+        self.assertIn("Wujupón: 2.000.000 Wuju Coins", hist[0].reason)
+        r = wdb.pull(self.db, 5, "p2", rng=FixedRng(offset_of("embo_100")))
+        self.assertEqual(embo_db.get_balance(self.db, 5), 100)
+        self.assertIn("Wujupón", embo_db.history(self.db, 5)[0][4])
+        self.assertEqual(wdb.get_stats(self.db).paid.get("wuju"), 2_000_000)      # cuenta en las estadísticas
 
     def test_distribucion_aproximada(self):
         prizes = wdb.list_prizes(self.db, True)
@@ -605,7 +620,12 @@ class WujuponDiscordTests(DiscordBase):
             await self.cog.do_spin(i2)            # sin tiradas: aviso
             self.assertEqual((i.deleted, i2.deleted), (0, 0))
             await asyncio.sleep(0.5)
-        run(go())
+        orig = wdb.draw
+        wdb.draw = lambda prizes, rng=None: orig(prizes, FixedRng(offset_of("caerleon_port")))   # una carta que va al inventario
+        try:
+            run(go())
+        finally:
+            wdb.draw = orig
         self.assertEqual((i.deleted, i2.deleted), (1, 1))
         self.assertIn("se borra en", i.response.sent[0][1]["embed"].footer)
         inv = wdb.inventory(self.db, self.alice.id)[0]
