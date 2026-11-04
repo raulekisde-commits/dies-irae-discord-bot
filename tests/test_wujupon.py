@@ -691,10 +691,10 @@ class WujuponDiscordTests(DiscordBase):
 
     def test_comandos_admin_solo_council(self):
         i = self.inter(self.bob)
-        run(self.cog.gift.callback(self.cog, i, self.alice, 3, None))
+        run(self.cog.gift.callback(self.cog, i, 3, self.alice, None, None))
         self.assertIn("Solo el Council", i.text)
         i = self.inter(self.council)
-        run(self.cog.gift.callback(self.cog, i, self.alice, 3, None))
+        run(self.cog.gift.callback(self.cog, i, 3, self.alice, None, None))
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 3)
 
     def test_panel_premios_e_inventario(self):
@@ -1032,6 +1032,61 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIn("8,000,000", " ".join(v for _, v, _ in e.fields))
         # filtro por días
         self.assertEqual(wdb.money_stats(self.db, 1)[0].net, 1_700_000)
+
+    def test_regalar_tiradas_a_un_rol(self):
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, 2, None, None, None))
+        self.assertIn("persona **o** un rol", i.text)
+        self.robot.roles.append(self.r_member)
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, 2, None, self.r_member, "evento"))
+        self.assertIn("persona(s)", i.text)
+        self.assertEqual((wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), (2, 2))
+        self.assertEqual(wdb.get_spins(self.db, self.robot.id), 0)                 # a los bots no
+        # quitar a un rol: nadie queda en negativo
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=3, request_key="x", reason="t")
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, -4, None, self.r_member, None))
+        self.assertEqual((wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), (1, 0))
+
+    def test_tiradas_diarias_gratis(self):
+        legacy = discord.Role(1000000000000000077, "Legacy", self.guild)
+        self.guild.roles.append(legacy)
+        self.alice.roles.append(legacy)
+        i = self.inter(self.bob)
+        run(self.cog.daily_spins.callback(self.cog, i, self.r_member, 1))
+        self.assertIn("Solo el Council", i.text)
+        run(self.cog.daily_spins.callback(self.cog, self.inter(self.council), self.r_member, 1))
+        run(self.cog.daily_spins.callback(self.cog, self.inter(self.council), legacy, 3))
+        i = self.inter(self.council)
+        run(self.cog.daily_spins.callback(self.cog, i, None, None))
+        self.assertIn("**3** por día", i.response.sent[0][1]["embed"].description)
+        roles = [r.id for r in self.alice.roles]
+        self.assertEqual(wdb.free_spins_left(self.db, self.alice.id, roles), 3)      # la mayor de sus roles, no la suma
+        # se usan antes que las compradas
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="paga", reason="t")
+        for n in range(3):
+            self.assertEqual(wdb.pull(self.db, self.alice.id, f"f{n}", role_ids=roles).status, "ok")
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 1)                    # la comprada sigue intacta
+        self.assertEqual(wdb.free_spins_left(self.db, self.alice.id, roles), 0)
+        self.assertEqual(wdb.pull(self.db, self.alice.id, "f4", role_ids=roles).status, "ok")
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 0)
+        self.assertEqual(wdb.pull(self.db, self.alice.id, "f5", role_ids=roles).status, "no_spins")
+        # al día siguiente se renuevan (lo no usado no se acumula)
+        conn = connect(self.db)
+        conn.execute("UPDATE wjp_daily_used SET day = '2000-01-01'")
+        conn.close()
+        self.assertEqual(wdb.free_spins_left(self.db, self.alice.id, roles), 3)
+        # desde Discord: el inventario las muestra y la tirada las usa
+        i = self.inter(self.alice)
+        run(self.cog.show_inventory(i))
+        self.assertIn("🎁 Gratis de hoy", [n for n, _, _ in i.response.sent[0][1]["embed"].fields])
+        i = self.inter(self.alice)
+        run(self.cog.do_spin(i))
+        self.assertEqual(wdb.free_spins_left(self.db, self.alice.id, roles), 2)
+        # sacar el rol
+        run(self.cog.daily_spins.callback(self.cog, self.inter(self.council), legacy, 0))
+        self.assertEqual(wdb.free_spins_left(self.db, self.alice.id, roles), 0)       # Miembro da 1 y ya usó 1 hoy
 
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")

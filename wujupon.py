@@ -28,6 +28,12 @@ def _hm(seconds: int) -> str:
     return f"{h} h {m} min" if h else f"{m} min"
 
 
+def _next_utc_midnight() -> int:
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    return int((now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp())
+
+
 def money(n: int) -> str:
     return f"{eco.format_amount(n)} {eco.CURRENCY_NAME}"
 
@@ -496,7 +502,9 @@ class WujuponCog(commands.Cog):
             return
         user = interaction.user
         async with self._lock(user.id):
-            res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}")
+            role_ids = [r.id for r in getattr(user, "roles", [])]
+            res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}", None, role_ids)
+            free_left = await self.run(wdb.free_spins_left, user.id, role_ids)
         if res.status == "no_spins":
             price = await self.run(wdb.get_price)
             msg = await _say(interaction, f"🎟️ No tenés tiradas. Cada una cuesta **{money(price)}**.",
@@ -511,14 +519,15 @@ class WujuponCog(commands.Cog):
         if res.credited:                                 # Wuju Coins / embo: ya se acreditaron
             final.description = final.description.split("\n\n📖")[0] + f"\n\n✨ {res.credited}"
             final.set_footer(text="Se acreditó al instante.")
-        final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left), inline=True)
+        final.add_field(name="🎟️ Tiradas restantes", value=str(res.spins_left) + (f" (+{free_left} gratis hoy)" if free_left else ""),
+                        inline=True)
         if self.cleanup_delay:
             first = (("Carta mala: se aplicó sola" if res.prize.effect else "Carta mala: se le avisó al Council para aplicarla")
                      if res.prize.forced
                      else "Se acreditó al instante" if res.credited
                      else "Ya quedó guardada en 🎒 Mi inventario")
             final.set_footer(text=f"{first} · este mensaje se borra en {self.cleanup_delay} s.")
-        view = SpinAgainView(self, user.id, res.spins_left)
+        view = SpinAgainView(self, user.id, res.spins_left + free_left)
         animated = False
         if self.anim_delay > 0:
             try:
@@ -555,6 +564,7 @@ class WujuponCog(commands.Cog):
         user = target or interaction.user
         rows = await self.run(wdb.inventory, user.id)
         spins = await self.run(wdb.get_spins, user.id)
+        free = await self.run(wdb.free_spins_left, user.id, [r.id for r in getattr(user, "roles", [])])
         emb = discord.Embed(title=f"🎒 Inventario de {getattr(user, 'display_name', user)}", color=GOLD)
         if not rows:
             emb.description = "No hay cartas todavía. ¡Tirá el Wujupón!"
@@ -565,6 +575,8 @@ class WujuponCog(commands.Cog):
                 lines.append(f"{wdb.RARITIES[r.prize.rarity][1]} **{r.prize.name}** ×{r.available}{extra}")
             emb.description = "\n".join(lines)[:4000]
         emb.add_field(name="🎟️ Tiradas disponibles", value=str(spins), inline=True)
+        if free:
+            emb.add_field(name="🎁 Gratis de hoy", value=f"{free} (vencen <t:{_next_utc_midnight()}:R>)", inline=True)
         view = InventoryView(self, interaction.user.id, rows) if target is None and any(r.first_card_id for r in rows) else None
         await _say(interaction, embed=emb, **({"view": view} if view else {}))
 
@@ -854,17 +866,53 @@ class WujuponCog(commands.Cog):
         await self.run(wdb.set_setting, "council_channel", str(target.id))
         await _say(interaction, f"📨 Los canjes de Wujupón llegan a {target.mention}.")
 
-    @wj.command(name="regalar-tiradas", description="(Council) Regala tiradas (o quita, con número negativo)")
-    @app_commands.describe(usuario="Persona", cantidad="Tiradas (negativo para quitar)", motivo="Motivo")
-    async def gift(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: int, motivo: Optional[str] = None):
+    @wj.command(name="regalar-tiradas", description="(Council) Regala tiradas a una persona o a todo un rol (o quita, con número negativo)")
+    @app_commands.describe(cantidad="Tiradas por persona (negativo para quitar)", usuario="Persona (o usá rol)",
+                           rol="Rol: se le dan a cada miembro (o usá usuario)", motivo="Motivo")
+    async def gift(self, interaction: discord.Interaction, cantidad: int, usuario: Optional[discord.Member] = None,
+                   rol: Optional[discord.Role] = None, motivo: Optional[str] = None):
         if not await self._council(interaction):
             return
+        if (usuario is None) == (rol is None):
+            return await _say(interaction, "❌ Indicá una persona **o** un rol (uno solo de los dos).")
+        if rol is not None:
+            members = [m for m in getattr(rol, "members", []) if not getattr(m, "bot", False)]
+            if not members:
+                return await _say(interaction, f"❌ {rol.mention} no tiene miembros.")
+            try:
+                n = await self.run(wdb.gift_spins_many, actor_id=interaction.user.id, user_ids=[m.id for m in members], count=cantidad,
+                                   request_key=f"giftrole:{interaction.id}", reason=(motivo or f"Regalo del Council a {rol.name}")[:300])
+            except wdb.WujuponError as exc:
+                return await _say(interaction, f"❌ {exc}")
+            return await _say(interaction, f"✅ {rol.mention}: {'+' if cantidad > 0 else ''}{cantidad} tirada(s) a cada uno "
+                                           f"(**{n}** persona(s)).")
         try:
             after = await self.run(wdb.gift_spins, actor_id=interaction.user.id, user_id=usuario.id, count=cantidad,
                                    request_key=f"gift:{interaction.id}", reason=(motivo or "Regalo del Council")[:300])
         except wdb.WujuponError as exc:
             return await _say(interaction, f"❌ {exc}")
         await _say(interaction, f"✅ {usuario.mention}: {'+' if cantidad > 0 else ''}{cantidad} tirada(s). Ahora tiene **{after}**.")
+
+    @wj.command(name="tiradas-diarias", description="(Council) Tiradas gratis por día para un rol (0 = sacar). Sin datos, muestra la lista")
+    @app_commands.describe(rol="Rol", cantidad="Tiradas gratis por día (0 = sacar el rol)")
+    async def daily_spins(self, interaction: discord.Interaction, rol: Optional[discord.Role] = None, cantidad: Optional[int] = None):
+        if not await self._council(interaction):
+            return
+        if rol is not None and cantidad is not None:
+            try:
+                await self.run(wdb.set_daily_role, rol.id, cantidad, interaction.user.id)
+            except wdb.WujuponError as exc:
+                return await _say(interaction, f"❌ {exc}")
+            msg = (f"✅ {rol.mention} recibe **{cantidad}** tirada(s) gratis por día." if cantidad
+                   else f"✅ {rol.mention} ya no recibe tiradas gratis.")
+            return await _say(interaction, msg + "\nSe renuevan a las 00:00 UTC (21:00 de Argentina) y las que no se usan vencen. "
+                                                 "Si alguien tiene varios roles, recibe las del que más da.")
+        if (rol is None) != (cantidad is None):
+            return await _say(interaction, "❌ Indicá el rol **y** la cantidad (o ninguno de los dos para ver la lista).")
+        rows = await self.run(wdb.list_daily_roles)
+        await _say(interaction, embed=discord.Embed(title="🎁 Tiradas diarias gratis", color=GOLD,
+                                                    description="\n".join(f"<@&{r}> — **{n}** por día" for r, n in rows)
+                                                    or "Ningún rol tiene tiradas diarias."))
 
     async def prize_autocomplete(self, interaction: discord.Interaction, current: str):
         prizes = await self.run(wdb.list_prizes)
