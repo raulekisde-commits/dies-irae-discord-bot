@@ -998,6 +998,41 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.do_spin(i))
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 0)
 
+    def test_estadisticas_monedas_y_premios_solo_admin(self):
+        import efectos_db as edb
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=3, request_key="g", reason="t")
+        for n, key in enumerate(("wuju_2m", "embo_100", "embo_50")):
+            wdb.pull(self.db, self.alice.id, f"p{n}", rng=FixedRng(offset_of(key)))
+        for key, action, amount in (("bad_wuju_300k", "wuju", 300_000), ("bad_embo_15", "embo", 15)):
+            cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key=key, reason="t")
+            edb.apply_forced(self.db, card_id=cid, user_id=self.alice.id, prize_key=key, action=action, amount=amount, minutes=None)
+        wuju, embo = wdb.money_stats(self.db)
+        self.assertEqual((wuju.given, wuju.removed, wuju.net), (2_000_000, 300_000, 1_700_000))
+        self.assertEqual((embo.given, embo.removed, embo.net), (150, 15, 135))
+        # premios con costo máximo: un arma entregada por encargo
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="weapon_73", reason="t")
+        r = wdb.redeem(self.db, card_id=cid, user_id=self.alice.id, details="", request_key="w", guild_id=GUILD_ID)
+        wdb.deliver_request(self.db, r.request.id, 1)
+        rows = wdb.delivered_prizes(self.db)
+        self.assertEqual([(x.prize.key, x.count, x.total) for x in rows if x.prize.cost], [("weapon_73", 1, 8_000_000)])
+        self.assertNotIn("wuju_2m", [x.prize.key for x in rows])
+        # comandos: solo admin
+        i = self.inter(self.council)
+        run(self.cog.stats_money.callback(self.cog, i, None))
+        self.assertIn("Solo el dueño", i.text)
+        i = self.inter(self.admin)
+        run(self.cog.stats_money.callback(self.cog, i, None))
+        e = i.response.sent[0][1]["embed"]
+        self.assertIn("1,700,000", " ".join(v for _, v, _ in e.fields))
+        self.assertIn("3,050,000", " ".join(v for _, v, _ in e.fields))   # 1,7M + 135 embo × 10.000
+        i = self.inter(self.admin)
+        run(self.cog.stats_prizes.callback(self.cog, i, None))
+        e = i.response.sent[0][1]["embed"]
+        self.assertIn("Arma 7.3", e.description)
+        self.assertIn("8,000,000", " ".join(v for _, v, _ in e.fields))
+        # filtro por días
+        self.assertEqual(wdb.money_stats(self.db, 1)[0].net, 1_700_000)
+
     def test_bal_muestra_embo(self):
         embo_db.apply(self.db, user_id=self.alice.id, mode="add", amount=42, actor_id=1, request_key="x", reason="")
         emb = run(self.ecog.bal_embed(self.alice))

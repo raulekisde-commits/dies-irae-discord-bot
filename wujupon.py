@@ -1226,6 +1226,54 @@ class WujuponCog(commands.Cog):
                    + ("\n⚠️ Mientras esté deshabilitado no sale en las tiradas: las probabilidades del resto se reparten sobre lo habilitado."
                       if changed and not activo else ""))
 
+    estad = app_commands.Group(name="estadisticas", description="(Admin) Estadísticas de lo que entregó Wujupón", parent=wj)
+
+    @estad.command(name="monedas", description="(Admin) Wuju Coins y embo que dio Wujupón (menos lo que sacaron las cartas malas)")
+    @app_commands.describe(dias="Solo los últimos N días (vacío = desde siempre)")
+    async def stats_money(self, interaction: discord.Interaction, dias: Optional[int] = None):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador.")
+        wuju, embo = await self.run(wdb.money_stats, dias)
+        f = eco.format_amount
+        emb = discord.Embed(title="💰 Wujupón — Wuju Coins y embo", color=GOLD)
+        emb.add_field(name="🪙 Wuju Coins", value=(f"Dados: **{f(wuju.given)}** ({wuju.cards_given} cartas)\n"
+                                                   f"Quitados (☠️): **−{f(wuju.removed)}** ({wuju.cards_removed} cartas)\n"
+                                                   f"**Neto: {f(wuju.net)}**"), inline=True)
+        emb.add_field(name="🍾 Embo", value=(f"Dados: **{f(embo.given)}** ({embo.cards_given} cartas)\n"
+                                            f"Quitados (☠️): **−{f(embo.removed)}** ({embo.cards_removed} cartas)\n"
+                                            f"**Neto: {f(embo.net)}** (≈ {f(embo.net * wdb.EMBO_SILVER_VALUE)} silver)"), inline=True)
+        emb.add_field(name="Total en silver", value=f"**{f(wuju.net + embo.net * wdb.EMBO_SILVER_VALUE)}** (Wuju 1:1 · embo × "
+                                                    f"{f(wdb.EMBO_SILVER_VALUE)})", inline=False)
+        emb.set_footer(text=f"Últimos {dias} días" if dias else "Desde siempre")
+        await _say(interaction, embed=emb)
+
+    @estad.command(name="premios", description="(Admin) Premios entregados con su costo máximo")
+    @app_commands.describe(dias="Solo los últimos N días (vacío = desde siempre)")
+    async def stats_prizes(self, interaction: discord.Interaction, dias: Optional[int] = None):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador.")
+        rows = await self.run(wdb.delivered_prizes, dias)
+        f = eco.format_amount
+        totals: dict = {}
+        priced, free = [], []
+        for r in rows:
+            if r.prize.cost and r.prize.cost_currency:
+                totals[r.prize.cost_currency] = totals.get(r.prize.cost_currency, 0) + r.total
+                cur = "VAL" if r.prize.cost_currency == "val" else "silver"
+                priced.append(f"{wdb.RARITIES[r.prize.rarity][1]} **{r.prize.name}** ×{r.count} · {f(r.prize.cost)} c/u → "
+                              f"**{f(r.total)}** {cur}")
+            else:
+                free.append(f"{r.prize.name} ×{r.count}")
+        emb = discord.Embed(title="🎁 Wujupón — premios entregados (costo máximo)", color=GOLD)
+        emb.description = "\n".join(priced)[:3500] or "Todavía no se entregó ningún premio con costo."
+        emb.add_field(name="Total", value=f"**{f(totals.get('silver', 0))}** silver" +
+                      (f" · **{f(totals['val'])}** VAL" if totals.get("val") else ""), inline=False)
+        if free:
+            emb.add_field(name="Sin costo declarado", value=", ".join(free)[:1000], inline=False)
+        emb.set_footer(text=("Últimos %d días · " % dias if dias else "Desde siempre · ")
+                       + "Wuju Coins y embo van en /wujupon estadisticas monedas")
+        await _say(interaction, embed=emb)
+
     @wj.command(name="stats", description="(Council) Ingresos, costos entregados y pendientes de Wujupón")
     async def stats(self, interaction: discord.Interaction):
         if not await self._council(interaction):

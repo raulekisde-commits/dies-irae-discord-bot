@@ -359,6 +359,8 @@ INFO_STAFF_PAGE2 = {
     "• `/wujupon publicar-premios [canal]` — lista pública de premios (no se actualiza sola).\n"
     "• `/wujupon pausa pausado [motivo]` — pausa o reanuda comprar, tirar y canjear (el inventario se sigue viendo).\n"
     "• `/wujupon foto-premio` y `/wujupon canal-nsfw` — imagen del premio con foto (spoiler en el canal +18, se borra a los 60 s).\n"
+    "• `/wujupon estadisticas monedas [dias]` — Wuju Coins y embo que dio Wujupón, menos lo que sacaron las cartas malas.\n"
+    "• `/wujupon estadisticas premios [dias]` — premios entregados con su costo máximo.\n"
     "• `/wujupon limpiar-cartas [tambien_tiradas]` — borra las cartas sin usar de todos y anula los encargos abiertos.\n\n"
         "**✨ Efectos automáticos de las cartas** — grupo `/wujupon-efectos`\n"
         "Las cartas de mute, congelar, escudo, limpiezas, casino y las ☠️ cartas malas las aplica el bot solo. Si la carta afecta a otro, "
