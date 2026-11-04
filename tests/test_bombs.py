@@ -15,7 +15,8 @@ class BombsTests(DiscordBase):
         self.r_rec = discord.Role(bm.RECRUITER_ROLE_ID, "Reclutador", g)
         self.r_b1 = discord.Role(9101, "Bomb Norte", g)
         self.r_b2 = discord.Role(9102, "Bomb Sur", g)
-        g.roles += [self.r_staff, self.r_rec, self.r_b1, self.r_b2]
+        self.r_common = discord.Role(bm.BOMB_COMMON_ROLE_ID, "Bomb", g)
+        g.roles += [self.r_staff, self.r_rec, self.r_b1, self.r_b2, self.r_common]
         self.stf = discord.Member(7200, "Stf", roles=[self.r_staff], guild=g)
         self.rec = discord.Member(7201, "Rec", roles=[self.r_rec], guild=g)
         g.members += [self.stf, self.rec]
@@ -74,6 +75,31 @@ class BombsTests(DiscordBase):
         m = {r["user_id"]: r["added_by"] for r in bdb.members(self.db, bdb.find_bomb(self.db, GUILD_ID, "Norte")["id"])}
         self.assertEqual(m, {self.outsider.id: self.stf.id, self.alice.id: self.rec.id})
         self.assertIn("ya están cargados", self.call("cargar", self.rec, "Norte"))
+
+    def test_rol_comun_al_agregar_y_cargar(self):
+        self.call("crear", self.council, "Norte", self.r_b1, self.bob)
+        self.call("crear", self.council, "Sur", self.r_b2, self.alice)
+        self.call("agregar", self.stf, "Norte", self.outsider)
+        self.assertIn(self.r_common, self.outsider.roles)                   # rol propio + rol común
+        self.outsider.roles.remove(self.r_common)
+        self.assertIn("ya estaba", self.call("agregar", self.stf, "Norte", self.outsider))
+        self.assertIn(self.r_common, self.outsider.roles)                   # volver a agregar lo repone
+        self.outsider.roles.remove(self.r_common)                            # anotado pero sin rol común
+        self.council.roles.append(self.r_b2)                                 # rol de bomb dado a mano, otra bomb
+        self.assertIn("**1** personas", self.call("cargar", self.rec, "Sur"))
+        self.assertIn(self.r_common, self.council.roles)
+        self.assertIn("ya están cargados", self.call("cargar", self.rec, "Norte"))
+        self.assertIn(self.r_common, self.outsider.roles)                    # cargar repone el rol común a los ya anotados
+
+    def test_caller_solo_agrega_en_su_bomb(self):
+        self.call("crear", self.council, "Norte", self.r_b1, self.bob)
+        self.call("crear", self.council, "Sur", self.r_b2, self.alice)
+        self.assertIn("agregado", self.call("agregar", self.bob, "Norte", self.outsider))      # bob es caller de Norte
+        self.assertIn(self.r_b1, self.outsider.roles)
+        self.assertIn("tu bomb", self.call("agregar", self.bob, "Sur", self.outsider))
+        self.assertNotIn(self.r_b2, self.outsider.roles)
+        self.assertIn("Solo el Staff", self.call("cargar", self.bob, "Norte"))                  # el caller solo agrega
+        self.assertIn("Solo el Staff", self.call("sacar", self.bob, "Norte", self.outsider))
 
     def test_eliminar(self):
         self.call("crear", self.council, "Norte", self.r_b1, self.bob)
