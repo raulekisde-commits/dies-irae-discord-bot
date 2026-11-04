@@ -1,7 +1,8 @@
 """Balance de embo (embotelladas de Albion): solo contabilidad, separada de los Wuju Coins.
 
 Una cuenta por persona y un historial de movimientos. Cada movimiento lleva `request_key` única, así un reintento o un
-doble evento no aplica dos veces la misma operación. El balance nunca queda negativo.
+doble evento no aplica dos veces la misma operación. El balance puede quedar negativo (quitar o fijar desde /eco embo,
+cartas malas del Wujupón), igual que los Wuju Coins.
 """
 import sqlite3
 from dataclasses import dataclass
@@ -78,16 +79,16 @@ def tx_apply(conn: sqlite3.Connection, *, user_id: int, mode: str, amount: int, 
     if mode not in ("add", "remove", "set"):
         raise ValueError("modo inválido")
     amount = int(amount)
-    if amount < 0 or amount > MAX_EMBO or (mode != "set" and amount == 0):
-        raise EmboError("La cantidad tiene que ser un número positivo." if mode != "set" else "La cantidad no puede ser negativa.")
+    if mode != "set" and (amount <= 0 or amount > MAX_EMBO):
+        raise EmboError("La cantidad tiene que ser un número positivo.")
+    if mode == "set" and abs(amount) > MAX_EMBO:
+        raise EmboError("La cantidad excede el límite.")
     prev = conn.execute("SELECT balance_before, balance_after FROM embo_movements WHERE request_key = ?", (request_key,)).fetchone()
     if prev is not None:
         return Change(int(prev["balance_before"]), int(prev["balance_after"]), duplicate=True)
     before = _balance(conn, user_id)
     after = before + amount if mode == "add" else before - amount if mode == "remove" else amount
-    if after < 0:
-        raise EmboError(f"No alcanza: tiene {before} de embo.")
-    if after > MAX_EMBO:
+    if abs(after) > MAX_EMBO:
         raise EmboError("El balance resultante excede el límite.")
     now = utcnow_iso()
     conn.execute("INSERT INTO embo_accounts(user_id, balance, updated_at) VALUES (?,?,?) "

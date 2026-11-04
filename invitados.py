@@ -116,7 +116,7 @@ INFO_STAFF = {
                "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/casino winrate`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
-                 "• `/eco embo add|remove|set usuario cantidad [motivo]` — balance de embo (Admin o rol con `/eco perms-comando comando:embo`). No puede quedar negativo.\n"
+                 "• `/eco embo add|remove|set usuario cantidad [motivo]` — balance de embo (Admin o rol con `/eco perms-comando comando:embo`). Puede quedar en negativo (igual que los Wuju Coins).\n"
                  "• `/eco set-balance usuario cantidad` (Admin) — deja el balance exacto. `/eco eco-stats` (Staff) — total de monedas en el servidor. `/eco historico-bal reset` (Admin) — pone en cero el balance histórico.\n"
                  "• **Splits** (Council / Admin): `/split` (con looters) y `/split-ava` (scouts con pago fijo) crean el panel + hilo en el canal de splits. Se editan con el botón **Editar** o `/editar`, y se pagan con **Cerrar split**: el pago es idempotente, no se duplica aunque se repita.\n"
                  "• Listas del split: looters, scouts y la **lista mitad** (`!agregarlistamitad`), que cobra la mitad.\n"

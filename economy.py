@@ -1109,7 +1109,7 @@ class EconomyCog(commands.Cog):
     async def embo_add(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
         await self._embo_op(interaction, "add", usuario, cantidad, motivo)
 
-    @embo_g.command(name="remove", description="Resta embo a una persona (no puede quedar negativo)")
+    @embo_g.command(name="remove", description="Resta embo a una persona (puede quedar en negativo)")
     @app_commands.describe(usuario="Persona", cantidad="Cantidad de embo", motivo="Motivo (opcional)")
     async def embo_remove(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: str, motivo: Optional[str] = None):
         await self._embo_op(interaction, "remove", usuario, cantidad, motivo)
