@@ -379,7 +379,13 @@ INFO_STAFF_PAGE2 = {
         "• 🚫 Bloqueo de casino: dura hasta que el casino se cierre y se vuelva a abrir.\n"
         "• ☠️ Cartas malas: se aplican al salir; −Wuju y −embo pueden dejar el balance en negativo.\n"
         "• Los efectos sobreviven a los reinicios: al volver, el bot repone o saca los roles solo.\n"
-        "• Siguen por encargo al Council: cartas de CTA, coinflips con tope y duelo."),
+        "\n**🎴 Cartas de CTA**\n"
+        "• **Anotación libre** y **Slot libre en Party 1**: se usan solas. Si alguien se anota en una posición sin el rol (o en la Party 1 "
+        "durante los minutos de Legacy) y tiene la carta, el bot le ofrece usarla en esa CTA. Queda reservada: se consume si la CTA termina "
+        "con la persona anotada y vuelve al inventario si se baja o la CTA se cancela.\n"
+        "• **Staff a tu elección**: se canjea; el jugador elige la CTA abierta, alguien del Staff y la posición, y el bot lo anota ahí "
+        "(fijado, aunque no tenga el rol; si estaba en otra posición, lo mueve).\n"
+        "• Siguen por encargo al Council: coinflips con tope y duelo."),
 }
 
 INFO_STAFF["economia"] = INFO_STAFF["economia"] + ("\n• **Guild Shop** (`/panel shop [canal]`, Council): publica el Top Vendedores y el panel de compra. Quien compra abre un ticket con el rol Seller; la venta se confirma ahí. Los logs van al canal de `/canal logs guildshop`.")
@@ -740,7 +746,9 @@ class InvitadosCog(commands.Cog):
         page2 = self.info_staff_page2(value)
         if page2 is None:
             return await interaction.response.send_message(embed=self.info_embed(value, True), ephemeral=True)
-        await interaction.response.send_message(embeds=[self.info_embed(value, True), page2], ephemeral=True)
+        # cada mensaje admite 6000 caracteres en total: la segunda página va en un mensaje aparte
+        await interaction.response.send_message(embed=self.info_embed(value, True), ephemeral=True)
+        await interaction.followup.send(embed=page2, ephemeral=True)
 
     # ---------- si pierde el rol Invitado (p. ej. lo hacen miembro) el registro queda como histórico ----------
     @commands.Cog.listener()

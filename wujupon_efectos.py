@@ -6,6 +6,7 @@
 - Cada efecto sobre otra persona se anuncia en el canal de /wujupon-efectos canal y le llega un MD al afectado.
 """
 import asyncio
+import os
 import traceback
 from typing import Optional
 
@@ -15,6 +16,7 @@ from discord.ext import commands, tasks
 
 import casino_db
 import deposits_db
+import wujupon_cta
 import efectos_db as edb
 import wujupon_db as wdb
 from guildshop import can_manage
@@ -73,6 +75,58 @@ class TargetView(discord.ui.View):
         return True
 
 
+STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
+
+
+def wujupon_cta_is_staff(member) -> bool:
+    return any(getattr(r, "id", None) == STAFF_ROLE_ID for r in getattr(member, "roles", []))
+
+
+class StaffNumberModal(discord.ui.Modal, title="Posición para el Staff"):
+    numero = discord.ui.TextInput(label="Número de posición libre", placeholder="12", max_length=3)
+
+    def __init__(self, cog: "EfectosCog", card_id: int, run_id: int, staff):
+        super().__init__()
+        self.cog, self.card_id, self.run_id, self.staff = cog, card_id, run_id, staff
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.finish_staff_card(interaction, self.card_id, self.run_id, self.staff, str(self.numero.value))
+
+
+class StaffCardView(discord.ui.View):
+    """Carta «Staff a tu elección»: CTA → persona del Staff → número de posición."""
+
+    def __init__(self, cog: "EfectosCog", owner_id: int, card_id: int, runs):
+        super().__init__(timeout=180)
+        self.cog, self.owner_id, self.card_id = cog, owner_id, card_id
+        self.run_id = runs[0][0] if len(runs) == 1 else None
+        if len(runs) > 1:
+            sel = discord.ui.Select(placeholder="Elegí la CTA", options=[discord.SelectOption(label=t[:100], value=str(rid))
+                                                                         for rid, t in runs[:25]])
+            sel.callback = lambda inter, s=sel: self._pick_run(inter, int(s.values[0]))
+            self.add_item(sel)
+        staff = discord.ui.UserSelect(placeholder="Elegí a la persona del Staff", min_values=1, max_values=1)
+        staff.callback = lambda inter, s=staff: self._pick_staff(inter, s.values[0] if s.values else None)
+        self.add_item(staff)
+
+    async def interaction_check(self, interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Esto no es tuyo.")
+            return False
+        return True
+
+    async def _pick_run(self, interaction, run_id: int):
+        self.run_id = run_id
+        await _say(interaction, "✅ CTA elegida. Ahora elegí a la persona del Staff.")
+
+    async def _pick_staff(self, interaction, staff):
+        if self.run_id is None:
+            return await _say(interaction, "❌ Primero elegí la CTA.")
+        if staff is None:
+            return await _say(interaction, "❌ Elegí a alguien.")
+        await interaction.response.send_modal(StaffNumberModal(self.cog, self.card_id, self.run_id, staff))
+
+
 class EfectosCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
@@ -83,6 +137,7 @@ class EfectosCog(commands.Cog):
 
     async def cog_load(self):
         await self.run(edb.init_schema)
+        await self.run(wujupon_cta.init_schema)
         self.expire_loop.start()
         self._spawn(self._after_ready())
 
@@ -217,6 +272,55 @@ class EfectosCog(commands.Cog):
         await _say(interaction, txt)
         await self.announce(f"{'🎰' if open_ else '🔒'} <@{interaction.user.id}> {'abrió' if open_ else 'cerró'} el casino con una carta de Wujupón.")
 
+    # ---------------- cartas de CTA ----------------
+    def _cta_hooks(self):
+        return getattr(self.bot, "cta_hooks", None) or {}
+
+    async def start_cta(self, interaction: discord.Interaction, card: "wdb.Card", prize: "wdb.Prize"):
+        if prize.handler in ("cta:free", "cta:p1"):
+            where = "en cualquier posición" if prize.handler == "cta:free" else "en la Party 1 (también durante los minutos de Legacy)"
+            return await _say(interaction, f"🎴 **{prize.name}** se usa sola: cuando te anotás {where} y te falta el rol, el bot te "
+                                           "pregunta si querés usarla en esa CTA. La carta sigue en tu inventario.")
+        hooks = self._cta_hooks()
+        if not hooks:
+            return await _say(interaction, "❌ El sistema de CTA no está disponible. Tu carta no se gastó.")
+        runs = await asyncio.to_thread(hooks["open_runs"], self.guild_id)
+        if not runs:
+            return await _say(interaction, "❌ No hay ninguna CTA abierta. Tu carta no se gastó: usala cuando haya una.")
+        await _say(interaction, f"🎴 **{prize.name}**: elegí la CTA, la persona del Staff y la posición libre.",
+                   view=StaffCardView(self, interaction.user.id, card.id, runs))
+
+    async def finish_staff_card(self, interaction: discord.Interaction, card_id: int, run_id: int, staff, number_text: str):
+        hooks = self._cta_hooks()
+        card = await self.run(wdb.get_card, card_id)
+        if card is None or card.user_id != interaction.user.id or card.status != "available":
+            return await _say(interaction, "❌ Esa carta ya no está disponible.")
+        try:
+            number = int(str(number_text).strip())
+        except ValueError:
+            return await _say(interaction, "❌ Escribí el número de la posición (ej: 12). Tu carta no se gastó.")
+        if getattr(staff, "bot", False) or not wujupon_cta_is_staff(staff):
+            return await _say(interaction, "❌ Tenés que elegir a alguien con el rol **Staff**. Tu carta no se gastó.")
+        prot = await self.run(edb.is_immune, staff.id)
+        shield = await self.run(edb.active_until, staff.id, "shield")
+        if prot or shield is not None:
+            return await _say(interaction, f"❌ {staff.mention} es inmune o tiene escudo. Tu carta no se gastó.")
+        slot = await asyncio.to_thread(hooks["slot"], run_id, number)
+        if slot is None:
+            return await _say(interaction, "❌ Esa posición no existe o la CTA ya cerró. Tu carta no se gastó.")
+        key, label = slot
+        code, extra = hooks["assign"](run_id, staff.id, key, interaction.user.id)
+        if code == "occupied":
+            return await _say(interaction, f"❌ La {label} está ocupada por <@{extra}>. Elegí una libre. Tu carta no se gastó.")
+        if code == "same":
+            return await _say(interaction, f"ℹ️ {staff.mention} ya está en la {label}. Tu carta no se gastó.")
+        if code not in ("assigned", "moved"):
+            return await _say(interaction, "❌ La CTA ya cerró. Tu carta no se gastó.")
+        await self.run(wujupon_cta.consume_staff_card, card_id, interaction.user.id, f"CTA #{run_id}: {staff.id} → {key}")
+        await _say(interaction, f"✅ {staff.mention} quedó en la {label}" + (" (lo moví de su posición anterior)." if code == "moved" else "."))
+        await self.announce(f"🎴 <@{interaction.user.id}> puso a {staff.mention} en la {label} de la CTA #{run_id}.", staff.id,
+                            f"🎴 {interaction.user.display_name} usó una carta de Wujupón: te toca jugar en la {label} de la CTA #{run_id}.")
+
     # ---------------- cartas malas ----------------
     async def apply_forced(self, card_id: int, user_id: int, prize: "wdb.Prize") -> str:
         """Aplica una carta mala recién salida. Devuelve el texto para el jugador."""
@@ -243,6 +347,7 @@ class EfectosCog(commands.Cog):
         try:
             for e in await self.run(edb.expire_due):
                 await self._set_role(e.user_id, e.kind, False)
+            await self.run(wujupon_cta.settle)               # cartas de CTA reservadas: se consumen o vuelven al inventario
         except Exception:
             traceback.print_exc()
 

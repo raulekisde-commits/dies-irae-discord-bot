@@ -364,8 +364,8 @@ class CatalogoV2Tests(DbBase):
         base = {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
                 "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount", "shop_discount_30"}
         self.assertEqual(auto, base | set(wdb.EFFECT_HANDLERS))
-        # las de CTA, coinflips y duelo siguen por encargo al Council
-        for k in ("flex_cta", "party1_slot", "party_switch", "undo_coinflip", "coinflip_15m", "duel_1v1"):
+        # coinflips y duelo siguen por encargo al Council
+        for k in ("undo_coinflip", "coinflip_15m", "coinflip_20m", "coinflip_nolimit", "duel_1v1"):
             self.assertNotIn(k, auto)
 
     def test_descripciones_y_nombres_cortos(self):

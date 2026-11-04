@@ -603,6 +603,11 @@ class WujuponCog(commands.Cog):
         if card is None or card.user_id != interaction.user.id or card.status != "available":
             return await _say(interaction, "❌ Esa carta ya no está disponible.")
         p = await self.run(wdb.get_prize, card.prize_key)
+        if (p.handler or "").startswith("cta:"):         # cartas de CTA
+            efx = self.bot.get_cog("EfectosCog")
+            if efx is None:
+                return await _say(interaction, "❌ El módulo de efectos no está cargado. Tu carta no se gastó.")
+            return await efx.start_cta(interaction, card, p)
         if p.effect:                                    # cartas con efecto automático (mutes, escudos, congelamientos…)
             efx = self.bot.get_cog("EfectosCog")
             if efx is None:

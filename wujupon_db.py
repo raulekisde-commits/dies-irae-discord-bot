@@ -251,6 +251,9 @@ EFFECT_HANDLERS = {
     "bad_cd_4h": "efx:cooldown:4", "bad_cd_8h": "efx:cooldown:8", "bad_cd_12h": "efx:cooldown:12", "bad_cd_24h": "efx:cooldown:24",
     "bad_cd_48h": "efx:cooldown:48",
 }
+# Cartas de CTA (wujupon_cta): las dos primeras se usan solas al anotarse; la de Staff se canjea.
+CTA_HANDLERS = {"flex_cta": "cta:free", "party1_slot": "cta:p1", "party_switch": "cta:staff"}
+EFFECT_HANDLERS.update(CTA_HANDLERS)
 CATALOG = [c[:5] + (EFFECT_HANDLERS.get(c[0], c[5]),) + c[6:] for c in CATALOG]
 
 
@@ -406,7 +409,7 @@ class Prize:
 
     @property
     def automatic(self) -> bool:
-        return self.handler in AUTO_HANDLERS or (self.handler or "").startswith("efx:")
+        return self.handler in AUTO_HANDLERS or (self.handler or "").startswith(("efx:", "cta:"))
 
     @property
     def effect(self):
@@ -1206,7 +1209,7 @@ def _run_handler(conn, prize: Prize, card: Card, *, guild_id: int, req_key: str)
         ch = embo_db.tx_apply(conn, user_id=card.user_id, mode="add", amount=prize.amount, actor_id=card.user_id,
                               request_key=f"wjp:card:{card.id}", reason=f"Wujupón: {prize.name}", kind="wujupon_prize")
         return f"Se acreditaron **{eco.format_amount(prize.amount)} de embo**. Balance de embo: {eco.format_amount(ch.after)}."
-    if prize.effect:
+    if prize.effect or (prize.handler or "").startswith("cta:"):
         raise _Abort(RedeemResult("no_effect", "Esta carta se usa desde 🎒 Mi inventario con el botón Canjear.", prize=prize))
     if prize.handler == "photo":
         # la carta se consume acá; el envío lo hace la capa de Discord y, si falla, devuelve la carta
