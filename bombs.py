@@ -1,8 +1,9 @@
 """Grupo /bomb: cada bomb tiene nombre, rol y caller.
 - Council (o admin/propietario): /bomb crear, /bomb editar, /bomb eliminar.
-- Staff, Reclutador y Council: /bomb agregar, /bomb sacar (dan / quitan el rol y queda quién lo hizo) y /bomb cargar
+- Staff, Reclutador y Council: /bomb agregar (también el caller, solo en su bomb), /bomb sacar (dan / quitan el rol y queda quién lo hizo) y /bomb cargar
   (anota en la lista a quienes ya tienen el rol de la bomb pero no fueron agregados con el comando).
-- /bomb listar: lo anterior y además el caller de cualquier bomb."""
+- /bomb listar: lo anterior y además el caller de cualquier bomb.
+- Agregar o cargar también da el rol común de bomb (BOMB_COMMON_ROLE_ID) a todos los integrantes, sea cual sea su bomb."""
 import asyncio
 import os
 import traceback
@@ -18,6 +19,7 @@ from guildshop import can_manage
 
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ID", "1257896905099444354"))
+BOMB_COMMON_ROLE_ID = int(os.getenv("BOMB_COMMON_ROLE_ID", "1565982191945519194"))     # rol que tienen todos los de cualquier bomb
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
@@ -33,6 +35,23 @@ def can_define(member) -> bool:
 def can_staff(member) -> bool:
     """Agregar / sacar gente: Council, Staff o Reclutador (y administradores)."""
     return can_manage(member) or bool({STAFF_ROLE_ID, RECRUITER_ROLE_ID} & _roles(member))
+
+
+async def ensure_common_role(guild, members, reason: str) -> tuple:
+    """Da el rol común de bomb a quien no lo tenga. Devuelve (cuántos lo recibieron, error o None)."""
+    role = guild.get_role(BOMB_COMMON_ROLE_ID)
+    if role is None:
+        return 0, f"⚠️ No encuentro el rol común de bomb (<@&{BOMB_COMMON_ROLE_ID}>): no se pudo dar."
+    given, error = 0, None
+    for m in members:
+        if getattr(m, "bot", False) or role in m.roles:
+            continue
+        try:
+            await m.add_roles(role, reason=reason)
+            given += 1
+        except discord.HTTPException as exc:
+            error = f"⚠️ No pude dar el rol común {role.mention} (revisá que mi rol esté por encima): {exc}"
+    return given, error
 
 
 def _unix(iso: str) -> int:
@@ -174,13 +193,16 @@ class BombsCog(commands.Cog):
     @bomb_g.command(name="agregar", description="(Staff/Reclutador) Agrega a alguien a una bomb y le da su rol")
     @app_commands.describe(bomb="La bomb", usuario="Persona a agregar")
     async def agregar(self, interaction: discord.Interaction, bomb: str, usuario: discord.Member):
-        if not can_staff(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, los reclutadores y el Council pueden agregar gente a una bomb.")
+        staff = can_staff(interaction.user)
+        if not staff and not any(r["caller_id"] == interaction.user.id for r in await self.run(bdb.list_bombs, interaction.guild.id)):
+            return await _say(interaction, "🔒 Solo el Staff, los reclutadores, el Council y el caller de la bomb pueden agregar gente a una bomb.")
         if usuario.bot:
             return await _say(interaction, "❌ No se puede agregar un bot.")
         b = await self._bomb(interaction, bomb)
         if b is None:
             return
+        if not staff and b["caller_id"] != interaction.user.id:            # el caller solo agrega gente a SU bomb
+            return await _say(interaction, "🔒 Como caller solo podés agregar gente a tu bomb.")
         role = interaction.guild.get_role(b["role_id"])
         if role is None:
             return await _say(interaction, "❌ El rol de esa bomb ya no existe. Pedile al Council que la edite con `/bomb editar`.")
@@ -189,11 +211,14 @@ class BombsCog(commands.Cog):
                 await usuario.add_roles(role, reason=f"/bomb agregar {b['name']} por {interaction.user} ({interaction.user.id})")
             except discord.HTTPException as exc:
                 return await _say(interaction, f"❌ No pude darle el rol (revisá que mi rol esté por encima): {exc}")
+        _, common_err = await ensure_common_role(interaction.guild, [usuario],
+                                                 f"/bomb agregar {b['name']} por {interaction.user} ({interaction.user.id})")
+        warn = f"\n{common_err}" if common_err else ""
         new = await self.run(bdb.add_member, b["id"], usuario.id, interaction.user.id)
         name = discord.utils.escape_markdown(b["name"])
         if not new:
-            return await _say(interaction, f"ℹ️ {usuario.mention} ya estaba en **{name}** (se verificó que tenga el rol).")
-        await _say(interaction, f"✅ {usuario.mention} agregado a **{name}** · rol {role.mention}.")
+            return await _say(interaction, f"ℹ️ {usuario.mention} ya estaba en **{name}** (se verificó que tenga el rol).{warn}")
+        await _say(interaction, f"✅ {usuario.mention} agregado a **{name}** · rol {role.mention}.{warn}")
 
     @bomb_g.command(name="sacar", description="(Staff/Reclutador) Saca a alguien de una bomb y le quita su rol")
     @app_commands.describe(bomb="La bomb", usuario="Persona a sacar")
@@ -229,14 +254,23 @@ class BombsCog(commands.Cog):
         listed = {r["user_id"] for r in await self.run(bdb.members, b["id"])}
         nuevos = [m for m in role.members if not m.bot and m.id not in listed]
         name = discord.utils.escape_markdown(b["name"])
+        # todos los integrantes (anotados o con el rol) tienen que tener también el rol común de bomb
+        everyone = {m.id: m for m in role.members}
+        for uid in listed:
+            m = interaction.guild.get_member(uid)
+            if m is not None:
+                everyone[uid] = m
+        given, common_err = await ensure_common_role(interaction.guild, list(everyone.values()),
+                                                     f"/bomb cargar {b['name']} por {interaction.user} ({interaction.user.id})")
+        common = (f"\n🎖️ Rol común <@&{BOMB_COMMON_ROLE_ID}> dado a **{given}**." if given else "") + (f"\n{common_err}" if common_err else "")
         if not nuevos:
-            return await _say(interaction, f"✅ Todos los que tienen el rol {role.mention} ya están cargados en **{name}**.")
+            return await _say(interaction, f"✅ Todos los que tienen el rol {role.mention} ya están cargados en **{name}**.{common}")
         added = []
         for m in nuevos:
             if await self.run(bdb.add_member, b["id"], m.id, interaction.user.id):
                 added.append(m)
         lines = [f"<@{m.id}>" for m in added]
-        text = f"✅ Se cargaron **{len(added)}** personas en **{name}** (ya tenían el rol {role.mention}). Quedan como agregadas por vos.\n"
+        text = f"✅ Se cargaron **{len(added)}** personas en **{name}** (ya tenían el rol {role.mention}). Quedan como agregadas por vos.{common}\n"
         chunks = _chunks([text + ", ".join(lines)], limit=1900) if len(text) + len(", ".join(lines)) <= 1900 else _chunks([text] + lines)
         for c in chunks:
             await _say(interaction, c)
