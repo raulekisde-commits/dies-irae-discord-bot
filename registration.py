@@ -598,9 +598,19 @@ class RegistrationCog(commands.Cog):
         except rdb.RegError as exc:
             return await _say(interaction, f"❌ {exc}")
         nick_msg = await self.apply_nickname(usuario, reg.char_name)
+        role_msg = ""
+        member_role = interaction.guild.get_role(self.member_role_id) if self.member_role_id else None
+        if member_role is None:
+            role_msg = "\n⚠️ No encuentro el rol Miembro: no se le pudo dar."
+        elif member_role not in usuario.roles:
+            try:
+                await usuario.add_roles(member_role, reason=f"/admin_vincular por {interaction.user} ({interaction.user.id})")
+                role_msg = f"\n✅ No tenía el rol {member_role.mention}: se lo di."
+            except discord.HTTPException as exc:
+                role_msg = f"\n⚠️ No pude darle el rol {member_role.mention} (revisá que mi rol esté por encima): {exc}"
         await interaction.followup.send(
             f"⚠️ {usuario.mention} quedó vinculado a **{discord.utils.escape_markdown(reg.char_name)}** como **vínculo administrativo** "
-            f"(la persona no lo aceptó).{note}\n{nick_msg}", ephemeral=True, allowed_mentions=NO_MENTIONS)
+            f"(la persona no lo aceptó).{note}\n{nick_msg}{role_msg}", ephemeral=True, allowed_mentions=NO_MENTIONS)
         await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**")
 
     # ---------- reclutamiento: registro al aceptar y roles recién cuando entra a la guild ----------

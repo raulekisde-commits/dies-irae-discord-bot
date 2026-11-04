@@ -644,6 +644,14 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertEqual((reg.method, reg.char_id), ("admin_override", "id-cazador"))
         self.assertIn("vínculo administrativo", i.text)
         self.assertTrue(any("a mano" in m.content for m in self.logs.sent))
+        self.assertNotIn("se lo di", i.text)                                   # bob ya tenía Miembro
+        self.cog.member_role_id = self.r_member.id
+        rdb.unlink(self.db, self.bob.id, self.council.id)
+        self.bob.roles.remove(self.r_member)
+        i = self.inter(self.council)
+        run(self.cog.admin_vincular.callback(self.cog, i, self.bob, "Cazador"))
+        self.assertIn(self.r_member, self.bob.roles)                           # no lo tenía: se lo da
+        self.assertIn("se lo di", i.text)
         i = self.inter(self.council)
         run(self.cog.admin_registro.callback(self.cog, i, self.bob))
         self.assertIn("vinculado por un administrador", str(i.response.sent[0][1]["embed"].fields))
