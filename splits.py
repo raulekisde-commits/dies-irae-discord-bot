@@ -112,7 +112,8 @@ def data_embeds(s: sdb.Split, names=None) -> List[discord.Embed]:
         + (f"\n**Lista mitad:** {c.half} persona(s) × {fmt(c.per_half)}" if c.half else ""))
     if c.leftover:
         pass
-    note = "💡 Para agregar gente a la lista: !agregarlista @Ana @Beto @Caro" + (
+    note = ("💡 Para agregar gente a la lista: !agregarlista @Ana @Beto @Caro"
+            "\n💡 Para sacar gente de la lista: !eliminarlista @Ana @Rol o el nombre tal como figura en la lista") + (
         "\n💡 Para la lista mitad (cobran la mitad): !agregarlistamitad @Ana @Beto" if s.is_ava else "")
     summary.set_footer(text=(f"Sobran {fmt(c.leftover)} que no se reparten (no alcanzan para una unidad más por persona).\n" if c.leftover else "") + note)
     out.append(summary)
@@ -1415,6 +1416,87 @@ class SplitsCog(commands.Cog):
             return "ℹ️ Todas esas personas ya estaban en la lista mitad."
         return (f"✅ Agregué {n} persona(s) a la **lista mitad** de **Split {s.title}** (cobran la mitad de la parte)."
                 + (f" ({moved} salieron de la lista general.)" if moved else ""))
+
+    # ---------- !eliminarlista ----------
+    @staticmethod
+    def _norm(text: str) -> str:
+        return " ".join((text or "").replace(",", " ").replace(";", " ").casefold().split())
+
+    async def _remove_from_list(self, actor, channel_id: Optional[int], explicit_id: Optional[int], members, rest: str) -> str:
+        """!eliminarlista: saca de la lista (y de la lista mitad) a los etiquetados, a la gente de los roles etiquetados
+        y a los nombres escritos sin etiquetar (tal como figuran en la lista del split)."""
+        s = await self.run(sdb.get_split, explicit_id) if explicit_id is not None else await self.run(sdb.find_by_thread, channel_id or 0)
+        if s is None:
+            return "❌ Usalo dentro del hilo de un split (o poné el número del split antes: `!eliminarlista 3 @Ana @Beto`)."
+        if not (can_manage(actor) or actor.id == s.creator_id):
+            return "🔒 Solo el Council, un administrador o quien creó el split puede sacar gente."
+        if not s.is_open:
+            return "❌ Ese split ya está cerrado: no se puede modificar."
+        listed = list(dict.fromkeys(list(s.people) + list(s.half)))
+        ids = [m.id for m in members if not getattr(m, "bot", False)]
+        # nombres sin etiquetar: se buscan los nombres de la lista dentro del texto (los más largos primero, admiten espacios)
+        text = f" {self._norm(rest)} "
+        not_found, ambiguous = [], []
+        if text.strip():
+            names = await self.names_of(s)
+            by_name = {}
+            for uid in listed:
+                by_name.setdefault(self._norm(names.get(uid, "")), []).append(uid)
+            for name in sorted((n for n in by_name if n), key=len, reverse=True):
+                pat = re.compile(r"(?<!\S)" + re.escape(name) + r"(?!\S)")
+                if not pat.search(text):
+                    continue
+                text = pat.sub(" ", text)
+                if len(by_name[name]) > 1:
+                    ambiguous.append(names.get(by_name[name][0], name))
+                else:
+                    ids.append(by_name[name][0])
+            not_found = text.split()
+        ids = list(dict.fromkeys(ids))
+        if not ids and not not_found and not ambiguous:
+            return ("❌ Etiquetá a las personas o un rol, o escribí el nombre como figura en la lista. "
+                    "Ej: `!eliminarlista @Ana @Rol` o `!eliminarlista Ana Beto`")
+        to_remove = [u for u in ids if u in listed]
+        removed_n, lost_looters = 0, []
+        if to_remove:
+            try:
+                _, lost_looters = await self.run(sdb.remove_people, s.id, to_remove)
+            except sdb.SplitError as exc:
+                return f"❌ {exc}"
+            removed_n = len(to_remove)
+            await self.sync_split(s.id)
+        out = [f"✅ Saqué {removed_n} persona(s) de la lista de **Split {s.title}**." if removed_n
+               else "ℹ️ No saqué a nadie de la lista."]
+        missing = len(ids) - len(to_remove)
+        if missing:
+            out.append(f"ℹ️ {missing} etiquetado(s) no estaba(n) en la lista.")
+        if lost_looters:
+            out.append("🪙 También dejaron de ser looters: " + ", ".join(f"<@{u}>" for u in lost_looters))
+        if ambiguous:
+            out.append("⚠️ Nombre repetido en la lista, etiquetalo con @: " + ", ".join(f"`{n}`" for n in ambiguous))
+        if not_found:
+            out.append("❓ No encontré en la lista: " + " ".join(f"`{w}`" for w in not_found[:20]))
+        return "\n".join(out)
+
+    @commands.command(name="eliminarlista")
+    async def eliminarlista(self, ctx: commands.Context, *, texto: str = ""):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        first = (texto or "").split()[:1]
+        explicit = int(first[0]) if first and first[0].isdigit() else None
+        members = list(getattr(ctx.message, "mentions", []))
+        roles = list(getattr(ctx.message, "role_mentions", []))
+        for rid in ROLE_MENTION_RE.findall(texto or ""):
+            role = ctx.guild.get_role(int(rid))
+            if role is not None and role not in roles:
+                roles.append(role)
+        for role in roles:
+            members += [m for m in role.members if m not in members]
+        rest = ROLE_MENTION_RE.sub(" ", MENTION_RE.sub(" ", texto or ""))
+        if explicit is not None:
+            rest = rest.strip()[len(first[0]):]
+        reply = await self._remove_from_list(ctx.author, getattr(ctx.channel, "id", None), explicit, members, rest)
+        await ctx.reply(reply, mention_author=False, allowed_mentions=NO_MENTIONS)
 
     @commands.command(name="agregarlistamitad")
     async def agregarlistamitad(self, ctx: commands.Context, *, texto: str = ""):

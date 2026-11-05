@@ -371,7 +371,7 @@ NODES_SOURCE_GUILD_ID = 1086080340587712584      # servidor del otro bot (solo s
 NODES_SOURCE_CHANNEL_ID = 1546326872097427516    # canal donde el otro bot mantiene su panel de timers
 NODES_SOURCE_BOT_ID = 1546325145503928431
 NODES_SOURCE_OWNER_ID = 542775576461705218       # los timers copiados quedan a nombre de la persona dueña de ese bot
-PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "agregarlista", "agregarlistamitad"}          # comandos con «!» que siguen funcionando (el resto está apagado)
+PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "agregarlista", "agregarlistamitad", "eliminarlista"}          # comandos con «!» que siguen funcionando (el resto está apagado)
 EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
@@ -6949,7 +6949,7 @@ def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Los comandos con prefijo «!» están apagados salvo los de PREFIX_COMMANDS_ON (hoy !bal, !coinflip, !1v1, !agregarlista y !agregarlistamitad): todo lo demás se hace con los comandos /.
+    # Los comandos con prefijo «!» están apagados salvo los de PREFIX_COMMANDS_ON (hoy !bal, !coinflip, !1v1, !agregarlista, !agregarlistamitad y !eliminarlista): todo lo demás se hace con los comandos /.
     # Los objetos de comando siguen existiendo porque varios comandos / reutilizan su código con .callback.
     if message.guild is not None and not message.author.bot and message.content.startswith(bot.command_prefix):
         ctx = await bot.get_context(message)

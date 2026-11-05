@@ -539,6 +539,49 @@ class SplitDiscordTests(DiscordBase):
         self.assertIn("1 persona", out)
         self.assertIn(self.council.id, sdb.get_split(self.db, 1).people)
 
+    def eliminar(self, user, channel, mentions, text="", roles=()):
+        class Msg:
+            pass
+
+        class Ctx:
+            guild = self.guild
+
+            async def reply(inner, content=None, **kw):
+                inner.replies.append(content)
+
+        ctx = Ctx()
+        ctx.author, ctx.channel = user, channel
+        ctx.message = Msg()
+        ctx.message.mentions = mentions
+        ctx.message.role_mentions = list(roles)
+        ctx.replies = []
+        run(self.cog.eliminarlista.callback(self.cog, ctx, texto=text))
+        return ctx.replies[0]
+
+    def test_eliminarlista_by_mention_role_and_name(self):
+        self.create()
+        s, thread = self.split_and_thread()
+        self.agregar(self.council, thread, [self.alice, self.bob, self.admin, self.council])
+        self.assertIn("Solo el Council", self.eliminar(self.alice, thread, [self.bob]))
+        out = self.eliminar(self.council, thread, [self.alice], text=f"<@{self.alice.id}>")
+        self.assertIn("Saqué 1", out)
+        self.assertNotIn(self.alice.id, sdb.get_split(self.db, 1).people)
+        rol = discord.Role(9302, "Bomb Sur", self.guild)
+        self.guild.roles.append(rol)
+        self.bob.roles.append(rol)
+        out = self.eliminar(self.council, thread, [], text=f"<@&{rol.id}>")            # rol solo en el texto
+        self.assertIn("Saqué 1", out)
+        self.assertNotIn(self.bob.id, sdb.get_split(self.db, 1).people)
+        out = self.eliminar(self.council, thread, [], text="admin, Fulano")            # nombre sin etiquetar (sin importar mayúsculas)
+        self.assertIn("Saqué 1", out); self.assertIn("`fulano`", out)
+        self.assertEqual(sdb.get_split(self.db, 1).people, [self.council.id])
+        self.assertIn("no estaba", self.eliminar(self.council, thread, [self.alice]))
+        self.assertIn("Etiquetá", self.eliminar(self.council, thread, []))
+        out = self.eliminar(self.council, self.panelch, [], text=f"1 {self.council.display_name}")   # con el número del split
+        self.assertIn("Saqué 1", out)
+        foot = sp.data_embeds(sdb.get_split(self.db, 1))[-1].footer
+        self.assertIn("!eliminarlista", getattr(foot, "text", foot))                  # recordatorio abajo del panel
+
     def test_agregarlista_permissions_and_context(self):
         self.create()
         s, thread = self.split_and_thread()

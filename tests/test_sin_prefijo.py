@@ -25,7 +25,7 @@ class SinPrefijoTests(unittest.TestCase):
 
     def test_solo_algunos_siguen_con_prefijo(self):
         src = source("bot.py")
-        self.assertIn('PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "agregarlista", "agregarlistamitad"}', src)
+        self.assertIn('PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "agregarlista", "agregarlistamitad", "eliminarlista"}', src)
         fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_message")
         code = ast.get_source_segment(src, fn)
         self.assertIn("ctx.command.name in PREFIX_COMMANDS_ON", code)
