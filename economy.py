@@ -1296,6 +1296,40 @@ class EconomyCog(commands.Cog):
             day = await asyncio.to_thread(self._oldest_open_embo_day) or (now - timedelta(days=1)).date().isoformat()
         await self._embo_import(interaction, archivo, kind="import_dia", only_day=day, title="Embotelladas del día cargadas")
 
+    @embo_g.command(name="ultima-fecha", description="(Staff) Última fecha cargada del log de embotelladas y estado del encargo diario")
+    async def embo_last_date(self, interaction: discord.Interaction):
+        if not await self.has_command_permission(interaction.user, "embo", staff_ok=True):
+            return await self._ephemeral(interaction, "❌ Solo el Staff, los administradores o un rol con `/eco perms-comando comando:embo` "
+                                                      "pueden ver esto.")
+        import encargos_db as edb
+        last = await self._db(embo_db.last_loaded)
+        if last is None:
+            lines = [f"{self.embo_icon} **Embotelladas:** todavía no se cargó ningún archivo."]
+        else:
+            mv, loaded_at, actor = last
+            lines = [f"{self.embo_icon} **Última fecha cargada:** **{mv[8:10]}/{mv[5:7]}/{mv[:4]}** (último movimiento: {mv[11:16]} UTC)",
+                     f"• Cargado <t:{self._unix(loaded_at)}:R> por <@{actor}>"]
+        if not self.embo_daily_task.is_running():                     # red de seguridad: si el loop se detuvo, se vuelve a arrancar
+            self.embo_daily_task.start()
+            lines.append("\n⚠️ El encargo diario estaba **detenido**: lo volví a arrancar.")
+        else:
+            nxt = getattr(self.embo_daily_task, "next_iteration", None)
+            lines.append(f"\n🕛 Encargo diario activo (se revisa cada 5 min" + (f", próxima <t:{int(nxt.timestamp())}:R>)" if nxt else ")"))
+        day = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+        t = await asyncio.to_thread(edb.find_by_source, self.db_path, f"{self.EMBO_TASK_PREFIX}{day}")
+        state = {"scheduled": "⏳ creado, sin publicar todavía", "publishing": "⏳ publicándose", "open": "🟠 pendiente",
+                 "taken": "🔵 tomado", "done": "🟢 terminado", "cancelled": "✖️ cancelado"}
+        lines.append(f"• Encargo del {day[8:10]}/{day[5:7]} (UTC): " + (f"#{t.id} · {state.get(t.status, t.status)}" if t else "❌ **no existe**"))
+        await self._ephemeral(interaction, "\n".join(lines))
+
+    @staticmethod
+    def _unix(iso: str) -> int:
+        try:
+            d = datetime.fromisoformat(iso)
+            return int((d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp())
+        except Exception:
+            return 0
+
     @tasks.loop(minutes=5)
     async def embo_daily_task(self):
         await self.ensure_embo_daily_task()

@@ -121,6 +121,19 @@ def debtors(db_path: str, limit: int = 1000) -> List[Tuple[int, int]]:
         conn.close()
 
 
+def last_loaded(db_path: str) -> Optional[Tuple[str, str, int]]:
+    """Movimiento del log de embotelladas más reciente que se cargó: (fecha y hora del log UTC, cuándo se cargó, quién lo cargó).
+    None si todavía no se cargó ningún archivo. Solo cuenta movimientos de jugadores registrados (los demás no se guardan)."""
+    init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT substr(request_key, 9, 19) AS mv, created_at, actor_id FROM embo_movements "
+                         "WHERE request_key LIKE 'embomov:%' ORDER BY mv DESC, id DESC LIMIT 1").fetchone()
+        return (r["mv"], r["created_at"], int(r["actor_id"])) if r else None
+    finally:
+        conn.close()
+
+
 def history(db_path: str, user_id: int, limit: int = 15) -> List[Tuple[str, int, int, str, str]]:
     """(fecha, delta, balance_after, kind, reason) más recientes primero."""
     init_schema(db_path)
