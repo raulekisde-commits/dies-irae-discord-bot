@@ -114,6 +114,25 @@ class EmboImportTests(DiscordBase):
         self.assertEqual(edb.find_by_source(self.db, f"embo:dia:{day}").status, "done")
 
 
+    def test_ultima_fecha_y_estado_del_encargo(self):
+        import encargos
+        import botsettings as bs
+        tasks_ch = discord.TextChannel(bs.get("tasks"), self.guild, "tareas")
+        self.guild._channels[tasks_ch.id] = tasks_ch
+        self.bot.channels[tasks_ch.id] = tasks_ch
+        run(encargos.setup_encargos(self.bot, self.db, GUILD_ID))
+        self.assertIn("Solo el Staff", self.call("embo_last_date", self.alice))
+        self.ecog.embo_daily_task.cancel()                                          # loop detenido: el comando lo rearranca
+        text = self.call("embo_last_date", self.stf)
+        self.assertIn("todavía no se cargó", text); self.assertIn("no existe", text); self.assertIn("detenido", text)
+        self.assertTrue(self.ecog.embo_daily_task.is_running())
+        self.call("embo_import_history", self.admin, archivo(HISTORICO))
+        run(self.ecog.ensure_embo_daily_task())
+        text = self.call("embo_last_date", self.stf)
+        self.assertIn("**04/11/2026**", text); self.assertIn("16:06 UTC", text)        # el movimiento más nuevo cargado
+        self.assertIn("pendiente", text); self.assertIn("activo", text)
+
+
 class EmboIconoYTopTests(DiscordBase):
     def call(self, cmd, who, *a):
         i = self.inter(who)

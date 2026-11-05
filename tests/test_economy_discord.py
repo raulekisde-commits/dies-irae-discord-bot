@@ -156,7 +156,7 @@ class EconomyDiscordTests(unittest.TestCase):
         self.assertEqual(found, prefix)
         slash = {getattr(economy.EconomyCog, n).name for n in dir(economy.EconomyCog)
                  if isinstance(getattr(economy.EconomyCog, n, None), discord_stub.AppCommand)}
-        self.assertEqual(slash, {"config-moneda", "bal-reintentar-registro", "perms-canal", "perms-comando", "perms-ver", "verhistorial", "importar-bal", "set-balance", "eco-stats", "reset", "bal", "top", "addmoney", "addmoney-role", "remove-money", "give-money", "add", "remove", "set", "importar-historico", "cargar-dia", "icono"})
+        self.assertEqual(slash, {"config-moneda", "bal-reintentar-registro", "perms-canal", "perms-comando", "perms-ver", "verhistorial", "importar-bal", "set-balance", "eco-stats", "reset", "bal", "top", "addmoney", "addmoney-role", "remove-money", "give-money", "add", "remove", "set", "importar-historico", "cargar-dia", "icono", "ultima-fecha"})
 
     # ---------- !bal ----------
     def test_bal_disabled_until_channel_configured(self):
