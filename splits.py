@@ -23,6 +23,7 @@ bs.register("split", "Canal de splits", SPLIT_CHANNEL_ID, "Acá se publican los 
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD, GREY, GREEN = 0xF1C40F, 0x95A5A6, 0x2ECC71
 MENTION_RE = re.compile(r"<@!?(\d+)>")
+ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
 EDIT_TIMEOUT = 900.0
 ALBION_GUILD_DEFAULT = "Smogg"
 ALBION_LOOKUP = None          # lo registra bot.py: async (guild, texto, nombre_guild) -> dict con battles/players/found/not_found/ambiguous
@@ -1380,7 +1381,7 @@ class SplitsCog(commands.Cog):
             return "❌ Ese split ya está cerrado: no se puede modificar."
         ids = [m.id for m in members if not getattr(m, "bot", False)]
         if not ids:
-            return "❌ Mencioná a las personas que querés agregar. Ej: `!agregarlista @Ana @Beto @Caro`"
+            return "❌ Mencioná a las personas (o un rol) que querés agregar. Ej: `!agregarlista @Ana @Beto @Caro` o `!agregarlista @Rol`"
         try:
             n = await self.run(sdb.add_people, s.id, ids)
         except sdb.SplitError as exc:
@@ -1431,7 +1432,21 @@ class SplitsCog(commands.Cog):
         first = (texto or "").split()[:1]
         explicit = int(first[0]) if first and first[0].isdigit() else None
         members = [m for m in getattr(ctx.message, "mentions", [])]
+        # Roles etiquetados: se suman todos sus integrantes (se lee el texto por si el rol no es mencionable)
+        roles = list(getattr(ctx.message, "role_mentions", []))
+        for rid in ROLE_MENTION_RE.findall(getattr(ctx.message, "content", "") or ""):
+            role = ctx.guild.get_role(int(rid))
+            if role is not None and role not in roles:
+                roles.append(role)
+        seen = {m.id for m in members}
+        for role in roles:
+            for m in role.members:
+                if m.id not in seen:
+                    seen.add(m.id)
+                    members.append(m)
         reply = await self._add_to_list(ctx.author, getattr(ctx.channel, "id", None), explicit, members)
+        if roles and not reply.startswith(("❌ Usalo", "🔒", "❌ Ese split")):
+            reply += "\n🎭 Roles: " + ", ".join(f"{r.mention} ({sum(1 for m in r.members if not m.bot)})" for r in roles)
         await ctx.reply(reply, mention_author=False, allowed_mentions=NO_MENTIONS)
 
     @app_commands.command(name="agregarlista", description="Agrega gente a la lista de un split (usalo dentro de su hilo)")

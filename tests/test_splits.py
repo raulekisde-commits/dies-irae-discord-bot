@@ -493,7 +493,7 @@ class SplitDiscordTests(DiscordBase):
         self.assertEqual(sdb.cancel_split(self.db, 1, self.council.id), "closing")
 
     # ---------- !agregarlista ----------
-    def agregar(self, user, channel, mentions, text=""):
+    def agregar(self, user, channel, mentions, text="", roles=()):
         class Msg:
             pass
 
@@ -508,6 +508,8 @@ class SplitDiscordTests(DiscordBase):
         ctx.author, ctx.channel = user, channel
         ctx.message = Msg()
         ctx.message.mentions = mentions
+        ctx.message.role_mentions = list(roles)
+        ctx.message.content = "!agregarlista " + text
         ctx.replies = []
         run(self.cog.agregarlista.callback(self.cog, ctx, texto=text))
         return ctx.replies[0]
@@ -521,6 +523,21 @@ class SplitDiscordTests(DiscordBase):
         self.assertIn("Bob", thread.sent[0].embeds[0].description)                 # la lista del hilo se actualiza
         self.assertIn("ya estaban", self.agregar(self.council, thread, [self.alice]))
         self.assertIn("Mencioná", self.agregar(self.council, thread, []))
+
+    def test_agregarlista_with_role_adds_its_members(self):
+        self.create()
+        s, thread = self.split_and_thread()
+        rol = discord.Role(9301, "Bomb Norte", self.guild)
+        self.guild.roles.append(rol)
+        self.bob.roles.append(rol); self.admin.roles.append(rol); self.robot.roles.append(rol)
+        out = self.agregar(self.council, thread, [self.alice, self.bob], roles=[rol])
+        self.assertIn("3 persona", out)                                          # alice + bob + admin (bob no se repite, el bot no entra)
+        self.assertIn("Roles:", out)
+        self.assertEqual(sorted(sdb.get_split(self.db, 1).people), sorted([self.alice.id, self.bob.id, self.admin.id]))
+        self.council.roles.append(rol)                                          # rol solo escrito en el texto (no mencionable)
+        out = self.agregar(self.council, thread, [], text=f"<@&{rol.id}>")
+        self.assertIn("1 persona", out)
+        self.assertIn(self.council.id, sdb.get_split(self.db, 1).people)
 
     def test_agregarlista_permissions_and_context(self):
         self.create()
