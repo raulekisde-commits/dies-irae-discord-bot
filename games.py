@@ -322,6 +322,10 @@ class GamesCog(commands.Cog):
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
 
     async def winrate_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        try:                                                     # Discord exige responder en <3 s: las stats pueden tardar más
+            await interaction.response.defer(thinking=True)
+        except Exception:
+            pass
         ctx = SlashContext(interaction)
         if usuario is not None:
             ctx.message.mentions = [usuario]
