@@ -835,18 +835,19 @@ class GamesDiscordTests(unittest.TestCase):
         self.assertEqual(self.bal(self.gamer), 0)
         # monkeypatch del azar: gana quien acepta ("cruz")
         import games_db
-        orig = games_db.random.SystemRandom
-        games_db.random.SystemRandom = lambda: ScriptRng(1)
+        orig = games_db.pf.coin
+        games_db.pf.coin = lambda rng: "cruz"
         try:
             i = self.press(self.p1, "coinflip")
         finally:
-            games_db.random.SystemRandom = orig
+            games_db.pf.coin = orig
         self.assertIn("Aceptaste", i.text)
         self.assertEqual((self.bal(self.p1), self.bal(self.gamer)), (4000, 0))
         self.assertIsNone(msg.view)
         res = self.ch.sent[-1].embeds[0]
         self.assertIn("cruz", res.description)
         self.assertIn(f"<@{self.p1.id}>", res.description)
+        self.assertTrue(any("verificable" in f[0] for f in res.fields))                  # semillas reveladas en el resultado
         self.assertEqual(self.bal(self.p2), 2000)
         self.assertIsNone(gdb.live_game(self.db, GUILD_ID, "coinflip"))
         self.cmd("coinflip", self.p1, "100", self.ch)                      # sin rol: no puede crear, pero el cupo ya está libre

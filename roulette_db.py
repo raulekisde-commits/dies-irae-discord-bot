@@ -15,7 +15,6 @@ por encima de la reserva de seguridad. La reserva nunca se usa para autorizar ap
 Una sola ruleta: un índice único parcial sobre `roulette_panels(status) WHERE status='open'` impide dos ruletas abiertas a la vez.
 """
 import json
-import secrets
 import sqlite3
 import time
 import uuid
@@ -23,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import economy_db as eco
+import provably_fair as pf
 from dbutil import connect, utcnow_iso, write_tx
 
 MOV_BET, MOV_WIN, MOV_REFUND = "roulette_bet", "roulette_win", "roulette_refund"
@@ -305,6 +305,7 @@ def init_schema(db_path: str) -> None:
                              (now, "initial", DEFAULTS["house_balance"], DEFAULTS["house_balance"], None, "Capital inicial de la casa", "initial"))
     finally:
         conn.close()
+    pf.init_schema(db_path)
 
 
 def get_config(db_path: str) -> Config:
@@ -407,7 +408,9 @@ def _new_round(conn, panel_id: int) -> int:
     cfg = _cfg(conn.execute("SELECT * FROM roulette_config WHERE id = 1").fetchone())
     cur = conn.execute("INSERT INTO roulette_rounds(code, panel_id, created_at, payouts_json) VALUES (?,?,?,?)",
                        (uuid.uuid4().hex[:12], panel_id, utcnow_iso(), json.dumps(cfg.payouts)))
-    return int(cur.lastrowid)
+    rid = int(cur.lastrowid)
+    pf.tx_commit(conn, "roulette", rid)                                   # el número queda fijado (y su hash publicado) desde ya
+    return rid
 
 
 def create_panel(db_path: str, guild_id: int, channel_id: int, created_by: int) -> Tuple[Panel, bool]:
@@ -595,6 +598,7 @@ class Settlement:
     stake_by_user: Dict[int, int] = field(default_factory=dict)
     next_round_id: Optional[int] = None
     note: str = ""
+    proof: Optional[dict] = None                  # semillas reveladas para verificar (provably fair)
 
     @property
     def winners(self) -> List[Bet]:
@@ -648,7 +652,13 @@ def resolve_round(db_path: str, round_id: int, now: Optional[float] = None, forc
             if not bets:
                 return None
             cfg = _cfg(conn.execute("SELECT * FROM roulette_config WHERE id = 1").fetchone())
-            n = secrets.randbelow(37) if number is None else int(number)          # generador criptográfico del sistema operativo
+            proof = None
+            if number is None:                                                   # azar verificable: semilla del bot (hash ya publicado) + las de quienes apostaron
+                rng = pf.tx_rng(conn, "roulette", rnd.id, [b.user_id for b in bets])
+                n = pf.roulette_number(rng)
+                proof = pf.tx_finish(conn, "roulette", rnd.id, {"number": n})
+            else:                                                                # solo pruebas
+                n = int(number)
             staked = sum(b.amount for b in bets)
             payouts_by_user: Dict[int, int] = {}
             paid_total = 0
@@ -668,7 +678,7 @@ def resolve_round(db_path: str, round_id: int, now: Optional[float] = None, forc
                 conn.execute("UPDATE roulette_rounds SET status = 'cancelled', resolved_at = ? WHERE id = ?", (utcnow_iso(), rnd.id))
                 nxt = _new_round(conn, rnd.panel_id) if panel["status"] == "open" else None
                 return Settlement("cancelled", _round(conn.execute("SELECT * FROM roulette_rounds WHERE id = ?", (rnd.id,)).fetchone()), None, bets,
-                                  {}, stake_by_user, nxt, "La casa no podía cubrir los premios: se devolvieron las apuestas.")
+                                  {}, stake_by_user, nxt, "La casa no podía cubrir los premios: se devolvieron las apuestas.", proof)
             for uid, amount in sorted(payouts_by_user.items()):
                 _credit(conn, rnd.id, uid, amount, MOV_WIN, f"Ruleta ronda #{rnd.id}: premio (número {n})", "win")
             for b in settled:
@@ -684,7 +694,7 @@ def resolve_round(db_path: str, round_id: int, now: Optional[float] = None, forc
             for b in bets:
                 stake_by_user[b.user_id] = stake_by_user.get(b.user_id, 0) + b.amount
             return Settlement("done", _round(conn.execute("SELECT * FROM roulette_rounds WHERE id = ?", (rnd.id,)).fetchone()), n, settled,
-                              payouts_by_user, stake_by_user, nxt)
+                              payouts_by_user, stake_by_user, nxt, "", proof)
     finally:
         conn.close()
 

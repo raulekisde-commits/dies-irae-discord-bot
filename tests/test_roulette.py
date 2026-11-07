@@ -264,16 +264,21 @@ class BetAndResolveTests(RouletteDbBase):
         self.assertEqual(rdb.resolve_round(self.db, due[0], now=5000.0, number=2).status, "done")
         self.assertEqual(rdb.round_bets(self.db, due[0])[0].amount, 1000)
 
-    def test_secure_rng_is_used(self):
+    def test_provably_fair_rng_is_used(self):
         self.bet(self.alice, "red", 0, 1000)
         rid = rdb.current_round(self.db, self.panel_id).id
-        with mock.patch.object(rdb.secrets, "randbelow", return_value=7) as m:
-            st = rdb.resolve_round(self.db, rid, force=True)
-        m.assert_called_once_with(37)
-        self.assertEqual(st.number, 7)
+        sealed = rdb.pf.get_record(self.db, "roulette", rid)
+        self.assertFalse(sealed["revealed"])
+        self.assertIsNone(sealed["server_seed"])                          # la semilla no se expone antes de girar
+        st = rdb.resolve_round(self.db, rid, force=True)
+        self.assertEqual(st.proof["server_hash"], sealed["server_hash"])
+        self.assertEqual(rdb.pf.seed_hash(st.proof["server_seed"]), sealed["server_hash"])
+        self.assertEqual(st.number, rdb.pf.compute("roulette", st.proof["server_seed"], st.proof["client_seed"], st.proof["nonce"])["number"])
+        self.assertEqual(rdb.pf.verify(self.db, "roulette", rid).status, "ok")
 
     def test_rng_covers_all_numbers(self):
-        seen = {rdb.secrets.randbelow(37) for _ in range(4000)}
+        rng = rdb.pf.FairRng(rdb.pf.new_server_seed(), "test", 1)
+        seen = {rdb.pf.roulette_number(rng) for _ in range(4000)}
         self.assertEqual(seen, set(range(37)))
 
 

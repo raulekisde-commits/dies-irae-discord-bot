@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import economy_db as eco
+import provably_fair as pf
 from dbutil import connect, utcnow_iso, write_tx
 
 MAX_STAKE = 5_000_000
@@ -69,6 +70,7 @@ def init_schema(db_path: str) -> None:
             conn.execute("ALTER TABLE games ADD COLUMN creator_side TEXT")
     finally:
         conn.close()
+    pf.init_schema(db_path)
 
 
 def panel_channel_key(kind: str) -> str:
@@ -114,6 +116,7 @@ class Game:
     outcome: Optional[dict]
     players: List[int] = field(default_factory=list)
     creator_side: str = "cara"                                           # coinflip: lado del creador; el que acepta toma el otro
+    pf_hash: Optional[str] = None                                        # hash SHA-256 de la semilla secreta (se publica en el panel)
 
     @property
     def other_side(self) -> str:
@@ -138,11 +141,15 @@ def _build(conn: sqlite3.Connection, r) -> Optional[Game]:
         return None
     players = [int(x["user_id"]) for x in conn.execute(
         "SELECT user_id FROM game_players WHERE game_id = ? ORDER BY rowid", (r["id"],))]
+    try:
+        h = conn.execute("SELECT server_hash FROM pf_seeds WHERE game = ? AND ref_id = ?", (r["kind"], r["id"])).fetchone()
+    except sqlite3.OperationalError:                                     # base sin la tabla todavía
+        h = None
     return Game(int(r["id"]), r["kind"], int(r["guild_id"]), int(r["channel_id"]),
                 int(r["message_id"]) if r["message_id"] is not None else None, int(r["creator_id"]), int(r["stake"]),
                 r["status"], float(r["ends_at"]), int(r["winner_id"]) if r["winner_id"] is not None else None,
                 int(r["payout"]), json.loads(r["outcome"]) if r["outcome"] else None, players,
-                r["creator_side"] if "creator_side" in r.keys() and r["creator_side"] in SIDES else "cara")
+                r["creator_side"] if "creator_side" in r.keys() and r["creator_side"] in SIDES else "cara", h[0] if h else None)
 
 
 def get_game(db_path: str, game_id: int) -> Optional[Game]:
@@ -236,6 +243,7 @@ def create_game(db_path: str, *, kind: str, guild_id: int, channel_id: int, crea
                     "INSERT INTO games(kind, guild_id, channel_id, creator_id, stake, status, created_at, ends_at, creator_side) "
                     "VALUES (?,?,?,?,?, 'open', ?, ?, ?)", (kind, guild_id, channel_id, creator_id, stake, utcnow_iso(), now + DURATION_SECONDS, side))
                 gid = int(cur.lastrowid)
+                pf.tx_commit(conn, kind, gid)                                # el resultado queda fijado (y su hash publicado) desde ya
                 _debit(conn, gid, kind, creator_id, stake, LABEL[kind])
                 conn.execute("INSERT INTO game_players(game_id, user_id, joined_at) VALUES (?,?,?)", (gid, creator_id, utcnow_iso()))
                 return CreateResult(True, game=_load(conn, gid))
@@ -280,6 +288,7 @@ class ResolveResult:
     rounds: List[List[Tuple[int, int]]] = field(default_factory=list)     # dados: [(usuario, tirada)] por ronda
     coin_side: Optional[str] = None                                       # coinflip: "cara" | "cruz"
     note: str = ""
+    proof: Optional[dict] = None                                          # semillas reveladas para verificar (provably fair)
 
 
 @dataclass
@@ -309,7 +318,7 @@ def join_game(db_path: str, game_id: int, user_id: int, now: Optional[float] = N
                 after = _debit(conn, g.id, g.kind, user_id, g.stake, LABEL[g.kind])
                 conn.execute("INSERT INTO game_players(game_id, user_id, joined_at) VALUES (?,?,?)", (g.id, user_id, utcnow_iso()))
                 g = _load(conn, g.id)
-                resolved = _resolve(conn, g, rng or random.SystemRandom()) if g.kind == "coinflip" else None
+                resolved = _resolve(conn, g, rng) if g.kind == "coinflip" else None
                 return JoinResult("ok", _load(conn, g.id), after, resolved)
         except eco.InsufficientFunds as exc:
             return JoinResult("funds", balance=int(exc.args[0]))
@@ -320,39 +329,34 @@ def join_game(db_path: str, game_id: int, user_id: int, now: Optional[float] = N
 # ============================================================
 # Resolver
 # ============================================================
-def _roll_dice(players: List[int], rng: random.Random) -> Tuple[int, List[List[Tuple[int, int]]], str]:
-    contenders = list(players)
-    rounds: List[List[Tuple[int, int]]] = []
-    for _ in range(MAX_TIE_ROUNDS):
-        rolls = [(uid, rng.randint(1, 6)) for uid in contenders]
-        rounds.append(rolls)
-        top = max(r for _, r in rolls)
-        tied = [uid for uid, r in rolls if r == top]
-        if len(tied) == 1:
-            return tied[0], rounds, ""
-        contenders = tied
-    return rng.choice(contenders), rounds, "Se llegó al máximo de desempates: se sorteó entre los empatados."
+def _roll_dice(players: List[int], rng) -> Tuple[int, List[List[Tuple[int, int]]], str]:
+    return pf.roll_dice(players, rng)                                     # el algoritmo vive en provably_fair (lo usa el verificador)
 
 
-def _resolve(conn, g: Game, rng: random.Random) -> ResolveResult:
-    """Resuelve un juego abierto dentro de la transacción en curso."""
+def _resolve(conn, g: Game, rng=None) -> ResolveResult:
+    """Resuelve un juego abierto dentro de la transacción en curso. Sin `rng` (lo normal) se usa el azar verificable."""
     if len(g.players) < 2:
         _credit(conn, g.id, g.kind, g.players, g.stake, 2, LABEL[g.kind])
         conn.execute("UPDATE games SET status = 'refunded', resolved_at = ?, payout = 0 WHERE id = ?", (utcnow_iso(), g.id))
-        return ResolveResult("refunded", _load(conn, g.id))
+        proof = pf.tx_finish(conn, g.kind, g.id, {"status": "refunded"}) if rng is None else None
+        return ResolveResult("refunded", _load(conn, g.id), proof=proof)
+    fair = rng is None
+    if fair:
+        rng = pf.tx_rng(conn, g.kind, g.id, g.players)                    # semillas: la del bot (ya publicada) + las de los jugadores
     pool = g.stake * len(g.players)
     rounds, note, side = [], "", None
     if g.kind == "dice":
         winner, rounds, note = _roll_dice(g.players, rng)
         outcome = {"rounds": [[[u, r] for u, r in rnd] for rnd in rounds], "note": note}
     else:
-        side = "cara" if rng.randint(0, 1) == 0 else "cruz"                  # la moneda es 50/50 sea cual sea el lado elegido
+        side = pf.coin(rng)                                                   # la moneda es 50/50 sea cual sea el lado elegido
         winner = g.players[0] if side == g.creator_side else g.players[1]   # el creador juega con su lado (por defecto cara)
         outcome = {"side": side}
     _credit(conn, g.id, g.kind, [winner], pool, 1, LABEL[g.kind])
     conn.execute("UPDATE games SET status = 'done', resolved_at = ?, winner_id = ?, payout = ?, outcome = ? WHERE id = ?",
                  (utcnow_iso(), winner, pool, json.dumps(outcome), g.id))
-    return ResolveResult("done", _load(conn, g.id), winner, pool, rounds, side, note)
+    proof = pf.tx_finish(conn, g.kind, g.id, outcome) if fair else None
+    return ResolveResult("done", _load(conn, g.id), winner, pool, rounds, side, note, proof)
 
 
 def resolve_game(db_path: str, game_id: int, now: Optional[float] = None, rng: Optional[random.Random] = None) -> Optional[ResolveResult]:
@@ -364,6 +368,6 @@ def resolve_game(db_path: str, game_id: int, now: Optional[float] = None, rng: O
             g = _load(conn, game_id)
             if g is None or g.status != "open" or now < g.ends_at:
                 return None
-            return _resolve(conn, g, rng or random.SystemRandom())
+            return _resolve(conn, g, rng)
     finally:
         conn.close()
