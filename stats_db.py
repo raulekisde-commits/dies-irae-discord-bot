@@ -365,3 +365,104 @@ def top_streaks(db_path: str, min_best: int = MIN_STREAK_FOR_TOP) -> List[Streak
     rows = [s for s in _streaks(db_path, None).values() if s.best >= min_best]
     rows.sort(key=lambda s: (-s.best, -s.current, s.played, s.user_id))
     return rows
+
+
+# ============================================================
+# Historial del casino (/casino ver-historial)
+# ============================================================
+HISTORY_LIMIT = 200                                   # partidas más recientes que se muestran como máximo
+DAILY_LIMIT = 10                                      # en el historial del día se listan las últimas 10 (el resumen cuenta todas)
+
+
+def day_start_utc() -> str:
+    """Comienzo del día actual en UTC (00:00 UTC), en ISO: el historial diario cuenta desde ahí."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+@dataclass
+class HistoryEntry:
+    when: str                                         # ISO UTC de cuando se resolvió
+    game: str                                         # coinflip | dice | duel | roulette
+    ref_id: int                                       # número de partida / duelo / ronda
+    stake: int                                        # lo que apostó la persona
+    net: int                                          # + ganó / - perdió (neto)
+    rivals: List[int]                                 # contra quién jugó (vacío en la ruleta: es contra la casa)
+
+
+@dataclass
+class HeadToHead:
+    a: int
+    b: int
+    entries: List[HistoryEntry]                       # desde el punto de vista de `a`
+    a_wins: int = 0
+    b_wins: int = 0
+    a_net: int = 0                                    # lo que `a` le ganó (o perdió, si es negativo) a `b`
+
+
+def _history_rows(conn, user_id: int) -> List[HistoryEntry]:
+    out: List[HistoryEntry] = []
+    sql = """SELECT g.id, g.kind, g.stake, g.payout, g.winner_id, g.resolved_at,
+                    (SELECT group_concat(p2.user_id) FROM game_players p2 WHERE p2.game_id = g.id AND p2.user_id != ?) AS others
+               FROM game_players p JOIN games g ON g.id = p.game_id
+              WHERE p.user_id = ? AND g.status = 'done' AND g.winner_id IS NOT NULL"""
+    for r in conn.execute(sql, (user_id, user_id)):
+        won = int(r["winner_id"]) == user_id
+        net = int(r["payout"] or 0) - int(r["stake"]) if won else -int(r["stake"])
+        others = [int(x) for x in (r["others"] or "").split(",") if x]
+        out.append(HistoryEntry(r["resolved_at"], r["kind"], int(r["id"]), int(r["stake"]), net, others))
+    sql = """SELECT id, challenger_id, challenged_id, stake, winner_id, resolved_at FROM duels
+              WHERE status = 'done' AND winner_id IS NOT NULL AND ? IN (challenger_id, challenged_id)"""
+    for r in conn.execute(sql, (user_id,)):
+        rival = int(r["challenged_id"]) if int(r["challenger_id"]) == user_id else int(r["challenger_id"])
+        stake = int(r["stake"])
+        out.append(HistoryEntry(r["resolved_at"], "duel", int(r["id"]), stake, stake if int(r["winner_id"]) == user_id else -stake, [rival]))
+    try:
+        sql = """SELECT r.id, r.resolved_at, SUM(b.amount) AS staked, SUM(b.payout) AS paid
+                   FROM roulette_bets b JOIN roulette_rounds r ON r.id = b.round_id
+                  WHERE b.user_id = ? AND r.status = 'done' GROUP BY r.id"""
+        for r in conn.execute(sql, (user_id,)):
+            out.append(HistoryEntry(r["resolved_at"], "roulette", int(r["id"]), int(r["staked"]), int(r["paid"]) - int(r["staked"]), []))
+    except sqlite3.OperationalError as exc:              # base sin ruleta todavía
+        if "no such table" not in str(exc):
+            raise
+    out.sort(key=lambda e: (e.when or "", e.ref_id), reverse=True)
+    return out
+
+
+def history(db_path: str, user_id: int, limit: Optional[int] = HISTORY_LIMIT, since: Optional[str] = None) -> List[HistoryEntry]:
+    """Partidas terminadas de una persona (coinflip, dados, 1v1 y ruleta), de la más nueva a la más vieja.
+    Las devueltas o canceladas no aparecen: no hubo ganador ni perdedor. `since` (ISO UTC) filtra desde ese momento."""
+    conn = connect(db_path)
+    try:
+        rows = [e for e in _history_rows(conn, user_id) if since is None or (e.when or "") >= since]
+        return rows[:limit] if limit else rows
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        return []
+    finally:
+        conn.close()
+
+
+def head_to_head(db_path: str, a: int, b: int, limit: int = HISTORY_LIMIT, since: Optional[str] = None) -> HeadToHead:
+    """Partidas donde jugaron SOLO esas dos personas (coinflip, 1v1 y dados de a dos), vistas desde `a`."""
+    conn = connect(db_path)
+    try:
+        rows = _history_rows(conn, a)
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        rows = []
+    finally:
+        conn.close()
+    mine = [e for e in rows if e.game != "roulette" and e.rivals == [b] and (since is None or (e.when or "") >= since)]
+    h = HeadToHead(a, b, mine[:limit])
+    for e in mine:                                    # el resumen cuenta todas, no solo las que se listan
+        if e.net > 0:
+            h.a_wins += 1
+        else:
+            h.b_wins += 1
+        h.a_net += e.net
+    return h
