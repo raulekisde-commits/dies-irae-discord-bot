@@ -291,6 +291,10 @@ def init_schema(db_path: str) -> None:
         conn.executescript(SCHEMA)
         _ensure_columns(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_eco_movements_related ON eco_movements(related_id)")
+        # índices de rendimiento (van después de las migraciones porque usan columnas agregadas):
+        # totales por tipo de movimiento (stats, total apostado, embo/wujupón) y la cola del canal de logs
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eco_movements_kind ON eco_movements(kind, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eco_operations_log_pending ON eco_operations(created_at) WHERE log_status != 'sent'")
     finally:
         conn.close()
 

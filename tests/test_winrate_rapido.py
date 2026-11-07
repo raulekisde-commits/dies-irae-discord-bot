@@ -44,6 +44,22 @@ class WinrateRapidoTests(DiscordBase):
         for alias in ("b", "g", "d"):                     # nada de recorrer bets/games/duels completas por cada movimiento
             self.assertIn(f"SEARCH {alias} USING INTEGER PRIMARY KEY", plan)
 
+    def test_indices_de_rendimiento(self):
+        import economy_db as eco_db
+        eco_db.init_schema(self.db)
+        conn = sqlite3.connect(self.db)
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        for idx in ("idx_eco_movements_kind", "idx_eco_operations_log_pending", "idx_games_due", "idx_games_kind_status",
+                    "idx_game_players_user", "idx_duels_challenger", "idx_duels_challenged"):
+            self.assertIn(idx, names)
+        plan = lambda sql, *a: " | ".join(r[-1] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, a))
+        self.assertIn("idx_games_due", plan("SELECT id FROM games WHERE status = 'open' AND ends_at <= ? ORDER BY id", 1.0))
+        self.assertIn("idx_eco_operations_log_pending", plan("SELECT op_id FROM eco_operations WHERE log_status != 'sent' ORDER BY created_at LIMIT ?", 5))
+        self.assertIn("idx_game_players_user", plan("SELECT g.id FROM game_players p JOIN games g ON g.id = p.game_id "
+                                                    "WHERE p.user_id = ? AND g.status = 'done'", 1))
+        self.assertIn("idx_eco_movements_kind", plan("SELECT COUNT(*) FROM eco_movements WHERE kind = ?", "x"))
+        conn.close()
+
     def test_resultados_y_slash_con_defer(self):
         a, b = self.alice.id, self.bob.id
         for k in range(30):
