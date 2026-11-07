@@ -260,33 +260,6 @@ def set_client_seed(db_path: str, user_id: int, seed: str) -> str:
 
 
 # ============================================================
-# Textos para los paneles (sin dependencia de discord)
-# ============================================================
-COMMAND_NAME = {"coinflip": "coinflip", "dice": "dados", "duel": "1v1", "roulette": "ruleta"}
-SEALED_TITLE = "🔒 Resultado sellado"
-
-
-def sealed_text(server_hash: Optional[str]) -> Optional[str]:
-    if not server_hash:
-        return None
-    return (f"`{server_hash}`\nEs el SHA-256 de la semilla secreta del bot: el resultado ya quedó fijado y "
-            "la semilla se revela al terminar para que cualquiera lo verifique.")
-
-
-def proof_text(proof: Optional[dict]) -> Optional[str]:
-    """Bloque que acompaña al resultado: todo lo necesario para recalcularlo de forma independiente."""
-    if not proof or not proof.get("revealed"):
-        return None
-    client = str(proof.get("client_seed") or "")
-    if len(client) > 120:
-        client = client[:120] + "… (completa en /casino verificar)"
-    return (f"Hash publicado: `{proof['server_hash']}`\n"
-            f"Semilla del bot: `{proof['server_seed']}`\n"
-            f"Semilla de jugadores: `{client}` · Nonce: `{proof.get('nonce')}`\n"
-            f"Para comprobarlo: `/casino verificar juego:{COMMAND_NAME[proof['game']]} numero:{proof['ref_id']}`")[:1024]
-
-
-# ============================================================
 # Verificación contra lo que quedó registrado en el juego
 # ============================================================
 @dataclass

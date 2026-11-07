@@ -847,7 +847,7 @@ class GamesDiscordTests(unittest.TestCase):
         res = self.ch.sent[-1].embeds[0]
         self.assertIn("cruz", res.description)
         self.assertIn(f"<@{self.p1.id}>", res.description)
-        self.assertTrue(any("verificable" in f[0] for f in res.fields))                  # semillas reveladas en el resultado
+        self.assertFalse(any("verificable" in f[0].lower() for f in res.fields))         # el mensaje no muestra semillas ni hash
         self.assertEqual(self.bal(self.p2), 2000)
         self.assertIsNone(gdb.live_game(self.db, GUILD_ID, "coinflip"))
         self.cmd("coinflip", self.p1, "100", self.ch)                      # sin rol: no puede crear, pero el cupo ya está libre
