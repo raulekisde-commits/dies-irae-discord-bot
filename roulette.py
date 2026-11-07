@@ -13,7 +13,6 @@ from discord.ext import commands, tasks
 import casino_db
 import economy_db as eco
 import roulette_db as rdb
-import provably_fair as pf
 from guildshop import can_manage
 from memberguard import button_block_reason
 
@@ -117,9 +116,6 @@ class RouletteCog(commands.Cog):
             e.add_field(name=f"🎡 Ronda #{rnd.id if rnd else '—'}", value=when, inline=False)
             e.add_field(name="👥 Participantes", value=f"{parts:,} ({n:,} apuestas)", inline=True)
             e.add_field(name="💰 Total apostado", value=self.money(staked), inline=True)
-            sealed = pf.sealed_text(await self.run(pf.get_hash, "roulette", rnd.id)) if rnd is not None else None
-            if sealed:
-                e.add_field(name=f"{pf.SEALED_TITLE} (ronda #{rnd.id})", value=sealed, inline=False)
         e.add_field(name=SEP, value="Apostá **dentro del hilo** con `/casino apuestas apostar`: `rojo`, `negro`, `par`, `impar`, `falta`, `pasa`, "
                                      "`docena 1-3`, `columna 1-3`, `numero 0-36`." if is_open else "La ruleta está cerrada. Las apuestas pendientes fueron devueltas.",
                     inline=False)
@@ -402,9 +398,6 @@ class RouletteCog(commands.Cog):
             if len(st.losers) > MAX_LINES:
                 lines.append(f"… y {len(st.losers) - MAX_LINES} más")
             e.add_field(name="💀 Perdedores", value="\n".join(lines)[:1024], inline=False)
-        proof = pf.proof_text(st.proof)
-        if proof:
-            e.add_field(name="🔐 Azar verificable", value=proof, inline=False)
         return e
 
     async def announce(self, panel: rdb.Panel, st: rdb.Settlement):
