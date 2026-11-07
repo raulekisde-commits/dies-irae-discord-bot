@@ -9,6 +9,7 @@ from discord.ext import commands, tasks
 
 import casino_db as cdb
 import duels_db as ddb
+import provably_fair as pf
 import economy_db as eco
 from memberguard import button_block_reason
 
@@ -114,6 +115,9 @@ class DuelsCog(commands.Cog):
         if d.penalty:
             emb.add_field(name="⚖️ Si rechaza o no responde", value=f"le paga {self.money(d.penalty)} al retador", inline=True)
         emb.add_field(name="⏳ Vence", value=f"<t:{int(d.ends_at)}:R> (<t:{int(d.ends_at)}:T>)", inline=True)
+        sealed = pf.sealed_text(d.pf_hash)
+        if sealed:
+            emb.add_field(name=pf.SEALED_TITLE, value=sealed, inline=False)
         emb.set_footer(text=f"Duelo #{d.id} · solo {'la persona retada'} puede responder")
         return emb
 
@@ -242,6 +246,9 @@ class DuelsCog(commands.Cog):
             emb = discord.Embed(title="⚔️ Duelo 1v1 — resultado", color=GREEN)
             emb.description = (f"<@{g.challenger_id}> (cara) vs <@{g.challenged_id}> (cruz)\nLa moneda cayó en **{res.side}**.\n\n"
                                f"🏆 **<@{res.winner_id}>** se lleva **{self.money(res.pool)}**.")
+            proof = pf.proof_text(res.proof)
+            if proof:
+                emb.add_field(name="🔐 Azar verificable", value=proof, inline=False)
             emb.set_footer(text=f"Duelo #{g.id}")
             try:
                 await interaction.response.edit_message(embed=self.closed_embed(g, "finalizado", GREY), view=None)

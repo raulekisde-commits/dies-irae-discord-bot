@@ -1,6 +1,7 @@
 """Grupo /casino: abrir/cerrar el casino, límite, ban, y los juegos (dados, coinflip, 1v1, ruleta) y sus estadísticas.
 Un solo comando raíz para no pasar el límite de 100 comandos de Discord; cada juego sigue validando sus permisos en su módulo."""
 import asyncio
+import json
 import traceback
 from typing import Optional
 
@@ -10,6 +11,7 @@ from discord.ext import commands
 
 import casino_db as cdb
 import economy_db as eco
+import provably_fair as pf
 from guildshop import can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -31,6 +33,7 @@ class CasinoCog(commands.Cog):
 
     async def cog_load(self):
         await self.run(cdb.init_schema)
+        await self.run(pf.init_schema)
 
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
@@ -219,6 +222,55 @@ class CasinoCog(commands.Cog):
     @casino_g.command(name="ruleta-stats", description="Estadísticas de la ruleta (solo staff)")
     async def casino_ruleta_stats(self, interaction: discord.Interaction):
         await self._delegate(interaction, "RouletteCog", "ruleta_stats", "ruleta")
+
+    # ---------- azar verificable (provably fair) ----------
+    @casino_g.command(name="verificar", description="Comprueba con las semillas reveladas que el resultado de una partida no fue alterado")
+    @app_commands.describe(juego="Tipo de partida", numero="Número de la partida, duelo o ronda (sale en el pie del resultado)")
+    @app_commands.choices(juego=[app_commands.Choice(name="Coinflip", value="coinflip"), app_commands.Choice(name="Dados", value="dice"),
+                                 app_commands.Choice(name="1v1", value="duel"), app_commands.Choice(name="Ruleta", value="roulette")])
+    async def casino_verificar(self, interaction: discord.Interaction, juego: app_commands.Choice[str], numero: app_commands.Range[int, 1]):
+        try:
+            v = await self.run(pf.verify, juego.value, int(numero))
+            label = f"{juego.name} #{numero}"
+            if v.status == "notfound":
+                return await _reply(interaction, f"❌ {label} no tiene registro de azar verificable (no existe o es anterior a este sistema).")
+            if v.status == "pending":
+                return await _reply(interaction, f"🔒 {label} todavía no termina. Hash publicado: `{v.record['server_hash']}`\n"
+                                                 "La semilla del bot se revela cuando sale el resultado.")
+            rec = v.record
+            lines = [f"**{label}** — {'✅ resultado verificado' if v.status == 'ok' else '⚠️ NO COINCIDE'}",
+                     f"{'✅' if v.hash_ok else '❌'} SHA-256 de la semilla revelada = hash publicado antes de jugar",
+                     f"Hash publicado: `{rec['server_hash']}`", f"Semilla del bot: `{rec['server_seed']}`",
+                     f"Semilla de jugadores: `{rec['client_seed']}`", f"Nonce: `{rec['nonce']}`"]
+            if v.computed is not None:
+                lines.append(f"{'✅' if v.computed == v.stored else '❌'} Recalculado: `{json.dumps(v.computed, ensure_ascii=False)}` · "
+                             f"registrado: `{json.dumps(v.stored, ensure_ascii=False)}`")
+            else:
+                lines.append("La partida se devolvió o se canceló: no hubo resultado que pagar.")
+            lines.append("Se puede recalcular sin el bot con `provably_fair.py` o cualquier verificador compatible con Stake "
+                         "(HMAC-SHA256, mensaje `semilla_jugadores:nonce:ronda`).")
+            await _reply(interaction, "\n".join(lines)[:2000])
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude completar el comando.")
+
+    @casino_g.command(name="semilla", description="Ve o cambia tu semilla de jugador (se mezcla con la del bot en cada partida)")
+    @app_commands.describe(nueva="Nueva semilla: 1 a 32 letras, números o _ (vacío = solo ver la actual)")
+    async def casino_semilla(self, interaction: discord.Interaction, nueva: Optional[str] = None):
+        try:
+            if nueva:
+                try:
+                    seed = await self.run(pf.set_client_seed, interaction.user.id, nueva)
+                except ValueError as exc:
+                    return await _reply(interaction, f"❌ {exc}")
+                return await _reply(interaction, f"✅ Tu semilla ahora es `{seed}`. Se usa en las próximas partidas que se resuelvan.")
+            seed = await self.run(pf.get_client_seed, interaction.user.id)
+            await _reply(interaction, f"🎲 Tu semilla de jugador es `{seed}`.\nSe combina con la semilla secreta del bot (cuyo hash se publica "
+                                      "antes de jugar), así que ni el bot ni nadie puede elegir el resultado. Cámbiala con "
+                                      "`/casino semilla nueva:...`.")
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude completar el comando.")
 
 
 async def setup_casino(bot: commands.Bot, db_path: str, guild_id: int) -> CasinoCog:

@@ -17,6 +17,7 @@ from discord.ext import commands, tasks
 import economy_db as eco
 import casino_db as cdb
 import games_db as gdb
+import provably_fair as pf
 import stats_db
 from memberguard import button_block_reason
 from slashctx import SlashContext
@@ -156,6 +157,9 @@ class GamesCog(commands.Cog):
                 "Solo puede aceptar **una** persona.")
             emb.add_field(name="💰 Pozo si aceptan", value=self.money(game.stake * 2), inline=True)
             emb.add_field(name="⏳ Vence", value=f"<t:{ends}:R> (<t:{ends}:T>)", inline=True)
+        sealed = pf.sealed_text(game.pf_hash)
+        if sealed:
+            emb.add_field(name=pf.SEALED_TITLE, value=sealed, inline=False)
         emb.set_footer(text=f"Juego #{game.id}")
         return emb
 
@@ -187,6 +191,9 @@ class GamesCog(commands.Cog):
             lines.append(f"<@{g.players[0]}> ({g.creator_side}) vs <@{g.players[1]}> ({g.other_side})\nLa moneda cayó en **{res.coin_side}**.")
         lines.append(f"\n🏆 **<@{res.winner_id}>** se lleva **{self.money(res.pool)}**.")
         emb.description = "\n\n".join(lines)[:4000]
+        proof = pf.proof_text(res.proof)
+        if proof:
+            emb.add_field(name="🔐 Azar verificable", value=proof, inline=False)
         emb.set_footer(text=f"Juego #{g.id}")
         return emb
 

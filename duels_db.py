@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import economy_db as eco
+import provably_fair as pf
 from dbutil import connect, utcnow_iso, write_tx
 
 DURATION_SECONDS = 300
@@ -47,6 +48,7 @@ def init_schema(db_path: str) -> None:
             conn.execute("ALTER TABLE duels ADD COLUMN penalty_paid INTEGER NOT NULL DEFAULT 0")
     finally:
         conn.close()
+    pf.init_schema(db_path)
 
 
 class DuelError(ValueError):
@@ -68,6 +70,7 @@ class Duel:
     side: Optional[str]
     penalty: int = 0
     penalty_paid: int = 0
+    pf_hash: Optional[str] = None            # hash SHA-256 de la semilla secreta (se publica en el panel)
 
     @property
     def is_open(self) -> bool:
@@ -150,7 +153,9 @@ def create_duel(db_path: str, *, guild_id: int, channel_id: int, challenger_id: 
                                       total_amount=stake, target_count=1, reason=f"Duelo 1v1 #{did}: apuesta", related_id=rel)
             eco.tx_move(conn, op_id=op, user_id=challenger_id, delta=-stake, mov_type="duel_stake", reason=f"Duelo 1v1 #{did}: apuesta",
                         actor_id=challenger_id, related_id=rel, require_funds=True)
-            return CreateResult(True, "ok", _row(conn.execute("SELECT * FROM duels WHERE id = ?", (did,)).fetchone()), mine - stake)
+            duel = _row(conn.execute("SELECT * FROM duels WHERE id = ?", (did,)).fetchone())
+            duel.pf_hash = pf.tx_commit(conn, "duel", did)                 # el resultado queda fijado (y su hash publicado) desde ya
+            return CreateResult(True, "ok", duel, mine - stake)
     finally:
         conn.close()
 
@@ -202,13 +207,14 @@ class ActionResult:
     loser_id: Optional[int] = None
     side: Optional[str] = None       # lado que cayó: cara (retador) | cruz (retado)
     pool: int = 0
+    proof: Optional[dict] = None     # semillas reveladas para verificar (provably fair)
 
 
 def accept_duel(db_path: str, duel_id: int, user_id: int, now: Optional[float] = None,
                 rng: Optional[random.Random] = None) -> ActionResult:
     import time
     now = time.time() if now is None else now
-    rng = rng or random.SystemRandom()
+    fair = rng is None
     conn = connect(db_path)
     try:
         with write_tx(conn):
@@ -227,7 +233,9 @@ def accept_duel(db_path: str, duel_id: int, user_id: int, now: Optional[float] =
                                       total_amount=d.stake, target_count=1, reason=f"Duelo 1v1 #{d.id}: apuesta", related_id=rel)
             eco.tx_move(conn, op_id=op, user_id=user_id, delta=-d.stake, mov_type="duel_stake", reason=f"Duelo 1v1 #{d.id}: apuesta",
                         actor_id=user_id, related_id=rel, require_funds=True)
-            side = "cara" if rng.randint(0, 1) == 0 else "cruz"
+            if fair:
+                rng = pf.tx_rng(conn, "duel", d.id, [d.challenger_id, d.challenged_id])
+            side = pf.coin(rng)
             winner = d.challenger_id if side == "cara" else d.challenged_id
             loser = d.challenged_id if winner == d.challenger_id else d.challenger_id
             pool = d.stake * 2
@@ -237,8 +245,9 @@ def accept_duel(db_path: str, duel_id: int, user_id: int, now: Optional[float] =
                                    actor_id=winner, related_id=rel)
             conn.execute("UPDATE duels SET status = 'done', resolved_at = ?, winner_id = ?, side = ? WHERE id = ?",
                          (utcnow_iso(), winner, side, d.id))
+            proof = pf.tx_finish(conn, "duel", d.id, {"side": side}) if fair else None
             d2 = _row(conn.execute("SELECT * FROM duels WHERE id = ?", (d.id,)).fetchone())
-            return ActionResult("ok", d2, after, winner, loser, side, pool)
+            return ActionResult("ok", d2, after, winner, loser, side, pool, proof)
     except eco.InsufficientFunds:
         return ActionResult("funds", get_duel(db_path, duel_id))
     finally:
