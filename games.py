@@ -8,6 +8,7 @@ import asyncio
 import functools
 import time
 import traceback
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
 import discord
@@ -325,6 +326,92 @@ class GamesCog(commands.Cog):
         if usuario is not None:
             ctx.message.mentions = [usuario]
         await self.winrate.callback(self, ctx, objetivo=usuario.mention if usuario else "")
+
+    # ---------- historial de casino (/casino ver-historial) ----------
+    HISTORY_PAGE = 10
+    HISTORY_GAME = {"coinflip": ("🪙", "Coinflip"), "dice": ("🎲", "Dados"), "duel": ("⚔️", "1v1"), "roulette": ("🎡", "Ruleta")}
+
+    def _history_line(self, e: stats_db.HistoryEntry, who: Optional[int] = None) -> str:
+        try:
+            ts = int(datetime.fromisoformat(e.when).timestamp())
+            when = f"<t:{ts}:d> <t:{ts}:t>"
+        except (TypeError, ValueError):
+            when = "¿?"
+        icon, name = self.HISTORY_GAME.get(e.game, ("🎰", e.game))
+        result = f"✅ ganó **{self.money(e.net)}**" if e.net > 0 else f"❌ perdió **{self.money(-e.net)}**"
+        if who is not None:
+            result = f"<@{who}> {result}"
+        if e.game == "roulette":
+            vs = ""
+        elif len(e.rivals) == 1:
+            vs = f" vs <@{e.rivals[0]}>"
+        else:
+            vs = f" vs {len(e.rivals)} jugadores"
+        return f"{when} · {icon} {name} #{e.ref_id}{vs} · apostó {self.money(e.stake)} · {result}"
+
+    def _history_pages(self, title: str, header: str, entries: List[stats_db.HistoryEntry], who: Optional[int] = None,
+                       daily: bool = False) -> List[discord.Embed]:
+        if daily:                                                          # el día: solo las últimas 10, en una página
+            entries = entries[:stats_db.DAILY_LIMIT]
+        chunks = [entries[i:i + self.HISTORY_PAGE] for i in range(0, len(entries), self.HISTORY_PAGE)] or [[]]
+        empty = "Hoy (desde las 00:00 UTC) todavía no hay partidas terminadas." if daily else "Todavía no hay partidas terminadas."
+        scope = f"últimas {stats_db.DAILY_LIMIT} de hoy, desde las 00:00 UTC" if daily else f"máximo {stats_db.HISTORY_LIMIT} partidas"
+        pages = []
+        for n, chunk in enumerate(chunks, start=1):
+            emb = discord.Embed(title=title, color=GOLD)
+            body = "\n".join(self._history_line(e, who) for e in chunk) or empty
+            emb.description = f"{header}\n\n{body}"[:4096]
+            emb.set_footer(text=f"Página {n}/{len(chunks)} · de la más nueva a la más vieja · {scope}")
+            pages.append(emb)
+        return pages
+
+    @staticmethod
+    def _rate(wins: int, played: int) -> str:
+        return f"{100 * wins / played:.1f}%".replace(".", ",") if played else "—"
+
+    async def historial_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None,
+                              rival: Optional[discord.Member] = None, periodo: str = "todo"):
+        daily = periodo == "hoy"
+        since = stats_db.day_start_utc() if daily else None
+        target = usuario or interaction.user
+        if getattr(target, "bot", False) or (rival is not None and getattr(rival, "bot", False)):
+            return await interaction.response.send_message("❌ Los bots no juegan en el casino.", ephemeral=True)
+        if rival is not None and rival.id == target.id:
+            return await interaction.response.send_message("❌ Elegí dos personas distintas para comparar.", ephemeral=True)
+        name = getattr(target, "display_name", str(target.id))
+        when = " — hoy" if daily else ""
+        if rival is None:
+            entries = await self.run(stats_db.history, target.id, None if daily else stats_db.HISTORY_LIMIT, since)
+            wins = sum(1 for e in entries if e.net > 0)
+            net = sum(e.net for e in entries)
+            header = (f"<@{target.id}> · **{len(entries)}** partidas{' hoy' if daily else ''} · ✅ {wins} ganadas · ❌ {len(entries) - wins} perdidas"
+                      f" · 🎯 ganó el **{self._rate(wins, len(entries))}**\n"
+                      f"Neto{' del día' if daily else ''}: **{'+' if net >= 0 else '-'}{self.money(abs(net))}**")
+            pages = self._history_pages(f"📜 Historial de casino — {name}{when}", header, entries, daily=daily)
+        else:
+            h = await self.run(stats_db.head_to_head, target.id, rival.id, stats_db.HISTORY_LIMIT, since)
+            total = h.a_wins + h.b_wins
+            if h.a_net > 0:
+                balance = f"<@{target.id}> le va ganando **{self.money(h.a_net)}** a <@{rival.id}>"
+            elif h.a_net < 0:
+                balance = f"<@{rival.id}> le va ganando **{self.money(-h.a_net)}** a <@{target.id}>"
+            else:
+                balance = "Van parejos: nadie le debe nada al otro"
+            header = (f"<@{target.id}> ganó **{h.a_wins}** ({self._rate(h.a_wins, total)}) · <@{rival.id}> ganó **{h.b_wins}** "
+                      f"({self._rate(h.b_wins, total)}) · {total} partidas entre ellos{' hoy' if daily else ''}\n{balance}\n"
+                      f"-# Cuenta coinflip, 1v1 y dados donde jugaron solo ellos dos.")
+            pages = self._history_pages(f"⚔️ {name} vs {getattr(rival, 'display_name', rival.id)}{when}", header, h.entries,
+                                        who=target.id, daily=daily)
+        if len(pages) > 1:
+            from paging import PagedView
+            view = PagedView(pages, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=pages[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=pages[0], allowed_mentions=NO_MENTIONS)
 
     # ---------- top de winrate y total apostado (públicos, para todos) ----------
     TOP_WINRATE_SHOWN = 15

@@ -194,6 +194,14 @@ class CasinoCog(commands.Cog):
     async def casino_winrate(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
         await self._delegate(interaction, "GamesCog", "winrate_slash", "juegos", usuario)
 
+    @casino_g.command(name="ver-historial", description="Últimas partidas de una persona, o el cara a cara entre dos (fecha, apuesta y si ganó o perdió)")
+    @app_commands.describe(usuario="Persona a consultar (por defecto, vos)", rival="Otra persona: muestra solo las partidas entre ellos dos y quién va ganando",
+                           periodo="Todo el historial, o solo hoy (desde las 00:00 UTC, últimas 10 con el % ganado del día)")
+    @app_commands.choices(periodo=[app_commands.Choice(name="Todo", value="todo"), app_commands.Choice(name="Hoy (desde 00:00 UTC)", value="hoy")])
+    async def casino_ver_historial(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None,
+                                   rival: Optional[discord.Member] = None, periodo: Optional[app_commands.Choice[str]] = None):
+        await self._delegate(interaction, "GamesCog", "historial_slash", "juegos", usuario, rival, periodo.value if periodo else "todo")
+
     @casino_g.command(name="total", description="Todo lo que se apostó en el servidor (apuestas, dados, coinflip y duelos)")
     async def casino_total(self, interaction: discord.Interaction):
         await self._delegate(interaction, "GamesCog", "totalapostado_slash", "juegos")

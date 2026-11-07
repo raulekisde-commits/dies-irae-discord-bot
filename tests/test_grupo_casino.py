@@ -17,7 +17,7 @@ class CasinoGroupTests(DiscordBase):
         g = cs.CasinoCog.casino_g
         self.assertEqual(g.name, "casino")
         self.assertEqual(sorted(g.commands), sorted(["abrir", "cerrar", "limite", "ban", "dados", "coinflip", "1v1", "winrate", "total",
-                                                     "ruleta", "ruleta-editar", "ruleta-stats", "apuestas", "verificar", "semilla"]))
+                                                     "ruleta", "ruleta-editar", "ruleta-stats", "apuestas", "verificar", "semilla", "ver-historial"]))
 
     def test_apuestas_viven_en_casino_apuestas(self):
         g = cs.CasinoCog.apuestas_g
