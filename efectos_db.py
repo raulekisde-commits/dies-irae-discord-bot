@@ -29,6 +29,7 @@ CLEANS = {                                  # carta de limpieza → efectos que 
     "clean_freeze": ("freeze_balance",),
     "clean_all": ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon"),
 }
+STACKABLE = ("mute_chat", "mute_voice", "casino_block")   # su tiempo se acumula
 TARGETED = ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon", "casino_block", "purge", "voice_kick")
 
 SCHEMA = """
@@ -138,7 +139,12 @@ def _add_effect(conn, user_id: int, kind: str, minutes: Optional[float], card_id
     cur = _active(conn, user_id, kind, now)
     until = None if minutes is None else now + float(minutes) * 60
     if cur is not None:
-        new_until = None if (cur.until is None or until is None) else max(cur.until, until)
+        if cur.until is None or until is None:
+            new_until = None
+        elif kind in STACKABLE:                     # mutes y bloqueo de casino: el tiempo se suma al que le queda
+            new_until = max(cur.until, now) + float(minutes) * 60
+        else:
+            new_until = max(cur.until, until)
         conn.execute("UPDATE wjp_effects SET until = ?, card_id = ?, actor_id = ? WHERE id = ?", (new_until, card_id, actor_id, cur.id))
         return _effect(conn.execute("SELECT * FROM wjp_effects WHERE id = ?", (cur.id,)).fetchone())
     eid = conn.execute("INSERT INTO wjp_effects(user_id, kind, until, armed, card_id, actor_id, created_at) VALUES (?,?,?,?,?,?,?)",

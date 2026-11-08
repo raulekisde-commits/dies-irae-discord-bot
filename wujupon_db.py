@@ -47,7 +47,7 @@ SHIELD_NOTE = " El escudo y los inmunes la bloquean."
 CATALOG = [
     # ⚪ Comunes — 45 %
     ("casino_block", "Bloqueo de casino 2 h", "common", 6200, "Bot", None, 0, 0, "", 1,
-     "Bloqueás a un jugador del casino por 2 horas." + SHIELD_NOTE, 0),
+     "Bloqueás a un jugador del casino por 2 horas. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
     ("sell_cooldown", "Cancelar cooldown de cobro", "common", 6200, "Bot", "sell_cooldown", 0, 0, "", 0,
      "Te saca el cooldown de «Cobrar balance». Si no tenés cooldown, la carta no se gasta.", 0),
     ("gendarme_photo", "Foto de la cola de Gendarme", "common", 6200, "Bot", "photo", 0, 0, "", 0,
@@ -57,9 +57,9 @@ CATALOG = [
     ("embo_50", "Hasta 50 de embo", "common", 1500, "Bot", "embo", 50, 50, "embo", 0,
      "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 50.", 0),
     ("mute_chat_5", "Mute de chat 15 min", "common", 3500, "Bot", None, 0, 0, "", 1,
-     "Le muteás el chat a un jugador por 15 minutos." + SHIELD_NOTE, 0),
+     "Le muteás el chat a un jugador por 15 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_5", "Mute de voice 15 min", "common", 3500, "Bot", None, 0, 0, "", 1,
-     "Muteás a un jugador en el voice por 15 minutos." + SHIELD_NOTE, 0),
+     "Muteás a un jugador en el voice por 15 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("shield_1h", "🛡️ Escudo 1 h", "common", 3500, "Bot", None, 0, 0, "", 0,
      "Durante 1 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("clean_chat", "🧹 Limpiar mute de chat", "common", 2300, "Bot", None, 0, 0, "", 0,
@@ -80,14 +80,14 @@ CATALOG = [
      "Carta mala: suma 4 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔵 Raras — 35 %
     ("mute_15", "Mute de chat 45 min", "rare", 3400, "Bot", None, 0, 0, "", 1,
-     "Le muteás el chat a un jugador por 45 minutos." + SHIELD_NOTE, 0),
+     "Le muteás el chat a un jugador por 45 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("voice_mute_15", "Mute de voice 45 min", "rare", 2300, "Bot", None, 0, 0, "", 1,
-     "Muteás a un jugador en el voice por 45 minutos." + SHIELD_NOTE, 0),
-    ("undo_coinflip", "Coinflip hasta 10M", "rare", 5000, "Bot", None, 0, 0, "", 0,
+     "Muteás a un jugador en el voice por 45 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
+    ("undo_coinflip", "Coinflip hasta 10M", "rare", 4300, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 10M. Rigen todas las reglas del coinflip.", 0),
-    ("casino_open", "Abrir el casino", "rare", 2800, "Bot", None, 0, 0, "", 0,
+    ("casino_open", "Abrir el casino", "rare", 2400, "Bot", None, 0, 0, "", 0,
      "Abrís el casino si está cerrado.", 0),
-    ("casino_close", "Cerrar el casino", "rare", 2800, "Bot", None, 0, 0, "", 0,
+    ("casino_close", "Cerrar el casino", "rare", 2400, "Bot", None, 0, 0, "", 0,
      "Cerrás el casino si está abierto.", 0),
     ("free_build_p1", "Build libre en Party PRIO 1", "rare", 3300, "Staff", None, 0, 0, "", 0,
      "En Party PRIO 1 jugás con la build que quieras.", 0),
@@ -102,6 +102,8 @@ CATALOG = [
      "Durante 3 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("clean_freeze", "🧹 Limpiar congelamiento", "rare", 1000, "Bot", None, 0, 0, "", 0,
      "Te descongela el balance (si te lo congeló una carta). Si no estás congelado, no se gasta.", 0),
+    ("casino_block_6h", "Bloqueo de casino 6 h", "rare", 1500, "Bot", None, 0, 0, "", 1,
+     "Bloqueás a un jugador del casino por 6 horas. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
     ("voice_kick", "🔌 Kick de voice", "rare", 1500, "Bot", None, 0, 0, "", 1,
      "Desconectás del voice a un jugador. Si no está en un voice, la carta no se gasta." + SHIELD_NOTE, 0),
     ("shop_discount_15", "🎟️ Ticket de descuento 15 % (Guild Shop)", "rare", 500, "Bot", "shop_ticket", 0, 1_000_000, "silver", 0,
@@ -133,7 +135,7 @@ CATALOG = [
      "Te portean a Caerleon.", 0),
     ("plot_tax0", "Tax 0 en plots 48 h", "epic", 600, "Staff", None, 0, 0, "", 0,
      "Tus plots sin tax durante 48 horas.", 0),
-    ("alter_ho_24h", "Permisos de alter en el HO 24 h", "epic", 700, "Staff", None, 0, 0, "", 0,
+    ("alter_ho_24h", "Permisos de alter en el HO 24 h", "epic", 500, "Staff", None, 0, 0, "", 0,
      "Un alter tuyo tiene permisos en el HO durante 24 horas.", 0),
     ("shop_discount", "🎟️ Ticket de descuento 20 % (Guild Shop)", "epic", 300, "Bot", "shop_ticket", 0, 2_000_000, "silver", 0,
      "En una compra del Guild Shop el descuento pasa de 10 % a 20 % hasta 20M. Al abrir el ticket de compra, el bot te pregunta si querés usarlo.", 0),
@@ -158,16 +160,18 @@ CATALOG = [
     ("freeze_2h", "Congelar balance 2 h", "epic", 600, "Bot", None, 0, 0, "", 1,
      "Durante 2 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
-    ("split_no_join", "Split sin participar", "epic", 600, "Staff", None, 0, 0, "", 0,
+    ("split_no_join", "Split sin participar", "epic", 500, "Staff", None, 0, 0, "", 0,
      "Cobrás el split de una CTA del día sin haber ido.", 0),
     ("coinflip_15m", "Coinflip hasta 15M", "epic", 650, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 15M. Rigen todas las reglas del coinflip.", 0),
-    ("morgana_chest", "Cofre de Morgana en el HO", "epic", 600, "Staff", None, 0, 0, "", 0,
+    ("morgana_chest", "Cofre de Morgana en el HO", "epic", 400, "Staff", None, 0, 0, "", 0,
      "Ponés un cofre de Morgana en el HO, sobre un spot que no sea de la guild.", 0),
     ("mute_chat_30", "Mute de chat 2 h", "epic", 300, "Bot", None, 0, 0, "", 1,
-     "Le muteás el chat a un jugador por 2 horas." + SHIELD_NOTE, 0),
+     "Le muteás el chat a un jugador por 2 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_30", "Mute de voice 2 h", "epic", 300, "Bot", None, 0, 0, "", 1,
-     "Muteás a un jugador en el voice por 2 horas." + SHIELD_NOTE, 0),
+     "Muteás a un jugador en el voice por 2 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
+    ("casino_block_24h", "Bloqueo de casino 24 h", "epic", 500, "Bot", None, 0, 0, "", 1,
+     "Bloqueás a un jugador del casino por 24 horas. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
     ("shield_12h", "🛡️ Escudo 12 h", "epic", 600, "Bot", None, 0, 0, "", 0,
      "Durante 12 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("clean_all", "🧹 Limpieza total", "epic", 400, "Bot", None, 0, 0, "", 0,
@@ -197,7 +201,7 @@ CATALOG = [
     ("freeze_12h", "Congelar balance 12 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Durante 12 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
-    ("deny_cta", "Denegar una CTA", "legendary", 300, "Staff", None, 0, 0, "", 1,
+    ("deny_cta", "Denegar una CTA", "legendary", 150, "Staff", None, 0, 0, "", 1,
      "Un jugador no puede ir a una CTA." + SHIELD_NOTE, 0),
     ("guild_desc_1d", "Descripción de la guild 1 día", "legendary", 100, "Staff", None, 0, 0, "", 0,
      "Elegís la descripción de la guild durante 1 día.", 0),
@@ -208,9 +212,11 @@ CATALOG = [
     ("coinflip_20m", "Coinflip hasta 20M", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 20M. Rigen todas las reglas del coinflip.", 0),
     ("mute_chat_60", "Mute de chat 6 h", "legendary", 450, "Bot", None, 0, 0, "", 1,
-     "Le muteás el chat a un jugador por 6 horas." + SHIELD_NOTE, 0),
+     "Le muteás el chat a un jugador por 6 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_60", "Mute de voice 6 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
-     "Muteás a un jugador en el voice por 6 horas." + SHIELD_NOTE, 0),
+     "Muteás a un jugador en el voice por 6 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
+    ("casino_block_72h", "Bloqueo de casino 72 h", "legendary", 150, "Bot", None, 0, 0, "", 1,
+     "Bloqueás a un jugador del casino por 72 horas. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
     ("shield_24h", "🛡️ Escudo 24 h", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Durante 24 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("shop_discount_30", "🎟️ Ticket de descuento 30 % (Guild Shop)", "legendary", 130, "Bot", "shop_ticket", 0, 7_000_000, "silver", 0,
@@ -232,10 +238,12 @@ CATALOG = [
     ("coinflip_nolimit", "Coinflip sin límite", "mythic", 30, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino sin tope de apuesta. Rigen todas las reglas del coinflip.", 0),
     ("mute_chat_180", "Mute de chat 48 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
-     "Le muteás el chat a un jugador por 48 horas." + SHIELD_NOTE, 0),
+     "Le muteás el chat a un jugador por 48 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_180", "Mute de voice 48 h", "mythic", 10, "Bot", None, 0, 0, "", 1,
-     "Muteás a un jugador en el voice por 48 horas." + SHIELD_NOTE, 0),
-    ("shield_4d", "🛡️ Escudo 4 días", "mythic", 40, "Bot", None, 0, 0, "", 0,
+     "Muteás a un jugador en el voice por 48 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
+    ("casino_block_7d", "Bloqueo de casino 7 días", "mythic", 10, "Bot", None, 0, 0, "", 1,
+     "Bloqueás a un jugador del casino por 7 días. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
+    ("shield_4d", "🛡️ Escudo 4 días", "mythic", 30, "Bot", None, 0, 0, "", 0,
      "Durante 4 días nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("bad_cd_48h", "☠️ Cooldown de cobro +48 h", "mythic", 10, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 48 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
@@ -243,7 +251,8 @@ CATALOG = [
 # Cartas con efecto automático (efectos_db / wujupon_efectos): clave → handler «efx:<acción>[:<valor>]».
 # Mutes, escudos y congelamientos en minutos; cartas malas de Wuju/embo con el monto y de cooldown en horas.
 EFFECT_HANDLERS = {
-    "casino_block": "efx:casino_block:120", "voice_kick": "efx:voice_kick", "bad_voice_dc": "efx:voice_dc", "casino_open": "efx:casino_open", "casino_close": "efx:casino_close",
+    "casino_block": "efx:casino_block:120", "casino_block_6h": "efx:casino_block:360", "casino_block_24h": "efx:casino_block:1440",
+    "casino_block_72h": "efx:casino_block:4320", "casino_block_7d": "efx:casino_block:10080", "voice_kick": "efx:voice_kick", "bad_voice_dc": "efx:voice_dc", "casino_open": "efx:casino_open", "casino_close": "efx:casino_close",
     "mute_chat_5": "efx:mute_chat:15", "mute_15": "efx:mute_chat:45", "mute_chat_30": "efx:mute_chat:120",
     "mute_chat_60": "efx:mute_chat:360", "mute_chat_180": "efx:mute_chat:2880",
     "mute_voice_5": "efx:mute_voice:15", "voice_mute_15": "efx:mute_voice:45", "mute_voice_30": "efx:mute_voice:120",
@@ -281,7 +290,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 11
+CATALOG_VERSION = 12
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -304,6 +313,10 @@ CATALOG_CHANGES = {
          "embo_500", "embo_1000", "mute_chat_5", "mute_voice_5", "shield_1h", "clean_chat", "clean_voice", "undo_coinflip",
          "casino_open", "casino_close", "mount_escort", "coinflip_15m", "ava_replace", "plot_tax0", "lootsplit_remove",
          "repair_4m", "voice_kick", "shop_discount_15", "bad_voice_dc"),
+    12: ("casino_block", "casino_block_6h", "casino_block_24h", "casino_block_72h", "casino_block_7d", "undo_coinflip",
+         "casino_open", "casino_close", "alter_ho_24h", "morgana_chest", "split_no_join", "deny_cta", "shield_4d",
+         "mute_chat_5", "mute_voice_5", "mute_15", "voice_mute_15", "mute_chat_30", "mute_voice_30", "mute_chat_60",
+         "mute_voice_60", "mute_chat_180", "mute_voice_180"),
 }
 
 SCHEMA = """
