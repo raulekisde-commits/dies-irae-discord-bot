@@ -5,6 +5,7 @@ no se llene de mensajes. Las tiradas se anuncian en un canal público configurab
 """
 import asyncio
 import io
+import time
 import traceback
 from typing import Callable, List, Optional
 
@@ -896,14 +897,48 @@ class WujuponCog(commands.Cog):
                                    request_key=f"giftrole:{interaction.id}", reason=(motivo or f"Regalo del Council a {rol.name}")[:300])
             except wdb.WujuponError as exc:
                 return await _say(interaction, f"❌ {exc}")
-            return await _say(interaction, f"✅ {rol.mention}: {'+' if cantidad > 0 else ''}{cantidad} tirada(s) a cada uno "
-                                           f"(**{n}** persona(s)).")
+            return await self._gift_announce(interaction, cantidad, f"{rol.mention} (**{n}** persona(s), a cada uno)", motivo)
         try:
             after = await self.run(wdb.gift_spins, actor_id=interaction.user.id, user_id=usuario.id, count=cantidad,
                                    request_key=f"gift:{interaction.id}", reason=(motivo or "Regalo del Council")[:300])
         except wdb.WujuponError as exc:
             return await _say(interaction, f"❌ {exc}")
-        await _say(interaction, f"✅ {usuario.mention}: {'+' if cantidad > 0 else ''}{cantidad} tirada(s). Ahora tiene **{after}**.")
+        await self._gift_announce(interaction, cantidad, f"{usuario.mention} (ahora tiene **{after}**)", motivo)
+
+    async def _gift_announce(self, interaction: discord.Interaction, cantidad: int, destino: str, motivo: Optional[str]):
+        """Mensaje público del regalo/quita + copia al canal de log (/canal wujupon-regalos)."""
+        verbo = "regaló" if cantidad > 0 else "quitó"
+        texto = (f"🎁 {interaction.user.mention} {verbo} **{abs(cantidad)}** tirada(s) de Wujupón a {destino}.\n"
+                 f"📝 Motivo: {motivo or 'sin motivo'}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(texto, allowed_mentions=NO_MENTIONS)
+            else:
+                await interaction.response.send_message(texto, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+        log = await self._channel("gift_log_channel")
+        if log is not None:
+            try:
+                where = f" · en {interaction.channel.mention}" if getattr(interaction.channel, "mention", None) else ""
+                await log.send(f"{texto}\n🕒 <t:{int(time.time())}:f>{where}", allowed_mentions=NO_MENTIONS)
+            except Exception:
+                traceback.print_exc()
+
+    async def canal_regalos(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None,
+                            desactivar: bool = False):
+        """Lo llama /canal wujupon-regalos (guildshop.py): canal de log de /wujupon regalar-tiradas."""
+        if not await self._council(interaction):
+            return
+        if desactivar:
+            await self.run(wdb.set_setting, "gift_log_channel", None)
+            return await _say(interaction, "🔕 Ya no se registran los regalos de tiradas.")
+        target = canal or interaction.channel
+        perms = target.permissions_for(interaction.guild.me) if interaction.guild and interaction.guild.me else None
+        if perms is not None and not perms.send_messages:
+            return await _say(interaction, f"❌ No tengo permiso para escribir en {target.mention}.")
+        await self.run(wdb.set_setting, "gift_log_channel", str(target.id))
+        await _say(interaction, f"📒 Los regalos de tiradas se registran en {target.mention}.")
 
     @wj.command(name="tiradas-diarias", description="(Council) Tiradas gratis por día para un rol (0 = sacar). Sin datos, muestra la lista")
     @app_commands.describe(rol="Rol", cantidad="Tiradas gratis por día (0 = sacar el rol)")

@@ -437,6 +437,11 @@ class GuildShopCog(commands.Cog):
     async def canal_economia_cmd(self, interaction: discord.Interaction, canal: discord.TextChannel):
         await self._canal_delegate(interaction, "EconomyCog", "registro_bal", "economía", canal)
 
+    @canal.command(name="wujupon-regalos", description="(Council) Canal donde se registra cada /wujupon regalar-tiradas")
+    @app_commands.describe(canal="Canal (por defecto, este)", desactivar="Apagar este registro")
+    async def canal_wujupon_regalos_cmd(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
+        await self._canal_delegate(interaction, "WujuponCog", "canal_regalos", "Wujupón", canal, desactivar)
+
     # /canal dados vive acá porque el grupo "/canal" es único en el bot (Discord no permite repetirlo en otro módulo)
     @canal.command(name="dados", description="(Council) Canal donde se publican los paneles de !dados")
     @app_commands.describe(canal="Canal donde aparecerán los paneles de dados")
