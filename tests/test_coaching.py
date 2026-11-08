@@ -251,7 +251,7 @@ class CoachingDiscordTests(DiscordBase):
         i = self.inter(opi, message=self.tasks_ch.sent[0])                                      # lo tomó otro, pero el Opinólogo puede cerrarla
         run(self.ecog.on_done(i))
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, opi.id)
-        self.assertIn("quien tomó", self.inter_done(self.alice, self.tasks_ch.sent[1]))          # un miembro no
+        self.assertIn("No podés terminar", self.inter_done(self.alice, self.tasks_ch.sent[1]))          # un miembro no
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4300)))
         i = self.inter(self.alice)
         top = edb.top_coaches(self.db)

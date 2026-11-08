@@ -1,7 +1,9 @@
-"""/encargar — tareas para el staff: panel con botones Tomar / Soltar / Terminada, y publicación programada."""
+"""/tarea — tareas para el staff: panel con botones Terminada / Cancelar, y publicación programada."""
 import asyncio
 import os
+import re
 import traceback
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -51,8 +53,19 @@ def can_take(member) -> bool:
     return is_staff_or_council(member) or bool({OPINOLOGO_ROLE_ID, COACHING_ROLE_ID} & _roles(member))
 
 
+TAGGED_PREFIX = "tarea:"                                    # source de las tareas de /tarea con tags: solo los etiquetados + Council
+TAG_RE = re.compile(r"<@([!&]?)(\d+)>")
+
+
+def is_tagged(t) -> bool:
+    return (getattr(t, "source", None) or "").startswith(TAGGED_PREFIX)
+
+
 def can_work_on(member, t) -> bool:
-    """Quién puede tomar y terminar una tarea: las comunes, el Staff/Council/Opinólogo/Coaching; las que son «para» un rol, ese rol y el Council."""
+    """Quién puede terminar una tarea: las comunes, el Staff/Council/Opinólogo/Coaching; las que son «para» un rol, ese rol y el Council;
+    las de /tarea con tags, las personas y roles etiquetados y el Council."""
+    if is_tagged(t):
+        return can_manage(member) or member.id in t.ping_users or bool(set(t.ping_roles) & _roles(member))
     if getattr(t, "for_role", None):
         return can_manage(member) or t.for_role in _roles(member)
     return can_take(member)
@@ -63,14 +76,6 @@ class TaskView(discord.ui.View):
     def __init__(self, cog: "EncargosCog"):
         super().__init__(timeout=None)
         self.cog = cog
-
-    @discord.ui.button(label="Tomar tarea", style=discord.ButtonStyle.success, custom_id="task:take", emoji="✋")
-    async def take(self, interaction: discord.Interaction, button):
-        await self.cog.on_take(interaction)
-
-    @discord.ui.button(label="Soltar tarea", style=discord.ButtonStyle.secondary, custom_id="task:release", emoji="↩️")
-    async def release(self, interaction: discord.Interaction, button):
-        await self.cog.on_release(interaction)
 
     @discord.ui.button(label="Tarea terminada", style=discord.ButtonStyle.primary, custom_id="task:done", emoji="✅")
     async def done(self, interaction: discord.Interaction, button):
@@ -135,6 +140,8 @@ class EncargosCog(commands.Cog):
             e.add_field(name="Terminada por", value=f"<@{t.done_by}>", inline=True)
         if t.for_role:
             e.add_field(name="Para", value=f"<@&{t.for_role}>", inline=True)
+        elif is_tagged(t):
+            e.add_field(name="Para", value=" ".join([f"<@&{r}>" for r in t.ping_roles] + [f"<@{u}>" for u in t.ping_users])[:1024] or "—", inline=True)
         if t.link:
             e.add_field(name="Link", value=t.link, inline=False)
         lines = []
@@ -182,7 +189,7 @@ class EncargosCog(commands.Cog):
     async def create(self, *, text: str, created_by: int, publish_at: Optional[float] = None, source: Optional[str] = None,
                      link: Optional[str] = None, channel_id: Optional[int] = None, ping_roles=(), ping_users=(), ping_staff: bool = True,
                      for_role: Optional[int] = None) -> edb.Task:
-        """Crea una tarea (la usan /encargar y los avisos automáticos, como el del combatlog de una CTA).
+        """Crea una tarea (la usan /tarea y los avisos automáticos, como el del combatlog de una CTA).
         Etiqueta al Staff (salvo ping_staff=False) y, además, a los roles y personas indicados."""
         t = await self.run(edb.create_task, guild_id=self.guild_id, channel_id=channel_id or bs.get("tasks"), text=text, created_by=created_by,
                            publish_at=publish_at, source=source, link=link, ping_roles=ping_roles, ping_users=ping_users, ping_staff=ping_staff,
@@ -192,25 +199,33 @@ class EncargosCog(commands.Cog):
         return await self.run(edb.get_task, t.id)
 
     # ---------- comando ----------
-    @app_commands.command(name="encargar", description="Crea una tarea para el staff (panel con botones y mención al Staff)")
-    @app_commands.describe(tarea="Qué hay que hacer", cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h",
-                           rol="(Opcional) Rol a etiquetar además del Staff", persona="(Opcional) Persona a etiquetar además del Staff",
-                           para_rol="(Opcional) Tarea PARA este rol (ej: Council): se etiqueta solo a ese rol y solo ese rol y el Council la pueden tomar")
+    @app_commands.command(name="tarea", description="Crea una tarea (solo Council): panel con botón Tarea terminada")
+    @app_commands.describe(titulo="Título de la tarea", descripcion="Qué hay que hacer",
+                           tags="(Opcional) Personas y/o roles: @persona @rol … Solo ellos (y el Council) la pueden terminar. Sin tags se etiqueta al Staff",
+                           cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h")
     @app_commands.guild_only()
-    async def encargar(self, interaction: discord.Interaction, tarea: str, cuando: Optional[str] = None,
-                       rol: Optional[discord.Role] = None, persona: Optional[discord.Member] = None, para_rol: Optional[discord.Role] = None):
-        if not is_staff_or_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff y el Council pueden encargar tareas.")
+    async def tarea(self, interaction: discord.Interaction, titulo: str, descripcion: str, tags: Optional[str] = None,
+                    cuando: Optional[str] = None):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council puede crear tareas.")
+        roles, users = [], []
+        for kind, raw in TAG_RE.findall(tags or ""):
+            if kind == "&":
+                role = interaction.guild.get_role(int(raw)) if interaction.guild else None
+                if role is None or role.id == interaction.guild.id:              # el id de @everyone es el del servidor
+                    return await _say(interaction, "❌ Uno de los roles no existe en el servidor (o es @everyone).")
+                roles.append(role.id)
+            else:
+                users.append(int(raw))
+        if tags and tags.strip() and not (roles or users):
+            return await _say(interaction, "❌ En `tags` mencioná personas o roles (ej: `@Juan @Council`).")
+        roles, users = list(dict.fromkeys(roles)), list(dict.fromkeys(users))
+        tagged = bool(roles or users)
         try:
             at = edb.parse_when(cuando) if cuando and cuando.strip() else None
-            if para_rol is not None and para_rol.is_default():
-                return await _say(interaction, "❌ Elegí un rol del servidor (no @everyone).")
-            pings = [rol.id] if rol is not None and not rol.is_default() else []
-            if para_rol is not None:
-                pings = list(dict.fromkeys(pings + [para_rol.id]))
-            t = await self.create(text=tarea, created_by=interaction.user.id, publish_at=at, ping_roles=pings,
-                                  ping_users=[persona.id] if persona is not None else [],
-                                  ping_staff=para_rol is None, for_role=para_rol.id if para_rol is not None else None)
+            t = await self.create(text=f"**{titulo.strip()}**\n{descripcion.strip()}", created_by=interaction.user.id, publish_at=at,
+                                  ping_roles=roles, ping_users=users, ping_staff=not tagged,
+                                  source=f"{TAGGED_PREFIX}{uuid.uuid4().hex[:12]}" if tagged else None)
         except edb.TaskError as exc:
             return await _say(interaction, f"❌ {exc}")
         if at and at > datetime.now(timezone.utc).timestamp():
@@ -358,12 +373,10 @@ class EncargosCog(commands.Cog):
     async def on_done(self, interaction: discord.Interaction):
         t = await self._task(interaction)
         if t:
-            # las devoluciones de coaching las puede cerrar cualquiera que pueda tomarlas (Coaching, Opinólogo, Staff, Council)
-            if t.for_role:
-                override = can_work_on(interaction.user, t)
-            else:
-                override = is_staff_or_council(interaction.user) or ((t.source or "").startswith("coach:") and can_take(interaction.user))
-            await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
+            # sin botón Tomar: la termina directamente quien tenga permiso sobre la tarea
+            if not can_work_on(interaction.user, t):
+                return await _say(interaction, "🔒 No podés terminar esta tarea.")
+            await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, True), "✅ Tarea terminada.")
 
     async def record_done(self, text: str, actor_id: int, source: str) -> bool:
         """Cuenta como tarea hecha (para /top tareas) algo que el Staff resolvió sin pasar por el panel de tareas. Nunca rompe a quien la llama."""

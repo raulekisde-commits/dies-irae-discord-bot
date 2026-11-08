@@ -246,85 +246,75 @@ class TaskDiscordTests(DiscordBase):
         run(getattr(self.cog, f"on_{action}")(i))
         return i
 
-    def test_permissions_to_create(self):
-        i = self.inter(self.alice)
-        run(self.cog.encargar.callback(self.cog, i, "hacer algo", None))
-        self.assertIn("Solo el Staff", i.text)
-        self.assertEqual(self.tasks_ch.sent, [])
-        for who in (self.staff, self.council, self.admin):
-            run(self.cog.encargar.callback(self.cog, self.inter(who), "hacer algo", None))
-        self.assertEqual(len(self.tasks_ch.sent), 3)
+    def tarea(self, who, titulo="Tarea", desc="hacer algo", tags=None, cuando=None):
+        i = self.inter(who)
+        run(self.cog.tarea.callback(self.cog, i, titulo, desc, tags, cuando))
+        return i
 
-    def test_panel_pings_only_staff_and_lives_in_the_tasks_channel(self):
-        run(self.cog.encargar.callback(self.cog, self.inter(self.staff), "Cargar el killboard", None))
+    def test_permissions_to_create_only_council(self):
+        for who in (self.alice, self.staff):
+            self.assertIn("Solo el Council", self.tarea(who).text)
+        self.assertEqual(self.tasks_ch.sent, [])
+        for who in (self.council, self.admin):
+            self.tarea(who)
+        self.assertEqual(len(self.tasks_ch.sent), 2)
+
+    def test_panel_without_tags_pings_staff_and_shows_title(self):
+        self.tarea(self.council, "Killboard", "Cargar el killboard")
         msg = self.tasks_ch.sent[0]
         self.assertIn(f"<@&{enc.STAFF_ROLE_ID}>", msg.content)
-        am = enc.STAFF_PING.kw                                    # lo único que se menciona al publicar
-        self.assertEqual([r.id for r in am["roles"]], [enc.STAFF_ROLE_ID])
-        self.assertFalse(am["everyone"])
-        self.assertFalse(am["users"])
+        self.assertIn("**Killboard**", msg.embeds[0].description)
         self.assertIn("Cargar el killboard", msg.embeds[0].description)
 
-    def test_take_release_done_flow_in_panel(self):
-        run(self.cog.encargar.callback(self.cog, self.inter(self.staff), "Cargar el killboard", None))
+    def test_no_take_button_and_done_directly(self):
+        self.assertEqual(sorted(c.custom_id for c in enc.TaskView(self.cog).children), ["task:cancel", "task:done"])
+        self.tarea(self.council, desc="Cargar el killboard")
         msg = self.tasks_ch.sent[0]
-        self.assertIn("Solo el Staff", self.press(self.alice, "take", msg).text)           # un miembro común no puede
-        i = self.press(self.opi, "take", msg)                                                # Opinólogo sí
-        shown = i.response.edited[-1] if hasattr(i.response, "edited") else None
+        self.assertIn("No podés", self.press(self.alice, "done", msg).text)                  # un miembro común no puede
+        self.press(self.opi, "done", msg)                                                     # Opinólogo la termina sin tomarla
         t = edb.find_by_message(self.db, msg.id)
-        self.assertEqual((t.status, t.taker_id), ("taken", self.opi.id))
-        self.assertIn("ya la tomó", self.press(self.staff, "take", msg).text)
-        self.assertIn("quien tomó", self.press(self.staff, "release", msg).text)            # soltar: solo quien la tiene
-        self.press(self.opi, "release", msg)
-        self.assertEqual(edb.find_by_message(self.db, msg.id).status, "open")
-        self.press(self.opi, "take", msg)
-        self.assertIn("quien tomó", self.press(self.alice, "done", msg).text)
-        self.press(self.council, "done", msg)                                                 # council cierra aunque no la tomó
-        t = edb.find_by_message(self.db, msg.id)
-        self.assertEqual((t.status, t.done_by), ("done", self.council.id))
+        self.assertEqual((t.status, t.done_by, t.taker_id), ("done", self.opi.id, None))
 
-    def test_take_opens_thread_and_hourly_reminder_until_closed(self):
-        import time
-        run(self.cog.encargar.callback(self.cog, self.inter(self.staff), "Cargar el killboard", None))
+    def test_tags_people_and_roles_only_they_and_council(self):
+        self.tarea(self.council, tags=f"<@{self.alice.id}> <@&{enc.OPINOLOGO_ROLE_ID}> <@!{self.alice.id}>")
         msg = self.tasks_ch.sent[0]
-        self.press(self.opi, "take", msg)
+        self.assertNotIn(f"<@&{enc.STAFF_ROLE_ID}>", msg.content)                            # con tags no se etiqueta al Staff
+        self.assertIn(f"<@{self.alice.id}>", msg.content)
+        self.assertIn(f"<@&{enc.OPINOLOGO_ROLE_ID}>", msg.content)
         t = edb.find_by_message(self.db, msg.id)
-        self.assertIsNotNone(t.thread_id)
-        thread = msg.thread
-        self.bot.channels[thread.id] = thread
-        self.assertIn(f"<@{self.opi.id}>", thread.sent[0].content)
-        self.assertEqual(run(self.cog.remind_taken(time.time() + 600)), 0)                     # antes de 1 h no avisa
-        self.assertEqual(run(self.cog.remind_taken(time.time() + 3700)), 1)
-        self.assertIn(f"<@{self.opi.id}>", thread.sent[-1].content)
-        self.assertIn("Tarea terminada", thread.sent[-1].content)
-        self.assertEqual(run(self.cog.remind_taken(time.time() + 3800)), 0)                    # ya avisó: espera otra hora
-        self.assertEqual(run(self.cog.remind_taken(time.time() + 3700 + 3700)), 1)
-        self.press(self.opi, "release", msg)                                                    # soltada: no hay a quién avisar
-        self.assertEqual(run(self.cog.remind_taken(time.time() + 99999)), 0)
-        self.press(self.opi, "take", msg)
-        log = discord.TextChannel(enc.TASK_LOG_CHANNEL_ID, self.guild, "logs")
-        self.bot.channels[log.id] = log
-        self.press(self.council, "done", msg)                                                   # cerrada: el hilo se borra y no avisa más
-        self.assertTrue(thread.deleted)
-        self.assertEqual(run(self.cog.remind_taken(time.time() + 99999)), 0)
+        self.assertEqual((t.ping_users, t.ping_roles, t.ping_staff), ([self.alice.id], [enc.OPINOLOGO_ROLE_ID], False))
+        self.assertIn("No podés", self.press(self.staff, "done", msg).text)                  # Staff no etiquetado: no
+        self.press(self.opi, "done", msg)                                                     # miembro del rol etiquetado: sí
+        self.assertEqual(edb.find_by_message(self.db, msg.id).done_by, self.opi.id)
+        self.tarea(self.council, tags=f"<@{self.alice.id}>")
+        msg2 = self.tasks_ch.sent[1]
+        self.assertIn("No podés", self.press(self.opi, "done", msg2).text)
+        self.press(self.alice, "done", msg2)                                                  # persona etiquetada: sí
+        self.assertEqual(edb.find_by_message(self.db, msg2.id).done_by, self.alice.id)
+        self.tarea(self.council, tags=f"<@{self.alice.id}>")
+        self.press(self.council, "done", self.tasks_ch.sent[2])                               # el Council siempre
+        self.assertEqual(edb.find_by_message(self.db, self.tasks_ch.sent[2].id).done_by, self.council.id)
+
+    def test_bad_tags_are_rejected(self):
+        self.assertIn("mencioná personas o roles", self.tarea(self.council, tags="juan").text)
+        self.assertIn("no existe", self.tarea(self.council, tags="<@&999>").text)
+        self.assertEqual(self.tasks_ch.sent, [])
 
     def test_scheduled_task_publishes_when_due_and_flags_late(self):
         import time
-        run(self.cog.encargar.callback(self.cog, self.inter(self.staff), "Tarea futura", "+30m"))
+        self.tarea(self.council, desc="Tarea futura", cuando="+30m")
         self.assertEqual(self.tasks_ch.sent, [])
         self.assertEqual(run(self.cog.process_due(time.time() + 60)), 0)
         self.assertEqual(run(self.cog.process_due(time.time() + 31 * 60)), 1)
         self.assertEqual(len(self.tasks_ch.sent), 1)
         self.assertNotIn("retraso", self.tasks_ch.sent[0].content)
-        run(self.cog.encargar.callback(self.cog, self.inter(self.staff), "Otra", "+10m"))
+        self.tarea(self.council, desc="Otra", cuando="+10m")
         self.assertEqual(run(self.cog.process_due(time.time() + 3 * 3600)), 1)                # el bot estuvo caído
         self.assertIn("retraso", self.tasks_ch.sent[1].content)
         self.assertEqual(run(self.cog.process_due(time.time() + 4 * 3600)), 0)                # nunca se publica dos veces
 
     def test_bad_when_is_rejected(self):
-        i = self.inter(self.staff)
-        run(self.cog.encargar.callback(self.cog, i, "algo", "mañana"))
-        self.assertIn("No entendí", i.text)
+        self.assertIn("No entendí", self.tarea(self.council, cuando="mañana").text)
         self.assertEqual(self.tasks_ch.sent, [])
 
     def test_create_api_for_automatic_tasks(self):

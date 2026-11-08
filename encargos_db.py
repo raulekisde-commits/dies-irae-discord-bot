@@ -1,4 +1,4 @@
-"""/encargar — tareas para el staff (datos y transiciones, sin Discord).
+"""/tarea — tareas para el staff (datos y transiciones, sin Discord).
 
 Estados: scheduled (esperando su hora) → open (publicada, sin dueño) ⇄ taken (alguien la tiene) → done.
 Cada transición es una sola transacción y condicionada al estado actual, así dos toques simultáneos no pueden pisarse.
