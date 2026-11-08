@@ -1,5 +1,6 @@
 """Piezas puras (sin Discord) del sistema de CTA: título por hora redonda, rol único por posición y envíos programados."""
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple
@@ -291,6 +292,35 @@ def bomb_add(db_path: str, cta_id: int, user_id: int, panel_id: Optional[int] = 
         return "missing"
     finally:
         conn.close()
+
+
+def bomb_remove(db_path: str, cta_id: int, user_id: int) -> str:
+    """Desanota a un Bomb. Devuelve 'removed' · 'none' (no estaba) · 'final' (la CTA terminó o se canceló) · 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            run = conn.execute("SELECT final_state, status FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None:
+                return "missing"
+            if run["final_state"] is not None or run["status"] == "cancelled":
+                return "final"
+            if not conn.execute("DELETE FROM cta_bombs WHERE cta_id=? AND user_id=?", (cta_id, user_id)).rowcount:
+                return "none"
+            conn.execute("DELETE FROM cta_positions WHERE cta_id=? AND user_id=? AND slot_key='bomb'", (cta_id, user_id))
+            return "removed"
+    except sqlite3.OperationalError:
+        return "missing"
+    finally:
+        conn.close()
+
+
+CTA_BOMB_RE = re.compile(r"([-−–])?\s*bomb", re.IGNORECASE)
+
+
+def parse_cta_bomb_text(text: Optional[str]) -> Optional[str]:
+    """En el hilo de la CTA: `bomb` -> 'join' · `- bomb` -> 'leave' · otro texto -> None."""
+    m = CTA_BOMB_RE.fullmatch((text or "").strip().strip(".!¡ "))
+    return None if m is None else ("leave" if m.group(1) else "join")
 
 
 def bomb_list(db_path: str, cta_id: int, panel_id: Optional[int] = None) -> List[int]:

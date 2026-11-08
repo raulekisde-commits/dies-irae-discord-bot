@@ -160,3 +160,19 @@ def members(db_path: str, bomb_id: int) -> List[dict]:
         return [dict(r) for r in conn.execute("SELECT * FROM bomb_members WHERE bomb_id=? ORDER BY added_at", (bomb_id,))]
     finally:
         conn.close()
+
+
+def groups(db_path: str, guild_id: int) -> List[dict]:
+    """Bombs del servidor con su caller y sus integrantes: [{id, name, caller_id, members: set}] (orden por nombre)."""
+    conn = connect(db_path)
+    try:
+        out = [{"id": int(r["id"]), "name": r["name"], "caller_id": int(r["caller_id"]), "members": set()}
+               for r in conn.execute("SELECT id, name, caller_id FROM bombs WHERE guild_id=? ORDER BY lower(name)", (guild_id,))]
+        by_id = {b["id"]: b for b in out}
+        for r in conn.execute("SELECT m.bomb_id, m.user_id FROM bomb_members m JOIN bombs b ON b.id=m.bomb_id WHERE b.guild_id=?", (guild_id,)):
+            by_id[int(r["bomb_id"])]["members"].add(int(r["user_id"]))
+        return out
+    except sqlite3.OperationalError:               # tablas de bombs todavía no creadas
+        return []
+    finally:
+        conn.close()

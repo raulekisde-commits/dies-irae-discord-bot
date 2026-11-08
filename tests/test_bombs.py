@@ -118,3 +118,21 @@ class BombsTests(DiscordBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BombsSplitYCTA(unittest.TestCase):
+    def test_parse_cta_bomb_text(self):
+        import ctautil as cu
+        self.assertEqual(cu.parse_cta_bomb_text("bomb"), "join")
+        self.assertEqual(cu.parse_cta_bomb_text("BOMB!"), "join")
+        self.assertEqual(cu.parse_cta_bomb_text("- bomb"), "leave")
+        self.assertEqual(cu.parse_cta_bomb_text("-bomb"), "leave")
+        self.assertIsNone(cu.parse_cta_bomb_text("bombas"))
+        self.assertIsNone(cu.parse_cta_bomb_text("21"))
+
+    def test_group_by_bomb(self):
+        import splits
+        bombs = [{"name": "A", "caller_id": 9, "members": {1, 2}}, {"name": "B", "caller_id": 8, "members": {2, 3}}]
+        groups, rest = splits.group_by_bomb([5, 3, 2, 1, 4], bombs)
+        self.assertEqual([(b["name"], m) for b, m in groups], [("A", [2, 1]), ("B", [3])])
+        self.assertEqual(rest, [5, 4])
