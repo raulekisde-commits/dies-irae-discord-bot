@@ -4285,6 +4285,17 @@ async def cta_create_split_task(run: dict):
                          source=f"cta:{run['id']}:split", link=link, ping_staff=False, ping_roles=[COUNCIL_ROLE_ID])
     except Exception as exc:
         print(f"CTA #{run['id']}: no pude crear la tarea del split: {exc!r}")
+        return
+    scog = bot.get_cog("SplitsCog")                       # si el split ya se cerró con el botón, la tarea queda hecha por quien lo cerró
+    if scog is not None:
+        try:
+            import splits_db as _sdb
+            s = await scog.run(_sdb.find_by_cta, int(run["id"]))
+            closer = await scog.run(_sdb.closed_by, s.id) if s is not None else None
+            if closer:
+                await cog.complete_by_source(f"cta:{run['id']}:split", closer)
+        except Exception as exc:
+            print(f"CTA #{run['id']}: no pude completar la tarea del split: {exc!r}")
 
 
 COMBATLOG_CHANNEL_ID = int(os.getenv("COMBATLOG_CHANNEL_ID", "1562975589756043364"))
@@ -4330,18 +4341,8 @@ async def cta_create_combatlog_panel(run: dict) -> Optional[str]:
 
 
 async def cta_create_combatlog_task(run: dict):
-    """Al terminar la inscripción: panel + hilo para enviar el combatlog y tarea para el Staff (con mención) de activarlo y enviarlo."""
-    cog = bot.get_cog("EncargosCog")
-    if cog is None:
-        print(f"CTA #{run['id']}: no hay módulo de encargos, no se creó la tarea del combatlog.")
-        return
-    link = await cta_create_combatlog_panel(run) or (
-        f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}" + (f"/{run['message_id']}" if not run.get("thread_id") and run.get("message_id") else ""))
-    try:
-        await cog.create(text=f"Activar y enviar el combatlog de {cta_run_title(run)} (hilo del panel de combatlog)", created_by=int(run["created_by"]),
-                         source=f"cta:{run['id']}:combatlog", link=link)
-    except Exception as exc:
-        print(f"CTA #{run['id']}: no pude crear la tarea del combatlog: {exc!r}")
+    """Al terminar la inscripción: solo el panel + hilo para enviar el combatlog (ya no se crea tarea para el Staff)."""
+    await cta_create_combatlog_panel(run)
 
 
 async def cta_handle_combatlog_message(message: discord.Message) -> bool:

@@ -1301,13 +1301,30 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.get_split, split_id)
         enc = self.bot.get_cog("EncargosCog")
         if enc is not None:                                    # repartir el split cuenta como tarea hecha para /top tareas (una vez por split)
-            await enc.record_done(f"Repartir el split «{s.title}» (#{split_id})", interaction.user.id, f"split:{split_id}")
+            if s.source_cta_id:                                # split de una CTA: cuenta su tarea «Repartir el split», hecha por quien lo cerró
+                try:                                           # (si la tarea todavía no existe, se completa sola al crearse)
+                    await enc.complete_by_source(f"cta:{s.source_cta_id}:split", interaction.user.id)
+                except Exception:
+                    traceback.print_exc()
+            else:
+                await enc.record_done(f"Repartir el split «{s.title}» (#{split_id})", interaction.user.id, f"split:{split_id}")
         await self.sync_split(split_id)
         if old_pay:
             await self._post_adjustment(s, old_pay, paid, interaction.user.id)
+            await self._archive_thread(s)
             return await interaction.followup.send("✅ Edición confirmada: se restó lo anterior y se repartió de nuevo.", ephemeral=True)
         await self._post_result(s, calc, paid, interaction.user.id)
+        await self._archive_thread(s)
         await interaction.followup.send("✅ Split cerrado y pagado. La lista quedó en el hilo.", ephemeral=True)
+
+    async def _archive_thread(self, s):
+        """Al cerrar el split el hilo no se borra: se archiva (sale de la lista, se ve entrando al hilo)."""
+        th = await self._get_channel(s.thread_id)
+        if isinstance(th, discord.Thread) and not getattr(th, "archived", False):
+            try:
+                await th.edit(archived=True)
+            except Exception as exc:
+                print(f"⚠️ Split #{s.id}: no pude archivar el hilo: {exc!r}")
 
     # ---------- reajuste: reabrir un split pagado ----------
     async def reopen_split(self, interaction: discord.Interaction, split_id: int):
