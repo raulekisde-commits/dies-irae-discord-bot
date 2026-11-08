@@ -4285,6 +4285,17 @@ async def cta_create_split_task(run: dict):
                          source=f"cta:{run['id']}:split", link=link, ping_staff=False, ping_roles=[COUNCIL_ROLE_ID])
     except Exception as exc:
         print(f"CTA #{run['id']}: no pude crear la tarea del split: {exc!r}")
+        return
+    scog = bot.get_cog("SplitsCog")                       # si el split ya se cerró con el botón, la tarea queda hecha por quien lo cerró
+    if scog is not None:
+        try:
+            import splits_db as _sdb
+            s = await scog.run(_sdb.find_by_cta, int(run["id"]))
+            closer = await scog.run(_sdb.closed_by, s.id) if s is not None else None
+            if closer:
+                await cog.complete_by_source(f"cta:{run['id']}:split", closer)
+        except Exception as exc:
+            print(f"CTA #{run['id']}: no pude completar la tarea del split: {exc!r}")
 
 
 COMBATLOG_CHANNEL_ID = int(os.getenv("COMBATLOG_CHANNEL_ID", "1562975589756043364"))
@@ -4330,18 +4341,8 @@ async def cta_create_combatlog_panel(run: dict) -> Optional[str]:
 
 
 async def cta_create_combatlog_task(run: dict):
-    """Al terminar la inscripción: panel + hilo para enviar el combatlog y tarea para el Staff (con mención) de activarlo y enviarlo."""
-    cog = bot.get_cog("EncargosCog")
-    if cog is None:
-        print(f"CTA #{run['id']}: no hay módulo de encargos, no se creó la tarea del combatlog.")
-        return
-    link = await cta_create_combatlog_panel(run) or (
-        f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}" + (f"/{run['message_id']}" if not run.get("thread_id") and run.get("message_id") else ""))
-    try:
-        await cog.create(text=f"Activar y enviar el combatlog de {cta_run_title(run)} (hilo del panel de combatlog)", created_by=int(run["created_by"]),
-                         source=f"cta:{run['id']}:combatlog", link=link)
-    except Exception as exc:
-        print(f"CTA #{run['id']}: no pude crear la tarea del combatlog: {exc!r}")
+    """Al terminar la inscripción: solo el panel + hilo para enviar el combatlog (ya no se crea tarea para el Staff)."""
+    await cta_create_combatlog_panel(run)
 
 
 async def cta_handle_combatlog_message(message: discord.Message) -> bool:
@@ -4662,6 +4663,26 @@ async def cta_ask_final(interaction: discord.Interaction, run_id: Optional[int],
     await interaction.response.send_message(text, view=CTAFinalConfirmView(int(run_id), state, interaction.user.id), ephemeral=True)
 
 
+CTA_VOICE_FROM_ID = int(os.getenv("CTA_VOICE_FROM_ID", "1257910727843250177"))
+CTA_VOICE_TO_ID = int(os.getenv("CTA_VOICE_TO_ID", "1257899850327130244"))
+
+
+async def cta_move_voice_after_close(run: dict):
+    """Al cerrar la CTA: mueve a todos los del voice de la CTA al voice de después."""
+    guild = bot.get_guild(int(run["guild_id"]))
+    if guild is None:
+        return
+    src, dst = guild.get_channel(CTA_VOICE_FROM_ID), guild.get_channel(CTA_VOICE_TO_ID)
+    if not isinstance(src, discord.VoiceChannel) or not isinstance(dst, (discord.VoiceChannel, discord.StageChannel)):
+        print(f"CTA #{run['id']}: no encuentro los voice para mover ({CTA_VOICE_FROM_ID} → {CTA_VOICE_TO_ID}).")
+        return
+    for m in list(src.members):
+        try:
+            await m.move_to(dst, reason=f"CTA #{run['id']} cerrada")
+        except Exception as exc:
+            print(f"CTA #{run['id']}: no pude mover a {m.id}: {exc!r}")
+
+
 async def cta_finish_run(run_id: int, actor_id: int):
     """Botón «Cerrar CTA». Devuelve (texto para quien lo apretó, si corresponde ofrecer borrar el mensaje)."""
     run = cta_run_get(run_id)
@@ -4677,6 +4698,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
     voice = bot.get_cog("CTAVoiceCog")
     if voice is not None:
         await voice.stop_run(run_id)
+    await cta_move_voice_after_close(run)                 # después de cortar el seguimiento de voz
     stats_note = await cta_create_stats_panel_once(run, actor_id)         # normalmente ya existe desde que cerró la inscripción
     await cta_post_voice_lists(run_id)                                    # recién ahora hay datos de voz completos
     await cta_delete_thread(run)                          # el hilo donde se anotaron se borra al cerrar la CTA

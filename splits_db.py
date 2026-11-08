@@ -325,6 +325,16 @@ def find_by_cta(db_path: str, cta_id: int) -> Optional[Split]:
     return _find(db_path, "source_cta_id", cta_id)
 
 
+def closed_by(db_path: str, split_id: int) -> Optional[int]:
+    """Quién cerró (pagó) el split; None si no está cerrado."""
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT closed_by FROM splits WHERE id=? AND status='closed'", (split_id,)).fetchone()
+        return int(r["closed_by"]) if r and r["closed_by"] else None
+    finally:
+        conn.close()
+
+
 def find_by_message(db_path: str, message_id: int) -> Optional[Split]:
     return _find(db_path, "message_id", message_id)
 
