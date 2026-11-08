@@ -442,6 +442,27 @@ class GuildShopCog(commands.Cog):
     async def canal_wujupon_regalos_cmd(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         await self._canal_delegate(interaction, "WujuponCog", "canal_regalos", "Wujupón", canal, desactivar)
 
+    @canal.command(name="log-foco", description="(Council) Canal donde se registran las donaciones de foco aprobadas")
+    @app_commands.describe(canal="Canal de registro (por defecto, este canal)")
+    async def canal_log_foco(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        try:
+            if interaction.guild is None or not can_manage(interaction.user):
+                return await _reply(interaction, "❌ Solo el rol **Council**, el propietario o los administradores pueden usar este comando.")
+            channel = canal or interaction.channel
+            if channel is None or not hasattr(channel, "send"):
+                return await _reply(interaction, "❌ No puedo usar ese canal.")
+            try:
+                await channel.send("✅ Canal de registro de **Foco Donor** configurado: acá se anotará cada donación aprobada.",
+                                   allowed_mentions=NO_MENTIONS)
+            except (discord.Forbidden, discord.HTTPException):
+                return await _reply(interaction, f"❌ No tengo permiso para escribir en {channel.mention}. No cambié nada.")
+            import botsettings as bs
+            await asyncio.to_thread(bs.set_value, "foco_log", channel.id, interaction.user.id)
+            await _reply(interaction, f"✅ Log de Foco Donor configurado en {channel.mention}.")
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude guardar el canal.")
+
     # /canal dados vive acá porque el grupo "/canal" es único en el bot (Discord no permite repetirlo en otro módulo)
     @canal.command(name="dados", description="(Council) Canal donde se publican los paneles de !dados")
     @app_commands.describe(canal="Canal donde aparecerán los paneles de dados")

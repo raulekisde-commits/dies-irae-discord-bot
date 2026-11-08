@@ -442,9 +442,14 @@ ALBIONBB_KILLS_URL = f"{ALBIONBB_BASE_URL}/battles/kills"
 # ================== FOCO DONOR TICKETS (NUEVO) ==================
 FOCO_CATEGORY_ID = 1468340293571973273        
 FOCO_NOTIFY_USER_ID = 350688193903067140       # a quien se etiqueta cuando se abre un ticket de Foco Donor (en vez del Staff)
-FOCO_LOG_CHANNEL_ID = 1468345144502915313      
+FOCO_LOG_CHANNEL_ID = 1468345144502915313
+bs.register("foco_log", "Log de Foco Donor", FOCO_LOG_CHANNEL_ID, "Donaciones de foco aprobadas (/canal log-foco)")
 
 FOCO_TOPIC_PREFIX = "FOCO_DONOR"
+FOCO_PANEL_DESC = (
+    "Presioná el botón para donar foco a la guild.\n\n"
+    "🎰 **Por cada donación aprobada recibís una tirada del Wujupón.**"
+)
 
 ticket_images = {}         
 active_applications = {}
@@ -1005,10 +1010,13 @@ def _sanitize_topic_value(s: str, max_len: int = 200) -> str:
         s = s[:max_len - 1] + "…"
     return s
 
-def make_foco_topic(user_id: int, foco: str, item_spec: str) -> str:
-    foco_v = _sanitize_topic_value(foco, 60)
-    item_v = _sanitize_topic_value(item_spec, 300)
-    return f"{FOCO_TOPIC_PREFIX}|uid={user_id}|foco={foco_v}|item={item_v}"
+def make_foco_topic(user_id: int, foco: str, t6: str, spec70: str, quiero: str = "") -> str:
+    # topic de Discord: máx. 1024 caracteres
+    foco_v = _sanitize_topic_value(foco, 40)
+    t6_v = _sanitize_topic_value(t6, 280)
+    spec_v = _sanitize_topic_value(spec70, 280)
+    quiero_v = _sanitize_topic_value(quiero, 200) or "-"
+    return f"{FOCO_TOPIC_PREFIX}|uid={user_id}|foco={foco_v}|t6={t6_v}|spec={spec_v}|quiero={quiero_v}"
 
 def parse_foco_topic(topic: Optional[str]) -> dict:
     data = {}
@@ -1046,7 +1054,7 @@ def find_open_foco_channel(guild: discord.Guild, user_id: int) -> Optional[disco
     return None
 
 async def send_foco_log(guild: discord.Guild, message: str):
-    target_id = FOCO_LOG_CHANNEL_ID if FOCO_LOG_CHANNEL_ID and FOCO_LOG_CHANNEL_ID != 0 else bs.get("log")
+    target_id = bs.get("foco_log") or bs.get("log")
     channel = guild.get_channel(target_id)
     if channel is None:
         try:
@@ -2084,17 +2092,30 @@ class RecruitTicketView(discord.ui.View):
 # ================== FOCO DONOR SYSTEM ==================
 class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
     foco = discord.ui.TextInput(
-        label="¿Cuánto foco tenés actualmente?",
+        label="¿Cuánto foco tenés?",
         placeholder="Ej: 30000",
         required=True,
-        max_length=60
+        max_length=40
     )
-    item_spec = discord.ui.TextInput(
-        label="¿Qué ítem podés craftear y con qué spec?",
-        placeholder="Ej: Hellion Jacket - Spec 100",
+    t6 = discord.ui.TextInput(
+        label="¿Qué ítems a T6 podés craftear?",
+        placeholder="Ej: Hellion Jacket, Bloodletter, Cleric Robe",
         required=True,
         style=discord.TextStyle.paragraph,
-        max_length=300
+        max_length=280
+    )
+    spec70 = discord.ui.TextInput(
+        label="¿Qué ítems tenés con spec 70+?",
+        placeholder="Ej: Hellion Jacket 100, Bloodletter 80",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=280
+    )
+    quiero = discord.ui.TextInput(
+        label="¿Querés craftear algún ítem en específico?",
+        placeholder="Opcional. Ej: Bloodletter",
+        required=False,
+        max_length=200
     )
 
     def __init__(self, opener: discord.Member):
@@ -2146,7 +2167,7 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
         if notify_member is not None:
             overwrites[notify_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-        topic = make_foco_topic(user_id, str(self.foco.value), str(self.item_spec.value))
+        topic = make_foco_topic(user_id, str(self.foco.value), str(self.t6.value), str(self.spec70.value), str(self.quiero.value or ""))
 
         try:
             channel = await guild.create_text_channel(
@@ -2166,8 +2187,10 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
         embed = discord.Embed(
             title="💠 Foco Donor",
             description=(
-                f"**Foco declarado:** `{self.foco.value}`\n"
-                f"**Item + spec:** `{self.item_spec.value}`\n\n"
+                f"**Foco:** `{self.foco.value}`\n"
+                f"**Ítems que puede craftear a T6:** `{self.t6.value}`\n"
+                f"**Ítems con spec 70+:** `{self.spec70.value}`\n"
+                f"**Ítem que quiere craftear:** `{self.quiero.value or '-'}`\n\n"
                 "Un Staff va a revisar tu donación."
             ),
             color=discord.Color.blurple()
@@ -2182,6 +2205,76 @@ class FocoDonorModal(discord.ui.Modal, title="Foco Donor"):
         )
 
         await respond_ephemeral(interaction, f"✅ Ticket creado: {channel.mention}")
+
+class FocoCloseModal(discord.ui.Modal, title="Cerrar donación de foco"):
+    tiradas = discord.ui.TextInput(
+        label="Tiradas de Wujupón a dar (0 = ninguna)",
+        default="1",
+        required=True,
+        max_length=4
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        ch = interaction.channel
+        if not isinstance(ch, discord.TextChannel) or interaction.guild is None:
+            return await respond_ephemeral(interaction, "❌ Este canal no es válido para esta acción.")
+
+        try:
+            n = int(str(self.tiradas.value).strip())
+        except ValueError:
+            return await respond_ephemeral(interaction, "❌ La cantidad de tiradas tiene que ser un número (0 o más).")
+        if n < 0 or n > 1000:
+            return await respond_ephemeral(interaction, "❌ La cantidad de tiradas tiene que estar entre 0 y 1000.")
+
+        info = parse_foco_topic(ch.topic)
+        uid = info.get("uid")
+        foco = info.get("foco", "N/D")
+        item = info.get("t6") or info.get("item", "N/D")
+        if not uid:
+            return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket.")
+
+        member = interaction.guild.get_member(int(uid))
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(int(uid))
+            except Exception:
+                member = None
+
+        # Tiradas de Wujupón (antes de borrar el canal: si falla, el ticket queda abierto)
+        tiradas_txt = ""
+        if n > 0 and member is not None:
+            cog = bot.get_cog("WujuponCog")
+            if cog is None:
+                return await respond_ephemeral(interaction, "❌ El módulo de Wujupón no está cargado. No cerré el ticket.")
+            try:
+                import wujupon_db as _wdb
+                after = await cog.run(_wdb.gift_spins, actor_id=interaction.user.id, user_id=member.id, count=n,
+                                      request_key=f"foco:{ch.id}", reason="Donación de foco")
+            except Exception as exc:
+                traceback.print_exc()
+                return await respond_ephemeral(interaction, f"❌ No pude dar las tiradas ({exc}). No cerré el ticket.")
+            tiradas_txt = f" | 🎰 **{n}** tirada(s) de Wujupón (ahora tiene {after})"
+
+        if member:
+            await send_foco_log(
+                interaction.guild,
+                f"✅ **FOCO DONADO (OK)** {member.mention} → **{foco}** foco | Item: **{item}**{tiradas_txt}"
+            )
+            try:
+                extra = f" Recibiste **{n}** tirada(s) de Wujupón 🎰" if tiradas_txt else ""
+                await ch.send(f"✅ Donación aprobada. Gracias {member.mention} 💚{extra}")
+            except Exception:
+                pass
+            active_foco_tickets.pop(member.id, None)
+
+        try:
+            await ch.delete(reason=f"Foco donor ticket cerrado exitoso por {interaction.user}")
+        except Exception:
+            pass
+
+        await respond_ephemeral(interaction, f"✅ Ticket cerrado como exitoso.{' Tiradas entregadas: ' + str(n) if tiradas_txt else ''}")
 
 class FocoTicketActionView(discord.ui.View):
     def __init__(self):
@@ -2202,47 +2295,12 @@ class FocoTicketActionView(discord.ui.View):
         custom_id="foco_ticket_success"
     )
     async def foco_success(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
         ch = interaction.channel
         if not isinstance(ch, discord.TextChannel) or interaction.guild is None:
             return await respond_ephemeral(interaction, "❌ Este canal no es válido para esta acción.")
-
-        info = parse_foco_topic(ch.topic)
-        uid = info.get("uid")
-        foco = info.get("foco", "N/D")
-        item = info.get("item", "N/D")
-
-        if not uid:
+        if not parse_foco_topic(ch.topic).get("uid"):
             return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket.")
-
-        member = interaction.guild.get_member(int(uid))
-        if member is None:
-            try:
-                member = await interaction.guild.fetch_member(int(uid))
-            except Exception:
-                member = None
-
-        if member:
-            # Log de foco (tag a la persona + cantidad)
-            await send_foco_log(
-                interaction.guild,
-                f"✅ **FOCO DONADO (OK)** {member.mention} → **{foco}** foco | Item: **{item}**"
-            )
-
-            try:
-                await ch.send(f"✅ Donación aprobada. Gracias {member.mention} 💚")
-            except Exception:
-                pass
-
-            active_foco_tickets.pop(member.id, None)
-
-        try:
-            await ch.delete(reason=f"Foco donor ticket cerrado exitoso por {interaction.user}")
-        except Exception:
-            pass
-
-        await respond_ephemeral(interaction, "✅ Ticket cerrado como exitoso.")
+        await interaction.response.send_modal(FocoCloseModal())
 
     @discord.ui.button(
         label="❌ Rechazar Donación",
@@ -2258,7 +2316,7 @@ class FocoTicketActionView(discord.ui.View):
 
         info = parse_foco_topic(ch.topic)
         uid = info.get("uid")
-        item = info.get("item", "ese ítem")
+        item = info.get("quiero") if info.get("quiero") not in (None, "", "-") else info.get("item", "ese ítem")
 
         if not uid:
             return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket.")
@@ -2319,7 +2377,7 @@ class FocoPanelView(discord.ui.View):
         if existing is not None:
             return await respond_ephemeral(interaction, f"❌ Ya tenés un ticket de **Foco Donor** abierto: {existing.mention}")
 
-        # Abrir modal con 2 preguntas antes de crear el canal
+        # Abrir modal con 4 preguntas antes de crear el canal
         try:
             await interaction.response.send_modal(FocoDonorModal(interaction.user))
         except Exception:
@@ -2581,7 +2639,7 @@ async def panel(ctx: commands.Context):
 async def panel_foco(ctx: commands.Context):
     embed = discord.Embed(
         title="Foco Donor",
-        description="Presioná el botón para donar foco a la guild.",
+        description=FOCO_PANEL_DESC,
         color=discord.Color.blurple()
     )
     embed.set_footer(text="Smogg Foco Donor System")
@@ -2615,7 +2673,7 @@ async def panel_slash(interaction: discord.Interaction):         # se usa desde 
 async def panel_foco_slash(interaction: discord.Interaction):    # se usa desde /panel foco (panels.py)
     embed = discord.Embed(
         title="Foco Donor",
-        description="Presioná el botón para donar foco a la guild.",
+        description=FOCO_PANEL_DESC,
         color=discord.Color.blurple()
     )
     embed.set_footer(text="Smogg Foco Donor System")
