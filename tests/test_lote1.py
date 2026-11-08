@@ -252,9 +252,9 @@ class TaskDiscordTests(DiscordBase):
         run(getattr(self.cog, f"on_{action}")(i))
         return i
 
-    def tarea(self, who, titulo="Tarea", desc="hacer algo", tags=None, cuando=None, foto=False):
+    def tarea(self, who, titulo="Tarea", desc="hacer algo", tags=None, cuando=None, foto=False, tiradas=1):
         i = self.inter(who)
-        run(self.cog.crear.callback(self.cog, i, titulo, desc, tags, foto, cuando))
+        run(self.cog.crear.callback(self.cog, i, titulo, desc, tags, foto, cuando, tiradas))
         return i
 
     def test_permissions_to_create_only_council(self):
@@ -399,6 +399,29 @@ class TaskDiscordTests(DiscordBase):
         self.assertEqual(log.sent[-1].file.filename, f"tarea_{t.id}.jpg")
         self.assertEqual(log.sent[-1].embeds[0].image, f"attachment://tarea_{t.id}.jpg")
         self.assertIn("foto", ok.text)
+
+    def test_reward_spins_shown_in_panel_and_given(self):
+        given = []
+
+        class FakeWujupon:
+            async def run(self, fn, **kw):
+                given.append((kw["user_id"], kw["count"], kw["request_key"]))
+                return 7
+        self.bot.get_cog = lambda name: FakeWujupon() if name == "WujuponCog" else None
+        log = self.task_log()
+        self.tarea(self.council, desc="vale 5", tiradas=5)
+        self.tarea(self.council, desc="no vale nada", tiradas=0)
+        p5, p0 = self.tasks_ch.sent
+        self.assertIn(("Recompensa", "🎰 5 tiradas de Wujupón", True), p5.embeds[0].fields)
+        self.assertNotIn("Recompensa", [f[0] for f in p0.embeds[0].fields])
+        self.press(self.opi, "done", p5)
+        self.press(self.opi, "done", p0)
+        t5 = edb.find_by_message(self.db, p5.id)
+        self.assertEqual(given, [(self.opi.id, 5, f"task:{t5.id}")])                          # la de 0 no regala nada
+        self.assertIn("+5 tiradas", log.sent[0].content)
+        self.assertNotIn("tirada", log.sent[1].content)
+        auto = run(self.cog.create(text="Cargar conectados", created_by=1, source="cta:8:conectados"))
+        self.assertEqual(auto.reward_spins, 1)                                                 # las automáticas siguen dando 1
 
     def test_photo_option_refused_without_library_support(self):
         old, enc.PHOTO_SUPPORTED = enc.PHOTO_SUPPORTED, False

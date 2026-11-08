@@ -173,6 +173,8 @@ class EncargosCog(commands.Cog):
             e.add_field(name="Para", value=f"<@&{t.for_role}>", inline=True)
         elif is_tagged(t):
             e.add_field(name="Para", value=" ".join([f"<@&{r}>" for r in t.ping_roles] + [f"<@{u}>" for u in t.ping_users])[:1024] or "—", inline=True)
+        if t.reward_spins > 0:
+            e.add_field(name="Recompensa", value=f"🎰 {t.reward_spins} tirada{'s' if t.reward_spins != 1 else ''} de Wujupón", inline=True)
         if t.link:
             e.add_field(name="Link", value=t.link, inline=False)
         lines = []
@@ -220,12 +222,12 @@ class EncargosCog(commands.Cog):
 
     async def create(self, *, text: str, created_by: int, publish_at: Optional[float] = None, source: Optional[str] = None,
                      link: Optional[str] = None, channel_id: Optional[int] = None, ping_roles=(), ping_users=(), ping_staff: bool = True,
-                     for_role: Optional[int] = None, require_photo: bool = False) -> edb.Task:
+                     for_role: Optional[int] = None, require_photo: bool = False, reward_spins: int = 1) -> edb.Task:
         """Crea una tarea (la usan /tarea y los avisos automáticos, como el del combatlog de una CTA).
         Etiqueta al Staff (salvo ping_staff=False) y, además, a los roles y personas indicados."""
         t = await self.run(edb.create_task, guild_id=self.guild_id, channel_id=channel_id or bs.get("tasks"), text=text, created_by=created_by,
                            publish_at=publish_at, source=source, link=link, ping_roles=ping_roles, ping_users=ping_users, ping_staff=ping_staff,
-                           for_role=for_role, require_photo=require_photo)
+                           for_role=for_role, require_photo=require_photo, reward_spins=reward_spins)
         if t.status == "scheduled" and (t.publish_at or 0) <= datetime.now(timezone.utc).timestamp():
             await self.publish(t.id)
         return await self.run(edb.get_task, t.id)
@@ -237,9 +239,10 @@ class EncargosCog(commands.Cog):
     @app_commands.describe(titulo="Título de la tarea", descripcion="Qué hay que hacer",
                            tags="(Opcional) Personas y/o roles: @persona @rol … Solo ellos (y el Council) la pueden terminar. Sin tags se etiqueta al Staff",
                            foto="(Opcional) Para terminarla hay que subir una foto de la tarea hecha (queda en el log)",
+                           tiradas="(Opcional) Tiradas de Wujupón que gana quien la termina (0 a 100, por defecto 1)",
                            cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h")
     async def crear(self, interaction: discord.Interaction, titulo: str, descripcion: str, tags: Optional[str] = None,
-                    foto: bool = False, cuando: Optional[str] = None):
+                    foto: bool = False, cuando: Optional[str] = None, tiradas: app_commands.Range[int, 0, 100] = 1):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council puede crear tareas.")
         if foto and not PHOTO_SUPPORTED:
@@ -260,7 +263,7 @@ class EncargosCog(commands.Cog):
         try:
             at = edb.parse_when(cuando) if cuando and cuando.strip() else None
             t = await self.create(text=f"**{titulo.strip()}** — {descripcion.strip()}", created_by=interaction.user.id, publish_at=at,
-                                  ping_roles=roles, ping_users=users, ping_staff=not tagged, require_photo=foto,
+                                  ping_roles=roles, ping_users=users, ping_staff=not tagged, require_photo=foto, reward_spins=tiradas,
                                   source=f"{TAGGED_PREFIX}{uuid.uuid4().hex[:12]}")
         except edb.TaskError as exc:
             return await _say(interaction, f"❌ {exc}")
@@ -555,7 +558,7 @@ class EncargosCog(commands.Cog):
 
     async def grant_task_spin(self, t: edb.Task) -> str:
         """1 tirada de Wujupón a quien terminó la tarea. Idempotente por tarea (request_key task:<id>). Nunca rompe el cierre."""
-        if not t.done_by:
+        if not t.done_by or t.reward_spins <= 0:
             return ""
         try:
             cog = self.bot.get_cog("WujuponCog")
@@ -563,9 +566,9 @@ class EncargosCog(commands.Cog):
                 return " · ⚠️ sin tirada (Wujupón no cargado)"
             import wujupon_db as wdb
             actor = self.bot.user.id if getattr(self.bot, "user", None) else 0
-            after = await cog.run(wdb.gift_spins, actor_id=actor, user_id=t.done_by, count=1,
+            after = await cog.run(wdb.gift_spins, actor_id=actor, user_id=t.done_by, count=t.reward_spins,
                                   request_key=f"task:{t.id}", reason=f"Tarea #{t.id} terminada")
-            return f" · 🎰 +1 tirada de Wujupón (ahora tiene {after})"
+            return f" · 🎰 +{t.reward_spins} tirada{'s' if t.reward_spins != 1 else ''} de Wujupón (ahora tiene {after})"
         except Exception:
             traceback.print_exc()
             return " · ⚠️ no se pudo dar la tirada"
