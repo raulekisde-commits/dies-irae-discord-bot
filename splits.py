@@ -11,6 +11,7 @@ from discord.ext import commands
 import economy_db as eco
 import botsettings as bs
 import splits_db as sdb
+import bombs_db as bdb
 import ctautil as cu
 import killboard_db as kbdb
 import os
@@ -59,11 +60,46 @@ def _nm(names, uid: int) -> str:
     return (names or {}).get(uid) or f"<@{uid}>"
 
 
-def people_embed(s: sdb.Split, names=None) -> discord.Embed:
+BOMB_COLOR = 0xE67E22
+
+
+def group_by_bomb(people, bombs) -> Tuple[List[Tuple[dict, List[int]]], List[int]]:
+    """Reparte la gente del split por bomb (/bomb). Cada persona va a una sola (la primera por nombre).
+    Devuelve ([(bomb, integrantes)], resto sin bomb), respetando el orden de la lista."""
+    taken, out = set(), []
+    for b in bombs or []:
+        mem = [u for u in people if u in b["members"] and u not in taken]
+        if mem:
+            taken.update(mem)
+            out.append((b, mem))
+    return out, [u for u in people if u not in taken]
+
+
+def people_embeds(s: sdb.Split, names=None, bombs=None) -> List[discord.Embed]:
+    """Lista del split: un embed «Bomb de <caller>» por cada /bomb con gente, y el resto todo junto."""
+    groups, rest = group_by_bomb(s.people, bombs)
+    for _, mem in groups[9:]:                              # máximo 10 embeds por mensaje: lo que sobra va al resto
+        rest += mem
+    groups = groups[:9]
     looters = {l.user_id for l in s.looters}
-    lines = [f"{'🪙' if u in looters else '•'} {_nm(names, u)}" for u in s.people]
-    emb = discord.Embed(title=f"👥 Personas del split ({len(s.people)})", color=GOLD)
-    emb.description = "\n".join(lines)[:4000] if lines else "*Todavía no hay nadie en la lista.*"
+    budget = max(200, 3000 // len(groups)) if groups else 0   # límite de 6000 caracteres por mensaje
+    out = [people_embed(s, names, rest, 2000 if groups else 4000)]
+    for b, mem in groups:
+        emb = discord.Embed(title=f"💣 Bomb de {_nm(names, b['caller_id'])} ({len(mem)})"[:256], color=BOMB_COLOR,
+                            description="\n".join(f"{'🪙' if u in looters else '•'} {_nm(names, u)}" for u in mem)[:budget])
+        emb.set_footer(text=b["name"])
+        out.append(emb)
+    return out
+
+
+def people_embed(s: sdb.Split, names=None, people=None, limit: int = 4000) -> discord.Embed:
+    looters = {l.user_id for l in s.looters}
+    grouped = people is not None and len(people) != len(s.people)
+    people = s.people if people is None else people
+    lines = [f"{'🪙' if u in looters else '•'} {_nm(names, u)}" for u in people]
+    emb = discord.Embed(title=f"👥 Personas del split ({len(s.people)})" + (f" · sin bomb: {len(people)}" if grouped else ""), color=GOLD)
+    emb.description = ("\n".join(lines)[:limit] if lines else
+                       "*Todos están en alguna bomb.*" if grouped else "*Todavía no hay nadie en la lista.*")
     if looters:
         emb.set_footer(text="🪙 = looter")
     if s.is_ava and s.half:
@@ -644,7 +680,11 @@ class SplitsCog(commands.Cog):
 
     async def names_of(self, s: sdb.Split) -> dict:
         ids = list(s.people) + list(s.half) + [l.user_id for l in s.looters] + [s.creator_id]
+        ids += [b["caller_id"] for b in await self.run(bdb.groups, s.guild_id)]
         return await resolve_names(self.bot.get_guild(self.guild_id), ids)
+
+    async def people_list(self, s: sdb.Split, names=None) -> List[discord.Embed]:
+        return people_embeds(s, names, await self.run(bdb.groups, s.guild_id))
 
     def _lock(self, split_id: int) -> asyncio.Lock:
         return self._locks.setdefault(split_id, asyncio.Lock())
@@ -688,7 +728,8 @@ class SplitsCog(commands.Cog):
         if th is None:
             return
         names = await self.names_of(s)
-        for col, builder in (("list_message_id", lambda: [people_embed(s, names)]), ("data_message_id", lambda: data_embeds(s, names))):
+        people = await self.people_list(s, names)
+        for col, builder in (("list_message_id", lambda: people), ("data_message_id", lambda: data_embeds(s, names))):
             mid = getattr(s, col)
             try:
                 if mid:
@@ -809,7 +850,7 @@ class SplitsCog(commands.Cog):
             except discord.HTTPException:
                 thread = await msg.create_thread(name=f"Split {s.title}"[:100], auto_archive_duration=1440)
             names = await self.names_of(s)
-            lst = await thread.send(embeds=[people_embed(s, names)], allowed_mentions=NO_MENTIONS)
+            lst = await thread.send(embeds=await self.people_list(s, names), allowed_mentions=NO_MENTIONS)
             dat = await thread.send(embeds=data_embeds(s, names), allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()

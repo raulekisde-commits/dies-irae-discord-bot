@@ -148,7 +148,7 @@ INFO_TEXTS.update({
             "• Cuando sale una CTA se publica un panel con la composición y un hilo. Las inscripciones tienen un **tiempo seteado por el caller** (el panel muestra cuándo cierran).\n"
             "• Para anotarte, escribí en el hilo el **número de la posición** que querés ocupar. Ej: `5`.\n"
             "• A veces la Party 1 es solo para Legacy durante los primeros minutos; el panel lo avisa.\n"
-            "• Si tenés el rol **Bomb**, te anotás con `+` en el hilo de Bomb o con su botón.\n\n"
+            "• Si tenés el rol **Bomb**, te anotás escribiendo `bomb` en el hilo de la CTA (y te desanotás con `- bomb`).\n\n"
             "**Tu build**\n"
             "• En el panel de la CTA tocá **🧩 Ver mi build**: te muestra la build del slot en el que te anotaste.\n\n"
             "**Loot**\n"
@@ -231,7 +231,7 @@ INFO_STAFF.update({
                "• **Lista mitad**: gente que cobra la mitad de una parte. Se agrega con `!agregarlistamitad @persona` o con el botón **Agregar lista mitad** (quitar: **Quitar lista mitad**). Solo existe en los split AVA."),
     "zvz": ("**Quién puede qué**\n"
             "• Iniciar y administrar CTA: **Staff, Caller y Council / Admin**.\n"
-            "• Botones **Cerrar CTA**, **Cancelar CTA** y **Agregar Bomb**: solo **Council y Caller**.\n"
+            "• Botones **Cerrar CTA** y **Cancelar CTA**: solo **Council y Caller**.\n"
             "• **Ver mi build**: cualquier miembro.\n\n"
             "**Publicar**\n"
             "• `/cta nombre [tiempo] [titulo] [programar]` — `nombre` es una composición guardada. `tiempo` es la duración de las inscripciones (`HH:MM` o minutos; mínimo 10, por defecto 40). `programar` es una hora UTC `HH:MM` para publicarla más tarde con @everyone y @here.\n"
@@ -243,7 +243,7 @@ INFO_STAFF.update({
             "• `/cta-admin cerrar` — cierra la inscripción antes de tiempo.\n"
             "• `/cta-admin asignar` y `/cta-admin liberar` — poner o sacar a un jugador de una posición a mano.\n\n"
             "**Bomb**\n"
-            "• **Agregar Bomb** crea un panel e hilo aparte en el canal de Bomb. Puede haber varios por CTA. Solo el rol Bomb se anota (`+` o botón) y cuentan en el split.\n\n"
+            "• El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA y se desanota con `- bomb`. Salen en el panel aparte y cuentan en el split, agrupados por `/bomb` (Bomb de <caller>).\n\n"
             "**Cerrar**\n"
             "• **Cerrar CTA** crea el panel y el hilo de stats (`/info-staff stats`) y deja de aceptar anotados. Si la composición es «track», genera el split (`/info-staff splits`).\n"
             "• Durante los primeros 5 min la Party 1 es solo Legacy si la composición lo tiene activado."),

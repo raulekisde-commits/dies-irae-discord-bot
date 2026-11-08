@@ -4478,44 +4478,33 @@ async def cta_bomb_join(user, run_id: int, panel_id: Optional[int] = None) -> st
     return f"💣 Quedaste anotado como Bomb en **{cta_run_title(run)}**.{note}"
 
 
-_bomb_creating: set = set()
-
-
-async def cta_open_bomb_panel(interaction: discord.Interaction, run_id: Optional[int]):
-    """Botón «Agregar Bomb» (solo Council y Caller): publica un panel nuevo con su hilo en el canal de Bomb. Puede haber varios por CTA."""
-    if not is_council_or_caller(interaction.user):
-        return await interaction.response.send_message("🔒 Solo el Council y el Caller pueden usar este botón.", ephemeral=True)
-    run = cta_run_get(run_id) if run_id else None
-    if not run:
-        return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
-    if run.get("final_state") is not None or run["status"] == "cancelled":
-        return await interaction.response.send_message("Esta CTA ya fue cerrada o cancelada.", ephemeral=True)
-    if run_id in _bomb_creating:
-        return await interaction.response.send_message("⏳ Ya se está creando un panel de Bomb para esta CTA.", ephemeral=True)
-    _bomb_creating.add(run_id)
-    try:
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        ch = guild.get_channel(bs.get("bomb")) if guild else None
-        if ch is None:
-            try:
-                ch = await bot.fetch_channel(bs.get("bomb"))
-            except Exception:
-                return await interaction.followup.send(f"❌ No encuentro el canal de Bomb (<#{bs.get("bomb")}>).", ephemeral=True)
-        n = len(await asyncio.to_thread(cu.bomb_panels, DB_PATH, run_id)) + 1
+async def cta_bomb_leave(user, run_id: int) -> str:
+    """Desanota a un Bomb («- bomb» en el hilo de la CTA). Si ya hay split abierto, también sale de él."""
+    res = await asyncio.to_thread(cu.bomb_remove, DB_PATH, run_id, user.id)
+    if res == "final":
+        return "🏁 Esta CTA ya terminó: no se puede desanotar."
+    if res == "missing":
+        return "No encontré esta CTA."
+    if res == "none":
+        return "ℹ️ No estabas anotado como Bomb."
+    run = cta_run_get(run_id)
+    cta_audit(int(run["guild_id"]), user.id, "bomb_leave", run_id, "")
+    note = ""
+    cog = bot.get_cog("SplitsCog")
+    if cog is not None and run.get("status") != "open":
+        import splits_db as _sdb
         try:
-            msg = await ch.send(content=f"<@&{BOMB_ROLE_ID}>", embed=cta_bomb_embed(run, [], n), view=BombPanelView(),
-                                allowed_mentions=discord.AllowedMentions(roles=[discord.Object(id=BOMB_ROLE_ID)], users=False, everyone=False))
-            thread = await msg.create_thread(name=f"Bomb {n} {cta_run_title(run)}"[:100], auto_archive_duration=1440)
-            await thread.send(f"💣 Anotate acá escribiendo `+` (o con el botón del panel). Solo el rol <@&{BOMB_ROLE_ID}>.", allowed_mentions=CTA_NO_PINGS)
+            s = await cog.run(_sdb.find_by_cta, run_id)
+            if s is not None:
+                removed, _ = await cog.run(_sdb.remove_people, s.id, [user.id])
+                if removed:
+                    await cog.sync_split(s.id)
+                    note = " También saliste del split."
         except Exception as exc:
-            print(f"CTA #{run_id}: no pude crear el panel de Bomb: {exc!r}")
-            return await interaction.followup.send("❌ No pude crear el panel de Bomb (revisá los permisos del bot en ese canal).", ephemeral=True)
-        await asyncio.to_thread(cu.bomb_panel_add, DB_PATH, run_id, ch.id, msg.id, thread.id)
-        cta_audit(int(run["guild_id"]), interaction.user.id, "bomb_panel", run_id, f"thread={thread.id}")
-        await interaction.followup.send(f"💣 Panel de Bomb {n} creado: {thread.mention}", ephemeral=True)
-    finally:
-        _bomb_creating.discard(run_id)
+            print(f"CTA #{run_id}: no pude sacar al Bomb {user.id} del split: {exc!r}")
+            note = " ⚠️ No pude sacarte del split: avisale al organizador."
+    cta_request_board_refresh(run_id)
+    return f"👋 Te desanotaste como Bomb de **{cta_run_title(run)}**.{note}"
 
 
 class BombPanelView(discord.ui.View):
@@ -4621,16 +4610,29 @@ class CTADeleteMessageView(discord.ui.View):
         await interaction.edit_original_response(content="🗑️ Mensaje de la CTA borrado." if ok else "⚠️ No pude borrar el mensaje (¿ya no existe o me falta permiso?).", view=None)
 
 
+async def cta_delete_thread(run: dict) -> bool:
+    """Borra el hilo de inscripción de la CTA y lo desvincula (los links pasan a apuntar al canal)."""
+    if not run.get("thread_id"):
+        return True
+    thread = await cta_get_thread(run)
+    if thread is not None:
+        try:
+            await thread.delete()
+        except discord.NotFound:
+            pass
+        except Exception as exc:
+            print(f"CTA #{run['id']}: no pude borrar el hilo: {exc!r}")
+            return False
+    db_execute("UPDATE cta_runs SET thread_id=NULL WHERE id=?", (int(run["id"]),))
+    run["thread_id"] = None
+    return True
+
+
 async def cta_delete_message(run: dict) -> bool:
     """Borra solo el mensaje de la CTA del canal (su hilo de inscripción se va con él). No toca el split ni las stats."""
     try:
         ch = bot.get_channel(int(run["channel_id"])) or await bot.fetch_channel(int(run["channel_id"]))
-        thread = await cta_get_thread(run)
-        if thread is not None:
-            try:
-                await thread.delete()
-            except Exception:
-                pass
+        await cta_delete_thread(run)
         msg = await ch.fetch_message(int(run["message_id"]))
         await msg.delete()
         return True
@@ -4677,17 +4679,12 @@ async def cta_finish_run(run_id: int, actor_id: int):
         await voice.stop_run(run_id)
     stats_note = await cta_create_stats_panel_once(run, actor_id)         # normalmente ya existe desde que cerró la inscripción
     await cta_post_voice_lists(run_id)                                    # recién ahora hay datos de voz completos
+    await cta_delete_thread(run)                          # el hilo donde se anotaron se borra al cerrar la CTA
     try:
         await cta_refresh_board(run_id)
     except Exception as exc:
         print(f"CTA #{run_id}: no pude refrescar el tablero final: {exc!r}")
     await cta_refresh_panel(bot, run_id)
-    thread = await cta_get_thread(run)
-    if thread is not None:
-        try:
-            await thread.send(f"🏁 <@{actor_id}> cerró la CTA. Ya no se aceptan más anotados.", allowed_mentions=CTA_NO_PINGS)
-        except Exception:
-            pass
     await cta_create_split_task(run)                      # tarea del Staff: repartir el split (recién ahora que la CTA terminó)
     cog = bot.get_cog("EncargosCog")
     if cog is not None and run.get("kind") != "content":  # tarea para el staff: revisar el combat log de esta CTA (no en /content)
@@ -4986,6 +4983,18 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if add_time:
         await cta_add_time(message, run, add_time.group(1))
         return True
+    bomb_action = cu.parse_cta_bomb_text(message.content)
+    if bomb_action and not message.mentions and run.get("kind") != "content":     # `bomb` / `- bomb`: lista Bomb del panel
+        rid = int(run["id"])
+        text = await (cta_bomb_join(message.author, rid) if bomb_action == "join" else cta_bomb_leave(message.author, rid))
+        if text.startswith(("💣", "👋")):
+            try:
+                await message.add_reaction("💣" if bomb_action == "join" else "👋")
+            except Exception:
+                pass
+        else:
+            await cta_reply_short(message, text, 10)
+        return True
     mentions = [m for m in message.mentions if not getattr(m, "bot", False) and m.id != message.author.id]
     command = cta_parse_thread_command(re.sub(r"<@!?\d+>", "", message.content or "") if mentions else message.content)
     if command is None:
@@ -5168,7 +5177,7 @@ async def cta_handle_staff_command(message, run: dict, snapshot: dict, mentions:
 
 class CTAPanelView(discord.ui.View):
     """Panel del canal. La inscripción se hace escribiendo el número en el hilo; acá quedan el
-    acceso al hilo, «Agregar Bomb» y los botones de cerrar/cancelar la CTA (solo Council y Caller)."""
+    acceso al hilo y los botones de cerrar/cancelar la CTA (solo Council y Caller)."""
 
     def __init__(self, run_id: Optional[int] = None, closed: bool = False, thread_url: Optional[str] = None, final: bool = False):
         super().__init__(timeout=None)
@@ -5183,10 +5192,6 @@ class CTAPanelView(discord.ui.View):
             mine.callback = self.mybuild_callback
             self.add_item(mine)
         if run_id is not None and not final:
-            if not cta_is_content(run_id):                       # las CTA de /content no tienen Bomb
-                bomb = discord.ui.Button(label="Agregar Bomb", emoji="💣", style=discord.ButtonStyle.primary, custom_id=f"cta:bomb:{run_id}")
-                bomb.callback = self.bomb_callback
-                self.add_item(bomb)
             fin = discord.ui.Button(label="CTA terminado", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
             ab = discord.ui.Button(label="Cancelar CTA", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
             fin.callback, ab.callback = self.finish_callback, self.abort_callback
@@ -5196,9 +5201,6 @@ class CTAPanelView(discord.ui.View):
                 self.add_item(addt)
             self.add_item(fin)
             self.add_item(ab)
-
-    async def bomb_callback(self, interaction: discord.Interaction):
-        await cta_open_bomb_panel(interaction, self.run_id)
 
     async def addtime_callback(self, interaction: discord.Interaction):
         run = cta_run_get(self.run_id)
@@ -6711,7 +6713,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
-        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El botón 💣 **Agregar Bomb** (Council/Caller) crea un panel con hilo en el canal de Bomb donde se anota el rol Bomb con un botón o escribiendo `+`; van al split y cuentan como anotados, en una lista aparte."),
+        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. Al cerrar o cancelar la CTA se borra su hilo."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content: igual que /cta pero sin Bomb ni tareas de combatlog. Quien la lanza puede terminarla o cancelarla con los botones."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/config", "Administrador", "Panel para cambiar, sin tocar código, los canales del bot (logs, CTA, content, tareas, splits…) y qué roles pueden usar cada comando de economía/casino. Los cambios valen al instante y quedan avisados en el canal de logs."),

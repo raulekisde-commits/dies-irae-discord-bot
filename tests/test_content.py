@@ -26,7 +26,7 @@ class ContentFuente(unittest.TestCase):
         self.assertIn('content_command.autocomplete("nombre")', self.src)
 
     def test_content_sin_bomb_ni_combatlog(self):
-        self.assertIn("if not cta_is_content(run_id):", self.src)                       # sin botón «Agregar Bomb»
+        self.assertIn('if bomb_action and not message.mentions and run.get("kind") != "content":', self.src)   # sin Bomb en el hilo
         self.assertIn('if run.get("kind") != "content":', self.src)                      # sin panel/tarea de combatlog
         self.assertIn('if cog is not None and run.get("kind") != "content":', self.src)  # sin tarea de revisar el combat log
 
