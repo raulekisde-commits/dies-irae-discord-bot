@@ -1087,6 +1087,19 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.gift.callback(self.cog, i, -4, None, self.r_member, None))
         self.assertEqual((wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), (1, 0))
 
+    def test_regalar_tiradas_publico_y_log(self):
+        run(self.cog.canal_regalos(self.inter(self.council, self.feedch), None, False))
+        self.assertEqual(wdb.get_setting(self.db, "gift_log_channel"), str(self.feedch.id))
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, 3, self.alice, None, "evento CTA"))
+        self.assertFalse(i.response.sent[-1][1].get("ephemeral"))
+        self.assertIn(self.council.mention, i.text)
+        self.assertIn(self.alice.mention, i.text)
+        self.assertIn("evento CTA", i.text)
+        self.assertIn("evento CTA", self.feedch.sent[-1].content)
+        run(self.cog.canal_regalos(self.inter(self.bob), None, True))         # no-Council no puede
+        self.assertIsNotNone(wdb.get_setting(self.db, "gift_log_channel"))
+
     def test_tiradas_diarias_gratis(self):
         legacy = discord.Role(1000000000000000077, "Legacy", self.guild)
         self.guild.roles.append(legacy)
