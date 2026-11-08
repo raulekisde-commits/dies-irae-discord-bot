@@ -5,6 +5,8 @@ Lógica con SQLite real y capa de Discord con el stub (sin red). NO prueban la A
 import os
 import sys
 import time
+import types
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -184,19 +186,25 @@ class EfectosTests(DiscordBase):
         self.use("casino_close")
         self.assertFalse(casino_db.is_open(self.db, GUILD_ID))
 
-    def test_bloqueo_de_casino_hasta_cierre_y_reapertura(self):
+    def test_bloqueo_de_casino_por_tiempo(self):
         casino_db.set_open(self.db, GUILD_ID, True, 1)
         self.use("casino_block", self.bob)
         self.assertIsNotNone(casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
+        # cerrar y abrir el casino ya no lo corta: dura 2 h
         casino_db.set_open(self.db, GUILD_ID, False, 1)
         casino_db.set_open(self.db, GUILD_ID, True, 1)
-        self.assertIsNone(casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
+        self.assertIsNotNone(casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
+        until = edb.active_until(self.db, self.bob.id, "casino_block")
+        self.assertAlmostEqual(until - time.time(), 120 * 60, delta=60)
+        with mock.patch.object(edb, "_now", return_value=time.time() + 121 * 60), \
+                mock.patch("time.time", return_value=time.time() + 121 * 60):
+            edb.expire_due(self.db)
+            self.assertIsNone(casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
 
-    def test_bloqueo_con_casino_cerrado_termina_al_abrir(self):
-        casino_db.set_open(self.db, GUILD_ID, False, 1)
-        self.use("casino_block", self.bob)
+    def test_congelar_balance_bloquea_el_casino(self):
         casino_db.set_open(self.db, GUILD_ID, True, 1)
-        self.assertIsNone(casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
+        self.use("freeze_30m", self.bob)
+        self.assertIn("congelado", casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
 
     # ---------------- cartas malas ----------------
     def _pull(self, key, user=None):
@@ -228,6 +236,28 @@ class EfectosTests(DiscordBase):
     def test_carta_mala_autosilencio(self):
         self._pull("bad_selfmute_voice_5")
         self.assertIn(self.r_voice, self.alice.roles)
+
+    def _in_voice(self, member):
+        member.voice = types.SimpleNamespace(channel=types.SimpleNamespace(id=777))
+        member.move_to = mock.AsyncMock()
+        return member.move_to
+
+    def test_kick_de_voice(self):
+        cid, i = self.use("voice_kick", self.bob)
+        self.assertIn("no está en un voice", i.text)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")
+        move = self._in_voice(self.bob)
+        i = self.inter(self.alice)
+        run(self.cog.use_on_target(i, cid, self.bob))
+        move.assert_awaited_once()
+        self.assertIsNone(move.await_args.args[0])
+        self.assertEqual(wdb.get_card(self.db, cid).status, "consumed")
+
+    def test_carta_mala_desconecta_del_voice(self):
+        move = self._in_voice(self.alice)
+        i = self._pull("bad_voice_dc")
+        move.assert_awaited_once()
+        self.assertIn("desconectó", i.text)
 
     def test_carta_mala_cooldown(self):
         self._pull("bad_cd_8h")

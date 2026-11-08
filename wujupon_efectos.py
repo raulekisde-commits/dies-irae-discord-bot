@@ -257,6 +257,17 @@ class EfectosCog(commands.Cog):
                     await asyncio.sleep(1)
             return
 
+    async def _disconnect(self, member) -> bool:
+        """Saca a la persona del voice si está en uno (una sola vez). True si la desconectó."""
+        if member is None or getattr(getattr(member, "voice", None), "channel", None) is None:
+            return False
+        try:
+            await member.move_to(None, reason="Wujupón: carta mala")
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
+
     async def announce(self, text: str, target_id: Optional[int] = None, dm: Optional[str] = None):
         try:
             cid = await self.run(wdb.get_setting, "efx_channel")
@@ -312,8 +323,10 @@ class EfectosCog(commands.Cog):
             return await _say(interaction, "❌ Esa carta ya no está disponible.")
         prize = await self.run(wdb.get_prize, card.prize_key)
         action, value = prize.effect
+        if action == "voice_kick":
+            return await self._voice_kick(interaction, card, prize, target)
         casino_open = None
-        if action == "casino_block":
+        if action == "casino_block" and not value:
             casino_open = await self.run(casino_db.is_open, self.guild_id)
         res = await self.run(edb.use_card, card_id=card.id, owner_id=interaction.user.id, prize_key=prize.key, action=action,
                              minutes=value, target_id=target.id, casino_open=casino_open)
@@ -333,6 +346,24 @@ class EfectosCog(commands.Cog):
         await _say(interaction, f"✅ **{prize.name}** aplicada a {target.mention} ({until}).")
         await self.announce(f"{label}: {actor} se la usó a {target.mention} {until}.", target.id,
                             f"{label} por una carta de Wujupón de {interaction.user.display_name}, {until}.")
+
+    async def _voice_kick(self, interaction, card, prize, target):
+        member = await self._member(target.id) or target
+        if getattr(getattr(member, "voice", None), "channel", None) is None:
+            return await _say(interaction, f"ℹ️ {target.mention} no está en un voice. Tu carta no se gastó.")
+        res = await self.run(edb.use_card, card_id=card.id, owner_id=interaction.user.id, prize_key=prize.key, action="voice_kick",
+                             minutes=None, target_id=target.id)
+        if res.status != "ok":
+            return await _say(interaction, f"❌ {res.message}")
+        try:
+            await member.move_to(None, reason=f"Wujupón: kick de voice de {interaction.user}")
+        except Exception:
+            traceback.print_exc()
+            await self.run(edb.undo_use, card.id, None, interaction.user.id)
+            return await _say(interaction, "❌ No pude desconectarlo (necesito «Mover miembros»). Tu carta no se gastó.")
+        await _say(interaction, f"🔌 Desconectaste a {target.mention} del voice.")
+        await self.announce(f"🔌 <@{interaction.user.id}> desconectó a {target.mention} del voice.", target.id,
+                            f"🔌 {interaction.user.display_name} te desconectó del voice con una carta de Wujupón.")
 
     async def _casino(self, interaction, card, prize, open_: bool):
         if await self.run(casino_db.is_open, self.guild_id) == open_:
@@ -512,6 +543,9 @@ class EfectosCog(commands.Cog):
             return res.message
         if res.effect is not None and not await self._set_role(user_id, res.effect.kind, True):
             print(f"⚠️ Wujupón: no pude aplicar {res.effect.kind} a {user_id} (¿faltan los roles de mute?)")
+        if action == "voice_dc":
+            member = await self._member(user_id)
+            res.message = "Te desconectó del voice." if await self._disconnect(member) else "No estabas en un voice: zafaste."
         if res.cooldown_hours:
             await asyncio.to_thread(deposits_db.add_sell_cooldown, self.db_path, self.guild_id, user_id, res.cooldown_hours)
         await self.announce(f"☠️ <@{user_id}> sacó **{prize.name}**: {res.message}")

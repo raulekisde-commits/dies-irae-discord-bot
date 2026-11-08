@@ -74,7 +74,7 @@ INFO_TEXTS = {
                  "• Los splits de las CTA se hacen y se publican en <#1558630638066602094> (canal de splits): ahí podés ver cada reparto, quiénes participaron y cuánto le tocó a cada uno.\n\n"
                  "**Guild Shop**\n"
                  "• Podés comprar ítems en el **Guild Shop** con un **10% de descuento**: creás un ticket desde el panel del shop y un Seller te atiende.\n"
-                 "• Con un 🎟️ **ticket de descuento** de Wujupón (**20%** hasta 20M o **30%** hasta 35M) esa compra tiene más descuento: "
+                 "• Con un 🎟️ **ticket de descuento** de Wujupón (**15%** o **20%** hasta 20M, **30%** hasta 35M) esa compra tiene más descuento: "
                  "el bot te pregunta al abrir el ticket.\n\n"
                  "**Cambiar tu balance**\n"
                  "• Si querés cambiar tu balance (por ejemplo canjearlo), hacelo en <#1565241897277067375>."),
@@ -385,7 +385,7 @@ INFO_STAFF_PAGE2 = {
         "• Contra un inmune o alguien con 🛡️ escudo, la carta no se gasta. Tampoco contra bots.\n"
         "• 🧊 Congelar balance: no puede apostar, usar give-money, comprar en el Guild Shop ni en Wujupón, ni cobrar. Los splits le llegan igual.\n"
         "• ❄️ Congelar Wujupón: no puede comprar, tirar ni usar cartas.\n"
-        "• 🚫 Bloqueo de casino: dura hasta que el casino se cierre y se vuelva a abrir.\n"
+        "• 🚫 Bloqueo de casino: dura 2 horas.\n"
         "• ☠️ Cartas malas: se aplican al salir; −Wuju y −embo pueden dejar el balance en negativo.\n"
         "• Los efectos sobreviven a los reinicios: al volver, el bot repone o saca los roles solo.\n"
         "\n**🎴 Cartas de CTA**\n"

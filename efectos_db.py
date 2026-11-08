@@ -29,7 +29,7 @@ CLEANS = {                                  # carta de limpieza → efectos que 
     "clean_freeze": ("freeze_balance",),
     "clean_all": ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon"),
 }
-TARGETED = ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon", "casino_block", "purge")
+TARGETED = ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon", "casino_block", "purge", "voice_kick")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS wjp_effects (
@@ -217,8 +217,14 @@ def use_card(db_path: str, *, card_id: int, owner_id: int, prize_key: str, actio
                 _record(conn, card_id, owner_id, prize_key, "Limpió: " + ", ".join(e.kind for e in ended))
                 _log(conn, owner_id, "efx_clean", owner_id, f"card:{card_id}", ",".join(e.kind for e in ended))
                 return UseResult("ok", ended=tuple(ended))
-            if action == "casino_block":
-                # armed=1 si el casino ya está cerrado: lo termina la próxima apertura; si está abierto, primero tiene que cerrarse
+            if action == "voice_kick":
+                # sin efecto que dure: la capa de Discord desconecta (y devuelve la carta con undo_use si no puede)
+                _consume(conn, card_id, owner_id)
+                _record(conn, card_id, owner_id, prize_key, f"Kick de voice → {target_id}")
+                _log(conn, owner_id, "efx_voice_kick", target_id, f"card:{card_id}", "")
+                return UseResult("ok")
+            if action == "casino_block" and not minutes:
+                # (bloqueos viejos sin duración) armed=1 si el casino ya está cerrado: lo termina la próxima apertura; si está abierto, primero tiene que cerrarse
                 eff = _add_effect(conn, target_id, "casino_block", None, card_id, owner_id, armed=0 if casino_open else 1)
             elif action in KINDS:
                 who = owner_id if action == "shield" else target_id
@@ -274,7 +280,7 @@ class ForcedResult:
 
 def apply_forced(db_path: str, *, card_id: int, user_id: int, prize_key: str, action: str, amount: int,
                  minutes: Optional[float]) -> ForcedResult:
-    """`action`: wuju | embo | mute_chat | mute_voice | cooldown. La carta (reservada al salir) pasa a usada."""
+    """`action`: wuju | embo | mute_chat | mute_voice | cooldown | voice_dc. La carta (reservada al salir) pasa a usada."""
     init_schema(db_path)
     conn = connect(db_path)
     try:
@@ -305,6 +311,8 @@ def apply_forced(db_path: str, *, card_id: int, user_id: int, prize_key: str, ac
             elif action in ("mute_chat", "mute_voice"):
                 eff = _add_effect(conn, user_id, action, minutes, card_id, user_id)
                 msg = f"{KIND_LABELS[action]} por {int(minutes)} min."
+            elif action == "voice_dc":
+                msg = "Si estabas en un voice, te desconectó."      # la desconexión la hace la capa de Discord
             elif action == "cooldown":
                 hours = int(amount)
                 msg = f"Se sumaron **{hours} h** de cooldown para cobrar balance."
@@ -407,10 +415,11 @@ def tx_casino_changed(conn, opened: bool) -> None:
     """Llamado por casino_db al cambiar el estado: cerrar «arma» los bloqueos; abrir termina los armados."""
     def go():
         if opened:
-            conn.execute("UPDATE wjp_effects SET active = 0, ended_at = ? WHERE kind = 'casino_block' AND active = 1 AND armed = 1",
+            conn.execute("UPDATE wjp_effects SET active = 0, ended_at = ? WHERE kind = 'casino_block' AND active = 1 AND armed = 1 "
+                         "AND until IS NULL",
                          (utcnow_iso(),))
         else:
-            conn.execute("UPDATE wjp_effects SET armed = 1 WHERE kind = 'casino_block' AND active = 1")
+            conn.execute("UPDATE wjp_effects SET armed = 1 WHERE kind = 'casino_block' AND active = 1 AND until IS NULL")
     _safe(go, None)
 
 
