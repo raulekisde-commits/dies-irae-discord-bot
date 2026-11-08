@@ -186,6 +186,27 @@ class EfectosTests(DiscordBase):
         self.use("casino_close")
         self.assertFalse(casino_db.is_open(self.db, GUILD_ID))
 
+    def test_mute_y_bloqueo_de_casino_se_acumulan(self):
+        self.use("mute_15", self.bob)
+        self.use("mute_15", self.bob)
+        until = edb.active_until(self.db, self.bob.id, "mute_chat")
+        self.assertAlmostEqual(until - time.time(), 90 * 60, delta=60)          # 45 + 45 min
+        casino_db.set_open(self.db, GUILD_ID, True, 1)
+        self.use("casino_block", self.bob)
+        self.use("casino_block_6h", self.bob)
+        until = edb.active_until(self.db, self.bob.id, "casino_block")
+        self.assertAlmostEqual(until - time.time(), 8 * 3600, delta=60)         # 2 h + 6 h
+        self.use("shield_1h")                                                    # el escudo no se acumula
+        self.use("shield_1h")
+        self.assertAlmostEqual(edb.active_until(self.db, self.alice.id, "shield") - time.time(), 3600, delta=60)
+
+    def test_bloqueos_de_casino_por_rareza(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual([(p[k].rarity, p[k].handler) for k in ("casino_block", "casino_block_6h", "casino_block_24h",
+                                                                 "casino_block_72h", "casino_block_7d")],
+                         [("common", "efx:casino_block:120"), ("rare", "efx:casino_block:360"), ("epic", "efx:casino_block:1440"),
+                          ("legendary", "efx:casino_block:4320"), ("mythic", "efx:casino_block:10080")])
+
     def test_bloqueo_de_casino_por_tiempo(self):
         casino_db.set_open(self.db, GUILD_ID, True, 1)
         self.use("casino_block", self.bob)
