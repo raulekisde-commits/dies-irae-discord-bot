@@ -1,7 +1,9 @@
-"""/encargar — tareas para el staff: panel con botones Tomar / Soltar / Terminada, y publicación programada."""
+"""/tarea — tareas para el staff: panel con botones Terminada / Cancelar, y publicación programada."""
 import asyncio
 import os
+import re
 import traceback
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,6 +23,8 @@ OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 TASKS_CHANNEL_ID = int(os.getenv("TASKS_CHANNEL_ID", "1565986098679644270"))
 bs.register("task_log", "Registro de tareas terminadas", TASK_LOG_CHANNEL_ID, "Acá queda el registro de cada tarea terminada o cancelada")
 bs.register("tasks", "Panel de tareas", TASKS_CHANNEL_ID, "Canal donde se publican las tareas del Staff")
+bs.register("task_log_cmd", "Registro de tareas de /tarea", lambda: bs.get("task_log"),
+            "Registro de las tareas creadas con /tarea crear (si no se configura, van al registro de tareas)")
 COACHING_ROLE_ID = int(os.getenv("COACHING_ROLE_ID", "1566691393726980167"))
 STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
 
@@ -51,8 +55,34 @@ def can_take(member) -> bool:
     return is_staff_or_council(member) or bool({OPINOLOGO_ROLE_ID, COACHING_ROLE_ID} & _roles(member))
 
 
+TAGGED_PREFIX = "tarea:"                                    # source de las tareas de /tarea con tags: solo los etiquetados + Council
+TAG_RE = re.compile(r"<@([!&]?)(\d+)>")
+
+
+PHOTO_SUPPORTED = hasattr(discord.ui, "FileUpload") and hasattr(discord.ui, "Label")     # subir archivos en un formulario: discord.py 2.6+
+
+
+def is_tagged(t) -> bool:
+    return (getattr(t, "source", None) or "").startswith(TAGGED_PREFIX) and bool(t.ping_users or t.ping_roles)
+
+
+def from_command(t) -> bool:
+    """Creada a mano (/tarea crear, o la vieja /encargar): su registro va al canal de /canal logs tareas."""
+    src = getattr(t, "source", None) or ""
+    return not src or src.startswith(TAGGED_PREFIX)
+
+
+def is_auto(t) -> bool:
+    """Automáticas: se cierran solas cuando el bot detecta que se hicieron (sin botón). Revisar el combat log no tiene detector: sigue a mano."""
+    src = getattr(t, "source", None) or ""
+    return bool(src) and not src.startswith(TAGGED_PREFIX) and not src.endswith(":combatlog_review")
+
+
 def can_work_on(member, t) -> bool:
-    """Quién puede tomar y terminar una tarea: las comunes, el Staff/Council/Opinólogo/Coaching; las que son «para» un rol, ese rol y el Council."""
+    """Quién puede terminar una tarea: las comunes, el Staff/Council/Opinólogo/Coaching; las que son «para» un rol, ese rol y el Council;
+    las de /tarea con tags, las personas y roles etiquetados y el Council."""
+    if is_tagged(t):
+        return can_manage(member) or member.id in t.ping_users or bool(set(t.ping_roles) & _roles(member))
     if getattr(t, "for_role", None):
         return can_manage(member) or t.for_role in _roles(member)
     return can_take(member)
@@ -60,17 +90,11 @@ def can_work_on(member, t) -> bool:
 
 class TaskView(discord.ui.View):
     """Botones persistentes: la tarea se busca por el id del mensaje, así sirven aunque el bot se reinicie."""
-    def __init__(self, cog: "EncargosCog"):
+    def __init__(self, cog: "EncargosCog", done: bool = True):
         super().__init__(timeout=None)
         self.cog = cog
-
-    @discord.ui.button(label="Tomar tarea", style=discord.ButtonStyle.success, custom_id="task:take", emoji="✋")
-    async def take(self, interaction: discord.Interaction, button):
-        await self.cog.on_take(interaction)
-
-    @discord.ui.button(label="Soltar tarea", style=discord.ButtonStyle.secondary, custom_id="task:release", emoji="↩️")
-    async def release(self, interaction: discord.Interaction, button):
-        await self.cog.on_release(interaction)
+        if not done:                                   # tareas automáticas: sin botón «Tarea terminada»
+            self.remove_item(self.done)
 
     @discord.ui.button(label="Tarea terminada", style=discord.ButtonStyle.primary, custom_id="task:done", emoji="✅")
     async def done(self, interaction: discord.Interaction, button):
@@ -79,6 +103,18 @@ class TaskView(discord.ui.View):
     @discord.ui.button(label="Cancelar tarea", style=discord.ButtonStyle.danger, custom_id="task:cancel", emoji="🗑️")
     async def cancel(self, interaction: discord.Interaction, button):
         await self.cog.on_cancel(interaction)
+
+
+class PhotoModal(discord.ui.Modal):
+    """Formulario para terminar una tarea que pide foto (solo se usa si PHOTO_SUPPORTED)."""
+    def __init__(self, cog: "EncargosCog", task_id: int):
+        super().__init__(title=f"Terminar tarea #{task_id}"[:45], timeout=600)
+        self.cog, self.task_id = cog, task_id
+        self.upload = discord.ui.FileUpload(min_values=1, max_values=1, required=True)
+        self.add_item(discord.ui.Label(text="Foto de la tarea terminada", component=self.upload))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.finish_with_photo(interaction, self.task_id, list(getattr(self.upload, "values", None) or []))
 
 
 class ConfirmCancelTaskView(discord.ui.View):
@@ -135,6 +171,10 @@ class EncargosCog(commands.Cog):
             e.add_field(name="Terminada por", value=f"<@{t.done_by}>", inline=True)
         if t.for_role:
             e.add_field(name="Para", value=f"<@&{t.for_role}>", inline=True)
+        elif is_tagged(t):
+            e.add_field(name="Para", value=" ".join([f"<@&{r}>" for r in t.ping_roles] + [f"<@{u}>" for u in t.ping_users])[:1024] or "—", inline=True)
+        if t.reward_spins > 0:
+            e.add_field(name="Recompensa", value=f"🎰 {t.reward_spins} tirada{'s' if t.reward_spins != 1 else ''} de Wujupón", inline=True)
         if t.link:
             e.add_field(name="Link", value=t.link, inline=False)
         lines = []
@@ -171,7 +211,8 @@ class EncargosCog(commands.Cog):
             roles = ([STAFF_ROLE_ID] if t.ping_staff else []) + [r for r in t.ping_roles if r != STAFF_ROLE_ID or not t.ping_staff]
             tags = " ".join([f"<@&{r}>" for r in roles] + [f"<@{u}>" for u in t.ping_users])
             allowed = discord.AllowedMentions(users=[discord.Object(id=u) for u in t.ping_users], roles=[discord.Object(id=r) for r in roles], everyone=False)
-            msg = await ch.send(content=f"{tags} nueva tarea{note}".strip(), embed=self.embed(t), view=TaskView(self), allowed_mentions=allowed)
+            msg = await ch.send(content=f"{tags} nueva tarea{note}".strip(), embed=self.embed(t), view=TaskView(self, done=not is_auto(t)),
+                                allowed_mentions=allowed)
         except Exception:
             traceback.print_exc()
             await self.run(edb.unclaim_publish, task_id)          # se reintenta en el próximo ciclo
@@ -181,36 +222,49 @@ class EncargosCog(commands.Cog):
 
     async def create(self, *, text: str, created_by: int, publish_at: Optional[float] = None, source: Optional[str] = None,
                      link: Optional[str] = None, channel_id: Optional[int] = None, ping_roles=(), ping_users=(), ping_staff: bool = True,
-                     for_role: Optional[int] = None) -> edb.Task:
-        """Crea una tarea (la usan /encargar y los avisos automáticos, como el del combatlog de una CTA).
+                     for_role: Optional[int] = None, require_photo: bool = False, reward_spins: int = 1) -> edb.Task:
+        """Crea una tarea (la usan /tarea y los avisos automáticos, como el del combatlog de una CTA).
         Etiqueta al Staff (salvo ping_staff=False) y, además, a los roles y personas indicados."""
         t = await self.run(edb.create_task, guild_id=self.guild_id, channel_id=channel_id or bs.get("tasks"), text=text, created_by=created_by,
                            publish_at=publish_at, source=source, link=link, ping_roles=ping_roles, ping_users=ping_users, ping_staff=ping_staff,
-                           for_role=for_role)
+                           for_role=for_role, require_photo=require_photo, reward_spins=reward_spins)
         if t.status == "scheduled" and (t.publish_at or 0) <= datetime.now(timezone.utc).timestamp():
             await self.publish(t.id)
         return await self.run(edb.get_task, t.id)
 
     # ---------- comando ----------
-    @app_commands.command(name="encargar", description="Crea una tarea para el staff (panel con botones y mención al Staff)")
-    @app_commands.describe(tarea="Qué hay que hacer", cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h",
-                           rol="(Opcional) Rol a etiquetar además del Staff", persona="(Opcional) Persona a etiquetar además del Staff",
-                           para_rol="(Opcional) Tarea PARA este rol (ej: Council): se etiqueta solo a ese rol y solo ese rol y el Council la pueden tomar")
-    @app_commands.guild_only()
-    async def encargar(self, interaction: discord.Interaction, tarea: str, cuando: Optional[str] = None,
-                       rol: Optional[discord.Role] = None, persona: Optional[discord.Member] = None, para_rol: Optional[discord.Role] = None):
-        if not is_staff_or_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff y el Council pueden encargar tareas.")
+    tarea = app_commands.Group(name="tarea", description="Tareas del staff", guild_only=True)
+
+    @tarea.command(name="crear", description="(Council) Crea una tarea: panel con botón Tarea terminada")
+    @app_commands.describe(titulo="Título de la tarea", descripcion="Qué hay que hacer",
+                           tags="(Opcional) Personas y/o roles: @persona @rol … Solo ellos (y el Council) la pueden terminar. Sin tags se etiqueta al Staff",
+                           foto="(Opcional) Para terminarla hay que subir una foto de la tarea hecha (queda en el log)",
+                           tiradas="(Opcional) Tiradas de Wujupón que gana quien la termina (0 a 100, por defecto 1)",
+                           cuando="(Opcional) Cuándo publicarla: HH:MM en UTC (ej: 22:30) o +90m / +2h")
+    async def crear(self, interaction: discord.Interaction, titulo: str, descripcion: str, tags: Optional[str] = None,
+                    foto: bool = False, cuando: Optional[str] = None, tiradas: app_commands.Range[int, 0, 100] = 1):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council puede crear tareas.")
+        if foto and not PHOTO_SUPPORTED:
+            return await _say(interaction, "❌ La opción `foto` necesita discord.py 2.6 o más nuevo en el servidor del bot. No creé la tarea.")
+        roles, users = [], []
+        for kind, raw in TAG_RE.findall(tags or ""):
+            if kind == "&":
+                role = interaction.guild.get_role(int(raw)) if interaction.guild else None
+                if role is None or role.id == interaction.guild.id:              # el id de @everyone es el del servidor
+                    return await _say(interaction, "❌ Uno de los roles no existe en el servidor (o es @everyone).")
+                roles.append(role.id)
+            else:
+                users.append(int(raw))
+        if tags and tags.strip() and not (roles or users):
+            return await _say(interaction, "❌ En `tags` mencioná personas o roles (ej: `@Juan @Council`).")
+        roles, users = list(dict.fromkeys(roles)), list(dict.fromkeys(users))
+        tagged = bool(roles or users)
         try:
             at = edb.parse_when(cuando) if cuando and cuando.strip() else None
-            if para_rol is not None and para_rol.is_default():
-                return await _say(interaction, "❌ Elegí un rol del servidor (no @everyone).")
-            pings = [rol.id] if rol is not None and not rol.is_default() else []
-            if para_rol is not None:
-                pings = list(dict.fromkeys(pings + [para_rol.id]))
-            t = await self.create(text=tarea, created_by=interaction.user.id, publish_at=at, ping_roles=pings,
-                                  ping_users=[persona.id] if persona is not None else [],
-                                  ping_staff=para_rol is None, for_role=para_rol.id if para_rol is not None else None)
+            t = await self.create(text=f"**{titulo.strip()}** — {descripcion.strip()}", created_by=interaction.user.id, publish_at=at,
+                                  ping_roles=roles, ping_users=users, ping_staff=not tagged, require_photo=foto, reward_spins=tiradas,
+                                  source=f"{TAGGED_PREFIX}{uuid.uuid4().hex[:12]}")
         except edb.TaskError as exc:
             return await _say(interaction, f"❌ {exc}")
         if at and at > datetime.now(timezone.utc).timestamp():
@@ -282,7 +336,8 @@ class EncargosCog(commands.Cog):
                 traceback.print_exc()
         try:
             await interaction.response.edit_message(content=interaction.message.content, embed=self.embed(res.task),
-                                                    view=None if res.task.status == "done" else TaskView(self), allowed_mentions=NO_MENTIONS)
+                                                    view=None if res.task.status == "done" else TaskView(self, done=not is_auto(res.task)),
+                                                    allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await _say(interaction, ok_text)
@@ -358,12 +413,70 @@ class EncargosCog(commands.Cog):
     async def on_done(self, interaction: discord.Interaction):
         t = await self._task(interaction)
         if t:
-            # las devoluciones de coaching las puede cerrar cualquiera que pueda tomarlas (Coaching, Opinólogo, Staff, Council)
-            if t.for_role:
-                override = can_work_on(interaction.user, t)
-            else:
-                override = is_staff_or_council(interaction.user) or ((t.source or "").startswith("coach:") and can_take(interaction.user))
-            await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, override), "✅ Tarea terminada.")
+            # sin botón Tomar: la termina directamente quien tenga permiso sobre la tarea
+            if is_auto(t):
+                return await _say(interaction, "🤖 Esta tarea se cierra sola cuando el bot detecta que se hizo.")
+            if not can_work_on(interaction.user, t):
+                return await _say(interaction, "🔒 No podés terminar esta tarea.")
+            if t.require_photo and t.status not in ("done", "cancelled"):
+                if not PHOTO_SUPPORTED:
+                    return await _say(interaction, "❌ Esta tarea pide foto y el bot no puede recibir archivos (falta actualizar discord.py).")
+                return await interaction.response.send_modal(PhotoModal(self, t.id))
+            await self._after(interaction, await self.run(edb.finish, t.id, interaction.user.id, True), "✅ Tarea terminada.")
+
+    async def finish_with_photo(self, interaction: discord.Interaction, task_id: int, files) -> None:
+        """Envío del formulario de foto: valida la imagen, cierra la tarea y la deja en el log con la foto."""
+        img = next((a for a in files if (getattr(a, "content_type", None) or "").startswith("image/")), None)
+        if img is None:
+            return await _say(interaction, "❌ Tiene que ser una imagen. La tarea sigue abierta.")
+        t = await self.run(edb.get_task, task_id)
+        if t is None:
+            return await _say(interaction, "❌ No encuentro esa tarea.")
+        if not can_work_on(interaction.user, t):
+            return await _say(interaction, "🔒 No podés terminar esta tarea.")
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            ext = os.path.splitext(getattr(img, "filename", "") or "")[1].lower() or ".png"
+            photo = await img.to_file(filename=f"tarea_{task_id}{ext}")
+        except Exception:
+            traceback.print_exc()
+            return await _say(interaction, "❌ No pude descargar la foto. Probá de nuevo; la tarea sigue abierta.")
+        res = await self.run(edb.finish, task_id, interaction.user.id, True)
+        if res.status != "ok":
+            return await _say(interaction, {"closed": "ℹ️ Esta tarea ya está terminada."}.get(res.status, "❌ No se pudo."))
+        if await self.log_done(res.task, photo):
+            await self.drop_thread(res.task)
+            try:
+                if interaction.message is not None:
+                    await interaction.message.delete()
+            except Exception:
+                traceback.print_exc()
+            return await _say(interaction, "✅ Tarea terminada. Quedó registrada con la foto en el canal de logs.")
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(embed=self.embed(res.task), view=None, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+        await _say(interaction, "✅ Tarea terminada, pero no pude dejarla en el canal de logs.")
+
+    async def canal_log_tareas(self, interaction: discord.Interaction, canal) -> None:
+        """/canal logs tareas: dónde se registran las tareas creadas con /tarea crear."""
+        if interaction.guild is None or not can_manage(interaction.user):
+            return await _say(interaction, "❌ Solo el rol **Council**, el propietario o los administradores pueden usar este comando.")
+        channel = canal or interaction.channel
+        if channel is None or not hasattr(channel, "send"):
+            return await _say(interaction, "❌ No puedo usar ese canal.")
+        try:
+            await channel.send("✅ Canal de registro de **tareas** configurado: acá se anota cada tarea de `/tarea crear` terminada o cancelada.",
+                               allowed_mentions=NO_MENTIONS)
+        except Exception:
+            return await _say(interaction, f"❌ No tengo permiso para escribir en {channel.mention}. No cambié nada.")
+        try:
+            await asyncio.to_thread(bs.set_value, "task_log_cmd", channel.id, interaction.user.id)
+        except Exception:
+            traceback.print_exc()
+            return await _say(interaction, "❌ No pude guardar el canal.")
+        await _say(interaction, f"✅ Registro de tareas de `/tarea crear` configurado en {channel.mention}.")
 
     async def record_done(self, text: str, actor_id: int, source: str) -> bool:
         """Cuenta como tarea hecha (para /top tareas) algo que el Staff resolvió sin pasar por el panel de tareas. Nunca rompe a quien la llama."""
@@ -408,7 +521,7 @@ class EncargosCog(commands.Cog):
             except Exception as exc:
                 print(f"Tarea {t.id}: cancelada pero no pude borrar el panel: {exc!r}")
         try:
-            log = await self._channel(bs.get("task_log"))
+            log = await self._channel(bs.get("task_log_cmd" if from_command(t) else "task_log"))
             if log is not None:
                 await log.send(f"🗑️ Tarea #{t.id} {who}.\n> {t.text[:300]}", allowed_mentions=NO_MENTIONS)
         except Exception:
@@ -424,17 +537,41 @@ class EncargosCog(commands.Cog):
                 n += 1
         return n
 
-    async def log_done(self, t: edb.Task) -> bool:
-        """Deja el registro de la tarea terminada en el canal de logs. False si no se pudo (entonces el panel NO se borra)."""
+    async def log_done(self, t: edb.Task, photo=None) -> bool:
+        """Deja el registro de la tarea terminada en el canal de logs (las de /tarea crear, en el suyo). False si no se pudo
+        (entonces el panel NO se borra)."""
         try:
-            ch = await self._channel(bs.get("task_log"))
+            ch = await self._channel(bs.get("task_log_cmd" if from_command(t) else "task_log"))
             if ch is None:
                 return False
-            await ch.send(content=f"✅ Tarea #{t.id} terminada por <@{t.done_by}>", embed=self.embed(t), allowed_mentions=NO_MENTIONS)
+            reward = await self.grant_task_spin(t)
+            emb = self.embed(t)
+            kw = {}
+            if photo is not None:
+                emb.set_image(url=f"attachment://{photo.filename}")
+                kw["file"] = photo
+            await ch.send(content=f"✅ Tarea #{t.id} terminada por <@{t.done_by}>{reward}", embed=emb, allowed_mentions=NO_MENTIONS, **kw)
             return True
         except Exception:
             traceback.print_exc()
             return False
+
+    async def grant_task_spin(self, t: edb.Task) -> str:
+        """1 tirada de Wujupón a quien terminó la tarea. Idempotente por tarea (request_key task:<id>). Nunca rompe el cierre."""
+        if not t.done_by or t.reward_spins <= 0:
+            return ""
+        try:
+            cog = self.bot.get_cog("WujuponCog")
+            if cog is None:
+                return " · ⚠️ sin tirada (Wujupón no cargado)"
+            import wujupon_db as wdb
+            actor = self.bot.user.id if getattr(self.bot, "user", None) else 0
+            after = await cog.run(wdb.gift_spins, actor_id=actor, user_id=t.done_by, count=t.reward_spins,
+                                  request_key=f"task:{t.id}", reason=f"Tarea #{t.id} terminada")
+            return f" · 🎰 +{t.reward_spins} tirada{'s' if t.reward_spins != 1 else ''} de Wujupón (ahora tiene {after})"
+        except Exception:
+            traceback.print_exc()
+            return " · ⚠️ no se pudo dar la tirada"
 
     async def update_text_by_source(self, source: str, text: str) -> bool:
         """Cambia el texto de una tarea abierta (y su panel). False si no hay tarea o ya está terminada."""

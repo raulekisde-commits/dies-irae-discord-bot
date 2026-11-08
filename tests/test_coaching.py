@@ -243,19 +243,16 @@ class CoachingDiscordTests(DiscordBase):
         self.assertIn("✅", m.reactions)
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [])
 
-    def test_done_button_works_for_any_coach_role_and_top_coach(self):
+    def test_vod_tasks_close_only_when_a_coach_replies_and_top_coach(self):
         self.open_post(self.novato)
         th = self.vods(2)
         opi = discord.Member(700000000000000020, "Opi", roles=[discord.Role(enc.OPINOLOGO_ROLE_ID, "Opinólogo", self.guild)], guild=self.guild)
-        run(self.ecog.on_take(self.inter(self.coach, message=self.tasks_ch.sent[0])))
-        i = self.inter(opi, message=self.tasks_ch.sent[0])                                      # lo tomó otro, pero el Opinólogo puede cerrarla
-        run(self.ecog.on_done(i))
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, opi.id)
-        self.assertIn("quien tomó", self.inter_done(self.alice, self.tasks_ch.sent[1]))          # un miembro no
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4300)))
-        i = self.inter(self.alice)
-        top = edb.top_coaches(self.db)
-        self.assertEqual(sorted(top), sorted([(opi.id, 1), (self.coach.id, 1)]))
+        self.assertNotIn("task:done", [c.custom_id for c in self.tasks_ch.sent[0].view.children])   # sin botón «Tarea terminada»
+        self.assertIn("se cierra sola", self.inter_done(opi, self.tasks_ch.sent[0]))                 # ni con permiso se cierra a mano
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4300)))                          # el coach contesta: se cierran
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, self.coach.id)
+        self.assertEqual(edb.top_coaches(self.db), [(self.coach.id, 2)])
         i = self.inter(self.alice)
         run(self.ecog.send_top_coach(i))
         emb = i.response.sent[0][1]["embed"]

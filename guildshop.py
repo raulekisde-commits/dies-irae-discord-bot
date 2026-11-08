@@ -480,6 +480,11 @@ class GuildShopCog(commands.Cog):
             traceback.print_exc()
             await _reply(interaction, "❌ No pude guardar el canal.")
 
+    @canal_logs.command(name="tareas", description="(Council) Canal donde se registran las tareas creadas con /tarea crear")
+    @app_commands.describe(canal="Canal de registro (por defecto, este canal)")
+    async def logs_tareas(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+        await self._canal_delegate(interaction, "EncargosCog", "canal_log_tareas", "tareas", canal)
+
     @canal_logs.command(name="guildshop", description="(Council) Canal donde se registra cada transacción del Guild Shop")
     @app_commands.describe(canal="Canal de registro (por defecto, este canal)")
     async def logs_guildshop(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
