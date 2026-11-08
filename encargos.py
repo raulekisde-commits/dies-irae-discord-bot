@@ -430,11 +430,29 @@ class EncargosCog(commands.Cog):
             ch = await self._channel(bs.get("task_log"))
             if ch is None:
                 return False
-            await ch.send(content=f"✅ Tarea #{t.id} terminada por <@{t.done_by}>", embed=self.embed(t), allowed_mentions=NO_MENTIONS)
+            reward = await self.grant_task_spin(t)
+            await ch.send(content=f"✅ Tarea #{t.id} terminada por <@{t.done_by}>{reward}", embed=self.embed(t), allowed_mentions=NO_MENTIONS)
             return True
         except Exception:
             traceback.print_exc()
             return False
+
+    async def grant_task_spin(self, t: edb.Task) -> str:
+        """1 tirada de Wujupón a quien terminó la tarea. Idempotente por tarea (request_key task:<id>). Nunca rompe el cierre."""
+        if not t.done_by:
+            return ""
+        try:
+            cog = self.bot.get_cog("WujuponCog")
+            if cog is None:
+                return " · ⚠️ sin tirada (Wujupón no cargado)"
+            import wujupon_db as wdb
+            actor = self.bot.user.id if getattr(self.bot, "user", None) else 0
+            after = await cog.run(wdb.gift_spins, actor_id=actor, user_id=t.done_by, count=1,
+                                  request_key=f"task:{t.id}", reason=f"Tarea #{t.id} terminada")
+            return f" · 🎰 +1 tirada de Wujupón (ahora tiene {after})"
+        except Exception:
+            traceback.print_exc()
+            return " · ⚠️ no se pudo dar la tirada"
 
     async def update_text_by_source(self, source: str, text: str) -> bool:
         """Cambia el texto de una tarea abierta (y su panel). False si no hay tarea o ya está terminada."""
