@@ -226,6 +226,12 @@ class TaskPingTests(DiscordBase):
         self.assertEqual((t.text, t.ping_staff, t.ping_roles), ("vieja", True, []))
 
 
+def run_text(case, user, channel):
+    i = case.inter(user, channel=channel)
+    run(case.cog.canal_log_tareas(i, None))
+    return i.text
+
+
 class TaskDiscordTests(DiscordBase):
     def setUp(self):
         super().setUp()
@@ -246,9 +252,9 @@ class TaskDiscordTests(DiscordBase):
         run(getattr(self.cog, f"on_{action}")(i))
         return i
 
-    def tarea(self, who, titulo="Tarea", desc="hacer algo", tags=None, cuando=None):
+    def tarea(self, who, titulo="Tarea", desc="hacer algo", tags=None, cuando=None, foto=False):
         i = self.inter(who)
-        run(self.cog.tarea.callback(self.cog, i, titulo, desc, tags, cuando))
+        run(self.cog.crear.callback(self.cog, i, titulo, desc, tags, foto, cuando))
         return i
 
     def test_permissions_to_create_only_council(self):
@@ -316,6 +322,91 @@ class TaskDiscordTests(DiscordBase):
     def test_bad_when_is_rejected(self):
         self.assertIn("No entendí", self.tarea(self.council, cuando="mañana").text)
         self.assertEqual(self.tasks_ch.sent, [])
+
+    def task_log(self):
+        log = discord.TextChannel(enc.TASK_LOG_CHANNEL_ID, self.guild, "logs")
+        self.bot.channels[log.id] = log
+        return log
+
+    def test_automatic_tasks_have_no_done_button_and_close_only_by_detection(self):
+        log = self.task_log()
+        run(self.cog.create(text="Cargar el killboard", created_by=1, source="cta:5:killboard"))
+        msg = self.tasks_ch.sent[0]
+        self.assertEqual([c.custom_id for c in msg.view.children], ["task:cancel"])           # sin «Tarea terminada»
+        self.assertIn("se cierra sola", self.press(self.council, "done", msg).text)           # ni el Council la cierra a mano
+        self.assertEqual(edb.find_by_message(self.db, msg.id).status, "open")
+        self.assertTrue(run(self.cog.complete_by_source("cta:5:killboard", self.staff.id)))   # la cierra el detector
+        self.assertEqual(edb.find_by_source(self.db, "cta:5:killboard").status, "done")
+        self.assertEqual(len(log.sent), 1)
+        run(self.cog.create(text="Revisar el combat log", created_by=1, source="cta:5:combatlog_review"))
+        msg2 = self.tasks_ch.sent[1]                                                           # la única automática con botón
+        self.assertIn("task:done", [c.custom_id for c in msg2.view.children])
+        self.press(self.staff, "done", msg2)
+        self.assertEqual(edb.find_by_message(self.db, msg2.id).status, "done")
+
+    def test_command_tasks_log_to_their_own_channel(self):
+        import botsettings as bs
+        bs.configure(self.db)
+        self.addCleanup(lambda: (bs._over.clear(), setattr(bs, "_db", None)))
+        log = self.task_log()
+        cmd_log = discord.TextChannel(777000000000000001, self.guild, "log-tareas")
+        self.bot.channels[cmd_log.id] = cmd_log
+        self.tarea(self.council, desc="sin canal propio")
+        self.press(self.opi, "done", self.tasks_ch.sent[0])
+        self.assertEqual(len(log.sent), 1)                                                     # sin configurar: va al log de siempre
+        i = self.inter(self.council, channel=cmd_log)
+        run(self.cog.canal_log_tareas(i, None))
+        self.assertIn("configurado", i.text)
+        self.assertEqual(bs.get("task_log_cmd"), cmd_log.id)
+        self.tarea(self.council, desc="con canal propio")
+        self.press(self.opi, "done", self.tasks_ch.sent[1])
+        run(self.cog.create(text="Cargar conectados", created_by=1, source="cta:6:conectados"))
+        run(self.cog.complete_by_source("cta:6:conectados", self.staff.id))
+        self.assertEqual(len(cmd_log.sent), 2)                                                 # aviso de configuración + la tarea de comando
+        self.assertIn("Tarea #", cmd_log.sent[1].content)
+        self.assertEqual(len(log.sent), 2)                                                     # la automática sigue en el log de siempre
+        self.assertIn("Solo el rol **Council**", run_text(self, self.staff, cmd_log))
+
+    def test_photo_task_requires_image_and_logs_it(self):
+        log = self.task_log()
+        self.tarea(self.council, desc="Limpiar el banco", foto=True)
+        msg = self.tasks_ch.sent[0]
+        t = edb.find_by_message(self.db, msg.id)
+        self.assertTrue(t.require_photo)
+        i = self.press(self.opi, "done", msg)
+        self.assertEqual(len(i.modals), 1)                                                     # pide la foto, no la cierra
+        self.assertEqual(edb.find_by_message(self.db, msg.id).status, "open")
+        modal = i.modals[0]
+
+        class Att:
+            def __init__(self, ctype, name):
+                self.content_type, self.filename = ctype, name
+
+            async def to_file(self, filename=None):
+                return discord.File(io.BytesIO(b"x"), filename=filename)
+
+        bad = self.inter(self.opi, message=msg)
+        modal.upload.values = [Att("text/plain", "a.txt")]
+        run(modal.on_submit(bad))
+        self.assertIn("imagen", bad.text)
+        self.assertEqual(edb.find_by_message(self.db, msg.id).status, "open")
+        ok = self.inter(self.opi, message=msg)
+        modal.upload.values = [Att("image/jpeg", "Foto.JPG")]
+        run(modal.on_submit(ok))
+        t = edb.find_by_message(self.db, msg.id)
+        self.assertEqual((t.status, t.done_by), ("done", self.opi.id))
+        self.assertTrue(msg.deleted)
+        self.assertEqual(log.sent[-1].file.filename, f"tarea_{t.id}.jpg")
+        self.assertEqual(log.sent[-1].embeds[0].image, f"attachment://tarea_{t.id}.jpg")
+        self.assertIn("foto", ok.text)
+
+    def test_photo_option_refused_without_library_support(self):
+        old, enc.PHOTO_SUPPORTED = enc.PHOTO_SUPPORTED, False
+        try:
+            self.assertIn("discord.py 2.6", self.tarea(self.council, foto=True).text)
+            self.assertEqual(self.tasks_ch.sent, [])
+        finally:
+            enc.PHOTO_SUPPORTED = old
 
     def test_create_api_for_automatic_tasks(self):
         t = run(self.cog.create(text="Activar el combatlog", created_by=1, source="cta:9:combatlog", link="https://x"))

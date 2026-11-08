@@ -1301,7 +1301,14 @@ class SplitsCog(commands.Cog):
         s = await self.run(sdb.get_split, split_id)
         enc = self.bot.get_cog("EncargosCog")
         if enc is not None:                                    # repartir el split cuenta como tarea hecha para /top tareas (una vez por split)
-            await enc.record_done(f"Repartir el split «{s.title}» (#{split_id})", interaction.user.id, f"split:{split_id}")
+            closed = False
+            if s.source_cta_id is not None:                    # cierra sola la tarea automática «Repartir el split» de esa CTA
+                try:
+                    closed = await enc.complete_by_source(f"cta:{s.source_cta_id}:split", interaction.user.id)
+                except Exception:
+                    traceback.print_exc()
+            if not closed:
+                await enc.record_done(f"Repartir el split «{s.title}» (#{split_id})", interaction.user.id, f"split:{split_id}")
         await self.sync_split(split_id)
         if old_pay:
             await self._post_adjustment(s, old_pay, paid, interaction.user.id)

@@ -49,6 +49,7 @@ class Embed:
         self.footer = None
         self.thumbnail = None
         self.author = None
+        self.image = None
 
     def add_field(self, *, name, value, inline=True):
         self.fields.append((name, value, inline))
@@ -60,6 +61,10 @@ class Embed:
 
     def set_thumbnail(self, *, url):
         self.thumbnail = url
+        return self
+
+    def set_image(self, *, url):
+        self.image = url
         return self
 
     def set_author(self, *, name, icon_url=None, url=None):
@@ -290,6 +295,7 @@ class TextChannel:
         if self.fail_send:
             raise HTTPException("boom")
         msg = Message(self, content or "", ([embed] if embed else []) + list(embeds or []), view, author=getattr(self.guild, "me", None))
+        msg.file = kw.get("file")
         self.sent.append(msg)
         return msg
 
@@ -608,6 +614,17 @@ def _select(**kwargs):
     return deco
 
 
+class FileUpload(Item):
+    def __init__(self, *, min_values=1, max_values=1, required=True, custom_id=None, id=None):
+        self.min_values, self.max_values, self.required = min_values, max_values, required
+        self.values = []
+
+
+class Label(Item):
+    def __init__(self, *, text, component, description=None, id=None):
+        self.text, self.component, self.description = text, component, description
+
+
 class Modal:
     def __init_subclass__(cls, *, title=None, **kw):
         super().__init_subclass__()
@@ -670,6 +687,7 @@ def install():
     ui = types.ModuleType("discord.ui")
     ui.View, ui.Button, ui.Select, ui.RoleSelect, ui.Modal, ui.TextInput, ui.Item = View, Button, Select, RoleSelect, Modal, TextInput, Item
     ui.UserSelect, ui.ChannelSelect = UserSelect, ChannelSelect
+    ui.FileUpload, ui.Label = FileUpload, Label
     ui.button, ui.select = _button, _select
     d.ui = ui
     d.ChannelType = ChannelType
