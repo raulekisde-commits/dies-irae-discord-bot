@@ -18,7 +18,7 @@ import guildshop_db as gdb  # noqa: E402
 import wujupon as wj  # noqa: E402
 import wujupon_db as wdb  # noqa: E402
 
-T20, T30 = "shop_discount", "shop_discount_30"
+T15, T20, T30 = "shop_discount_15", "shop_discount", "shop_discount_30"
 
 
 class OfferMathTests(unittest.TestCase):
@@ -34,7 +34,13 @@ class OfferMathTests(unittest.TestCase):
         bp, net = gdb.offer_with_ticket(45_000_000, T30)                # 35M al 30 % + 10M al 10 %
         self.assertEqual(net, 24_500_000 + 9_000_000)
 
+    def test_15_hasta_20m(self):
+        self.assertEqual(gdb.offer_with_ticket(20_000_000, T15), (1500, 17_000_000))
+        bp, net = gdb.offer_with_ticket(30_000_000, T15)                # 20M al 15 % + 10M al 10 %
+        self.assertEqual(net, 17_000_000 + 9_000_000)
+
     def test_etiquetas(self):
+        self.assertEqual(gdb.ticket_label(T15), "15% hasta 20,000,000")
         self.assertEqual(gdb.ticket_label(T20), "20% hasta 20,000,000")
         self.assertEqual(gdb.ticket_label(T30), "30% hasta 35,000,000")
 
@@ -77,6 +83,12 @@ class TicketDescuentoTests(_Harness):
         ids = [c.custom_id for c in q.view.children]
         self.assertEqual(ids, ["gshop:ticket_use30", "gshop:ticket_skip"])
         self.assertIn("30% hasta 35,000,000", q.content)
+
+    def test_boton_del_ticket_15(self):
+        self.give(T15)
+        ch, _ = self.open_ticket()
+        q = self.question(ch)
+        self.assertEqual([c.custom_id for c in q.view.children], ["gshop:ticket_use15", "gshop:ticket_skip"])
 
     def test_ticket_20_hasta_20m(self):
         cid = self.give(T20)

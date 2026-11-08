@@ -1023,9 +1023,10 @@ class WujuponCog(commands.Cog):
         p = await self.run(wdb.get_prize, premio)
         await _say(interaction, f"✅ Carta `#{card_id}` **{p.name}** agregada al inventario de {usuario.mention}.")
 
-    @wj.command(name="dar-ticket", description="(Council) Da tickets de descuento del Guild Shop (20 % hasta 20M o 30 % hasta 35M)")
+    @wj.command(name="dar-ticket", description="(Council) Da tickets de descuento del Guild Shop (15 % o 20 % hasta 20M, 30 % hasta 35M)")
     @app_commands.describe(usuario="Persona", tipo="Qué ticket", cantidad="Cuántos (1 a 20)", motivo="Motivo")
-    @app_commands.choices(tipo=[app_commands.Choice(name="20 % hasta 20M", value="shop_discount"),
+    @app_commands.choices(tipo=[app_commands.Choice(name="15 % hasta 20M", value="shop_discount_15"),
+                                app_commands.Choice(name="20 % hasta 20M", value="shop_discount"),
                                 app_commands.Choice(name="30 % hasta 35M", value="shop_discount_30")])
     async def give_ticket(self, interaction: discord.Interaction, usuario: discord.Member, tipo: app_commands.Choice[str],
                           cantidad: Optional[int] = 1, motivo: Optional[str] = None):

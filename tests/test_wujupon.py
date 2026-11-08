@@ -7,6 +7,7 @@ import random
 import sys
 import threading
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -56,12 +57,18 @@ class CatalogTests(unittest.TestCase):
             by[c[2]] = by.get(c[2], 0) + c[3]
         self.assertEqual(by, {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
+    def test_monto_al_azar_entre_1_y_el_tope(self):
+        rng = random.Random(7)
+        vals = [wdb.random_amount(50, rng) for _ in range(500)] + [wdb.random_amount(50) for _ in range(500)]
+        self.assertTrue(all(1 <= v <= 50 for v in vals))
+        self.assertGreater(len(set(vals)), 30)
+
     def test_costo_esperado(self):
         prizes = [wdb.Prize(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], bool(c[9]), True, c[10], False, bool(c[11]))
                   for c in wdb.CATALOG]
         exp = wdb.expected_cost(prizes)
         silver = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE
-        self.assertAlmostEqual(silver + exp["val"], 294_200, places=3)      # margen ≈ 41 % con la tirada a 500.000 (v10)
+        self.assertAlmostEqual(silver + exp["val"], 230_412.54925, places=3)  # margen ≈ 54 % con la tirada a 500.000 (v11)
         self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
     def test_texto_de_chance(self):
@@ -70,8 +77,16 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(wdb.chance_text(15200), "15,2 %")
 
 
+def _max_amount(test):
+    """Los montos de Wuju/embo salen al azar (1..tope); en los tests que miran saldos se fija el tope."""
+    patcher = mock.patch.object(wdb, "random_amount", lambda top, rng=None: top)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 class DbBase(unittest.TestCase):
     def setUp(self):
+        _max_amount(self)
         import tempfile
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "t.sqlite3")
@@ -128,7 +143,7 @@ class WujuponDbTests(DbBase):
         self.assertEqual(wdb.get_card(self.db, r.card_id).status, "consumed")
         self.assertEqual(wdb.inventory(self.db, 5), [])
         hist = eco.get_history(self.db, 5)
-        self.assertIn("Wujupón: 2.000.000 Wuju Coins", hist[0].reason)
+        self.assertIn("Wujupón: Hasta 2.000.000 Wuju Coins", hist[0].reason)
         r = wdb.pull(self.db, 5, "p2", rng=FixedRng(offset_of("embo_100")))
         self.assertEqual(embo_db.get_balance(self.db, 5), 100)
         self.assertIn("Wujupón", embo_db.history(self.db, 5)[0][4])
@@ -377,7 +392,7 @@ class CatalogoV2Tests(DbBase):
     def test_cartas_automaticas(self):
         auto = {c[0] for c in wdb.CATALOG if c[5]}
         base = {"sell_cooldown", "wuju_100k", "embo_50", "wuju_500k", "embo_100", "wuju_2m", "embo_500",
-                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount", "shop_discount_30"}
+                "wuju_15m", "embo_1000", "gendarme_photo", "shop_discount_15", "shop_discount", "shop_discount_30"}
         self.assertEqual(auto, base | set(wdb.EFFECT_HANDLERS))
         for k in ("undo_coinflip", "coinflip_15m", "coinflip_20m", "coinflip_nolimit", "duel_1v1"):
             self.assertIn(k, auto)
@@ -397,7 +412,7 @@ class CatalogoV2Tests(DbBase):
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "flex_cta")
-        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 6200))
+        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 700))
         # una edición posterior del Council se mantiene en los reinicios siguientes
         wdb.edit_prize(self.db, "flex_cta", actor_id=1, name="Flex", description="Mía")
         wdb._ready.discard(self.db)
@@ -601,6 +616,7 @@ class EmboDbTests(DbBase):
 # ============================================================
 class WujuponDiscordTests(DiscordBase):
     def setUp(self):
+        _max_amount(self)
         super().setUp()
         self.councilch = discord.TextChannel(COUNCIL_CH, self.guild, "council")
         self.feedch = discord.TextChannel(FEED_CH, self.guild, "wujupon")
@@ -812,7 +828,7 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.council)
         run(self.cog.odds_card.callback(self.cog, i, "flex_cta", "10", leg))
         self.assertIn("Legendaria", i.text)
-        self.assertIn("103,8 %", i.text)                               # avisa que ya no suma 100 %
+        self.assertIn("109,3 %", i.text)                               # avisa que ya no suma 100 %
         p = wdb.get_prize(self.db, "flex_cta")
         self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
 

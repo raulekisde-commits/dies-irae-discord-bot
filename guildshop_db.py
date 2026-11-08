@@ -22,6 +22,7 @@ CURRENCIES = ("wuju", "silver")
 # Tickets de descuento (cartas de Wujupón): reemplazan el 10 % normal por un % mayor sobre los primeros N de la compra.
 # clave del premio → (descuento en bp, tope de la compra al que se aplica)
 TICKETS = {
+    "shop_discount_15": (1500, 20_000_000),   # 15 % hasta 20M
     "shop_discount": (2000, 20_000_000),      # 20 % hasta 20M
     "shop_discount_30": (3000, 35_000_000),   # 30 % hasta 35M
 }

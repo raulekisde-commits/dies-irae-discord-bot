@@ -93,6 +93,10 @@ class DiscountTicketView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
+    @discord.ui.button(label="Usar ticket 15%", style=discord.ButtonStyle.success, custom_id="gshop:ticket_use15", emoji="🎟️")
+    async def use15(self, interaction: discord.Interaction, button):
+        await self.cog.on_discount_choice(interaction, "shop_discount_15")
+
     @discord.ui.button(label="Usar ticket 20%", style=discord.ButtonStyle.success, custom_id="gshop:ticket_use", emoji="🎟️")
     async def use(self, interaction: discord.Interaction, button):
         await self.cog.on_discount_choice(interaction, "shop_discount")
@@ -107,7 +111,8 @@ class DiscountTicketView(discord.ui.View):
 
     def only(self, owned) -> "DiscountTicketView":
         """Deja solo los botones de los tickets que tiene el comprador (los callbacks siguen por custom_id)."""
-        keep = {"gshop:ticket_skip"} | {"gshop:ticket_use" if k == "shop_discount" else "gshop:ticket_use30" for k in owned}
+        ids = {"shop_discount_15": "gshop:ticket_use15", "shop_discount": "gshop:ticket_use", "shop_discount_30": "gshop:ticket_use30"}
+        keep = {"gshop:ticket_skip"} | {ids[k] for k in owned if k in ids}
         for item in list(self.children):
             if getattr(item, "custom_id", None) not in keep:
                 self.remove_item(item)
