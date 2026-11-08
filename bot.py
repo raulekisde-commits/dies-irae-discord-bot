@@ -4663,6 +4663,26 @@ async def cta_ask_final(interaction: discord.Interaction, run_id: Optional[int],
     await interaction.response.send_message(text, view=CTAFinalConfirmView(int(run_id), state, interaction.user.id), ephemeral=True)
 
 
+CTA_VOICE_FROM_ID = int(os.getenv("CTA_VOICE_FROM_ID", "1257910727843250177"))
+CTA_VOICE_TO_ID = int(os.getenv("CTA_VOICE_TO_ID", "1257899850327130244"))
+
+
+async def cta_move_voice_after_close(run: dict):
+    """Al cerrar la CTA: mueve a todos los del voice de la CTA al voice de después."""
+    guild = bot.get_guild(int(run["guild_id"]))
+    if guild is None:
+        return
+    src, dst = guild.get_channel(CTA_VOICE_FROM_ID), guild.get_channel(CTA_VOICE_TO_ID)
+    if not isinstance(src, discord.VoiceChannel) or not isinstance(dst, (discord.VoiceChannel, discord.StageChannel)):
+        print(f"CTA #{run['id']}: no encuentro los voice para mover ({CTA_VOICE_FROM_ID} → {CTA_VOICE_TO_ID}).")
+        return
+    for m in list(src.members):
+        try:
+            await m.move_to(dst, reason=f"CTA #{run['id']} cerrada")
+        except Exception as exc:
+            print(f"CTA #{run['id']}: no pude mover a {m.id}: {exc!r}")
+
+
 async def cta_finish_run(run_id: int, actor_id: int):
     """Botón «Cerrar CTA». Devuelve (texto para quien lo apretó, si corresponde ofrecer borrar el mensaje)."""
     run = cta_run_get(run_id)
@@ -4678,6 +4698,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
     voice = bot.get_cog("CTAVoiceCog")
     if voice is not None:
         await voice.stop_run(run_id)
+    await cta_move_voice_after_close(run)                 # después de cortar el seguimiento de voz
     stats_note = await cta_create_stats_panel_once(run, actor_id)         # normalmente ya existe desde que cerró la inscripción
     await cta_post_voice_lists(run_id)                                    # recién ahora hay datos de voz completos
     await cta_delete_thread(run)                          # el hilo donde se anotaron se borra al cerrar la CTA
