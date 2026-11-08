@@ -76,9 +76,11 @@ SELECT user_id,
                SUM(CASE WHEN m.kind IN ({stakes}) THEN -m.delta ELSE 0 END) AS staked,
                SUM(m.delta) AS net
           FROM eco_movements m
-          LEFT JOIN bets  b ON m.related_id = 'bet:'  || b.id
-          LEFT JOIN games g ON m.related_id = 'game:' || g.id
-          LEFT JOIN duels d ON m.related_id = 'duel:' || d.id
+          -- se busca por id (usa la clave primaria) y se confirma el texto completo; comparar solo con 'x:' || id
+          -- obligaba a recorrer la tabla entera por cada movimiento (segundos con miles de partidas)
+          LEFT JOIN bets  b ON b.id = CAST(substr(m.related_id, 5) AS INTEGER) AND m.related_id = 'bet:'  || b.id
+          LEFT JOIN games g ON g.id = CAST(substr(m.related_id, 6) AS INTEGER) AND m.related_id = 'game:' || g.id
+          LEFT JOIN duels d ON d.id = CAST(substr(m.related_id, 6) AS INTEGER) AND m.related_id = 'duel:' || d.id
           LEFT JOIN stats_reset r ON r.user_id = m.user_id
          WHERE m.kind IN ({results})
            AND (b.status = 'resolved' OR g.status = 'done' OR d.status = 'done')

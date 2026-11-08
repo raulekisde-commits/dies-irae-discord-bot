@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS duels (
 );
 CREATE INDEX IF NOT EXISTS idx_duels_open ON duels(status, ends_at);
 CREATE INDEX IF NOT EXISTS idx_duels_msg ON duels(message_id);
+CREATE INDEX IF NOT EXISTS idx_duels_challenger ON duels(challenger_id);
+CREATE INDEX IF NOT EXISTS idx_duels_challenged ON duels(challenged_id);
 """
 
 

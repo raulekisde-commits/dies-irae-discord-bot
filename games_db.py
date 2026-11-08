@@ -68,6 +68,10 @@ def init_schema(db_path: str) -> None:
         conn.executescript(SCHEMA)
         if "creator_side" not in {r["name"] for r in conn.execute("PRAGMA table_info(games)")}:       # bases creadas antes de esta opción
             conn.execute("ALTER TABLE games ADD COLUMN creator_side TEXT")
+        # índices de rendimiento: juegos vencidos (cada 5 s), winrate/rachas/historial por tipo y por persona
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_games_due ON games(status, ends_at) WHERE status = 'open'")   # parcial: solo los abiertos
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_games_kind_status ON games(kind, status, resolved_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_game_players_user ON game_players(user_id)")
     finally:
         conn.close()
     pf.init_schema(db_path)
