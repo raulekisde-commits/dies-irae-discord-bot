@@ -23,9 +23,9 @@ class SorteoBase(DiscordBase):
         self.guild.members.append(self.staff)
         self.cog = run(sg.setup_sorteos(self.bot, self.db, GUILD_ID, STAFF_ROLE))
 
-    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None, bal=None, anotar_rol=False):
+    def create(self, user=None, prize="Premio", tiempo="1:00", winners=1, rol=None, bal=None, anotar_rol=False, jugadores=None):
         i = self.inter(user or self.staff)
-        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol, bal, anotar_rol))
+        run(self.cog.sorteo.callback(self.cog, i, prize, tiempo, winners, rol, bal, anotar_rol, None, jugadores))
         return i
 
     def msg(self):
@@ -137,6 +137,45 @@ class AnotarRolTests(SorteoBase):
     def test_sin_la_opcion_no_anota_a_nadie(self):
         self.create(rol=self.r_vip)
         self.assertEqual(sdb.count_entrants(self.db, self.msg().id), 0)
+
+
+class JugadoresTests(SorteoBase):
+    def test_anota_solo_a_los_mencionados(self):
+        i = self.create(jugadores=f"<@{self.alice.id}> <@!{self.bob.id}> <@{self.alice.id}>")
+        self.assertIn("Solo jugadores anotados: 2", i.text)
+        g = sdb.get(self.db, self.msg().id)
+        self.assertTrue(g.closed)
+        self.assertEqual(sorted(g.entrants), sorted([self.alice.id, self.bob.id]))
+        self.assertTrue(any("anotados" in str(f[0]).lower() for f in self.msg().embeds[0].fields))
+
+    def test_otro_no_puede_anotarse(self):
+        self.create(jugadores=f"<@{self.alice.id}>")
+        self.assertIn("solo para los jugadores anotados", self.join(self.bob).text)
+        self.assertIn("Ya estabas anotado", self.join(self.alice).text)
+        self.assertEqual(sorted(sdb.get(self.db, self.msg().id).entrants), [self.alice.id])
+
+    def test_sortea_solo_entre_los_mencionados(self):
+        self.create(jugadores=f"<@{self.alice.id}> <@{self.bob.id}>", winners=2)
+        m = self.msg()
+        self.past(m.id)
+        run(self.cog.process_due())
+        txt = [x.content for x in self.panelch.sent if x.content][-1]
+        for u in (self.alice, self.bob):
+            self.assertIn(f"<@{u.id}>", txt)
+        self.assertNotIn(f"<@{self.council.id}>", txt)
+
+    def test_sin_jugadores_validos(self):
+        self.assertIn("No encontré jugadores válidos", self.create(jugadores="nadie <@123>").text)
+        self.assertEqual(len([m for m in self.panelch.sent if m.embeds]), 0)
+
+    def test_no_se_combina_con_anotar_rol(self):
+        r = discord.Role(777000000000000001, "VIP", self.guild)
+        self.assertIn("no los dos juntos", self.create(rol=r, anotar_rol=True, jugadores=f"<@{self.alice.id}>").text)
+
+    def test_sin_la_opcion_sigue_abierto(self):
+        self.create()
+        self.assertFalse(sdb.get(self.db, self.msg().id).closed)
+        self.assertIn("quedaste anotado", self.join(self.bob).text)
 
 
 class BalTests(SorteoBase):
