@@ -186,6 +186,27 @@ def save_battle(db_path: str, battle_id: str, cta_id: Optional[int], loaded_by: 
         conn.close()
 
 
+def attach_to_cta(db_path: str, battle_id: str, cta_id: int, actor_id: int) -> Tuple[str, Optional[int]]:
+    """Batalla ya cargada que se vuelve a cargar desde una CTA. Devuelve (estado, cta_actual):
+    'attached' (estaba suelta: ahora es de esta CTA) | 'same' (ya era de esta CTA) | 'other' (es de otra CTA: no se mueve) | 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT cta_id FROM kb_battles WHERE battle_id=?", (battle_id,)).fetchone()
+            if r is None:
+                return "missing", None
+            if r["cta_id"] is None:
+                conn.execute("UPDATE kb_battles SET cta_id=? WHERE battle_id=? AND cta_id IS NULL", (cta_id, battle_id))
+                conn.execute("INSERT INTO kb_audit(battle_id, action, actor_id, at, details) VALUES (?,?,?,?,?)",
+                             (battle_id, "attach", actor_id, utcnow_iso(), json.dumps({"cta_id": cta_id})))
+                return "attached", cta_id
+            if int(r["cta_id"]) == int(cta_id):
+                return "same", cta_id
+            return "other", int(r["cta_id"])
+    finally:
+        conn.close()
+
+
 def delete_battle(db_path: str, battle_id: str, actor_id: int) -> bool:
     conn = connect(db_path)
     try:

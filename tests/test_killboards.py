@@ -194,3 +194,67 @@ class TopStatsTests(KBBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PanelYTareaTests(KBBase):
+    """La carga desde la CTA siempre actualiza el panel de stats y cierra la tarea «Cargar el killboard»."""
+
+    def setUp(self):
+        super().setUp()
+        import encargos as enc
+        self.enc = enc
+        tasks_ch = discord.TextChannel(enc.TASKS_CHANNEL_ID, self.guild, "tareas")
+        self.bot.channels[tasks_ch.id] = tasks_ch
+        self.ecog = run(enc.setup_encargos(self.bot, self.db, GUILD_ID))
+        self.ecog.ticker.cancel()
+        run(self.ecog.create(text="Cargar el killboard", created_by=1, source="cta:5:killboard"))
+
+    def task_status(self):
+        import encargos_db as edb
+        return edb.find_by_source(self.db, "cta:5:killboard").status
+
+    def test_boton_del_panel_carga_y_cierra_la_tarea(self):
+        view = kc.StatsPanelView(self.cog)
+        c = connect(self.db); c.execute("UPDATE cta_runs SET stats_message_id=4321 WHERE id=5"); c.close()
+        msg = discord.Message(self.thread); msg.id = 4321
+        i = self.inter(self.stf, channel=self.thread, message=msg)
+        run([b for b in view.children if b.custom_id == "kbpanel:killboard"][0].callback(i))
+        modal = i.modals[0]
+        modal.links.value = "1473088480"
+        run(modal.on_submit(self.inter(self.stf, channel=self.thread, message=msg)))
+        self.assertEqual([b["battle_id"] for b in kb.battles_of_cta(self.db, 5)], ["1473088480"])
+        self.assertEqual(self.task_status(), "done")
+
+    def test_batalla_cargada_suelta_se_asocia_a_la_cta(self):
+        self.load(self.stf, "1473088480")                                       # suelta (fuera del hilo de stats)
+        self.assertEqual(kb.battles_of_cta(self.db, 5), [])
+        self.assertEqual(self.task_status(), "open")
+        i = self.load(self.stf, "1473088480", channel=self.thread)              # después, desde la CTA
+        self.assertIn("ahora cuenta para esta CTA", i.text)
+        self.assertEqual([b["battle_id"] for b in kb.battles_of_cta(self.db, 5)], ["1473088480"])
+        self.assertEqual(self.task_status(), "done")
+
+    def test_batalla_de_otra_cta_no_se_mueve(self):
+        c = connect(self.db)
+        c.execute("INSERT INTO cta_runs(id, snapshot_json, status, final_state, stats_thread_id) VALUES (6, '{\"slots\": []}', 'closed', 'finished', 666)")
+        c.close()
+        self.load(self.stf, "1473088480", channel=discord.TextChannel(666, self.guild, "otro"))
+        i = self.load(self.stf, "1473088480", channel=self.thread)
+        self.assertIn("ya está cargado en la CTA #6", i.text)
+        self.assertEqual(kb.battles_of_cta(self.db, 5), [])
+        self.assertEqual(self.task_status(), "open")
+
+    def test_si_falla_el_panel_la_tarea_igual_se_cierra(self):
+        async def boom(_cta_id):
+            raise RuntimeError("panel roto")
+        self.cog.refresh_stats_panel = boom
+        self.load(self.stf, "1473088480", channel=self.thread)
+        self.assertEqual(self.task_status(), "done")
+
+    def test_recargar_en_la_misma_cta_resincroniza(self):
+        self.load(self.stf, "1473088480", channel=self.thread)
+        import encargos_db as edb
+        c = connect(self.db); c.execute("UPDATE tasks SET status='open', done_by=NULL WHERE source='cta:5:killboard'"); c.close()
+        i = self.load(self.stf, "1473088480", channel=self.thread)              # p. ej. la primera vez falló cerrar la tarea
+        self.assertIn("ya estaba cargado en esta CTA", i.text)
+        self.assertEqual(edb.find_by_source(self.db, "cta:5:killboard").status, "done")
