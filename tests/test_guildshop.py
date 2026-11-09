@@ -648,6 +648,40 @@ class ShopDiscordTests(unittest.TestCase):
         self.assertIn("2,700,000", self.shopch.sent[0].embeds[0].description)
         self.assertIn("silver", self.logch.sent[0].embeds[0].title)
 
+    def fake_wujupon(self):
+        given = []
+
+        class FakeWujupon:
+            async def run(self, fn, **kw):
+                given.append((kw["user_id"], kw["count"], kw["request_key"]))
+                return 4
+
+            async def _channel(self, _setting):
+                return None
+        self.bot.get_cog = (lambda old: lambda name: FakeWujupon() if name == "WujuponCog" else old(name))(self.bot.get_cog)
+        return given
+
+    def test_sale_over_3m_gives_spin_to_whoever_confirms(self):
+        gdb.set_log_channel_id(self.db, LOG_CH)
+        given = self.fake_wujupon()
+        self.publish_panels()
+        ch, _ = self.open_ticket()
+        self.start_sale(ch, self.seller, "silver", "3.000.001")                # valor total > 3M (lo cobrado es menos por el 10 %)
+        self.confirm(ch, self.seller2)                                          # confirma otro Seller: la tirada es para él
+        self.assertEqual(len(given), 1)
+        self.assertEqual(given[0][:2], (self.seller2.id, 1))
+        self.assertTrue(given[0][2].startswith("gshop-sale:"))
+        self.assertTrue(any("tirada de Wujupón" in m.content for m in ch.sent if m.content))
+        self.assertTrue(any(f[0] == "🎰 Wujupón" for f in self.logch.sent[-1].embeds[0].fields))
+
+    def test_sale_of_exactly_3m_or_less_gives_no_spin(self):
+        given = self.fake_wujupon()
+        self.publish_panels()
+        ch, _ = self.open_ticket()
+        self.start_sale(ch, self.seller, "silver", "3.000.000")                 # justo 3M: no supera
+        self.confirm(ch, self.seller)
+        self.assertEqual(given, [])
+
     def test_silver_cancel_records_nothing(self):
         ch, _ = self.open_ticket()
         self.start_sale(ch, self.seller, "silver", "1000")
