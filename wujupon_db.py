@@ -1079,6 +1079,30 @@ def gift_spins(db_path: str, *, actor_id: int, user_id: int, count: int, request
         conn.close()
 
 
+def gift_spins_capped(db_path: str, *, actor_id: int, user_id: int, count: int, group: str, cap: int, reason: str) -> Optional[int]:
+    """Regala tiradas a los primeros `cap` usuarios distintos de un grupo (p. ej. «combatlog:<cta>»), una sola vez por usuario.
+    Atómico: el conteo y el regalo van en la misma transacción. Devuelve las tiradas resultantes, o None si ya recibió o se llenó el cupo."""
+    if count <= 0 or count > 1000:
+        raise WujuponError("La cantidad de tiradas tiene que estar entre 1 y 1000.")
+    request_key = f"{group}:{int(user_id)}"
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM wjp_ops WHERE request_key = ?", (request_key,)).fetchone():
+                return None
+            given = conn.execute("SELECT COUNT(*) FROM wjp_ops WHERE request_key LIKE ? ESCAPE '\\'",
+                                 (group.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%",)).fetchone()[0]
+            if given >= cap:
+                return None
+            after = _add_spins(conn, user_id, count)
+            conn.execute("INSERT INTO wjp_ops(request_key, kind, user_id, actor_id, spins, cost, reason, created_at) "
+                         "VALUES (?,?,?,?,?,0,?,?)", (request_key, "gift", user_id, actor_id, count, reason, utcnow_iso()))
+            _log(conn, actor_id, "gift_spins", user_id, request_key, f"{count} · {reason}")
+            return after
+    finally:
+        conn.close()
+
+
 @dataclass
 class PullResult:
     status: str                       # ok | duplicate | no_spins | empty
