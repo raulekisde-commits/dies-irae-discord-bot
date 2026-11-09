@@ -300,10 +300,23 @@ class KillboardCog(commands.Cog):
         if len(ids) > MAX_BATTLES_PER_LOAD:
             return await _say(interaction, f"❌ Máximo {MAX_BATTLES_PER_LOAD} batallas por vez.")
         await interaction.response.defer(ephemeral=True)
-        lines, loaded = [], 0
+        lines, loaded, linked = [], 0, 0                  # linked: ya cargadas que quedan (o ya estaban) en esta CTA
         for bid in ids:
             if await self.run(battle_exists, bid):
-                lines.append(f"↪️ `{bid}` ya estaba cargado: lo salteé.")
+                if cta_id is None:
+                    lines.append(f"↪️ `{bid}` ya estaba cargado: lo salteé.")
+                    continue
+                state, other = await self.run(kb.attach_to_cta, bid, cta_id, me.id)
+                if state == "attached":
+                    linked += 1
+                    lines.append(f"🔗 `{bid}` ya estaba cargado suelto: ahora cuenta para esta CTA.")
+                elif state == "same":
+                    linked += 1
+                    lines.append(f"↪️ `{bid}` ya estaba cargado en esta CTA.")
+                elif state == "other":
+                    lines.append(f"⚠️ `{bid}` ya está cargado en la CTA #{other}: no lo moví. Si es de esta, borralo con `/killboard borrar` y cargalo acá.")
+                else:
+                    lines.append(f"↪️ `{bid}` ya estaba cargado: lo salteé.")
                 continue
             try:
                 parsed = await self.fetch_battle(bid)
@@ -326,16 +339,20 @@ class KillboardCog(commands.Cog):
             warn = f" ⚠️ {parsed['ts_missing']} muerte(s) sin hora" if parsed["ts_missing"] else ""
             lines.append(f"✅ `{bid}`: {len(parsed['players'])} jugadores de {GUILD_NAME}, {parsed['smogg_deaths']} muertes propias.{warn}")
         await _say(interaction, "\n".join(lines))
-        if cta_id is not None and loaded:
+        if cta_id is not None and (loaded or linked):
             await self.after_cta_load(interaction, cta_id)
 
     async def after_cta_load(self, interaction: discord.Interaction, cta_id: int):
-        await self.refresh_stats_panel(cta_id)
-        await self.sync_split_suggestions(cta_id)
+        # primero la tarea, y cada paso aislado: si uno falla, los demás igual se hacen
         enc = self.bot.get_cog("EncargosCog")
         if enc is not None:
             try:
                 await enc.complete_by_source(f"cta:{cta_id}:killboard", interaction.user.id)
+            except Exception:
+                traceback.print_exc()
+        for step in (self.refresh_stats_panel, self.sync_split_suggestions):
+            try:
+                await step(cta_id)
             except Exception:
                 traceback.print_exc()
         if not is_staff_or_council(interaction.user):
@@ -523,7 +540,11 @@ class KillboardCog(commands.Cog):
             run = conn.execute("SELECT stats_channel_id, stats_message_id FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
         finally:
             conn.close()
-        skips = await self.recompute_skips(cta_id)              # siempre, aunque la CTA no tenga panel
+        try:
+            skips = await self.recompute_skips(cta_id)          # siempre, aunque la CTA no tenga panel
+        except Exception:
+            traceback.print_exc()                               # si falla, el panel igual se actualiza
+            skips = []
         await self.refresh_voice_kb(cta_id)                     # lista extra del hilo (solo si la CTA ya terminó)
         if not run or not run["stats_message_id"]:
             return
