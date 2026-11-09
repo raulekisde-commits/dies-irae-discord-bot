@@ -23,7 +23,15 @@ class ContentFuente(unittest.TestCase):
         self.assertIn("CONTENT_CREATOR_ROLE_ID = 1258562816512884808", self.src)
         self.assertIn("any(r.id == CONTENT_CREATOR_ROLE_ID for r in member.roles)", self.src)
         self.assertIn('kind="content"', self.src)
-        self.assertIn('content_command.autocomplete("nombre")', self.src)
+        self.assertIn('content_command.autocomplete("nombre")(content_name_autocomplete)', self.src)
+
+    def test_content_compo_canal_y_split_ava(self):
+        self.assertIn('"cta_compositions", "content"', self.src)                        # columna nueva
+        self.assertIn("content: bool = False", self.src)                                   # /compo crear content (default false)
+        self.assertIn('if not comp.get("content"):', self.src)                            # /content solo con compos de content
+        self.assertIn('kind="content", channel=interaction.channel', self.src)            # se publica en el canal del comando
+        self.assertIn("is_ava = is_content or", self.src)                                  # split-ava
+        self.assertIn("if not is_content:", self.src)                                      # sin Bomb en el split
 
     def test_content_sin_bomb_ni_combatlog(self):
         self.assertIn('if bomb_action and not message.mentions and run.get("kind") != "content":', self.src)   # sin Bomb en el hilo
