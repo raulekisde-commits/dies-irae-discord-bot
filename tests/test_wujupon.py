@@ -68,7 +68,7 @@ class CatalogTests(unittest.TestCase):
                   for c in wdb.CATALOG]
         exp = wdb.expected_cost(prizes)
         silver = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE
-        self.assertAlmostEqual(silver + exp["val"], 230_412.54925, places=3)  # margen ≈ 54 % con la tirada a 500.000 (v11)
+        self.assertAlmostEqual(silver + exp["val"], 249_162.54925, places=3)  # margen ≈ 50 % con la tirada a 500.000 (v13)
         self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
     def test_texto_de_chance(self):
@@ -138,16 +138,17 @@ class WujuponDbTests(DbBase):
         import embo_db
         wdb.gift_spins(self.db, actor_id=1, user_id=5, count=2, request_key="g", reason="t")
         r = wdb.pull(self.db, 5, "p1", rng=FixedRng(offset_of("wuju_2m")))
-        self.assertIn("2,000,000", r.credited)
-        self.assertEqual(eco.get_balance(self.db, 5), 2_000_000)
+        self.assertIn("2,600,000", r.credited)
+        self.assertEqual(r.gained, "2,600,000 Wuju Coins")
+        self.assertEqual(eco.get_balance(self.db, 5), 2_600_000)
         self.assertEqual(wdb.get_card(self.db, r.card_id).status, "consumed")
         self.assertEqual(wdb.inventory(self.db, 5), [])
         hist = eco.get_history(self.db, 5)
-        self.assertIn("Wujupón: Hasta 2.000.000 Wuju Coins", hist[0].reason)
+        self.assertIn("Wujupón: Hasta 2.600.000 Wuju Coins", hist[0].reason)
         r = wdb.pull(self.db, 5, "p2", rng=FixedRng(offset_of("embo_100")))
-        self.assertEqual(embo_db.get_balance(self.db, 5), 100)
+        self.assertEqual(embo_db.get_balance(self.db, 5), 130)
         self.assertIn("Wujupón", embo_db.history(self.db, 5)[0][4])
-        self.assertEqual(wdb.get_stats(self.db).paid.get("wuju"), 2_000_000)      # cuenta en las estadísticas
+        self.assertEqual(wdb.get_stats(self.db).paid.get("wuju"), 2_600_000)      # cuenta en las estadísticas
 
     def test_distribucion_aproximada(self):
         prizes = wdb.list_prizes(self.db, True)
@@ -168,15 +169,15 @@ class WujuponDbTests(DbBase):
         cid = self._card("wuju_500k")
         r = wdb.redeem(self.db, card_id=cid, user_id=5, details="", request_key="r1", guild_id=GUILD_ID)
         self.assertEqual(r.status, "auto")
-        self.assertEqual(eco.get_balance(self.db, 5), 500_000)
+        self.assertEqual(eco.get_balance(self.db, 5), 650_000)
         r2 = wdb.redeem(self.db, card_id=cid, user_id=5, details="", request_key="r2", guild_id=GUILD_ID)
         self.assertEqual(r2.status, "not_available")
-        self.assertEqual(eco.get_balance(self.db, 5), 500_000)
+        self.assertEqual(eco.get_balance(self.db, 5), 650_000)
 
     def test_canje_automatico_embo(self):
         cid = self._card("embo_100")
         self.assertEqual(wdb.redeem(self.db, card_id=cid, user_id=5, details="", request_key="r", guild_id=GUILD_ID).status, "auto")
-        self.assertEqual(embo_db.get_balance(self.db, 5), 100)
+        self.assertEqual(embo_db.get_balance(self.db, 5), 130)
 
     def test_no_se_canjea_carta_ajena(self):
         cid = self._card("wuju_100k", uid=6)
@@ -1061,8 +1062,8 @@ class WujuponDiscordTests(DiscordBase):
             cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key=key, reason="t")
             edb.apply_forced(self.db, card_id=cid, user_id=self.alice.id, prize_key=key, action=action, amount=amount, minutes=None)
         wuju, embo = wdb.money_stats(self.db)
-        self.assertEqual((wuju.given, wuju.removed, wuju.net), (2_000_000, 300_000, 1_700_000))
-        self.assertEqual((embo.given, embo.removed, embo.net), (150, 15, 135))
+        self.assertEqual((wuju.given, wuju.removed, wuju.net), (2_600_000, 300_000, 2_300_000))
+        self.assertEqual((embo.given, embo.removed, embo.net), (195, 15, 180))
         # premios con costo máximo: un arma entregada por encargo
         cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="weapon_73", reason="t")
         r = wdb.redeem(self.db, card_id=cid, user_id=self.alice.id, details="", request_key="w", guild_id=GUILD_ID)
@@ -1077,8 +1078,8 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.admin)
         run(self.cog.stats_money.callback(self.cog, i, None))
         e = i.response.sent[0][1]["embed"]
-        self.assertIn("1,700,000", " ".join(v for _, v, _ in e.fields))
-        self.assertIn("3,050,000", " ".join(v for _, v, _ in e.fields))   # 1,7M + 135 embo × 10.000
+        self.assertIn("2,300,000", " ".join(v for _, v, _ in e.fields))
+        self.assertIn("4,100,000", " ".join(v for _, v, _ in e.fields))   # 2,3M + 180 embo × 10.000
         i = self.inter(self.admin)
         run(self.cog.stats_prizes.callback(self.cog, i, None))
         e = i.response.sent[0][1]["embed"]

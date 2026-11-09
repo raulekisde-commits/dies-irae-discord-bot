@@ -52,10 +52,10 @@ CATALOG = [
      "Te saca el cooldown de «Cobrar balance». Si no tenés cooldown, la carta no se gasta.", 0),
     ("gendarme_photo", "Foto de la cola de Gendarme", "common", 6200, "Bot", "photo", 0, 0, "", 0,
      "Te llega la foto en el canal +18, como spoiler, y se borra a los 60 s.", 0),
-    ("wuju_100k", "Hasta 100.000 Wuju Coins", "common", 5000, "Bot", "wuju", 100_000, 100_000, "wuju", 0,
-     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 100.000.", 0),
-    ("embo_50", "Hasta 50 de embo", "common", 1500, "Bot", "embo", 50, 50, "embo", 0,
-     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 50.", 0),
+    ("wuju_100k", "Hasta 130.000 Wuju Coins", "common", 5000, "Bot", "wuju", 130_000, 130_000, "wuju", 0,
+     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 130.000.", 0),
+    ("embo_50", "Hasta 65 de embo", "common", 1500, "Bot", "embo", 65, 65, "embo", 0,
+     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 65.", 0),
     ("mute_chat_5", "Mute de chat 15 min", "common", 3500, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 15 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_5", "Mute de voice 15 min", "common", 3500, "Bot", None, 0, 0, "", 1,
@@ -91,10 +91,10 @@ CATALOG = [
      "Cerrás el casino si está abierto.", 0),
     ("free_build_p1", "Build libre en Party PRIO 1", "rare", 3300, "Staff", None, 0, 0, "", 0,
      "En Party PRIO 1 jugás con la build que quieras.", 0),
-    ("wuju_500k", "Hasta 500.000 Wuju Coins", "rare", 4000, "Bot", "wuju", 500_000, 500_000, "wuju", 0,
-     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 500.000.", 0),
-    ("embo_100", "Hasta 100 de embo", "rare", 2000, "Bot", "embo", 100, 100, "embo", 0,
-     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 100.", 0),
+    ("wuju_500k", "Hasta 650.000 Wuju Coins", "rare", 4000, "Bot", "wuju", 650_000, 650_000, "wuju", 0,
+     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 650.000.", 0),
+    ("embo_100", "Hasta 130 de embo", "rare", 2000, "Bot", "embo", 130, 130, "embo", 0,
+     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 130.", 0),
     ("freeze_30m", "Congelar balance 30 min", "rare", 1000, "Bot", None, 0, 0, "", 1,
      "Durante 30 min el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
@@ -153,10 +153,10 @@ CATALOG = [
      "Un arma 6.3 del Guild Shop de hasta 2M.", 0),
     ("chest_63", "Pecho 6.3 del Guild Shop (2M)", "epic", 600, "Staff", None, 0, 2_000_000, "silver", 0,
      "Un pecho 6.3 del Guild Shop de hasta 2M.", 0),
-    ("wuju_2m", "Hasta 2.000.000 Wuju Coins", "epic", 750, "Bot", "wuju", 2_000_000, 2_000_000, "wuju", 0,
-     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 2.000.000.", 0),
-    ("embo_500", "Hasta 500 de embo", "epic", 650, "Bot", "embo", 500, 500, "embo", 0,
-     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 500.", 0),
+    ("wuju_2m", "Hasta 2.600.000 Wuju Coins", "epic", 750, "Bot", "wuju", 2_600_000, 2_600_000, "wuju", 0,
+     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 2.600.000.", 0),
+    ("embo_500", "Hasta 650 de embo", "epic", 650, "Bot", "embo", 650, 650, "embo", 0,
+     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 650.", 0),
     ("freeze_2h", "Congelar balance 2 h", "epic", 600, "Bot", None, 0, 0, "", 1,
      "Durante 2 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
@@ -188,16 +188,16 @@ CATALOG = [
      "responde, te paga el 5 % de la apuesta." + SHIELD_NOTE, 0),
     ("weapon_83", "Arma 8.3 (hasta 12M)", "legendary", 100, "Staff", None, 0, 12_000_000, "silver", 0,
      "Un arma 8.3 de hasta 12M.", 0),
-    ("wuju_15m", "Jackpot hasta 15M Wuju Coins", "legendary", 100, "Bot", "wuju", 15_000_000, 15_000_000, "wuju", 0,
-     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 15.000.000.", 0),
+    ("wuju_15m", "Jackpot hasta 19,5M Wuju Coins", "legendary", 100, "Bot", "wuju", 19_500_000, 19_500_000, "wuju", 0,
+     "Se acreditan al instante en tu balance: un monto al azar entre 1 y 19.500.000.", 0),
     ("regear_full_5m", "Reequipo completo (5M)", "legendary", 400, "Staff", None, 0, 5_000_000, "silver", 0,
      "Reequipo completo para una CTA, con presupuesto de hasta 5M.", 0),
     ("custom_bomb", "Bomb personalizada", "legendary", 300, "Staff", None, 0, 0, "", 0,
      "Armás una bomb con 5 personas a elección.", 0),
     ("cta_free_mount", "CTA con montura de combate libre", "legendary", 200, "Staff", None, 0, 0, "", 0,
      "Vas a una CTA con la montura de combate que quieras. La montura la ponés vos, no el staff.", 0),
-    ("embo_1000", "Hasta 1.000 de embo", "legendary", 100, "Bot", "embo", 1000, 1000, "embo", 0,
-     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 1.000.", 0),
+    ("embo_1000", "Hasta 1.300 de embo", "legendary", 100, "Bot", "embo", 1_300, 1_300, "embo", 0,
+     "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 1.300.", 0),
     ("freeze_12h", "Congelar balance 12 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Durante 12 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
@@ -290,7 +290,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 12
+CATALOG_VERSION = 13
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -317,6 +317,7 @@ CATALOG_CHANGES = {
          "casino_open", "casino_close", "alter_ho_24h", "morgana_chest", "split_no_join", "deny_cta", "shield_4d",
          "mute_chat_5", "mute_voice_5", "mute_15", "voice_mute_15", "mute_chat_30", "mute_voice_30", "mute_chat_60",
          "mute_voice_60", "mute_chat_180", "mute_voice_180"),
+    13: ("wuju_100k", "wuju_500k", "wuju_2m", "wuju_15m", "embo_50", "embo_100", "embo_500", "embo_1000"),   # topes +30 %
 }
 
 SCHEMA = """
@@ -1089,6 +1090,7 @@ class PullResult:
     spins_left: int = 0
     request_id: Optional[int] = None  # carta mala: encargo creado solo para el Council
     credited: str = ""                # cartas de Wuju / embo: se acreditan apenas salen (texto del resultado)
+    gained: str = ""                  # cartas de Wuju / embo: monto que salió (para el anuncio público, sin balance)
 
 
 def draw(prizes: List[Prize], rng=None) -> Tuple[Prize, int]:
@@ -1135,12 +1137,15 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                    "VALUES (?,?,?,?,?,?,?,?)",
                                    (request_key, user_id, prize.key, prize.rarity, prize.weight, total, card_id, now)).lastrowid
             req_id = None
-            credited = ""
+            credited = gained = ""
             if prize.handler in ("wuju", "embo") and not prize.forced:
                 # Wuju Coins / embo: se acreditan apenas salen (motivo «Wujupón: <carta>»); no pasan por el inventario
                 conn.execute("UPDATE wjp_cards SET status = 'consumed' WHERE id = ?", (card_id,))
+                amount = random_amount(prize.amount)
+                gained = (f"{eco.format_amount(amount)} {eco.CURRENCY_NAME}" if prize.handler == "wuju"
+                          else f"{eco.format_amount(amount)} de embo")
                 credited = _run_handler(conn, prize, Card(int(card_id), user_id, prize.key, "consumed", "pull"),
-                                        guild_id=0, req_key=request_key)
+                                        guild_id=0, req_key=request_key, amount=amount)
                 conn.execute("INSERT INTO wjp_requests(request_key, card_id, user_id, prize_key, details, status, note, "
                              "created_at, updated_at) VALUES (?,?,?,?,'','auto',?,?,?)",
                              (f"pull:{request_key}", card_id, user_id, prize.key, credited, now, now))
@@ -1157,7 +1162,7 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                        "☠️ Carta mala: aplicarla al jugador que la sacó (salvo que tenga escudo o sea inmune).",
                                        now, now)).lastrowid
             return PullResult("ok", prize, int(card_id), int(pull_id), prize.weight, total, left,
-                              int(req_id) if req_id else None, credited)
+                              int(req_id) if req_id else None, credited, gained)
     finally:
         conn.close()
 
@@ -1349,9 +1354,10 @@ def random_amount(top: int, rng=None) -> int:
     return rng.randint(1, top) if rng is not None else 1 + secrets.randbelow(top)
 
 
-def _run_handler(conn, prize: Prize, card: Card, *, guild_id: int, req_key: str, rng=None) -> str:
+def _run_handler(conn, prize: Prize, card: Card, *, guild_id: int, req_key: str, rng=None,
+                 amount: Optional[int] = None) -> str:
     """Ejecuta un canje automático dentro de la transacción. Devuelve el texto del resultado o lanza _Abort."""
-    if prize.handler in ("wuju", "embo"):
+    if prize.handler in ("wuju", "embo") and amount is None:
         amount = random_amount(prize.amount, rng)
     if prize.handler == "wuju":
         op_id = eco.tx_new_operation(conn, kind="add", actor_id=card.user_id, request_key=f"wjp:card:{card.id}",
