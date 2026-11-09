@@ -4359,7 +4359,50 @@ async def cta_handle_combatlog_message(message: discord.Message) -> bool:
                     await message.add_reaction("✅")
             except Exception as exc:
                 print(f"CTA #{rows[0]['id']}: no pude terminar la tarea del combatlog: {exc!r}")
+    if cta_combatlog_text_file(message):
+        await cta_combatlog_reward(message, int(rows[0]["id"]))
     return True
+
+
+COMBATLOG_REWARD_CAP = 3          # los primeros 3 (personas distintas) que suben un archivo de texto ganan 1 tirada de Wujupón
+COMBATLOG_TEXT_EXT = (".txt", ".log")
+
+
+def cta_combatlog_text_file(message: discord.Message) -> bool:
+    """Trae un archivo de texto (.txt/.log o tipo text/*). Los links no cuentan."""
+    for a in message.attachments or []:
+        ctype = (getattr(a, "content_type", None) or "").lower()
+        if ctype.startswith("text/") or (getattr(a, "filename", "") or "").lower().endswith(COMBATLOG_TEXT_EXT):
+            return True
+    return False
+
+
+async def cta_combatlog_reward(message: discord.Message, cta_id: int) -> None:
+    """1 tirada de Wujupón a los primeros COMBATLOG_REWARD_CAP que suben el combatlog de esta CTA. Nunca rompe el hilo."""
+    wcog = bot.get_cog("WujuponCog")
+    if wcog is None:
+        return
+    try:
+        import wujupon_db as _wdb
+        after = await wcog.run(_wdb.gift_spins_capped, actor_id=bot.user.id if bot.user else 0, user_id=message.author.id, count=1,
+                               group=f"combatlog:{cta_id}", cap=COMBATLOG_REWARD_CAP, reason=f"Combatlog de la CTA #{cta_id}")
+    except Exception as exc:
+        print(f"CTA #{cta_id}: no pude dar la tirada del combatlog: {exc!r}")
+        return
+    if after is None:                                     # ya la recibió o se llenó el cupo
+        return
+    texto = f"🎰 {message.author.mention} ganó **1** tirada de Wujupón por subir el combatlog (ahora tiene {after})."
+    try:
+        await message.add_reaction("🎰")
+        await message.reply(texto, mention_author=False, allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{cta_id}: no pude avisar la tirada del combatlog: {exc!r}")
+    try:
+        log = await wcog._channel("gift_log_channel")
+        if log is not None:
+            await log.send(f"{texto}\n🧾 CTA #{cta_id} · en {message.channel.mention}\n🕒 <t:{int(time.time())}:f>", allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{cta_id}: no pude registrar la tirada del combatlog: {exc!r}")
 
 
 cta_role_tasks: set = set()

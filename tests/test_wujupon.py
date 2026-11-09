@@ -1178,3 +1178,38 @@ class WujuponDiscordTests(DiscordBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CombatlogRecompensaTests(DbBase):
+    """Combatlog: 1 tirada a los primeros 3 (personas distintas) que suben un archivo de texto en el hilo de una CTA."""
+
+    def give(self, uid, cta=7):
+        return wdb.gift_spins_capped(self.db, actor_id=1, user_id=uid, count=1, group=f"combatlog:{cta}", cap=3, reason="combatlog")
+
+    def test_solo_los_primeros_3_y_una_vez_por_persona(self):
+        self.assertEqual(self.give(10), 1)
+        self.assertIsNone(self.give(10))                                   # la misma persona no suma otra
+        self.assertEqual(self.give(11), 1)
+        self.assertEqual(self.give(12), 1)
+        self.assertIsNone(self.give(13))                                   # el cuarto ya no
+        self.assertEqual([wdb.get_spins(self.db, u) for u in (10, 11, 12, 13)], [1, 1, 1, 0])
+        self.assertEqual(self.give(13, cta=8), 1)                          # otra CTA: cupo nuevo
+        self.assertEqual(self.give(10, cta=70), 2)                         # «combatlog:70» no se mezcla con «combatlog:7»
+
+    def test_concurrencia_no_pasa_el_cupo(self):
+        import threading
+        out = []
+        ths = [threading.Thread(target=lambda u=u: out.append(self.give(u))) for u in range(100, 110)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
+        self.assertEqual(sum(1 for x in out if x is not None), 3)
+
+
+class CombatlogArchivoTextoTests(unittest.TestCase):
+    def test_detecta_archivo_de_texto_en_bot(self):
+        src = open(os.path.join(os.path.dirname(__file__), "..", "bot.py"), encoding="utf-8").read()
+        self.assertIn("COMBATLOG_REWARD_CAP = 3", src)
+        self.assertIn('COMBATLOG_TEXT_EXT = (".txt", ".log")', src)
+        self.assertIn("await cta_combatlog_reward(message, int(rows[0][\"id\"]))", src)
