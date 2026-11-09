@@ -23,6 +23,7 @@ TOP_LIMIT = 25
 CLOSE_DELAY_SECONDS = 5
 SALE_CLOSE_DELAY_SECONDS = 120          # después de confirmar una venta, el canal del ticket se borra solo a los 2 minutos
 GOLD = 0xF1C40F
+SALE_SPIN_MIN = 3_000_000          # quien confirma una venta con valor total MAYOR a esto gana 1 tirada de Wujupón
 
 
 def can_sell(member) -> bool:
@@ -657,6 +658,30 @@ class GuildShopCog(commands.Cog):
         if enc is not None and actor_id != buyer_id:
             await enc.record_done(text, actor_id, f"gshop:{ticket_id}")
 
+    async def _sale_spin(self, actor_id: int, t, p) -> str:
+        """1 tirada de Wujupón a quien confirma una venta con valor total > SALE_SPIN_MIN (una vez por ticket; no al propio comprador).
+        Devuelve el texto del aviso ('' si no corresponde o falló). Nunca rompe la venta."""
+        if p.gross <= SALE_SPIN_MIN or actor_id == t.buyer_id:
+            return ""
+        wcog = self.bot.get_cog("WujuponCog")
+        if wcog is None:
+            return ""
+        try:
+            import wujupon_db as wdb
+            after = await wcog.run(wdb.gift_spins, actor_id=self.bot.user.id if self.bot.user else 0, user_id=actor_id, count=1,
+                                   request_key=f"gshop-sale:{t.id}", reason=f"Venta Guild Shop #{t.id} (> {eco.format_amount(SALE_SPIN_MIN)})")
+        except Exception:
+            traceback.print_exc()
+            return ""
+        text = f"🎰 <@{actor_id}> ganó **1** tirada de Wujupón por cerrar una venta de más de {eco.format_amount(SALE_SPIN_MIN)} (ahora tiene {after})."
+        try:
+            log = await wcog._channel("gift_log_channel")
+            if log is not None:
+                await log.send(f"{text}\n🛒 Ticket del Guild Shop #{t.id}", allowed_mentions=NO_MENTIONS)
+        except Exception:
+            traceback.print_exc()
+        return text
+
     async def _delete_later(self, channel):
         if self.close_delay:
             await asyncio.sleep(self.close_delay)
@@ -750,6 +775,7 @@ class GuildShopCog(commands.Cog):
             return
         p, t = result.pending, result.ticket
         await self._record_task(interaction.user.id, t.buyer_id, f"Cerrar el ticket del Guild Shop #{t.id} (venta)", t.id)
+        spin_text = await self._sale_spin(interaction.user.id, t, p)
         await self._finish_msg(interaction, f"✅ Venta confirmada por {interaction.user.mention}.", view=None)
         done = discord.Embed(title=f"✅ Venta realizada — ticket #{t.id}", color=0x2ECC71)
         done.add_field(name="Comprador", value=f"<@{t.buyer_id}>", inline=True)
@@ -763,6 +789,8 @@ class GuildShopCog(commands.Cog):
                          if self.sale_close_delay >= 60 else "Venta confirmada: este canal se borra solo en unos segundos.")
         try:
             await interaction.channel.send(embed=done, allowed_mentions=NO_MENTIONS)
+            if spin_text:
+                await interaction.channel.send(spin_text, allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
         await self._disable_ticket_buttons(interaction.channel)
@@ -776,6 +804,8 @@ class GuildShopCog(commands.Cog):
         log.add_field(name="Cobrado", value=self.money_of(p.currency, p.net), inline=True)
         if p.currency == "wuju":
             log.add_field(name="Balance comprador", value=f"{self.wuju(result.balance_before)} → {self.wuju(result.balance_after)}", inline=True)
+        if spin_text:
+            log.add_field(name="🎰 Wujupón", value=spin_text[:1000], inline=False)
         log.add_field(name="Lista de compra", value=t.items[:1000], inline=False)
         await self.log(interaction.guild, log)
         await self.refresh_top_panel(interaction.guild)
