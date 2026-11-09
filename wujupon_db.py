@@ -190,7 +190,7 @@ CATALOG = [
      "Un arma 8.3 de hasta 12M.", 0),
     ("wuju_15m", "Jackpot hasta 19,5M Wuju Coins", "legendary", 100, "Bot", "wuju", 19_500_000, 19_500_000, "wuju", 0,
      "Se acreditan al instante en tu balance: un monto al azar entre 1 y 19.500.000.", 0),
-    ("regear_full_5m", "Reequipo completo (5M)", "legendary", 400, "Staff", None, 0, 5_000_000, "silver", 0,
+    ("regear_full_5m", "Reequipo completo (5M)", "legendary", 300, "Staff", None, 0, 5_000_000, "silver", 0,
      "Reequipo completo para una CTA, con presupuesto de hasta 5M.", 0),
     ("custom_bomb", "Bomb personalizada", "legendary", 300, "Staff", None, 0, 0, "", 0,
      "Armás una bomb con 5 personas a elección.", 0),
@@ -205,13 +205,17 @@ CATALOG = [
      "Un jugador no puede ir a una CTA." + SHIELD_NOTE, 0),
     ("guild_desc_1d", "Descripción de la guild 1 día", "legendary", 100, "Staff", None, 0, 0, "", 0,
      "Elegís la descripción de la guild durante 1 día.", 0),
+    ("farm_node_84", "Yo me farmeo el siguiente nodo", "legendary", 100, "Staff", None, 0, 0, "", 0,
+     "Te podés farmear el siguiente nodo 8.4 para subir spec.", 0),
+    ("ho_perms_remove_4h", "Sacar permisos del HO 4 h", "legendary", 100, "Staff", None, 0, 0, "", 1,
+     "Le sacás los permisos del HO a un jugador durante 4 horas." + SHIELD_NOTE, 0),
     ("staff_build", "Elegirle la build a un staff", "legendary", 120, "Staff", None, 0, 0, "", 1,
      "Elegís la build que va a usar alguien del staff." + SHIELD_NOTE, 0),
     ("craft_alter_7d", "Alter de crafteo 7 días", "legendary", 300, "Staff", None, 0, 0, "", 0,
      "Un alter de crafteo durante 7 días.", 0),
     ("coinflip_20m", "Coinflip hasta 20M", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 20M. Rigen todas las reglas del coinflip.", 0),
-    ("mute_chat_60", "Mute de chat 6 h", "legendary", 450, "Bot", None, 0, 0, "", 1,
+    ("mute_chat_60", "Mute de chat 6 h", "legendary", 350, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 6 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_60", "Mute de voice 6 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Muteás a un jugador en el voice por 6 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
@@ -290,7 +294,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 13
+CATALOG_VERSION = 14
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -318,6 +322,7 @@ CATALOG_CHANGES = {
          "mute_chat_5", "mute_voice_5", "mute_15", "voice_mute_15", "mute_chat_30", "mute_voice_30", "mute_chat_60",
          "mute_voice_60", "mute_chat_180", "mute_voice_180"),
     13: ("wuju_100k", "wuju_500k", "wuju_2m", "wuju_15m", "embo_50", "embo_100", "embo_500", "embo_1000"),   # topes +30 %
+    14: ("farm_node_84", "ho_perms_remove_4h", "regear_full_5m", "mute_chat_60"),
 }
 
 SCHEMA = """

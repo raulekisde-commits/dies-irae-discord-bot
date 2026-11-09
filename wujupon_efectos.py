@@ -326,7 +326,7 @@ class EfectosCog(commands.Cog):
         if action == "voice_kick":
             return await self._voice_kick(interaction, card, prize, target)
         casino_open = None
-        if action == "casino_block" and not value:
+        if action == "casino_block":
             casino_open = await self.run(casino_db.is_open, self.guild_id)
         res = await self.run(edb.use_card, card_id=card.id, owner_id=interaction.user.id, prize_key=prize.key, action=action,
                              minutes=value, target_id=target.id, casino_open=casino_open)
@@ -341,7 +341,9 @@ class EfectosCog(commands.Cog):
         if action in ROLE_SETTING and not await self._set_role(target.id, action, True):
             await self.run(edb.undo_use, card.id, eff.id, interaction.user.id)
             return await _say(interaction, "❌ No pude aplicar el mute (revisá los roles y mis permisos). Tu carta no se gastó.")
-        until = f"hasta <t:{int(eff.until)}:t>" if eff.until else "hasta que el casino se cierre y se vuelva a abrir"
+        until = (f"hasta <t:{int(eff.until)}:t>" if eff.until
+                 else f"por {edb.duration_text(eff.paused_left)} cuando abra el casino (cerrado no cuenta)" if eff.paused_left
+                 else "hasta que el casino se cierre y se vuelva a abrir")
         label = edb.KIND_LABELS[action]
         await _say(interaction, f"✅ **{prize.name}** aplicada a {target.mention} ({until}).")
         await self.announce(f"{label}: {actor} se la usó a {target.mention} {until}.", target.id,

@@ -222,6 +222,43 @@ class EfectosTests(DiscordBase):
             edb.expire_due(self.db)
             self.assertIsNone(casino_db.block_reason(self.db, GUILD_ID, self.bob.id))
 
+    def test_bloqueo_de_casino_no_corre_con_el_casino_cerrado(self):
+        t0 = time.time()
+        casino_db.set_open(self.db, GUILD_ID, True, 1)
+        self.use("casino_block", self.bob)                                       # 2 h
+        with mock.patch.object(edb, "_now", return_value=t0 + 30 * 60):
+            casino_db.set_open(self.db, GUILD_ID, False, 1)                      # cierra con 1 h 30 min restantes
+        eff = edb.list_active(self.db, self.bob.id)[0]
+        self.assertIsNone(eff.until)
+        self.assertAlmostEqual(eff.paused_left, 90 * 60, delta=60)
+        self.assertIn("quedan **1 h 30 min**", edb.effect_text(eff))
+        with mock.patch.object(edb, "_now", return_value=t0 + 10 * 3600):
+            self.assertEqual(edb.expire_due(self.db), [])                        # cerrado no vence
+            casino_db.set_open(self.db, GUILD_ID, True, 1)                       # reanuda
+        eff = edb.list_active(self.db, self.bob.id)[0]
+        self.assertIsNone(eff.paused_left)
+        self.assertAlmostEqual(eff.until - (t0 + 10 * 3600), 90 * 60, delta=60)
+
+    def test_bloqueo_de_casino_con_el_casino_cerrado_arranca_pausado(self):
+        casino_db.set_open(self.db, GUILD_ID, False, 1)
+        self.use("casino_block", self.bob)
+        self.use("casino_block_6h", self.bob)                                    # se suma al pausado
+        eff = edb.list_active(self.db, self.bob.id)[0]
+        self.assertIsNone(eff.until)
+        self.assertAlmostEqual(eff.paused_left, 8 * 3600, delta=60)
+        casino_db.set_open(self.db, GUILD_ID, True, 1)
+        self.assertAlmostEqual(edb.active_until(self.db, self.bob.id, "casino_block") - time.time(), 8 * 3600, delta=60)
+
+    def test_boton_mis_efectos(self):
+        i = self.inter(self.bob)
+        run(self.wcog.show_effects(i))
+        self.assertIn("ningún efecto", i.response.sent[-1][1]["embed"].description)
+        casino_db.set_open(self.db, GUILD_ID, True, 1)
+        self.use("casino_block", self.bob)
+        i = self.inter(self.bob)
+        run(self.wcog.show_effects(i))
+        self.assertIn("Bloqueado del casino", i.response.sent[-1][1]["embed"].description)
+
     def test_congelar_balance_bloquea_el_casino(self):
         casino_db.set_open(self.db, GUILD_ID, True, 1)
         self.use("freeze_30m", self.bob)

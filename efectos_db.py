@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS wjp_effects (
     kind       TEXT NOT NULL,
     until      REAL,                          -- epoch; NULL = sin vencimiento (bloqueo de casino)
     armed      INTEGER NOT NULL DEFAULT 0,    -- bloqueo de casino: 1 = la próxima apertura lo termina
+    paused_left REAL,                         -- bloqueo de casino con el casino cerrado: segundos que le quedan (until = NULL)
     card_id    INTEGER,
     actor_id   INTEGER NOT NULL,
     created_at TEXT NOT NULL,
@@ -63,22 +64,47 @@ class Effect:
     kind: str
     until: Optional[float]
     actor_id: int
+    paused_left: Optional[float] = None   # bloqueo de casino pausado (casino cerrado): segundos que le quedan
 
 
 def _effect(r) -> Effect:
-    return Effect(int(r["id"]), int(r["user_id"]), r["kind"], float(r["until"]) if r["until"] is not None else None, int(r["actor_id"]))
+    paused = r["paused_left"] if "paused_left" in r.keys() else None
+    return Effect(int(r["id"]), int(r["user_id"]), r["kind"], float(r["until"]) if r["until"] is not None else None, int(r["actor_id"]),
+                  float(paused) if paused is not None else None)
 
 
 def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        if "paused_left" not in {r[1] for r in conn.execute("PRAGMA table_info(wjp_effects)")}:
+            conn.execute("ALTER TABLE wjp_effects ADD COLUMN paused_left REAL")
+            conn.commit()
     finally:
         conn.close()
 
 
 def _now() -> float:
     return time.time()
+
+
+def duration_text(seconds: float) -> str:
+    """5400 → '1 h 30 min'."""
+    mins = max(1, int(round(float(seconds) / 60)))
+    d, rest = divmod(mins, 1440)
+    h, m = divmod(rest, 60)
+    parts = [f"{d} d" if d else "", f"{h} h" if h else "", f"{m} min" if m else ""]
+    return " ".join(p for p in parts if p)
+
+
+def effect_text(e: Effect) -> str:
+    """Una línea para «✨ Mis efectos»."""
+    label = KIND_LABELS.get(e.kind, e.kind)
+    if e.paused_left is not None:
+        return f"{label} — ⏸️ quedan **{duration_text(e.paused_left)}** (el casino está cerrado: el tiempo corre cuando abra)"
+    if e.until is None:
+        return f"{label} — hasta que el casino se cierre y se vuelva a abrir"
+    return f"{label} — hasta <t:{int(e.until)}:f> (<t:{int(e.until)}:R>)"
 
 
 def _active(conn, user_id: int, kind: str, now: Optional[float] = None) -> Optional[Effect]:
@@ -134,10 +160,25 @@ def _protected(conn, user_id: int) -> Optional[str]:
 
 
 def _add_effect(conn, user_id: int, kind: str, minutes: Optional[float], card_id: Optional[int], actor_id: int,
-                armed: int = 0) -> Effect:
+                armed: int = 0, paused: bool = False) -> Effect:
+    """`paused` (bloqueo de casino con el casino cerrado): el tiempo queda guardado y empieza a correr cuando abra."""
     now = _now()
     cur = _active(conn, user_id, kind, now)
     until = None if minutes is None else now + float(minutes) * 60
+    if cur is not None and cur.paused_left is not None and minutes is not None:
+        conn.execute("UPDATE wjp_effects SET paused_left = paused_left + ?, card_id = ?, actor_id = ? WHERE id = ?",
+                     (float(minutes) * 60, card_id, actor_id, cur.id))
+        return _effect(conn.execute("SELECT * FROM wjp_effects WHERE id = ?", (cur.id,)).fetchone())
+    if cur is None and paused and minutes is not None:
+        eid = conn.execute("INSERT INTO wjp_effects(user_id, kind, until, armed, card_id, actor_id, created_at, paused_left) "
+                           "VALUES (?,?,NULL,0,?,?,?,?)", (user_id, kind, card_id, actor_id, utcnow_iso(), float(minutes) * 60)).lastrowid
+        return _effect(conn.execute("SELECT * FROM wjp_effects WHERE id = ?", (eid,)).fetchone())
+    if cur is not None and paused and minutes is not None and cur.until is not None:
+        # quedó con tiempo corriendo pero el casino está cerrado: se pausa con lo que le quedaba + lo nuevo
+        left = max(cur.until - now, 0) + float(minutes) * 60
+        conn.execute("UPDATE wjp_effects SET until = NULL, paused_left = ?, card_id = ?, actor_id = ? WHERE id = ?",
+                     (left, card_id, actor_id, cur.id))
+        return _effect(conn.execute("SELECT * FROM wjp_effects WHERE id = ?", (cur.id,)).fetchone())
     if cur is not None:
         if cur.until is None or until is None:
             new_until = None
@@ -234,7 +275,8 @@ def use_card(db_path: str, *, card_id: int, owner_id: int, prize_key: str, actio
                 eff = _add_effect(conn, target_id, "casino_block", None, card_id, owner_id, armed=0 if casino_open else 1)
             elif action in KINDS:
                 who = owner_id if action == "shield" else target_id
-                eff = _add_effect(conn, who, action, minutes, card_id, owner_id)
+                eff = _add_effect(conn, who, action, minutes, card_id, owner_id,
+                                  paused=action == "casino_block" and casino_open is False)
             else:
                 raise ValueError(action)
             _consume(conn, card_id, owner_id)
@@ -418,14 +460,21 @@ def list_immune(db_path: str) -> List[Tuple[int, str]]:
 # Ganchos para otros módulos (sin abrir transacciones propias)
 # ============================================================
 def tx_casino_changed(conn, opened: bool) -> None:
-    """Llamado por casino_db al cambiar el estado: cerrar «arma» los bloqueos; abrir termina los armados."""
+    """Llamado por casino_db al cambiar el estado: cerrar «arma» los bloqueos viejos sin duración y pausa los que tienen tiempo
+    (con el casino cerrado no corre); abrir termina los armados y reanuda los pausados."""
     def go():
+        now = _now()
         if opened:
             conn.execute("UPDATE wjp_effects SET active = 0, ended_at = ? WHERE kind = 'casino_block' AND active = 1 AND armed = 1 "
-                         "AND until IS NULL",
+                         "AND until IS NULL AND paused_left IS NULL",
                          (utcnow_iso(),))
+            conn.execute("UPDATE wjp_effects SET until = ? + paused_left, paused_left = NULL "
+                         "WHERE kind = 'casino_block' AND active = 1 AND paused_left IS NOT NULL", (now,))
         else:
-            conn.execute("UPDATE wjp_effects SET armed = 1 WHERE kind = 'casino_block' AND active = 1 AND until IS NULL")
+            conn.execute("UPDATE wjp_effects SET armed = 1 WHERE kind = 'casino_block' AND active = 1 AND until IS NULL "
+                         "AND paused_left IS NULL")
+            conn.execute("UPDATE wjp_effects SET paused_left = until - ?, until = NULL "
+                         "WHERE kind = 'casino_block' AND active = 1 AND until IS NOT NULL AND until > ?", (now, now))
     _safe(go, None)
 
 

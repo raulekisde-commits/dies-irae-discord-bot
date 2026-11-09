@@ -193,6 +193,10 @@ class PanelView(discord.ui.View):
     async def reqs(self, interaction, button):
         await self.cog.show_requests(interaction)
 
+    @discord.ui.button(label="Mis efectos", style=discord.ButtonStyle.secondary, custom_id="wjp:efx", emoji="✨")
+    async def efx(self, interaction, button):
+        await self.cog.show_effects(interaction)
+
 
 class PrizesButtonView(discord.ui.View):
     """Botón «Ver premios» en el aviso de pausa (la lista se puede ver aunque Wujupón esté pausado)."""
@@ -423,7 +427,8 @@ class WujuponCog(commands.Cog):
             "🛒 **Comprar tiradas** — compralas con tu balance.\n"
             "🎒 **Mi inventario** — mirá tus cartas y canjealas.\n"
             "📜 **Ver premios** — rarezas, probabilidades y cómo se entregan.\n"
-            "📨 **Mis solicitudes** — estado de tus canjes con el Council.\n\n"
+            "📨 **Mis solicitudes** — estado de tus canjes con el Council.\n"
+            "✨ **Mis efectos** — mutes, bloqueo de casino, escudo, etc. que tenés activos y cuánto les queda.\n\n"
             "Las cartas son de un solo uso. Todas las respuestas son privadas.")
         emb.add_field(name="Rarezas", value="\n".join(f"{e} {n} — {wdb.chance_text(totals.get(k, 0), all_w)}"
                                                     for k, (n, e, _) in wdb.RARITIES.items()), inline=True)
@@ -612,6 +617,14 @@ class WujuponCog(commands.Cog):
         price = await self.run(wdb.get_price)
         for group in pack_embeds(prizes_embeds(prizes, price)):
             await _say(interaction, embeds=group)
+
+    async def show_effects(self, interaction: discord.Interaction):
+        import efectos_db
+        effects = await self.run(efectos_db.list_active, interaction.user.id)
+        emb = discord.Embed(title="✨ Mis efectos", color=GOLD)
+        emb.description = ("\n".join(efectos_db.effect_text(e) for e in effects)[:4000] if effects
+                           else "No tenés ningún efecto activo.")
+        await _say(interaction, embed=emb)
 
     async def show_requests(self, interaction: discord.Interaction, target: Optional[discord.abc.User] = None):
         user = target or interaction.user
