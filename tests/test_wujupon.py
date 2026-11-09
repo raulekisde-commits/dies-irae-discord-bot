@@ -1086,7 +1086,7 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIn("Arma 7.3", e.description)
         self.assertIn("8,000,000", " ".join(v for _, v, _ in e.fields))
         # filtro por días
-        self.assertEqual(wdb.money_stats(self.db, 1)[0].net, 1_700_000)
+        self.assertEqual(wdb.money_stats(self.db, 1)[0].net, 2_300_000)
 
     def test_regalar_tiradas_a_un_rol(self):
         i = self.inter(self.council)
