@@ -558,6 +558,10 @@ class WujuponCog(commands.Cog):
         if not animated:
             extra = await _say(interaction, embed=final, view=view)
         self._cleanup_later(interaction, extra)
+        if res.gained:                                   # Wuju Coins / embo: se anuncia cuánto salió en el canal de efectos
+            efx = self.bot.get_cog("EfectosCog")
+            if efx is not None:
+                await efx.announce(f"💰 <@{user.id}> sacó **{res.prize.name}** y ganó **{res.gained}**.")
         if res.request_id:
             await self.publish_request(res.request_id)   # carta mala: el loop de 60 s lo reintenta si falla
         elif res.prize.forced and res.prize.effect:
