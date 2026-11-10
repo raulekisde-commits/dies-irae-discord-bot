@@ -1781,6 +1781,8 @@ class RecruitView(discord.ui.View):
             except Exception:
                 pass
 
+        spin_text = await recruit_accept_spin(interaction, member)
+
         # LOG
         try:
             log_channel = interaction.guild.get_channel(bs.get("log")) or await interaction.guild.fetch_channel(bs.get("log"))
@@ -1791,7 +1793,7 @@ class RecruitView(discord.ui.View):
             embed = recruit_record_embed(
                 "✅ POSTULACIÓN ACEPTADA" + (" (falta confirmar ingreso a la guild)" if roles_pending else ""),
                 discord.Color.green(), member, interaction.user, getattr(interaction, "message", None),
-                extra=[("🎭 Rol asignado", role_name, False)])
+                extra=[("🎭 Rol asignado", role_name, False)] + ([("🎰 Wujupón", spin_text, False)] if spin_text else []))
 
             # Imagen: la guardás por uid
             img_data = ticket_images.get(member.id)
@@ -1952,6 +1954,31 @@ def recruit_data_fields(message) -> list:
         if getattr(emb, "title", None) == RECRUIT_DATA_TITLE:
             return [(f.name, f.value, f.inline) for f in emb.fields]
     return []
+
+
+async def recruit_accept_spin(interaction: discord.Interaction, member) -> str:
+    """1 tirada de Wujupón al reclutador que acepta una postulación (una vez por ticket; no si se acepta a sí mismo).
+    Devuelve el texto del aviso ('' si no corresponde o falló). Nunca frena la aceptación."""
+    if member is None or interaction.user.id == member.id:
+        return ""
+    wcog = bot.get_cog("WujuponCog")
+    if wcog is None:
+        return ""
+    try:
+        import wujupon_db as _wdb
+        after = await wcog.run(_wdb.gift_spins, actor_id=bot.user.id if bot.user else 0, user_id=interaction.user.id, count=1,
+                               request_key=f"recruit-accept:{interaction.channel.id}", reason=f"Aceptó la postulación de {member.display_name}"[:300])
+    except Exception:
+        traceback.print_exc()
+        return ""
+    text = f"🎰 {interaction.user.mention} ganó **1** tirada de Wujupón por aceptar a {member.mention} (ahora tiene {after})."
+    try:
+        log = await wcog._channel("gift_log_channel")
+        if log is not None:
+            await log.send(f"{text}\n📝 Postulación aceptada", allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        traceback.print_exc()
+    return text
 
 
 def recruit_record_embed(title: str, color, member, closer, message, extra: Optional[list] = None) -> discord.Embed:

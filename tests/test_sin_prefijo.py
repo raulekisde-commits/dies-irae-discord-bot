@@ -42,3 +42,11 @@ class SinPrefijoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReclutadorTiradaTests(unittest.TestCase):
+    def test_aceptar_postulacion_da_tirada_al_reclutador(self):
+        src = source("bot.py")
+        self.assertIn("async def recruit_accept_spin(interaction", src)
+        self.assertIn('request_key=f"recruit-accept:{interaction.channel.id}"', src)
+        self.assertIn("spin_text = await recruit_accept_spin(interaction, member)", src)

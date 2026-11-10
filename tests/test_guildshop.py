@@ -674,6 +674,23 @@ class ShopDiscordTests(unittest.TestCase):
         self.assertTrue(any("tirada de Wujupón" in m.content for m in ch.sent if m.content))
         self.assertTrue(any(f[0] == "🎰 Wujupón" for f in self.logch.sent[-1].embeds[0].fields))
 
+    def test_council_can_confirm_and_gets_the_spin(self):
+        given = self.fake_wujupon()
+        self.publish_panels()
+        ch, _ = self.open_ticket()
+        self.start_sale(ch, self.seller, "silver", "5.000.000")
+        self.confirm(ch, self.council)                                           # el Council también confirma
+        self.assertEqual([g[:2] for g in given], [(self.council.id, 1)])
+
+    def test_member_without_seller_or_council_cannot_confirm(self):
+        given = self.fake_wujupon()
+        self.publish_panels()
+        ch, _ = self.open_ticket()
+        self.start_sale(ch, self.seller, "silver", "5.000.000")
+        i = self.confirm(ch, self.buyer)
+        self.assertIn("Seller", i.text)
+        self.assertEqual(given, [])
+
     def test_sale_of_exactly_3m_or_less_gives_no_spin(self):
         given = self.fake_wujupon()
         self.publish_panels()
