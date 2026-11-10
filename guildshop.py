@@ -31,11 +31,6 @@ def can_sell(member) -> bool:
     return any(getattr(r, "id", None) in (SELLER_ROLE_ID, COUNCIL_ROLE_ID) for r in getattr(member, "roles", []))
 
 
-def can_confirm_sale(member) -> bool:
-    """Confirmar una venta: solo el rol Seller (el Council no)."""
-    return any(getattr(r, "id", None) == SELLER_ROLE_ID for r in getattr(member, "roles", []))
-
-
 def can_manage(member) -> bool:
     """Armar paneles y configurar el registro: Council, propietario o Administrador."""
     if any(getattr(r, "id", None) == COUNCIL_ROLE_ID for r in getattr(member, "roles", [])):
@@ -736,7 +731,7 @@ class GuildShopCog(commands.Cog):
                                                               f"{gdb.format_pct(gdb.DEFAULT_DISCOUNT_BP)}). Se usa al confirmar.", inline=False)
         if currency == "wuju":
             emb.add_field(name="Se descuenta del balance del comprador", value="Al confirmar se le restan estos Wuju Coins.", inline=False)
-        emb.set_footer(text="Solo un Seller puede confirmar (cancelar: Seller o Council).")
+        emb.set_footer(text="Solo un Seller (o Council) puede confirmar o cancelar.")
         await interaction.response.defer(ephemeral=True)
         try:
             msg = await interaction.channel.send(f"<@&{SELLER_ROLE_ID}> ¿{interaction.user.mention} vende por **{label}** a **{self.money_of(currency, net)}**? Confirmá o cancelá.",
@@ -754,8 +749,8 @@ class GuildShopCog(commands.Cog):
 
     # ---------- confirmar / cancelar ----------
     async def on_confirm_pressed(self, interaction: discord.Interaction):
-        if interaction.guild is None or not can_confirm_sale(interaction.user):
-            return await _reply(interaction, "❌ Solo los **Seller** pueden confirmar las ventas.")
+        if interaction.guild is None or not can_sell(interaction.user):
+            return await _reply(interaction, "❌ Solo los **Seller** (o Council) pueden confirmar.")
         msg = interaction.message
         result = await self.run(gdb.confirm_sale, msg.id, interaction.user.id)
         if result.status == "gone":
