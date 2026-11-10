@@ -92,6 +92,37 @@ def access_missing_role(member_role_ids: Iterable[int], slot_role_ids, flex_role
     return need
 
 
+# ---------- orden de llenado: Party 3 y 4 cerradas / DPS al final ----------
+LATE_PARTIES = (3, 4)
+EARLY_PARTIES = (1, 2)
+DPS_ROLE_ID = 1260755289062248458
+
+
+def is_dps_slot(slot) -> bool:
+    need = required_role(slot.get("role_ids"))
+    if need is not None:
+        return need == DPS_ROLE_ID
+    return (slot.get("role_name") or "").strip().casefold() == "dps"
+
+
+def fill_order_error(slots, taken: dict, slot, user_id: int, *, lock_p34: bool, dps_last: bool) -> Optional[str]:
+    """`taken` = {slot_key: user_id}. La plaza actual de `user_id` cuenta como libre (si se mueve, la deja vacía).
+    lock_p34: Party 3 y 4 cerradas hasta que la 1 y la 2 estén completas.
+    dps_last: en Party 3 y 4, los DPS se habilitan cuando el resto de roles de esas parties está completo."""
+    party = int(slot["party_no"])
+    if party not in LATE_PARTIES:
+        return None
+    occupied = {k for k, u in taken.items() if int(u) != int(user_id)}
+    if lock_p34 and any(slot_key(s) not in occupied for s in slots if int(s["party_no"]) in EARLY_PARTIES):
+        return "🔒 La **Party 3 y 4** se abren cuando la **Party 1 y 2** estén completas. Anotate en una posición libre de la 1 o la 2."
+    if dps_last and is_dps_slot(slot):
+        missing = [s for s in slots if int(s["party_no"]) in LATE_PARTIES and not is_dps_slot(s) and slot_key(s) not in occupied]
+        if missing:
+            return (f"🔒 En la **Party 3 y 4** los **DPS** se habilitan cuando se completen los demás roles "
+                    f"(faltan {len(missing)}). Anotate en otro rol o esperá.")
+    return None
+
+
 # ---------- CTA programadas ----------
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cta_scheduled (
@@ -111,17 +142,23 @@ def init_schedule(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(cta_scheduled)")}
+        for col in ("lock_p34", "dps_last"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE cta_scheduled ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
     finally:
         conn.close()
 
 
 def schedule(db_path: str, *, guild_id: int, composition_name: str, minutes: int, title: Optional[str], publish_at: datetime,
-             created_by: int) -> int:
+             created_by: int, lock_p34: bool = False, dps_last: bool = False) -> int:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            cur = conn.execute("INSERT INTO cta_scheduled(guild_id, composition_name, minutes, title, publish_at, created_by) VALUES (?,?,?,?,?,?)",
-                               (guild_id, composition_name, minutes, title, publish_at.astimezone(timezone.utc).isoformat(), created_by))
+            cur = conn.execute("INSERT INTO cta_scheduled(guild_id, composition_name, minutes, title, publish_at, created_by, lock_p34, dps_last) VALUES (?,?,?,?,?,?,?,?)",
+                               (guild_id, composition_name, minutes, title, publish_at.astimezone(timezone.utc).isoformat(), created_by,
+                                int(bool(lock_p34)), int(bool(dps_last))))
             return int(cur.lastrowid)
     finally:
         conn.close()

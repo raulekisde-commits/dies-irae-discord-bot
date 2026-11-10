@@ -4158,6 +4158,10 @@ def cta_instructions_text(run: dict, total: int) -> str:
         f"• Las posiciones con 🔒 piden ciertos roles.\n"
         + (f"• ⏳ Los primeros {CTA_LEGACY_MINUTES} minutos la **Party 1** es solo para el rol Legacy.\n"
            if json.loads(run["snapshot_json"]).get("legacy_first") else "") +
+        ("• 🔒 La **Party 3 y 4** se abren cuando la **Party 1 y 2** estén completas.\n"
+         if json.loads(run["snapshot_json"]).get("lock_p34") else "") +
+        ("• ⚔ En la **Party 3 y 4** los **DPS** se habilitan cuando se completen los demás roles de esas parties.\n"
+         if json.loads(run["snapshot_json"]).get("dps_last") else "") +
         f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>.\n"
         f"• La lista de parties y el contador de anotados están en el panel principal, arriba del hilo. Se actualiza sola.\n"
         f"• Al cerrar la inscripción se arma el hilo del split con la lista de anotados."
@@ -5198,6 +5202,13 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if slot is None:
         await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {total}.")
         return True
+    if snapshot.get("lock_p34") or snapshot.get("dps_last"):
+        taken = {s["slot_key"]: s["user_id"] for s in cta_get_signups(run_id)}
+        order_err = cu.fill_order_error(snapshot["slots"], taken, slot, member.id,
+                                        lock_p34=bool(snapshot.get("lock_p34")), dps_last=bool(snapshot.get("dps_last")))
+        if order_err:
+            await cta_reply_short(message, order_err, 12)
+            return True
     legacy_err = cta_legacy_error(member, slot, snapshot, run)
     access_err = cta_access_error(member, slot, message.guild)
     error = legacy_err or access_err
@@ -6381,7 +6392,7 @@ compo_ver_builds.autocomplete("build")(cta_build_autocomplete)
 
 
 async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_override: Optional[str], creator_id: int, *, scheduled: bool = False,
-                      kind: str = "cta", channel=None):
+                      kind: str = "cta", channel=None, lock_p34: bool = False, dps_last: bool = False):
     """Publica la CTA en el canal fijo de CTA, o en `channel` si se pasa (el /content va donde se mandó el comando). Devuelve (run_id, error_text)."""
     channel_id = channel.id if channel is not None else bs.get("content") if kind == "content" else bs.get("cta")
     channel = channel or guild.get_channel(channel_id)
@@ -6396,6 +6407,7 @@ async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_over
     base = " ".join(title_override.split())[:80] if title_override and title_override.strip() else cu.base_title(close_at)
     title = cu.unique_title(base, existing)
     snapshot = cta_snapshot_from_comp(comp)
+    snapshot["lock_p34"], snapshot["dps_last"] = bool(lock_p34), bool(dps_last)
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status,track,title,kind) VALUES (?,?,?,?,?,?,?,?, 'open', 1, ?, ?)",
                            (guild.id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), channel.id, creator_id, now.isoformat(), close_at.isoformat(), title,
@@ -6460,7 +6472,8 @@ async def cta_run_scheduled():
         if comp is None:
             await send_log(guild, f"⚠️ No pude publicar la CTA programada de <@{d['created_by']}>: {err}")
             continue
-        run_id, err = await cta_publish(guild, comp, int(d["minutes"]), d["title"], int(d["created_by"]), scheduled=True)
+        run_id, err = await cta_publish(guild, comp, int(d["minutes"]), d["title"], int(d["created_by"]), scheduled=True,
+                                        lock_p34=bool(d.get("lock_p34")), dps_last=bool(d.get("dps_last")))
         if err:
             await send_log(guild, f"⚠️ CTA programada de <@{d['created_by']}>: {err}")
 
@@ -6469,9 +6482,12 @@ async def cta_run_scheduled():
 @app_commands.describe(nombre="Nombre de la composición",
                        tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)",
                        titulo="Título (opcional). Por defecto: fecha y hora UTC redondeada del cierre, ej. CTA 31/10 22 UTC",
-                       programar="Hora UTC HH:MM para publicarla más tarde con @everyone y @here (opcional)")
+                       programar="Hora UTC HH:MM para publicarla más tarde con @everyone y @here (opcional)",
+                       cerrar_p34="true = la Party 3 y 4 se abren recién cuando la Party 1 y 2 están completas",
+                       dps_al_final="true = en la Party 3 y 4 los DPS se habilitan cuando el resto de roles de esas parties está completo")
 async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None,
-                      titulo: Optional[str] = None, programar: Optional[str] = None):
+                      titulo: Optional[str] = None, programar: Optional[str] = None,
+                      cerrar_p34: bool = False, dps_al_final: bool = False):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
     if not is_cta_manager(interaction.user):
@@ -6491,13 +6507,15 @@ async def cta_command(interaction: discord.Interaction, nombre: str, tiempo: Opt
         except ValueError as exc:
             return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
         sid = await asyncio.to_thread(cu.schedule, DB_PATH, guild_id=interaction.guild_id, composition_name=comp["name"], minutes=minutes,
-                                      title=" ".join(titulo.split()) if titulo and titulo.strip() else None, publish_at=at, created_by=interaction.user.id)
+                                      title=" ".join(titulo.split()) if titulo and titulo.strip() else None, publish_at=at, created_by=interaction.user.id,
+                                      lock_p34=cerrar_p34, dps_last=dps_al_final)
         cta_audit(interaction.guild_id, interaction.user.id, "cta_scheduled", None, f"id={sid}; composition={comp['name']}; at={at.isoformat()}")
         return await interaction.response.send_message(
             f"⏰ CTA **{comp['name']}** programada para <t:{int(at.timestamp())}:f> (<t:{int(at.timestamp())}:R>) en <#{bs.get("cta")}>, con @everyone y @here. "
             "Si el bot está apagado a esa hora, se descarta.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    run_id, err = await cta_publish(interaction.guild, comp, minutes, titulo, interaction.user.id)
+    run_id, err = await cta_publish(interaction.guild, comp, minutes, titulo, interaction.user.id,
+                                    lock_p34=cerrar_p34, dps_last=dps_al_final)
     if err:
         return await interaction.followup.send(err, ephemeral=True)
     run = cta_run_get(run_id)

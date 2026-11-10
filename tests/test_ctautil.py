@@ -205,3 +205,36 @@ class PositionsTests(unittest.TestCase):
         self.assertIsNone(cu.final_state(other, 1))
         self.assertIsNone(cu.thread_id_of(other, 1))
         self.assertFalse(cu.add_late_position(other, 1, 1, 1))
+
+
+class FillOrderTests(unittest.TestCase):
+    DPS, TANK = str(cu.DPS_ROLE_ID), "1260755129754189854"
+
+    def slots(self):
+        out = []
+        for p in (1, 2, 3, 4):
+            out.append({"party_no": p, "position_no": 1, "role_ids": [self.TANK], "role_name": "Tank"})
+            out.append({"party_no": p, "position_no": 2, "role_ids": [self.DPS], "role_name": "Dps"})
+        return out
+
+    def test_lock_p34(self):
+        s = self.slots(); p3 = s[4]
+        self.assertIsNotNone(cu.fill_order_error(s, {"1:1": 1, "1:2": 2, "2:1": 3}, p3, 9, lock_p34=True, dps_last=False))
+        full = {"1:1": 1, "1:2": 2, "2:1": 3, "2:2": 4}
+        self.assertIsNone(cu.fill_order_error(s, full, p3, 9, lock_p34=True, dps_last=False))
+        self.assertIsNotNone(cu.fill_order_error(s, full, p3, 4, lock_p34=True, dps_last=False))   # moverse deja hueco en la 2
+        self.assertIsNone(cu.fill_order_error(s, {}, s[0], 9, lock_p34=True, dps_last=True))
+
+    def test_dps_last(self):
+        s = self.slots(); p3_dps = s[5]
+        self.assertIsNotNone(cu.fill_order_error(s, {"3:1": 1}, p3_dps, 9, lock_p34=False, dps_last=True))
+        self.assertIsNone(cu.fill_order_error(s, {"3:1": 1, "4:1": 2}, p3_dps, 9, lock_p34=False, dps_last=True))
+        self.assertIsNone(cu.fill_order_error(s, {}, s[4], 9, lock_p34=False, dps_last=True))     # tank sí
+
+    def test_schedule_flags(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "t.db"); cu.init_schedule(db); cu.init_schedule(db)
+            at = datetime.now(U) - timedelta(seconds=5)
+            cu.schedule(db, guild_id=1, composition_name="x", minutes=40, title=None, publish_at=at, created_by=1, lock_p34=True, dps_last=True)
+            go, _ = cu.take_due(db)
+            self.assertEqual((go[0]["lock_p34"], go[0]["dps_last"]), (1, 1))
