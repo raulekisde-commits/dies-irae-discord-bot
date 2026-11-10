@@ -351,7 +351,7 @@ INFO_STAFF["wujupon"] = (
     "**Jugadores**\n"
     "• `/wujupon tiradas-diarias [rol] [cantidad]` — tiradas gratis por día para un rol (0 = sacar; vencen 00:00 UTC; "
     "con varios roles cuenta el que más da).\n"
-    "• `/wujupon regalar-tiradas cantidad usuario|rol` (negativo = quitar; con rol, a cada miembro) · `/wujupon dar-carta usuario premio` · "
+    "• `/wujupon regalar-tiradas cantidad usuarios|rol` (negativo = quitar; con rol, a cada miembro) · `/wujupon dar-carta usuario premio` · "
     "`/wujupon dar-ticket usuario tipo [cantidad]` (tickets de descuento del Guild Shop).\n"
     "• `/wujupon devolver-carta numero` — vuelve una carta usada al inventario. Si era automática, lo entregado no se descuenta.\n"
     "• `/wujupon inventario usuario` · `/wujupon encargos` · `/wujupon historial [usuario]` · `/wujupon registro`.\n"

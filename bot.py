@@ -202,6 +202,13 @@ except Exception:
     async def setup_nodesync(*_a, _imp_err=_imp_err, **_k):
         raise RuntimeError('No se pudo importar nodesync.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from ausencias import setup_ausencias
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_ausencias(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar ausencias.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from expulsar import setup_expulsar
 except Exception:
     import traceback as _tb
@@ -611,6 +618,7 @@ class MyBot(commands.Bot):
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("reactionroles", setup_reactionroles, self, DB_PATH, GUILD_ID)
             await _safe_setup("warnings", setup_warnings, self, DB_PATH, GUILD_ID)
+            await _safe_setup("ausencias", setup_ausencias, self, DB_PATH, GUILD_ID)
             await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
