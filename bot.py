@@ -1648,13 +1648,33 @@ async def addroll_list(ctx: commands.Context, *, args: str = None):
 
 async def addroll_list_run(guild: discord.Guild, actor, personas: str, rol: Optional[discord.Role], nombre: Optional[str]) -> str:
     """Lógica de /addroll-list: da un rol (existente o nuevo con ese nombre) a las personas mencionadas. Devuelve el texto de respuesta."""
-    members = []
+    members, not_found = [], []
     for m in re.finditer(r"<@!?(\d+)>", personas or ""):
         member = guild.get_member(int(m.group(1)))
-        if member is not None and member not in members:
+        if member is None:
+            not_found.append(m.group(0))
+        elif member not in members:
             members.append(member)
+    # Nombres sin mención: separados por coma/salto de línea, o por espacios si no hay comas.
+    rest = re.sub(r"<@[!&]?\d+>", " ", personas or "")
+    tokens = re.split(r"[,\n;]+", rest) if re.search(r"[,\n;]", rest) else rest.split()
+    for raw in tokens:
+        name = raw.strip().lstrip("@").strip()
+        if not name:
+            continue
+        low = name.lower()
+        matches = [mb for mb in guild.members
+                   if low in {(mb.name or "").lower(), (mb.display_name or "").lower(), (mb.global_name or "").lower()}]
+        if len(matches) == 1:
+            if matches[0] not in members:
+                members.append(matches[0])
+        else:
+            not_found.append(f"{name} (ambiguo: {len(matches)})" if matches else name)
     if not members:
-        return "❌ Mencioná al menos a 1 persona del servidor. Ej: `@Ana @Beto`."
+        msg = "❌ No encontré a nadie. Mencioná o escribí nombres de Discord. Ej: `@Ana @Beto` o `Ana, Beto`."
+        if not_found:
+            msg += "\nNo encontrados: " + ", ".join(f"`{n}`" for n in not_found)
+        return msg[:1990]
     name = " ".join((nombre or "").split())
     if rol is not None and rol.id == guild.id:
         return "❌ No se puede usar @everyone."
@@ -1675,11 +1695,14 @@ async def addroll_list_run(guild: discord.Guild, actor, personas: str, rol: Opti
             ok += 1
         except Exception:
             fail += 1
-    return f"✅ Rol **{role.name}** asignado. OK: {ok} | Fallos: {fail}"
+    text = f"✅ Rol **{role.name}** asignado. OK: {ok} | Fallos: {fail}"
+    if not_found:
+        text += f"\n⚠️ No encontrados ({len(not_found)}): " + ", ".join(f"`{n}`" for n in not_found)
+    return text[:1990]
 
 
 @bot.tree.command(name="addroll-list", description="(Council) Da un rol a varias personas (si el rol no existe, lo crea)", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(personas="Mencioná a las personas, por ejemplo @Ana @Beto", rol="Rol que ya existe (o escribí el nombre abajo para crear uno)",
+@app_commands.describe(personas="@Ana @Beto o nombres: Ana, Beto (si el nombre tiene espacios, separá con comas)", rol="Rol que ya existe (o escribí el nombre abajo para crear uno)",
                        nombre="Nombre del rol: si no existe, se crea")
 @app_commands.guild_only()
 async def addroll_list_slash(interaction: discord.Interaction, personas: str, rol: Optional[discord.Role] = None, nombre: Optional[str] = None):
