@@ -5,6 +5,7 @@ no se llene de mensajes. Las tiradas se anuncian en un canal público configurab
 """
 import asyncio
 import io
+import re
 import time
 import traceback
 from typing import Callable, List, Optional
@@ -896,15 +897,15 @@ class WujuponCog(commands.Cog):
         await self.run(wdb.set_setting, "council_channel", str(target.id))
         await _say(interaction, f"📨 Los canjes de Wujupón llegan a {target.mention}.")
 
-    @wj.command(name="regalar-tiradas", description="(Council) Regala tiradas a una persona o a todo un rol (o quita, con número negativo)")
-    @app_commands.describe(cantidad="Tiradas por persona (negativo para quitar)", usuario="Persona (o usá rol)",
-                           rol="Rol: se le dan a cada miembro (o usá usuario)", motivo="Motivo")
-    async def gift(self, interaction: discord.Interaction, cantidad: int, usuario: Optional[discord.Member] = None,
+    @wj.command(name="regalar-tiradas", description="(Council) Regala tiradas a una o varias personas o a todo un rol (o quita, con número negativo)")
+    @app_commands.describe(cantidad="Tiradas por persona (negativo para quitar)", usuarios="Una o varias personas: @Ana @Beto (o usá rol)",
+                           rol="Rol: se le dan a cada miembro (o usá usuarios)", motivo="Motivo")
+    async def gift(self, interaction: discord.Interaction, cantidad: int, usuarios: Optional[str] = None,
                    rol: Optional[discord.Role] = None, motivo: Optional[str] = None):
         if not await self._council(interaction):
             return
-        if (usuario is None) == (rol is None):
-            return await _say(interaction, "❌ Indicá una persona **o** un rol (uno solo de los dos).")
+        if (not (usuarios or "").strip()) == (rol is None):
+            return await _say(interaction, "❌ Indicá personas **o** un rol (uno solo de los dos).")
         if rol is not None:
             members = [m for m in getattr(rol, "members", []) if not getattr(m, "bot", False)]
             if not members:
@@ -915,12 +916,31 @@ class WujuponCog(commands.Cog):
             except wdb.WujuponError as exc:
                 return await _say(interaction, f"❌ {exc}")
             return await self._gift_announce(interaction, cantidad, f"{rol.mention} (**{n}** persona(s), a cada uno)", motivo)
+        ids: List[int] = []
+        for m in re.finditer(r"<@!?(\d+)>", usuarios):
+            uid = int(m.group(1))
+            member = interaction.guild.get_member(uid) if interaction.guild else None
+            if member is None:
+                return await _say(interaction, f"❌ No encuentro en el servidor a <@{uid}>.")
+            if getattr(member, "bot", False):
+                return await _say(interaction, f"❌ <@{uid}> es un bot: no puede recibir tiradas.")
+            if uid not in ids:
+                ids.append(uid)
+        if not ids:
+            return await _say(interaction, "❌ Mencioná a las personas con @ (ej: @Ana @Beto).")
+        if len(ids) > 1:
+            try:
+                n = await self.run(wdb.gift_spins_many, actor_id=interaction.user.id, user_ids=ids, count=cantidad,
+                                   request_key=f"giftmany:{interaction.id}", reason=(motivo or "Regalo del Council")[:300])
+            except wdb.WujuponError as exc:
+                return await _say(interaction, f"❌ {exc}")
+            return await self._gift_announce(interaction, cantidad, " ".join(f"<@{u}>" for u in ids) + f" (**{n}** persona(s), a cada uno)", motivo)
         try:
-            after = await self.run(wdb.gift_spins, actor_id=interaction.user.id, user_id=usuario.id, count=cantidad,
+            after = await self.run(wdb.gift_spins, actor_id=interaction.user.id, user_id=ids[0], count=cantidad,
                                    request_key=f"gift:{interaction.id}", reason=(motivo or "Regalo del Council")[:300])
         except wdb.WujuponError as exc:
             return await _say(interaction, f"❌ {exc}")
-        await self._gift_announce(interaction, cantidad, f"{usuario.mention} (ahora tiene **{after}**)", motivo)
+        await self._gift_announce(interaction, cantidad, f"<@{ids[0]}> (ahora tiene **{after}**)", motivo)
 
     async def _gift_announce(self, interaction: discord.Interaction, cantidad: int, destino: str, motivo: Optional[str]):
         """Mensaje público del regalo/quita + copia al canal de log (/canal wujupon-regalos)."""

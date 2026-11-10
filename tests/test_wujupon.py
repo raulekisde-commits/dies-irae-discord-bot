@@ -740,10 +740,10 @@ class WujuponDiscordTests(DiscordBase):
 
     def test_comandos_admin_solo_council(self):
         i = self.inter(self.bob)
-        run(self.cog.gift.callback(self.cog, i, 3, self.alice, None, None))
+        run(self.cog.gift.callback(self.cog, i, 3, self.alice.mention, None, None))
         self.assertIn("Solo el Council", i.text)
         i = self.inter(self.council)
-        run(self.cog.gift.callback(self.cog, i, 3, self.alice, None, None))
+        run(self.cog.gift.callback(self.cog, i, 3, self.alice.mention, None, None))
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 3)
 
     def test_panel_premios_e_inventario(self):
@@ -1097,7 +1097,7 @@ class WujuponDiscordTests(DiscordBase):
     def test_regalar_tiradas_a_un_rol(self):
         i = self.inter(self.council)
         run(self.cog.gift.callback(self.cog, i, 2, None, None, None))
-        self.assertIn("persona **o** un rol", i.text)
+        self.assertIn("personas **o** un rol", i.text)
         self.robot.roles.append(self.r_member)
         i = self.inter(self.council)
         run(self.cog.gift.callback(self.cog, i, 2, None, self.r_member, "evento"))
@@ -1110,11 +1110,24 @@ class WujuponDiscordTests(DiscordBase):
         run(self.cog.gift.callback(self.cog, i, -4, None, self.r_member, None))
         self.assertEqual((wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), (1, 0))
 
+    def test_regalar_tiradas_a_varios(self):
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, 2, f"{self.alice.mention} {self.bob.mention} {self.alice.mention}", None, None))
+        self.assertIn("**2** persona(s)", i.text)
+        self.assertEqual((wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), (2, 2))
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, 2, f"{self.alice.mention} {self.robot.mention}", None, None))
+        self.assertIn("es un bot", i.text)
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 2)            # no se aplicó a nadie
+        i = self.inter(self.council)
+        run(self.cog.gift.callback(self.cog, i, 2, "alice", None, None))
+        self.assertIn("Mencioná", i.text)
+
     def test_regalar_tiradas_publico_y_log(self):
         run(self.cog.canal_regalos(self.inter(self.council, self.feedch), None, False))
         self.assertEqual(wdb.get_setting(self.db, "gift_log_channel"), str(self.feedch.id))
         i = self.inter(self.council)
-        run(self.cog.gift.callback(self.cog, i, 3, self.alice, None, "evento CTA"))
+        run(self.cog.gift.callback(self.cog, i, 3, self.alice.mention, None, "evento CTA"))
         self.assertFalse(i.response.sent[-1][1].get("ephemeral"))
         self.assertIn(self.council.mention, i.text)
         self.assertIn(self.alice.mention, i.text)
