@@ -5987,6 +5987,20 @@ class CTACompositionGroup(app_commands.Group):
                else f"✅ **{comp['name']}**: el split de las CTA nuevas va a ser un split normal.")
         await interaction.response.send_message(msg + cta_active_notice(comp["id"]), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
+    @app_commands.command(name="content", description="Marcar si una composición se puede usar en /content")
+    @app_commands.describe(nombre="Nombre de la composición", activar="true = se puede publicar con /content; false = no aparece en /content")
+    async def content(self, interaction: discord.Interaction, nombre: str, activar: bool):
+        if not await self._admin_check(interaction):
+            return await interaction.response.send_message("No tenés permisos para editar composiciones.", ephemeral=True)
+        comp = cta_get_composition(interaction.guild_id, nombre)
+        if not comp:
+            return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+        db_execute("UPDATE cta_compositions SET content=?, updated_at=? WHERE id=?", (int(activar), cta_now_iso(), comp["id"]))
+        cta_audit(interaction.guild_id, interaction.user.id, "composition_content", details=f"{comp['name']}: {'content' if activar else 'no content'}")
+        msg = (f"✅ **{comp['name']}** ahora es una composición de content: ya aparece en `/content`." if activar
+               else f"✅ **{comp['name']}** ya no es de content: no aparece en `/content`.")
+        await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     @app_commands.command(name="builds", description="Poner o quitar el link de builds de una composición")
     @app_commands.describe(nombre="Nombre de la composición", link="Link a la web de builds (https://...). Vacío o «quitar» = sacar el link")
     async def builds(self, interaction: discord.Interaction, nombre: str, link: Optional[str] = None):
@@ -6094,8 +6108,9 @@ def cta_web_notes_text(notes: dict, failed: list) -> str:
 
 
 @compo_group.command(name="importar", description="Importar una compo de albionzvz.com como composición del bot")
-@app_commands.describe(nombre="Nombre que va a tener la composición en el bot", link="Link de la compo en albionzvz.com")
-async def compo_importar(interaction: discord.Interaction, nombre: str, link: str):
+@app_commands.describe(nombre="Nombre que va a tener la composición en el bot", link="Link de la compo en albionzvz.com",
+                       content="true = composición para /content (por defecto false)")
+async def compo_importar(interaction: discord.Interaction, nombre: str, link: str, content: bool = False):
     if compoweb is None:
         return await interaction.response.send_message("La importación desde AlbionZvZ no está disponible (revisá el log).", ephemeral=True)
     if not is_council_or_admin(interaction.user):
@@ -6123,9 +6138,11 @@ async def compo_importar(interaction: discord.Interaction, nombre: str, link: st
         return await interaction.followup.send("Ya existe una composición con ese nombre.", ephemeral=True)
     await asyncio.to_thread(compoweb.save_link, DB_PATH, cid, web_id, url)
     await asyncio.to_thread(compoweb.save_parsed, DB_PATH, cid, parsed)
-    cta_audit(interaction.guild_id, interaction.user.id, "composition_import", details=f"{name} <- {web_id}")
+    if content:
+        db_execute("UPDATE cta_compositions SET content=1 WHERE id=?", (cid,))
+    cta_audit(interaction.guild_id, interaction.user.id, "composition_import", details=f"{name} <- {web_id}" + (" (content)" if content else ""))
     restricted = sum(1 for d in defs if d["role_ids"])
-    text = (f"✅ Composición **{name}** importada de AlbionZvZ: **{len(defs)}** posiciones en **{len(parsed['parties'])}** parties "
+    text = (f"✅ Composición {'de content ' if content else ''}**{name}** importada de AlbionZvZ: **{len(defs)}** posiciones en **{len(parsed['parties'])}** parties "
             f"({n_builds} builds distintas, {restricted} posiciones con rol de Discord asignado).\nVerla: `/compo ver nombre:{name}` · Refrescarla desde la web: `/compo actualizar`.")
     extra = cta_web_notes_text(notes, failed)
     await interaction.followup.send((text + ("\n\n" + extra if extra else ""))[:1990], ephemeral=True)
@@ -6872,6 +6889,7 @@ HELP_SECTIONS = [
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. Al cerrar o cancelar la CTA se borra su hilo."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
+        ("/compo content nombre activar", "Council / Admin", "true/false: marca si la composición se puede publicar con /content."),
         ("/config", "Administrador", "Panel para cambiar, sin tocar código, los canales del bot (logs, CTA, content, tareas, splits…) y qué roles pueden usar cada comando de economía/casino. Los cambios valen al instante y quedan avisados en el canal de logs."),
         ("/cta-admin activas", "Todos", "Muestra las CTA abiertas y cuándo cierran."),
         ("/cta-admin programadas", "Staff, Caller, Council", "Lista las CTA programadas que todavía no se publicaron (cuándo salen, composición y quién las programó)."),
@@ -6882,7 +6900,7 @@ HELP_SECTIONS = [
         ("/compo crear · listar · ver · editar", "Council / Admin", "Crear y administrar composiciones (`/compo crear content:True` la marca para /content; por defecto false): parties, posiciones y roles necesarios para anotarse. En el editor, «Editar party completa» te muestra la lista de la party para reescribirla de una."),
         ("/compo duplicar · renombrar · eliminar", "Council / Admin", "Copiar, renombrar o borrar una composición."),
         ("/compo legacy nombre activar", "Council / Admin", f"true/false: si está activada, en cada /cta con esa composición la Party 1 es solo para el rol Legacy los primeros {CTA_LEGACY_MINUTES} minutos."),
-        ("/compo importar nombre link · actualizar nombre", "Council / Admin", "Importa una compo de albionzvz.com (cada posición toma el rol de Discord según el arma) y la vuelve a leer del sitio cuando la modificás, mostrando los cambios antes de aplicar."),
+        ("/compo importar nombre link [content] · actualizar nombre", "Council / Admin", "Importa una compo de albionzvz.com (cada posición toma el rol de Discord según el arma) y la vuelve a leer del sitio cuando la modificás, mostrando los cambios antes de aplicar."),
         ("/compo builds nombre link", "Council / Admin", "Pone (o quita) el link de builds que aparece como «Builds» en el panel de la CTA."),
         ("/compo reglas listar|agregar|quitar|discord|restablecer", "Council / Admin", "Qué rol de combate (tank, healer, dps...) es cada arma. Viene con una lista por defecto y se puede editar."),
     ]),
