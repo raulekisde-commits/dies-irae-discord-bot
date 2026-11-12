@@ -133,6 +133,7 @@ MOVEMENT_LABELS = {
     "roulette_win": "Premio de ruleta",
     "roulette_refund": "Devolución de ruleta",
     "embo_purchase": "Compra de embo",
+    "embo_payment": "Pago de embo",
 }
 
 
@@ -729,6 +730,40 @@ def set_balance(db_path: str, *, user_id: int, target: int, actor_id: int, reque
             _, after = tx_move(conn, op_id=op_id, user_id=user_id, delta=delta, mov_type=mov_type, reason=reason,
                                actor_id=actor_id, related_id=request_key)
             return "applied", before, after
+    finally:
+        conn.close()
+
+
+def pay_embo_debts(db_path: str, *, price: int, actor_id: int, request_key: str,
+                   reason: str = "Pago de embo") -> List[Tuple[int, int, int, int]]:
+    """Cobra en Wuju Coins (unidades × precio) a cada persona con embo negativo y le deja el embo en 0.
+    Puede dejar el balance negativo. Todo en una transacción; una sola vez por request_key.
+    Devuelve [(user_id, embo_debe, cobrado, balance_después)]."""
+    import embo_db
+    if price <= 0:
+        raise AmountError("El precio tiene que ser mayor a 0.")
+    embo_db.init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM eco_operations WHERE request_key = ?", (request_key,)).fetchone():
+                return []
+            rows = [(int(r["user_id"]), -int(r["balance"])) for r in
+                    conn.execute("SELECT user_id, balance FROM embo_accounts WHERE balance < 0 ORDER BY balance ASC, user_id")]
+            if not rows:
+                return []
+            total = sum(units * price for _, units in rows)
+            op_id = tx_new_operation(conn, kind="remove", actor_id=actor_id, request_key=request_key, total_amount=total,
+                                     target_count=len(rows), reason=reason, related_id=request_key)
+            out = []
+            for user_id, units in rows:
+                charge = units * price
+                _, after = tx_move(conn, op_id=op_id, user_id=user_id, delta=-charge, mov_type="embo_payment", reason=reason,
+                                   actor_id=actor_id, related_id=request_key)
+                embo_db.tx_apply(conn, user_id=user_id, mode="set", amount=0, actor_id=actor_id,
+                                 request_key=f"{request_key}:{user_id}", reason=reason, kind="embo_payment")
+                out.append((user_id, units, charge, after))
+            return out
     finally:
         conn.close()
 
