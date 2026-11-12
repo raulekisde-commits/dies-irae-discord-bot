@@ -79,9 +79,9 @@ class RolesTests(DiscordBase):
         self.assertIn("No tenés permiso", i.text)
 
     def test_es_un_solo_comando_raiz(self):
-        # el servidor admite 100 comandos: /rol cuenta como UNO (dar, quitar e historial son subcomandos)
+        # el servidor admite 100 comandos: /rol cuenta como UNO (dar, quitar, masivo e historial son subcomandos)
         self.assertEqual(self.cog.rol.name, "rol")
-        self.assertEqual(sorted(self.cog.rol.commands), ["dar", "historial", "quitar"])
+        self.assertEqual(sorted(self.cog.rol.commands), ["dar", "historial", "masivo", "quitar"])
 
     def test_info(self):
         self.assertIn("roles", [c.value for c in iv.InvitadosCog.INFO_CHOICES])
@@ -169,6 +169,83 @@ class ObsVoteTests(DiscordBase):
         self.press(self.c1, msg, "si")
         self.press(self.c1, msg, "no")
         self.assertEqual(rdb.ballots(self.db, rdb.vote_by_message(self.db, msg.id)["id"]), {self.c1.id: False})
+
+
+
+class RolMasivoTests(DiscordBase):
+    def setUp(self):
+        super().setUp()
+        rm.MASIVO_PAUSA = 0
+        g = self.guild
+        self.evento = discord.Role(880001, "Evento", g)
+        self.filtro = discord.Role(880002, "Miembro", g)
+        g.roles += [self.evento, self.filtro]
+        self.a = discord.Member(880101, "A", roles=[self.filtro], guild=g)
+        self.b = discord.Member(880102, "B", roles=[], guild=g)
+        self.c = discord.Member(880103, "C", roles=[self.filtro, self.evento], guild=g)
+        self.robot = discord.Member(880104, "Robot", roles=[self.filtro], guild=g, bot=True)
+        g.members += [self.a, self.b, self.c, self.robot]
+        self.cog = run(rm.setup_rolesmgmt(self.bot, self.db, GUILD_ID))
+
+    def pedir(self, who, action, role, filtro=None, motivo=None):
+        i = self.inter(who)
+        run(self.cog.rol_masivo.callback(self.cog, i, action, role, filtro, motivo))
+        return i
+
+    def confirmar(self, i, who=None, boton=0):
+        view = i.response.sent[0][1]["view"]
+        j = self.inter(who or i.user)
+        if not run(view.interaction_check(j)):
+            return j
+        run(view.children[boton].callback(j))
+        return j
+
+    def tiene(self, m):
+        return self.evento in m.roles
+
+    def test_solo_council_o_admin(self):
+        for who in (self.alice,):
+            i = self.pedir(who, "dar", self.evento)
+            self.assertIn("Solo **Council**", i.text)
+        self.assertFalse(self.tiene(self.a))
+
+    def test_dar_a_todos_pide_confirmacion_y_saltea_bots_y_quien_ya_lo_tiene(self):
+        i = self.pedir(self.council, "dar", self.evento, motivo="evento")
+        self.assertFalse(self.tiene(self.a))                                  # nada hasta confirmar
+        n = len([m for m in self.guild.members if not m.bot and self.evento not in m.roles])
+        self.assertIn(f"**{n}**", i.text)
+        j = self.confirmar(i)
+        self.assertTrue(all(self.tiene(m) for m in self.guild.members if not m.bot))
+        self.assertFalse(self.tiene(self.robot))
+        self.assertIn(f"✅ {n} miembros recibieron", j.text)
+        self.assertEqual(len(rdb.history(self.db, self.a.id)), 1)
+        self.assertEqual(rdb.history(self.db, self.a.id)[0]["reason"], "Masivo: evento")
+
+    def test_filtro_y_quitar(self):
+        self.confirmar(self.pedir(self.admin, "dar", self.evento, filtro=self.filtro))
+        self.assertTrue(self.tiene(self.a) and self.tiene(self.c))
+        self.assertFalse(self.tiene(self.b))
+        self.confirmar(self.pedir(self.admin, "quitar", self.evento))
+        self.assertFalse(any(self.tiene(m) for m in (self.a, self.b, self.c)))
+
+    def test_cancelar_y_solo_el_que_pidio_confirma(self):
+        i = self.pedir(self.council, "dar", self.evento)
+        j = self.confirmar(i, who=self.alice)
+        self.assertIn("no es tuyo", j.text)
+        self.confirmar(i, boton=1)
+        self.assertFalse(self.tiene(self.a))
+
+    def test_roles_bloqueados(self):
+        self.assertIn("@everyone", self.pedir(self.council, "dar", self.guild.default_role).text)
+        peligroso = discord.Role(880003, "Mod", self.guild)
+        peligroso.permissions = discord.Permissions(ban_members=True)
+        self.assertIn("moderación", self.pedir(self.council, "dar", peligroso).text)
+        bot_role = discord.Role(880004, "Integración", self.guild)
+        bot_role.managed = True
+        self.assertIn("integración", self.pedir(self.council, "dar", bot_role).text)
+
+    def test_nadie_para_cambiar(self):
+        self.assertIn("No hay nadie", self.pedir(self.council, "dar", self.evento, filtro=self.evento).text)
 
 
 if __name__ == "__main__":
