@@ -1432,6 +1432,10 @@ class WujuponCog(commands.Cog):
             return "\n".join(parts) + f"\n≈ **{eco.format_amount(wdb.silver_equivalent(d))}** silver (sin VAL)"
         emb.add_field(name="Entregado", value=fmt(st.paid), inline=True)
         emb.add_field(name="Pendiente (cartas sin canjear)", value=fmt(st.pending), inline=True)
+        total = st.wuju_spent - wdb.silver_equivalent(st.paid)
+        emb.add_field(name="Total", value=f"**{'+' if total > 0 else ''}{eco.format_amount(int(total))}** silver "
+                                          f"({'ganancia' if total >= 0 else 'pérdida'})\nIngresos − entregado (sin VAL)",
+                      inline=False)
         real = (wdb.silver_equivalent(st.paid) / st.pulls) if st.pulls else 0
         emb.add_field(name="Costo por tirada", value=f"Esperado: **{eco.format_amount(int(exp_silver))}** silver + "
                                                      f"{eco.format_amount(int(exp.get('val', 0)))} VAL\n"
