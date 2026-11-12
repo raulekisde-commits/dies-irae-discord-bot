@@ -1127,6 +1127,22 @@ class WujuponDiscordTests(DiscordBase):
         # filtro por días
         self.assertEqual(wdb.money_stats(self.db, 1)[0].net, 2_300_000)
 
+    def test_estadisticas_pendientes(self):
+        wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="weapon_73", reason="t")
+        wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="weapon_73", reason="t")
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="weapon_73", reason="t")
+        wdb.redeem(self.db, card_id=cid, user_id=self.alice.id, details="", request_key="w", guild_id=GUILD_ID)
+        rows = wdb.pending_by_user(self.db)
+        self.assertEqual([(u.user_id, u.cards, u.silver) for u in rows], [(self.alice.id, 3, 24_000_000)])
+        i = self.inter(self.council)
+        run(self.cog.stats_pending.callback(self.cog, i))
+        self.assertIn("Solo el dueño", i.text)
+        i = self.inter(self.admin)
+        run(self.cog.stats_pending.callback(self.cog, i))
+        e = i.response.sent[0][1]["embed"]
+        self.assertIn(f"<@{self.alice.id}>", e.description)
+        self.assertIn("24,000,000", e.description)
+
     def test_regalar_tiradas_a_un_rol(self):
         i = self.inter(self.council)
         run(self.cog.gift.callback(self.cog, i, 2, None, None, None))

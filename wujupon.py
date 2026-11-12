@@ -1410,6 +1410,28 @@ class WujuponCog(commands.Cog):
                        + "Wuju Coins y embo van en /wujupon estadisticas monedas")
         await _say(interaction, embed=emb)
 
+    @estad.command(name="pendientes", description="(Admin) Gente con cartas sin usar y cuánto Wuju y silver pueden ganar")
+    async def stats_pending(self, interaction: discord.Interaction):
+        if not is_admin(interaction.user):
+            return await _say(interaction, "❌ Solo el dueño del servidor o un administrador.")
+        rows = await self.run(wdb.pending_by_user)
+        f = eco.format_amount
+        lines = [f"<@{u.user_id}> · {u.cards} cartas · Wuju **{f(u.wuju)}** · Silver **{f(u.silver)}**" for u in rows]
+        desc, shown = "", 0
+        for ln in lines:
+            if len(desc) + len(ln) + 1 > 3800:
+                break
+            desc += ln + "\n"
+            shown += 1
+        if shown < len(lines):
+            desc += f"… y {len(lines) - shown} más"
+        emb = discord.Embed(title="🃏 Wujupón — cartas sin usar", color=GOLD,
+                            description=desc or "Nadie tiene cartas sin usar.")
+        emb.add_field(name="Total", value=f"Wuju **{f(sum(u.wuju for u in rows))}** · Silver **{f(sum(u.silver for u in rows))}** · "
+                                          f"{sum(u.cards for u in rows)} cartas de {len(rows)} personas", inline=False)
+        emb.set_footer(text="Cartas disponibles o reservadas · costo máximo de catálogo")
+        await _say(interaction, embed=emb)
+
     @wj.command(name="stats", description="(Council) Ingresos, costos entregados y pendientes de Wujupón")
     async def stats(self, interaction: discord.Interaction):
         if not await self._council(interaction):
