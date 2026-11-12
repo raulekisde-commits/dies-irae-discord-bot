@@ -249,6 +249,22 @@ class EfectosTests(DiscordBase):
         casino_db.set_open(self.db, GUILD_ID, True, 1)
         self.assertAlmostEqual(edb.active_until(self.db, self.bob.id, "casino_block") - time.time(), 8 * 3600, delta=60)
 
+    def test_comando_suerte_rol_solo_admin(self):
+        i = self.inter(self.bob)
+        run(self.cog.suerte_rol.callback(self.cog, i, self.r_member, 20))
+        self.assertIn("Solo el dueño", i.text)
+        i = self.inter(self.admin)
+        run(self.cog.suerte_rol.callback(self.cog, i, self.r_member, 20))
+        self.assertIn("+20 %", i.text)
+        self.assertEqual(wdb.list_luck_roles(self.db), [(self.r_member.id, 20)])
+        i = self.inter(self.admin)
+        run(self.cog.suerte_rol.callback(self.cog, i, None, None))
+        self.assertIn("+20 %", i.response.sent[-1][1]["embed"].description)
+        self.bob.roles.append(self.r_member) if self.r_member not in self.bob.roles else None
+        i = self.inter(self.bob)
+        run(self.wcog.show_effects(i))
+        self.assertIn("+20 %", " ".join(v for _, v, _ in i.response.sent[-1][1]["embed"].fields))
+
     def test_boton_mis_efectos(self):
         i = self.inter(self.bob)
         run(self.wcog.show_effects(i))

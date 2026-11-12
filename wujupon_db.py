@@ -420,6 +420,12 @@ CREATE TABLE IF NOT EXISTS wjp_daily_roles (      -- tiradas gratis por día seg
     updated_by INTEGER,
     updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS wjp_luck_roles (       -- suerte extra por rol en las tiradas (se usa la mayor de sus roles)
+    role_id    INTEGER PRIMARY KEY,
+    percent    INTEGER NOT NULL,
+    updated_by INTEGER,
+    updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS wjp_daily_used (       -- tiradas gratis usadas por día UTC (lo no usado vence solo)
     user_id INTEGER NOT NULL,
     day     TEXT NOT NULL,
@@ -1071,6 +1077,52 @@ def _used_today(conn, user_id: int) -> int:
     return int(r["used"]) if r else 0
 
 
+# ---------------- suerte por rol ----------------
+MAX_LUCK = 200
+
+
+def set_luck_role(db_path: str, role_id: int, percent: int, actor_id: int) -> None:
+    """percent = 0 saca el rol de la lista. +20 = las cartas raras o mejores pesan un 20 % más para ese rol."""
+    if not 0 <= percent <= MAX_LUCK:
+        raise WujuponError(f"La suerte tiene que estar entre 0 y {MAX_LUCK} %.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            if percent:
+                conn.execute("INSERT OR REPLACE INTO wjp_luck_roles(role_id, percent, updated_by, updated_at) VALUES (?,?,?,?)",
+                             (role_id, percent, actor_id, utcnow_iso()))
+            else:
+                conn.execute("DELETE FROM wjp_luck_roles WHERE role_id = ?", (role_id,))
+            _log(conn, actor_id, "luck_role", None, f"role:{role_id}", str(percent))
+    finally:
+        conn.close()
+
+
+def list_luck_roles(db_path: str) -> List[Tuple[int, int]]:
+    conn = _open(db_path)
+    try:
+        return [(int(r["role_id"]), int(r["percent"])) for r in conn.execute("SELECT * FROM wjp_luck_roles ORDER BY percent DESC")]
+    finally:
+        conn.close()
+
+
+def _luck(conn, role_ids) -> int:
+    ids = [int(r) for r in role_ids]
+    if not ids:
+        return 0
+    r = conn.execute(f"SELECT MAX(percent) FROM wjp_luck_roles WHERE role_id IN ({','.join('?' * len(ids))})", ids).fetchone()
+    return int(r[0] or 0)
+
+
+def luck_percent(db_path: str, role_ids) -> int:
+    """Suerte extra (%) de una persona según sus roles (la mayor)."""
+    conn = _open(db_path)
+    try:
+        return _luck(conn, role_ids)
+    finally:
+        conn.close()
+
+
 def free_spins_left(db_path: str, user_id: int, role_ids) -> int:
     """Tiradas gratis que le quedan hoy (día UTC)."""
     conn = _open(db_path)
@@ -1170,15 +1222,26 @@ class PullResult:
     gained: str = ""                  # cartas de Wuju / embo: monto que salió (para el anuncio público, sin balance)
 
 
-def draw(prizes: List[Prize], rng=None) -> Tuple[Prize, int]:
-    """Elige un premio según su peso. Devuelve (premio, peso total)."""
-    total = sum(p.weight for p in prizes)
+LUCKY_RARITIES = ("rare", "epic", "legendary", "mythic")   # la suerte multiplica estas cartas (las buenas); las malas no
+
+
+def luck_weight(p: Prize, luck: int) -> int:
+    """Peso de la carta con la suerte del jugador. Con suerte 0 es el peso normal; con suerte, todo se escala ×100."""
+    if not luck:
+        return p.weight
+    return p.weight * ((100 + luck) if p.rarity in LUCKY_RARITIES and not p.forced else 100)
+
+
+def draw(prizes: List[Prize], rng=None, luck: int = 0) -> Tuple[Prize, int]:
+    """Elige un premio según su peso (con la suerte del jugador). Devuelve (premio, peso total)."""
+    weights = [luck_weight(p, luck) for p in prizes]
+    total = sum(weights)
     if total <= 0:
         raise WujuponError("No hay premios habilitados.")
     roll = rng.randrange(total) if rng is not None else secrets.randbelow(total)
     acc = 0
-    for p in prizes:
-        acc += p.weight
+    for p, wgt in zip(prizes, weights):
+        acc += wgt
         if roll < acc:
             return p, total
     return prizes[-1], total
@@ -1200,7 +1263,9 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
             prizes = [_prize(r) for r in conn.execute("SELECT * FROM wjp_prizes WHERE enabled = 1 ORDER BY sort").fetchall()]
             if not prizes:
                 return PullResult("empty")
-            prize, total = draw(prizes, rng)
+            luck = _luck(conn, role_ids)
+            prize, total = draw(prizes, rng, luck) if luck else draw(prizes, rng)
+            weight = luck_weight(prize, luck)
             if free > 0:                                # primero las gratis del día (lo que no se usa, vence)
                 conn.execute("INSERT INTO wjp_daily_used(user_id, day, used) VALUES (?,?,1) "
                              "ON CONFLICT(user_id, day) DO UPDATE SET used = used + 1", (user_id, _today()))
@@ -1212,7 +1277,7 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                    "VALUES (?,?,'available','pull',?,?)", (user_id, prize.key, now, now)).lastrowid
             pull_id = conn.execute("INSERT INTO wjp_pulls(request_key, user_id, prize_key, rarity, weight, total_weight, card_id, created_at) "
                                    "VALUES (?,?,?,?,?,?,?,?)",
-                                   (request_key, user_id, prize.key, prize.rarity, prize.weight, total, card_id, now)).lastrowid
+                                   (request_key, user_id, prize.key, prize.rarity, weight, total, card_id, now)).lastrowid
             req_id = None
             credited = gained = ""
             if prize.handler in ("wuju", "embo") and not prize.forced:
@@ -1238,7 +1303,7 @@ def pull(db_path: str, user_id: int, request_key: str, rng: Optional[random.Rand
                                       (f"forced:{request_key}", card_id, user_id, prize.key,
                                        "☠️ Carta mala: aplicarla al jugador que la sacó (salvo que tenga escudo o sea inmune).",
                                        now, now)).lastrowid
-            return PullResult("ok", prize, int(card_id), int(pull_id), prize.weight, total, left,
+            return PullResult("ok", prize, int(card_id), int(pull_id), weight, total, left,
                               int(req_id) if req_id else None, credited, gained)
     finally:
         conn.close()

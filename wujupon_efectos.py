@@ -641,6 +641,28 @@ class EfectosCog(commands.Cog):
         await self.run(wdb.set_setting, "duel_channel", str(target.id))
         await _say(interaction, f"⚔️ Los duelos especiales se publican en {target.mention} (con mención al rol Ludópata).")
 
+    @efx.command(name="suerte-rol", description="(Admin) Suerte extra en Wujupón para un rol (0 = sacar). Sin datos, muestra la lista")
+    @app_commands.describe(rol="Rol", porcentaje="Suerte extra en % (ej.: 20). Las cartas raras o mejores pesan ese % más")
+    async def suerte_rol(self, interaction: discord.Interaction, rol: Optional[discord.Role] = None,
+                         porcentaje: Optional[int] = None):
+        if not await self._admin(interaction):
+            return
+        if rol is not None and porcentaje is not None:
+            try:
+                await self.run(wdb.set_luck_role, rol.id, porcentaje, interaction.user.id)
+            except wdb.WujuponError as exc:
+                return await _say(interaction, f"❌ {exc}")
+            return await _say(interaction, (f"🍀 {rol.mention} tiene **+{porcentaje} %** de suerte: las cartas raras, épicas, legendarias "
+                                            f"y míticas le pesan un {porcentaje} % más (bajan las comunes y las malas)." if porcentaje
+                                            else f"✅ {rol.mention} ya no tiene suerte extra.")
+                              + "\nSi alguien tiene varios roles, se usa el que más da.")
+        if (rol is None) != (porcentaje is None):
+            return await _say(interaction, "❌ Indicá el rol **y** el porcentaje (o ninguno de los dos para ver la lista).")
+        rows = await self.run(wdb.list_luck_roles)
+        await _say(interaction, embed=discord.Embed(title="🍀 Suerte por rol", color=0x2ECC71,
+                                                    description="\n".join(f"<@&{r}> — **+{n} %**" for r, n in rows)
+                                                    or "Ningún rol tiene suerte extra."))
+
     @efx.command(name="canal", description="(Council) Canal donde se anuncian los efectos que se usan contra otros")
     async def canal(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
         if not await self._council(interaction):

@@ -625,6 +625,9 @@ class WujuponCog(commands.Cog):
         emb = discord.Embed(title="✨ Mis efectos", color=GOLD)
         emb.description = ("\n".join(efectos_db.effect_text(e) for e in effects)[:4000] if effects
                            else "No tenés ningún efecto activo.")
+        luck = await self.run(wdb.luck_percent, [r.id for r in getattr(interaction.user, "roles", [])])
+        if luck:
+            emb.add_field(name="🍀 Suerte", value=f"**+{luck} %** en las cartas raras o mejores (por tu rol).", inline=False)
         await _say(interaction, embed=emb)
 
     async def show_requests(self, interaction: discord.Interaction, target: Optional[discord.abc.User] = None):
