@@ -68,7 +68,7 @@ class CatalogTests(unittest.TestCase):
                   for c in wdb.CATALOG]
         exp = wdb.expected_cost(prizes)
         silver = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE
-        self.assertAlmostEqual(silver + exp["val"], 289_875.04925, places=3)  # margen ≈ 42 % con la tirada a 500.000 (v15: embo ×2)
+        self.assertAlmostEqual(silver + exp["val"], 198_950.04, places=3)  # margen ≈ 60 % con la tirada a 500.000 (v16)
         self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
     def test_texto_de_chance(self):
@@ -441,7 +441,7 @@ class CatalogoV2Tests(DbBase):
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "flex_cta")
-        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 700))
+        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 1000))
         # una edición posterior del Council se mantiene en los reinicios siguientes
         wdb.edit_prize(self.db, "flex_cta", actor_id=1, name="Flex", description="Mía")
         wdb._ready.discard(self.db)
@@ -497,7 +497,7 @@ class CatalogoV2Tests(DbBase):
         self.assertEqual(p["freeze_24h"].name, "Congelar balance 72 h")
         self.assertEqual((p["mute_chat_180"].name, p["mute_voice_180"].name), ("Mute de chat 48 h", "Mute de voice 48 h"))
         self.assertEqual(p["plot_tax0"].name, "Tax 0 en plots 48 h")
-        self.assertEqual((p["shop_discount"].rarity, p["shop_discount"].weight), ("epic", 300))
+        self.assertEqual((p["shop_discount"].rarity, p["shop_discount"].weight), ("epic", 200))
         self.assertEqual(wdb.rarity_totals(self.db), {"common": 45000, "rare": 35000, "epic": 15200, "legendary": 4600, "mythic": 200})
 
     def test_cambios_v9(self):
@@ -512,8 +512,15 @@ class CatalogoV2Tests(DbBase):
 
     def test_cambios_v10_las_caras_con_menos_chance(self):
         p = {x.key: x.weight for x in wdb.list_prizes(self.db)}
-        self.assertEqual([p[k] for k in ("wuju_15m", "weapon_83", "embo_1000", "weapon_73")], [100, 100, 200, 150])
-        self.assertEqual([p[k] for k in ("mute_chat_60", "mute_voice_60", "purge_shield", "bad_cd_24h")], [250, 300, 300, 250])
+        self.assertEqual([p[k] for k in ("wuju_15m", "weapon_83", "embo_1000", "weapon_73")], [100, 100, 200, 100])
+        self.assertEqual([p[k] for k in ("mute_chat_60", "mute_voice_60", "purge_shield", "bad_cd_24h")], [250, 300, 350, 250])
+
+    def test_v16_costo_por_tirada_200k(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual([p[k].weight for k in ("loot_3_items", "regear_4m", "repair_4m", "wuju_500k")], [100, 200, 200, 2500])
+        exp = wdb.expected_cost(list(p.values()))
+        total = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE + exp["val"]
+        self.assertLess(total, 200_000)
 
     def test_v15_chance_de_embo_doble(self):
         p = {x.key: x.weight for x in wdb.list_prizes(self.db)}
@@ -524,7 +531,7 @@ class CatalogoV2Tests(DbBase):
         p = {x.key: x for x in wdb.list_prizes(self.db)}
         self.assertEqual([(p[k].rarity, p[k].weight, p[k].origin, p[k].automatic) for k in ("farm_node_84", "ho_perms_remove_4h")],
                          [("legendary", 100, "Staff", False)] * 2)
-        self.assertEqual((p["regear_full_5m"].weight, p["mute_chat_60"].weight), (300, 250))
+        self.assertEqual((p["regear_full_5m"].weight, p["mute_chat_60"].weight), (150, 250))
 
     def test_migracion_v9_actualiza_rarezas(self):
         conn = connect(self.db)
@@ -868,7 +875,7 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.council)
         run(self.cog.odds_card.callback(self.cog, i, "flex_cta", "10", leg))
         self.assertIn("Legendaria", i.text)
-        self.assertIn("109,3 %", i.text)                               # avisa que ya no suma 100 %
+        self.assertIn("109 %", i.text)                               # avisa que ya no suma 100 %
         p = wdb.get_prize(self.db, "flex_cta")
         self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
 
