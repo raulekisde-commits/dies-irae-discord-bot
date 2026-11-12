@@ -23,7 +23,7 @@ TOP_LIMIT = 25
 CLOSE_DELAY_SECONDS = 5
 SALE_CLOSE_DELAY_SECONDS = 120          # después de confirmar una venta, el canal del ticket se borra solo a los 2 minutos
 GOLD = 0xF1C40F
-SALE_SPIN_MIN = 3_000_000          # quien confirma ventas gana 1 tirada de Wujupón por cada 3M acumulados (el resto queda para la próxima)
+SALE_SPIN_MIN = 4_000_000          # quien confirma ventas gana 1 tirada de Wujupón por cada 4M acumulados (el resto queda para la próxima)
 
 
 def can_sell(member) -> bool:
