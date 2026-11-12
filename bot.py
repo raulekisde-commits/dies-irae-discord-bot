@@ -4114,7 +4114,9 @@ def cta_board_specs(run: dict) -> list:
         legacy_line = (f"\n⏳ **Party 1 solo para <@&{CTA_LEGACY_ROLE_ID}>** hasta las <t:{int(legacy_end.timestamp())}:t> "
                        f"(<t:{int(legacy_end.timestamp())}:R>)")
     bombs = cu.bomb_list(DB_PATH, int(run["id"]))
-    count_line = f"👥 **Anotados: {occupied}/{total}**" if not bombs else f"👥 **Anotados: {occupied + len(bombs)}** · posiciones {occupied}/{total} + 💣 {len(bombs)} Bomb"
+    cls = cu.cl_list(DB_PATH, int(run["id"]))
+    extras = (f" + 💣 {len(bombs)} Bomb" if bombs else "") + (f" + 🪙 {len(cls)} CL" if cls else "")
+    count_line = f"👥 **Anotados: {occupied}/{total}**" if not extras else f"👥 **Anotados: {occupied + len(bombs) + len(cls)}** · posiciones {occupied}/{total}{extras}"
     header = {"title": f"⚔️ SMOGG · {cta_run_title(run)} · {run['composition_name']}",
               "description": f"{status}\n{count_line}{builds_line}{legacy_line}", "color": color}
     specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
@@ -4124,7 +4126,13 @@ def cta_board_specs(run: dict) -> list:
         if len(chunk_text) > 3800:
             chunk_text = chunk_text[:3800].rsplit("\n", 1)[0] + "\n…"
         specs.append({"title": f"💣 BOMB · {len(bombs)}", "description": chunk_text, "color": discord.Color.dark_orange()})
-    footer_count = f"{occupied + len(bombs)}" + (f" (💣 {len(bombs)})" if bombs else "") if bombs else f"{occupied}/{total}"
+    if cls:                                           # Combat Looters: también aparte, van al split como looters
+        chunk_text = "\n".join(f"• <@{u}>" for u in cls)
+        if len(chunk_text) > 3800:
+            chunk_text = chunk_text[:3800].rsplit("\n", 1)[0] + "\n…"
+        specs.append({"title": f"🪙 COMBAT LOOTER · {len(cls)}", "description": chunk_text, "color": discord.Color.gold()})
+    footer_count = (f"{occupied + len(bombs) + len(cls)}" + (f" (💣 {len(bombs)})" if bombs else "") + (f" (🪙 {len(cls)})" if cls else "")
+                    if (bombs or cls) else f"{occupied}/{total}")
     specs[-1] = dict(specs[-1], footer=f"Anotados: {footer_count} · CTA #{run['id']}")
     return specs
 
@@ -4487,6 +4495,8 @@ async def cta_create_track_split(run_id: int):
     is_content = run.get("kind") == "content"
     if not is_content:                                                                  # en /content no cuentan los Bomb
         user_ids += [u for u in cu.bomb_list(DB_PATH, run_id) if u not in user_ids]      # los Bomb también van al split
+    cl_ids = [] if is_content else cu.cl_list(DB_PATH, run_id)                         # Combat Looters: al split como looters
+    user_ids += [u for u in cl_ids if u not in user_ids]
     title = cta_run_title(run)
     try:
         try:
@@ -4494,7 +4504,8 @@ async def cta_create_track_split(run_id: int):
         except Exception:
             is_ava = is_content
         split, msg, error = await cog.create_from_cta(cta_id=run_id, title=title, tab=run.get("tab"), city=run.get("city"),
-                                                      user_ids=user_ids, creator_id=int(run["created_by"]), kind="ava" if is_ava else "normal")
+                                                      user_ids=user_ids, creator_id=int(run["created_by"]), kind="ava" if is_ava else "normal",
+                                                      looters=cl_ids)
     except Exception as exc:
         print(f"CTA #{run_id}: error generando el split: {exc!r}")
         split, msg, error = None, None, "❌ Falló la creación del split."
@@ -4514,6 +4525,7 @@ bs.register("stats", "Panel de stats de las CTA", STATS_CHANNEL_ID, "Acá se pub
 BOMB_CHANNEL_ID = int(os.getenv("BOMB_CHANNEL_ID", str(cu.BOMB_CHANNEL_ID)))
 bs.register("bomb", "Paneles de Bomb", BOMB_CHANNEL_ID, "Acá se publica el panel (con su hilo) para anotar a los Bomb")
 BOMB_ROLE_ID = int(os.getenv("BOMB_ROLE_ID", str(cu.BOMB_ROLE_ID)))
+COMBAT_LOOTER_ROLE_ID = int(os.getenv("COMBAT_LOOTER_ROLE_ID", str(cu.COMBAT_LOOTER_ROLE_ID)))
 
 
 # ---------- Bomb: panel + hilo para anotar gente del rol Bomb a una CTA ----------
@@ -4545,21 +4557,25 @@ async def cta_bomb_refresh_panel(run_id: int):
             print(f"CTA #{run_id}: no pude actualizar el panel de Bomb {p.get('n')}: {exc!r}")
 
 
-async def cta_bomb_join(user, run_id: int, panel_id: Optional[int] = None) -> str:
-    """Anota a un Bomb. Devuelve el texto para mostrarle a quien lo pidió."""
-    if not isinstance(user, discord.Member) or BOMB_ROLE_ID not in {r.id for r in user.roles}:
+async def cta_bomb_join(user, run_id: int, panel_id: Optional[int] = None, by=None) -> str:
+    """Anota a un Bomb. Devuelve el texto para mostrarle a quien lo pidió.
+    `by`: organizador que lo anota etiquetándolo («@persona bomb»); en ese caso no se exige el rol."""
+    if by is None and (not isinstance(user, discord.Member) or BOMB_ROLE_ID not in {r.id for r in user.roles}):
         return f"🔒 Solo quienes tienen el rol <@&{BOMB_ROLE_ID}> pueden anotarse acá."
     res = await asyncio.to_thread(cu.bomb_add, DB_PATH, run_id, user.id, panel_id)
+    who = "Ya estabas" if by is None else f"{user.mention} ya estaba"
     if res == "final":
         return "🏁 Esta CTA ya terminó: no se aceptan más anotados."
     if res == "missing":
         return "No encontré esta CTA."
     if res == "exists":
-        return "✅ Ya estabas anotado como Bomb."
+        return f"✅ {who} anotado como Bomb."
     if res == "regular":
-        return "ℹ️ Ya estás anotado en una posición de la composición; no hace falta anotarte como Bomb."
+        return f"ℹ️ {who} anotado en una posición de la composición; no hace falta anotarlo como Bomb."
+    if res == "cl":
+        return f"ℹ️ {who} anotado como Combat Looter. Sacalo primero con `- cl`."
     run = cta_run_get(run_id)
-    cta_audit(int(run["guild_id"]), user.id, "bomb_signup", run_id, "")
+    cta_audit(int(run["guild_id"]), (by or user).id, "bomb_signup", run_id, "" if by is None else f"member={user.id}")
     note = ""
     cog = bot.get_cog("SplitsCog")
     if cog is not None and run.get("status") != "open":
@@ -4572,20 +4588,23 @@ async def cta_bomb_join(user, run_id: int, panel_id: Optional[int] = None) -> st
             note = " ⚠️ No pude sumarte al split: avisale al organizador."
     cta_request_board_refresh(run_id)
     await cta_bomb_refresh_panel(run_id)
+    if by is not None:
+        return f"💣 Anoté a {user.mention} como Bomb en **{cta_run_title(run)}**.{note}"
     return f"💣 Quedaste anotado como Bomb en **{cta_run_title(run)}**.{note}"
 
 
-async def cta_bomb_leave(user, run_id: int) -> str:
-    """Desanota a un Bomb («- bomb» en el hilo de la CTA). Si ya hay split abierto, también sale de él."""
+async def cta_bomb_leave(user, run_id: int, by=None) -> str:
+    """Desanota a un Bomb («- bomb» en el hilo de la CTA). Si ya hay split abierto, también sale de él.
+    `by`: organizador que lo saca etiquetándolo («@persona - bomb»)."""
     res = await asyncio.to_thread(cu.bomb_remove, DB_PATH, run_id, user.id)
     if res == "final":
         return "🏁 Esta CTA ya terminó: no se puede desanotar."
     if res == "missing":
         return "No encontré esta CTA."
     if res == "none":
-        return "ℹ️ No estabas anotado como Bomb."
+        return "ℹ️ No estabas anotado como Bomb." if by is None else f"ℹ️ {user.mention} no estaba anotado como Bomb."
     run = cta_run_get(run_id)
-    cta_audit(int(run["guild_id"]), user.id, "bomb_leave", run_id, "")
+    cta_audit(int(run["guild_id"]), (by or user).id, "bomb_leave", run_id, "" if by is None else f"member={user.id}")
     note = ""
     cog = bot.get_cog("SplitsCog")
     if cog is not None and run.get("status") != "open":
@@ -4601,7 +4620,75 @@ async def cta_bomb_leave(user, run_id: int) -> str:
             print(f"CTA #{run_id}: no pude sacar al Bomb {user.id} del split: {exc!r}")
             note = " ⚠️ No pude sacarte del split: avisale al organizador."
     cta_request_board_refresh(run_id)
+    if by is not None:
+        return f"👋 Saqué a {user.mention} de los Bomb de **{cta_run_title(run)}**.{note.replace('También saliste', 'También salió')}"
     return f"👋 Te desanotaste como Bomb de **{cta_run_title(run)}**.{note}"
+
+
+async def cta_cl_join(user, run_id: int, by=None) -> str:
+    """Anota a un Combat Looter («cl» en el hilo de la CTA): entra al split como looter.
+    `by`: organizador que lo anota etiquetándolo («@persona cl»); en ese caso no se exige el rol."""
+    if by is None and (not isinstance(user, discord.Member) or COMBAT_LOOTER_ROLE_ID not in {r.id for r in user.roles}):
+        return f"🔒 Solo quienes tienen el rol <@&{COMBAT_LOOTER_ROLE_ID}> pueden anotarse como Combat Looter."
+    res = await asyncio.to_thread(cu.cl_add, DB_PATH, run_id, user.id)
+    who = "Ya estabas" if by is None else f"{user.mention} ya estaba"
+    if res == "final":
+        return "🏁 Esta CTA ya terminó: no se aceptan más anotados."
+    if res == "missing":
+        return "No encontré esta CTA."
+    if res == "exists":
+        return f"✅ {who} anotado como Combat Looter."
+    if res == "regular":
+        return f"ℹ️ {who} anotado en una posición de la composición. Para pasar a Combat Looter, salí primero de la posición."
+    if res == "bomb":
+        return f"ℹ️ {who} anotado como Bomb. Sacalo primero con `- bomb`."
+    run = cta_run_get(run_id)
+    cta_audit(int(run["guild_id"]), (by or user).id, "cl_signup", run_id, "" if by is None else f"member={user.id}")
+    note = ""
+    cog = bot.get_cog("SplitsCog")
+    if cog is not None and run.get("status") != "open":
+        try:
+            state = await cog.add_looter(cta_id=run_id, user_id=user.id, actor_id=(by or user).id)
+            note = {"added": " Ya está en el split como looter.", "full": " ⚠️ El split está lleno: avisale al organizador.",
+                    "closed": " ⚠️ El split ya está cerrado: avisale al organizador."}.get(state, "")
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude sumar al Combat Looter {user.id} al split: {exc!r}")
+            note = " ⚠️ No pude sumarlo al split: avisale al organizador."
+    cta_request_board_refresh(run_id)
+    if by is not None:
+        return f"🪙 Anoté a {user.mention} como Combat Looter en **{cta_run_title(run)}**.{note}"
+    return f"🪙 Quedaste anotado como Combat Looter en **{cta_run_title(run)}**.{note}"
+
+
+async def cta_cl_leave(user, run_id: int, by=None) -> str:
+    """Desanota a un Combat Looter («- cl»). Si ya hay split abierto, también sale de él."""
+    res = await asyncio.to_thread(cu.cl_remove, DB_PATH, run_id, user.id)
+    if res == "final":
+        return "🏁 Esta CTA ya terminó: no se puede desanotar."
+    if res == "missing":
+        return "No encontré esta CTA."
+    if res == "none":
+        return "ℹ️ No estabas anotado como Combat Looter." if by is None else f"ℹ️ {user.mention} no estaba anotado como Combat Looter."
+    run = cta_run_get(run_id)
+    cta_audit(int(run["guild_id"]), (by or user).id, "cl_leave", run_id, "" if by is None else f"member={user.id}")
+    note = ""
+    cog = bot.get_cog("SplitsCog")
+    if cog is not None and run.get("status") != "open":
+        import splits_db as _sdb
+        try:
+            s = await cog.run(_sdb.find_by_cta, run_id)
+            if s is not None:
+                removed, _ = await cog.run(_sdb.remove_people, s.id, [user.id])
+                if removed:
+                    await cog.sync_split(s.id)
+                    note = " También salió del split."
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude sacar al Combat Looter {user.id} del split: {exc!r}")
+            note = " ⚠️ No pude sacarlo del split: avisale al organizador."
+    cta_request_board_refresh(run_id)
+    if by is not None:
+        return f"👋 Saqué a {user.mention} de los Combat Looter de **{cta_run_title(run)}**.{note}"
+    return f"👋 Te desanotaste como Combat Looter de **{cta_run_title(run)}**.{note}"
 
 
 class BombPanelView(discord.ui.View):
@@ -5113,6 +5200,36 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         else:
             await cta_reply_short(message, text, 10)
         return True
+    cl_action = cu.parse_cta_cl_text(message.content)
+    if cl_action and not message.mentions and run.get("kind") != "content":       # `cl` / `- cl`: Combat Looter (va al split como looter)
+        rid = int(run["id"])
+        text = await (cta_cl_join(message.author, rid) if cl_action == "join" else cta_cl_leave(message.author, rid))
+        if text.startswith(("🪙", "👋")):
+            try:
+                await message.add_reaction("🪙" if cl_action == "join" else "👋")
+            except Exception:
+                pass
+        else:
+            await cta_reply_short(message, text, 10)
+        return True
+    if message.mentions and run.get("kind") != "content":                         # «@persona bomb» / «@persona cl» (y con «-» para sacar)
+        rest = re.sub(r"<@!?\d+>", "", message.content or "")
+        tag_bomb, tag_cl = cu.parse_cta_bomb_text(rest), cu.parse_cta_cl_text(rest)
+        if tag_bomb or tag_cl:
+            if not cta_is_organizer(message.author):
+                await cta_reply_short(message, "Solo Staff, Caller y Council pueden anotar o sacar a otras personas.", 8)
+                return True
+            targets = [m for m in message.mentions if not getattr(m, "bot", False)]
+            rid = int(run["id"])
+            texts = []
+            for t in targets:
+                if tag_bomb:
+                    texts.append(await (cta_bomb_join(t, rid, by=message.author) if tag_bomb == "join" else cta_bomb_leave(t, rid, by=message.author)))
+                else:
+                    texts.append(await (cta_cl_join(t, rid, by=message.author) if tag_cl == "join" else cta_cl_leave(t, rid, by=message.author)))
+            if texts:
+                await cta_reply_short(message, "\n".join(texts)[:1900], 15)
+            return True
     mentions = [m for m in message.mentions if not getattr(m, "bot", False) and m.id != message.author.id]
     command = cta_parse_thread_command(re.sub(r"<@!?\d+>", "", message.content or "") if mentions else message.content)
     if command is None:
@@ -6338,6 +6455,8 @@ async def cta_show_my_build(interaction: discord.Interaction, run_id: Optional[i
     if not rows:
         if cu.bomb_list(DB_PATH, run_id) and interaction.user.id in cu.bomb_list(DB_PATH, run_id):
             return await interaction.response.send_message("💣 Estás anotado como Bomb: no tenés una build asignada en la composición.", ephemeral=True)
+        if interaction.user.id in cu.cl_list(DB_PATH, run_id):
+            return await interaction.response.send_message("🪙 Estás anotado como Combat Looter: no tenés una build asignada en la composición.", ephemeral=True)
         return await interaction.response.send_message("No estás anotado en ninguna posición de esta CTA. Anotate escribiendo el número en el hilo.", ephemeral=True)
     slot_key = str(rows[0]["slot_key"])
     try:
@@ -6875,7 +6994,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
-        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. Al cerrar o cancelar la CTA se borra su hilo."),
+        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. El rol Combat Looter se anota con `cl` (y se desanota con `- cl`) y entra al split como looter. Staff, Caller y Council pueden anotar o sacar a otros con «@persona bomb», «@persona cl», «@persona - bomb» o «@persona - cl». Al cerrar o cancelar la CTA se borra su hilo."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/compo content nombre activar", "Council / Admin", "true/false: marca si la composición se puede publicar con /content."),

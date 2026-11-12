@@ -624,6 +624,18 @@ class SplitDiscordTests(DiscordBase):
         self.assertEqual((again.id, msg2, err2), (split.id, None, None))                      # no se duplica
         self.assertEqual(len(self.panelch.sent), 1)
 
+    def test_create_from_cta_combat_looters_entran_como_looters(self):
+        split, _m, err = run(self.cog.create_from_cta(cta_id=8, title="CTA #8", tab=None, city=None,
+                                                      user_ids=[self.alice.id, self.bob.id], creator_id=self.admin.id, looters=[self.bob.id]))
+        self.assertIsNone(err)
+        self.assertEqual(split.people, [self.alice.id, self.bob.id])
+        self.assertEqual([l.user_id for l in split.looters], [self.bob.id])
+        self.assertEqual(run(self.cog.add_looter(cta_id=8, user_id=self.council.id, actor_id=self.admin.id)), "added")   # anotado tarde
+        s = sdb.get_split(self.db, split.id)
+        self.assertIn(self.council.id, s.people)
+        self.assertEqual([l.user_id for l in s.looters], [self.bob.id, self.council.id])
+        self.assertEqual(run(self.cog.add_looter(cta_id=99, user_id=self.alice.id, actor_id=1)), "nosplit")
+
     def _cierre_de_split_de_cta(self, con_killboard: bool):
         import killboard_db as kbdb
         kbdb.init_schema(self.db)

@@ -865,7 +865,7 @@ class SplitsCog(commands.Cog):
 
     # ---------- split generado desde una CTA con track ----------
     async def create_from_cta(self, *, cta_id: int, title: str, tab: Optional[str], city: Optional[str],
-                              user_ids: List[int], creator_id: int, kind: str = "normal"):
+                              user_ids: List[int], creator_id: int, kind: str = "normal", looters: List[int] = ()):
         """Al cerrar una CTA con track: arma el split con los anotados (sin crear ningún rol).
         Devuelve (split, mensaje, error); si ya existía uno para esa CTA, lo devuelve sin crear otro."""
         async with self._lock(-cta_id):
@@ -874,7 +874,7 @@ class SplitsCog(commands.Cog):
                 return old, None, None
             return await self._publish(creator_id=creator_id, title=title, tab=tab, city=city,
                                        people=[u for u in dict.fromkeys(user_ids)][:sdb.MAX_PEOPLE], source_cta_id=cta_id,
-                                       kind=kind)
+                                       kind=kind, looters=[u for u in dict.fromkeys(looters)][:sdb.MAX_LOOTERS])
 
     async def register_late_request(self, *, cta_id: int, user_id: int, slot_no: Optional[int]) -> Optional[str]:
         """Alguien se anotó en la CTA ya cerrada: queda una solicitud en el hilo del split para que el organizador decida.
@@ -923,6 +923,23 @@ class SplitsCog(commands.Cog):
             await self.sync_split(s.id)
             return "added"
         return "listed" if res == "decided" else res
+
+    async def add_looter(self, *, cta_id: int, user_id: int, actor_id: int) -> str:
+        """Un Combat Looter anotado después de armarse el split: entra como looter (y a la lista) sin pedir permiso.
+        En un split-ava no hay looters: entra solo a la lista. Mismos estados que add_bomb."""
+        s = await self.run(sdb.find_by_cta, cta_id)
+        if s is None:
+            return "nosplit"
+        if s.is_ava:
+            return await self.add_bomb(cta_id=cta_id, user_id=user_id, actor_id=actor_id)
+        if s.status != "open":
+            return "closed"
+        try:
+            await self.run(sdb.add_looters, s.id, [user_id])
+        except sdb.SplitError:
+            return "full"
+        await self.sync_split(s.id)
+        return "added"
 
     async def on_request_decision(self, interaction: discord.Interaction, accept: bool):
         msg = getattr(interaction, "message", None)

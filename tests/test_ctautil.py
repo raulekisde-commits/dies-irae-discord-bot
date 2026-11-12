@@ -136,6 +136,33 @@ class PositionsTests(unittest.TestCase):
         conn.close()
         self.assertEqual(cu.bomb_add(self.db, 1, 51), "final")
 
+    def test_combat_looter(self):
+        CL = cu.COMBAT_LOOTER_ROLE_ID
+        self.assertEqual(CL, 1570558058105544714)
+        self.assertEqual(cu.cl_add(self.db, 1, 60), "new")
+        self.assertEqual(cu.cl_add(self.db, 1, 60), "exists")
+        self.assertEqual(cu.cl_add(self.db, 1, 10), "regular")                   # ya tiene posición en la compo
+        self.assertEqual(cu.bomb_add(self.db, 1, 50), "new")
+        self.assertEqual(cu.cl_add(self.db, 1, 50), "bomb")                      # no puede ser Bomb y CL a la vez
+        self.assertEqual(cu.bomb_add(self.db, 1, 60), "cl")
+        self.assertEqual(cu.cl_add(self.db, 99, 60), "missing")
+        self.assertEqual(cu.cl_list(self.db, 1), [60])
+        pos = {p["user_id"]: p for p in cu.positions(self.db, 1)}
+        self.assertEqual((pos[60]["role_id"], pos[60]["role_name"]), (CL, "Combat Looter"))
+        cu.snapshot_positions(self.db, 1)
+        self.assertEqual({p["user_id"]: p for p in cu.positions(self.db, 1)}[60]["role_id"], CL)
+        self.assertEqual(cu.cl_remove(self.db, 1, 60), "removed")
+        self.assertEqual(cu.cl_remove(self.db, 1, 60), "none")
+        self.assertNotIn(60, {p["user_id"] for p in cu.positions(self.db, 1)})
+        self.assertEqual(cu.cl_list(self.db, 1), [])
+
+    def test_parse_cl(self):
+        self.assertEqual(cu.parse_cta_cl_text("cl"), "join")
+        self.assertEqual(cu.parse_cta_cl_text("CL!"), "join")
+        self.assertEqual(cu.parse_cta_cl_text("- cl"), "leave")
+        self.assertIsNone(cu.parse_cta_cl_text("clump"))
+        self.assertIsNone(cu.parse_cta_cl_text("21"))
+
     def test_bomb_varios_paneles(self):
         a = cu.bomb_panel_add(self.db, 1, 5, 100, 200)
         b = cu.bomb_panel_add(self.db, 1, 5, 101, 201)

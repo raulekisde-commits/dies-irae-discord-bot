@@ -12,6 +12,7 @@ CTA_VOICE_ID = 1257910727843250177
 STATS_CHANNEL_ID = 1565980248133345300
 BOMB_CHANNEL_ID = 1561077720069447680        # canal donde se publica el panel (con su hilo) para anotar a los Bomb de una CTA
 BOMB_ROLE_ID = 1565982191945519194           # rol Bomb: los únicos que pueden anotarse ahí
+COMBAT_LOOTER_ROLE_ID = 1570558058105544714  # rol Combat Looter: se anota con «cl» y entra al split como looter
 SCHEDULE_GRACE_SECONDS = 120          # si el bot estuvo caído más que esto a la hora de publicar, la CTA programada se descarta
 
 # Los 11 roles de juego: cada posición pide exactamente uno de ellos.
@@ -220,6 +221,7 @@ def init_positions(db_path: str) -> None:
     try:
         conn.executescript(POSITIONS_SCHEMA)
         conn.executescript(BOMBS_SCHEMA)
+        conn.executescript(LOOTERS_SCHEMA)
         if "panel_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(cta_bombs)")}:
             conn.execute("ALTER TABLE cta_bombs ADD COLUMN panel_id INTEGER")
     finally:
@@ -321,6 +323,8 @@ def bomb_add(db_path: str, cta_id: int, user_id: int, panel_id: Optional[int] = 
                 return "exists"
             if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
                 return "regular"
+            if _has_table(conn, "cta_looters") and conn.execute("SELECT 1 FROM cta_looters WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
+                return "cl"
             conn.execute("INSERT INTO cta_bombs(cta_id, user_id, added_at, panel_id) VALUES (?,?,?,?)", (cta_id, user_id, utcnow_iso(), panel_id))
             conn.execute("INSERT OR REPLACE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,0)",
                          (cta_id, user_id, "bomb", BOMB_ROLE_ID, "Bomb"))
@@ -349,6 +353,89 @@ def bomb_remove(db_path: str, cta_id: int, user_id: int) -> str:
         return "missing"
     finally:
         conn.close()
+
+
+# ---------- Combat Looter: se anota aparte con «cl» (no ocupa posición) y va al split como looter ----------
+LOOTERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cta_looters (
+    cta_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (cta_id, user_id)
+);
+"""
+
+
+def _has_table(conn, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def cl_add(db_path: str, cta_id: int, user_id: int) -> str:
+    """Anota a un Combat Looter. Devuelve 'new' · 'exists' · 'regular' (ya tiene posición) · 'bomb' (ya es Bomb) · 'final' · 'missing'."""
+    conn = connect(db_path)
+    try:
+        conn.executescript(LOOTERS_SCHEMA)
+        with write_tx(conn):
+            run = conn.execute("SELECT final_state, status FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None:
+                return "missing"
+            if run["final_state"] is not None or run["status"] == "cancelled":
+                return "final"
+            if conn.execute("SELECT 1 FROM cta_looters WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
+                return "exists"
+            if conn.execute("SELECT 1 FROM cta_signups WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
+                return "regular"
+            if conn.execute("SELECT 1 FROM cta_bombs WHERE cta_id=? AND user_id=?", (cta_id, user_id)).fetchone():
+                return "bomb"
+            conn.execute("INSERT INTO cta_looters(cta_id, user_id, added_at) VALUES (?,?,?)", (cta_id, user_id, utcnow_iso()))
+            conn.execute("INSERT OR REPLACE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,0)",
+                         (cta_id, user_id, "cl", COMBAT_LOOTER_ROLE_ID, "Combat Looter"))
+            return "new"
+    except sqlite3.OperationalError:
+        return "missing"
+    finally:
+        conn.close()
+
+
+def cl_remove(db_path: str, cta_id: int, user_id: int) -> str:
+    """Desanota a un Combat Looter. Devuelve 'removed' · 'none' · 'final' · 'missing'."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            run = conn.execute("SELECT final_state, status FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None:
+                return "missing"
+            if run["final_state"] is not None or run["status"] == "cancelled":
+                return "final"
+            if not conn.execute("DELETE FROM cta_looters WHERE cta_id=? AND user_id=?", (cta_id, user_id)).rowcount:
+                return "none"
+            conn.execute("DELETE FROM cta_positions WHERE cta_id=? AND user_id=? AND slot_key='cl'", (cta_id, user_id))
+            return "removed"
+    except sqlite3.OperationalError:
+        return "none"
+    finally:
+        conn.close()
+
+
+def cl_list(db_path: str, cta_id: int) -> List[int]:
+    """Combat Looters anotados en la CTA."""
+    conn = connect(db_path)
+    try:
+        q = conn.execute("SELECT user_id FROM cta_looters WHERE cta_id=? ORDER BY added_at, user_id", (cta_id,))
+        return [int(r["user_id"]) for r in q]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+CTA_CL_RE = re.compile(r"([-−–])?\s*cl", re.IGNORECASE)
+
+
+def parse_cta_cl_text(text: Optional[str]) -> Optional[str]:
+    """En el hilo de la CTA: `cl` -> 'join' · `- cl` -> 'leave' · otro texto -> None."""
+    m = CTA_CL_RE.fullmatch((text or "").strip().strip(".!¡ "))
+    return None if m is None else ("leave" if m.group(1) else "join")
 
 
 CTA_BOMB_RE = re.compile(r"([-−–])?\s*bomb", re.IGNORECASE)
