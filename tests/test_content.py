@@ -50,6 +50,10 @@ class ContentFuente(unittest.TestCase):
     def test_quien_lanzo_el_content_puede_cerrarlo_o_cancelarlo(self):
         self.assertIn('run.get("kind") == "content" and int(run["created_by"]) == interaction.user.id', self.src)
 
+    def test_content_creator_anota_en_el_hilo_del_content(self):
+        self.assertIn('content_ok = run.get("kind") == "content" and is_content_manager(message.author)', self.src)
+        self.assertIn("if not (cta_is_organizer(message.author) or content_ok):", self.src)
+
     def test_cancelar_borra_tareas(self):
         self.assertIn('enc.cancel_by_prefix(f"cta:{run_id}:"', self.src)
 
