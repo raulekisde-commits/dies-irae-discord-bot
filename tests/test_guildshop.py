@@ -177,13 +177,12 @@ class ShopDbTests(unittest.TestCase):
         self.assertEqual(gdb.confirm_sale(self.db, 7002, 200).status, "closed")
         self.assertEqual(eco.get_balance(self.db, 100), 5000)
 
-    def test_seller_cannot_sell_to_self(self):
+    def test_seller_can_sell_to_self(self):
         self.fund(100, 5000)
         t = self.ticket(buyer=100)
         self.pending(7001, t, 100, "wuju", "1000")
-        self.assertEqual(gdb.confirm_sale(self.db, 7001, 100).status, "self")
-        self.assertEqual(eco.get_balance(self.db, 100), 5000)
-        self.assertEqual(gdb.top_sellers(self.db, 1), [])
+        self.assertEqual(gdb.confirm_sale(self.db, 7001, 100).status, "ok")
+        self.assertEqual(eco.get_balance(self.db, 100), 4100)
 
     def test_cancel_pending_once(self):
         t = self.ticket()
@@ -567,12 +566,12 @@ class ShopDiscordTests(unittest.TestCase):
         again = self.confirm(ch, self.seller)                                 # el último mensaje ya no es la confirmación
         self.assertEqual(self.bal(self.buyer), 4100)
 
-    def test_wuju_sale_custom_discount(self):
+    def test_wuju_sale_seller_cannot_change_discount(self):
         self.fund(self.buyer, 5000)
         ch, _ = self.open_ticket()
-        self.start_sale(ch, self.seller, "wuju", "2.000", "25")
+        self.start_sale(ch, self.seller, "wuju", "2.000", "25")               # el % que mande el Seller se ignora: siempre 10 %
         self.confirm(ch, self.seller)
-        self.assertEqual(self.bal(self.buyer), 5000 - 1500)
+        self.assertEqual(self.bal(self.buyer), 5000 - 1800)
 
     def test_wuju_sale_rejected_upfront_when_balance_not_enough(self):
         self.fund(self.buyer, 800)
@@ -597,18 +596,20 @@ class ShopDiscordTests(unittest.TestCase):
         self.fund(self.buyer, 5000)
         ch, _ = self.open_ticket()
         n = len(ch.sent)
-        for total, disc in (("abc", "10"), ("1000", "150"), ("-5", "10"), ("1000", "xx"), ("0", "10")):
+        for total, disc in (("abc", "10"), ("-5", "10"), ("0", "10")):
             j = self.start_sale(ch, self.seller, "wuju", total, disc)
             self.assertIn("❌", j.text, (total, disc))
         self.assertEqual(len(ch.sent), n)
 
-    def test_seller_cannot_sell_to_himself(self):
+    def test_seller_can_sell_to_himself(self):
         self.fund(self.seller, 5000)
         ch, _ = self.open_ticket(self.seller)
         i = self.inter(self.seller, ch)
         run(self.cog.on_sell_pressed(i, "wuju"))
-        self.assertIn("vos mismo", i.text)
-        self.assertEqual(i.modals, [])
+        self.assertEqual(len(i.modals), 1)
+        self.start_sale(ch, self.seller, "wuju", "1000")
+        self.confirm(ch, self.seller)
+        self.assertEqual(self.bal(self.seller), 4100)
 
     def test_cancel_keeps_ticket_open(self):
         self.fund(self.buyer, 5000)
@@ -641,11 +642,11 @@ class ShopDiscordTests(unittest.TestCase):
         self.start_sale(ch, self.seller, "silver", "3.000.000")
         conf = ch.sent[-1]
         self.assertIn("silver", conf.embeds[0].title)
-        self.assertTrue(any("2,700,000" in str(f[1]) for f in conf.embeds[0].fields))
+        self.assertTrue(any("3,000,000" in str(f[1]) for f in conf.embeds[0].fields if f[0] == "A cobrar"))   # silver: sin descuento
         self.assertEqual(gdb.top_sellers(self.db, GUILD_ID), [])              # nada hasta confirmar
         self.confirm(ch, self.seller)
         self.assertEqual(self.bal(self.buyer), 50)
-        self.assertIn("2,700,000", self.shopch.sent[0].embeds[0].description)
+        self.assertIn("3,000,000", self.shopch.sent[0].embeds[0].description)
         self.assertIn("silver", self.logch.sent[0].embeds[0].title)
 
     def fake_wujupon(self):

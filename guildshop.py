@@ -189,16 +189,14 @@ class BuyModal(discord.ui.Modal, title="Comprar en el shop de la guild"):
 
 
 class SaleModal(discord.ui.Modal):
-    total = discord.ui.TextInput(label="Valor total de la venta", required=True, max_length=25, placeholder="Ej: 1.500.000")
-    discount = discord.ui.TextInput(label="Descuento en % (por defecto 10)", required=False, max_length=6,
-                                    default="10", placeholder="10")
+    total = discord.ui.TextInput(label="Valor total de la venta (sin descuento)", required=True, max_length=25, placeholder="Ej: 1.500.000")
 
     def __init__(self, cog: "GuildShopCog", ticket_id: int, currency: str):
         super().__init__(title="Vender por Wuju Coins" if currency == "wuju" else "Vender por silver")
         self.cog, self.ticket_id, self.currency = cog, ticket_id, currency
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.on_sale_submitted(interaction, self.ticket_id, self.currency, str(self.total.value), str(self.discount.value))
+        await self.cog.on_sale_submitted(interaction, self.ticket_id, self.currency, str(self.total.value))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -350,11 +348,11 @@ class GuildShopCog(commands.Cog):
         emb = discord.Embed(title="🛒 Shop de la guild", color=0x2ECC71)
         emb.description = (
             "Comprá ítems directamente a la guild.\n\n"
-            "**🏷️ Todos los ítems tienen un 10% de descuento.**\n\n"
+            "**🏷️ Pagando con Wuju Coins todos los ítems tienen un 10% de descuento** (con silver no hay descuento).\n\n"
             "**🎟️ Tickets de descuento**\n"
             + "\n".join(f"• **{gdb.format_pct(bp)}** de descuento hasta {gdb.eco.format_amount(cap)} (lo que pase, al 10%)."
                         for bp, cap in gdb.TICKETS.values())
-            + "\nSe consiguen en **Wujupón**. Si tenés uno, al abrir el ticket el bot te pregunta si querés usarlo.\n\n"
+            + "\nSe consiguen en **Wujupón**. Solo valen pagando con **Wuju Coins**: si tenés uno, al abrir el ticket el bot te pregunta si querés usarlo.\n\n"
             "**Cómo funciona**\n"
             "1. Tocá **Comprar**, elegí si pagás con **Wuju Coins** o **Silver** y escribí la lista de todo lo que querés (con cantidades).\n"
             "2. Se abre un ticket privado y se avisa a los **Seller**.\n"
@@ -565,7 +563,7 @@ class GuildShopCog(commands.Cog):
         emb.add_field(name="Comprador", value=interaction.user.mention, inline=False)
         emb.add_field(name="Lista de compra", value=items[:1000], inline=False)
         emb.add_field(name="Quiere pagar con", value=PAYMENT_LABEL.get(payment, payment), inline=True)
-        emb.add_field(name="Descuento", value="Los ítems tienen **10% de descuento**.", inline=False)
+        emb.add_field(name="Descuento", value="**10% de descuento** pagando con Wuju Coins (con silver no hay descuento).", inline=False)
         emb.set_footer(text="Solo los Seller pueden usar los botones.")
         ping = f"<@&{SELLER_ROLE_ID}> {interaction.user.mention}"
         try:
@@ -576,7 +574,8 @@ class GuildShopCog(commands.Cog):
             await self._try_delete(channel)
             return await interaction.followup.send("❌ No pude abrir el ticket. Probá de nuevo.", ephemeral=True)
         await interaction.followup.send(f"✅ Ticket abierto: {channel.mention}", ephemeral=True)
-        await self._offer_discount_ticket(channel, interaction.user)
+        if payment == "wuju":                    # los tickets de descuento solo se aplican pagando con Wuju Coins
+            await self._offer_discount_ticket(channel, interaction.user)
 
     # ---------- ticket de descuento (carta de Wujupón) ----------
     async def _offer_discount_ticket(self, channel, buyer):
@@ -695,24 +694,21 @@ class GuildShopCog(commands.Cog):
         ticket = await self._seller_ticket(interaction)
         if ticket is None:
             return
-        if ticket.buyer_id == interaction.user.id:
-            return await _reply(interaction, "❌ No podés venderte a vos mismo. Que lo atienda otro Seller.")
         await interaction.response.send_modal(SaleModal(self, ticket.id, currency))
 
-    async def on_sale_submitted(self, interaction: discord.Interaction, ticket_id: int, currency: str, total_text: str, discount_text: str):
+    async def on_sale_submitted(self, interaction: discord.Interaction, ticket_id: int, currency: str, total_text: str, discount_text: Optional[str] = None):
+        # el descuento lo fija el bot (el Seller no lo puede tocar): 10 % (o el ticket de descuento) solo pagando con Wuju Coins; silver sin descuento
         # los permisos se revisan otra vez: el modal se pudo abrir antes de que le quitaran el rol
         if interaction.guild is None or not can_sell(interaction.user):
             return await _reply(interaction, "❌ Solo los **Seller** (o Council) pueden hacer esto.")
         ticket = await self.run(gdb.get_ticket, ticket_id)
         if ticket is None or ticket.status != "open":
             return await _reply(interaction, "ℹ️ Este ticket ya fue cerrado o vendido.")
-        if ticket.buyer_id == interaction.user.id:
-            return await _reply(interaction, "❌ No podés venderte a vos mismo.")
         try:
-            gross, bp, net = gdb.build_offer(total_text, discount_text)
+            gross, bp, net = gdb.build_offer(total_text, "" if currency == "wuju" else "0")
         except gdb.ShopError as exc:
             return await _reply(interaction, f"❌ {exc}")
-        card_prize = await self.run(gdb.ticket_card_prize, ticket.id) if ticket.wjp_card_id else None
+        card_prize = await self.run(gdb.ticket_card_prize, ticket.id) if ticket.wjp_card_id and currency == "wuju" else None
         uses_card = card_prize is not None
         if uses_card:                            # ticket de descuento: el bot calcula el descuento (su % hasta su tope, 10 % el resto)
             bp, net = gdb.offer_with_ticket(gross, card_prize)

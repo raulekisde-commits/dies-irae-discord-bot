@@ -449,8 +449,6 @@ def confirm_sale(db_path: str, message_id: int, confirmer_id: int) -> SaleResult
                 t = _ticket(conn.execute("SELECT * FROM gshop_tickets WHERE id = ?", (p.ticket_id,)).fetchone())
                 if t is None or t.status != "open":
                     return SaleResult("closed", pending=p, ticket=t)
-                if t.buyer_id == p.seller_id:
-                    return SaleResult("self", pending=p, ticket=t)
                 if p.uses_card and not _card_reserved(conn, t):
                     # el ticket de descuento ya no está (lo devolvieron o limpiaron): la oferta no vale; se pide otra
                     conn.execute("UPDATE gshop_tickets SET wjp_card_id = NULL WHERE id = ?", (t.id,))
