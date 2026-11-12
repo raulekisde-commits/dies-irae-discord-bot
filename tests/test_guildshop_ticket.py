@@ -129,6 +129,22 @@ class TicketDescuentoTests(_Harness):
         self.assertEqual(self.bal(self.buyer), 50_000_000 - 9_000_000)
         self.assertEqual(wdb.get_card(self.db, cid).status, "available")
 
+    def test_pagando_con_silver_no_pregunta_por_el_ticket(self):
+        self.give()
+        ch, _ = self.open_ticket(payment="silver")
+        self.assertFalse(any("tickets de descuento" in (m.content or "") for m in ch.sent))
+
+    def test_ticket_no_se_aplica_si_se_vende_por_silver(self):
+        cid = self.give()
+        ch, _ = self.open_ticket()
+        self.choose(ch, self.buyer)
+        self.start_sale(ch, self.seller, "silver", "10.000.000", "")
+        v = self.offer_values(ch)
+        self.assertIn("10,000,000", v["A cobrar"])                         # silver: sin descuento ni ticket
+        self.assertNotIn("🎟️ Ticket de descuento", v)
+        self.confirm(ch, self.seller2)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")    # la carta vuelve al inventario
+
     def test_cerrar_sin_venta_devuelve_la_carta(self):
         cid = self.give()
         ch, _ = self.open_ticket()
