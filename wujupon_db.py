@@ -1734,6 +1734,31 @@ def delivered_prizes(db_path: str, days: Optional[int] = None) -> List[PrizeCost
         conn.close()
 
 
+@dataclass
+class PendingUser:
+    user_id: int
+    cards: int
+    wuju: int
+    silver: int
+
+
+def pending_by_user(db_path: str) -> List[PendingUser]:
+    """Por persona: cartas sin canjear (disponibles o reservadas) y cuánto Wuju y silver valen (costo máximo de catálogo)."""
+    conn = _open(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT c.user_id, COUNT(*) AS n, "
+            "COALESCE(SUM(CASE WHEN p.cost_currency = 'wuju' THEN p.cost END), 0) AS wuju, "
+            "COALESCE(SUM(CASE WHEN p.cost_currency = 'silver' THEN p.cost END), 0) AS silver "
+            "FROM wjp_cards c JOIN wjp_prizes p ON p.key = c.prize_key "
+            "WHERE c.status IN ('available', 'reserved') GROUP BY c.user_id").fetchall()
+        out = [PendingUser(int(r["user_id"]), int(r["n"]), int(r["wuju"]), int(r["silver"])) for r in rows]
+        out.sort(key=lambda u: (u.wuju + u.silver, u.cards), reverse=True)
+        return out
+    finally:
+        conn.close()
+
+
 def silver_equivalent(by_currency: Dict[str, int]) -> int:
     """Wuju = silver 1:1, embo = 10.000. VAL no se convierte (se informa aparte)."""
     return (by_currency.get("wuju", 0) + by_currency.get("silver", 0) + by_currency.get("embo", 0) * EMBO_SILVER_VALUE)
