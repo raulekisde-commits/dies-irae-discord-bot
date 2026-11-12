@@ -426,6 +426,18 @@ CREATE TABLE IF NOT EXISTS wjp_daily_used (       -- tiradas gratis usadas por d
     used    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day)
 );
+CREATE TABLE IF NOT EXISTS wjp_sale_progress (    -- monto acumulado de ventas del Guild Shop que todavía no llegó a una tirada
+    user_id    INTEGER PRIMARY KEY,
+    amount     INTEGER NOT NULL DEFAULT 0 CHECK (amount >= 0),
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wjp_sale_tickets (     -- ventas ya sumadas al acumulado (idempotencia, una vez por ticket)
+    request_key TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    amount      INTEGER NOT NULL,
+    spins       INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS wjp_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id   INTEGER NOT NULL,
@@ -1082,6 +1094,40 @@ def gift_spins(db_path: str, *, actor_id: int, user_id: int, count: int, request
                          "VALUES (?,?,?,?,?,0,?,?)", (request_key, "gift", user_id, actor_id, count, reason, utcnow_iso()))
             _log(conn, actor_id, "gift_spins" if count > 0 else "remove_spins", user_id, request_key, f"{count} · {reason}")
             return after
+    finally:
+        conn.close()
+
+
+def add_sale_progress(db_path: str, *, actor_id: int, user_id: int, amount: int, threshold: int,
+                      request_key: str, reason: str) -> Tuple[int, int, int]:
+    """Suma `amount` al acumulado de ventas de `user_id`; por cada `threshold` completo da 1 tirada y guarda el resto.
+    Una vez por request_key. Devuelve (tiradas ganadas, tiradas resultantes, acumulado restante)."""
+    if amount <= 0 or threshold <= 0:
+        return 0, 0, 0
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT amount FROM wjp_sale_progress WHERE user_id = ?", (user_id,)).fetchone()
+            acc = int(r["amount"]) if r is not None else 0
+            if (conn.execute("SELECT 1 FROM wjp_sale_tickets WHERE request_key = ?", (request_key,)).fetchone()
+                    or conn.execute("SELECT 1 FROM wjp_ops WHERE request_key = ?", (request_key,)).fetchone()):
+                return 0, _spins(conn, user_id), acc
+            acc += int(amount)
+            won, acc = divmod(acc, int(threshold))
+            now = utcnow_iso()
+            conn.execute("INSERT INTO wjp_sale_progress(user_id, amount, updated_at) VALUES (?,?,?) "
+                         "ON CONFLICT(user_id) DO UPDATE SET amount = excluded.amount, updated_at = excluded.updated_at",
+                         (user_id, acc, now))
+            conn.execute("INSERT INTO wjp_sale_tickets(request_key, user_id, amount, spins, created_at) VALUES (?,?,?,?,?)",
+                         (request_key, user_id, int(amount), won, now))
+            if won > 0:
+                after = _add_spins(conn, user_id, won)
+                conn.execute("INSERT INTO wjp_ops(request_key, kind, user_id, actor_id, spins, cost, reason, created_at) "
+                             "VALUES (?,?,?,?,?,0,?,?)", (request_key, "gift", user_id, actor_id, won, reason, now))
+                _log(conn, actor_id, "gift_spins", user_id, request_key, f"{won} · {reason}")
+            else:
+                after = _spins(conn, user_id)
+            return won, after, acc
     finally:
         conn.close()
 
