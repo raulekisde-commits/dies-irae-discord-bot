@@ -4,6 +4,8 @@ Quién puede qué (se valida siempre acá, no solo con permisos de Discord):
   • Observación — dar: Staff, Council, Admin, Coaching y Opinólogo · quitar: NADIE con /rol quitar; solo se saca con
     !votacion en el post del foro de VODs de la persona (mayoría de Coaching + Council, o aprobación directa de un Council).
   • Roles de CTA — dar: Staff, Council, Admin y Coaching · quitar: Staff, Council y Admin.
+  • /rol masivo — dar o quitar cualquier rol a todos los miembros (o a los que tengan un rol filtro): solo Council y
+    Administrador, con confirmación previa.
 Cada cambio queda registrado con quién lo hizo."""
 import asyncio
 import os
@@ -35,6 +37,11 @@ CTA_ROLES = {
 }
 ROLE_CHOICES = {"observacion": ("Observación", OBSERVACION_ROLE_ID), **CTA_ROLES}
 NO_MENTIONS = discord.AllowedMentions.none()
+MASIVO_PAUSA = float(os.getenv("ROL_MASIVO_PAUSA", "0.4"))   # segundos entre cambios (para no chocar con el límite de Discord)
+MASIVO_PROGRESO = 25                                          # cada cuántos miembros se actualiza el aviso de progreso
+# permisos peligrosos: un rol que los tenga no se puede dar en masa
+PERMISOS_PELIGROSOS = ("administrator", "manage_guild", "manage_roles", "manage_channels", "ban_members", "kick_members",
+                       "manage_webhooks", "mention_everyone", "moderate_members")
 
 
 def _ids(m) -> set:
@@ -123,11 +130,73 @@ class ObsVoteView(discord.ui.View):
         await self.cog.council_approve(interaction)
 
 
+class MasivoConfirmView(discord.ui.View):
+    """Confirmación de /rol masivo (solo quien lo pidió puede tocar los botones)."""
+    def __init__(self, cog: "RolesMgmtCog", actor_id: int, action: str, role, filtro, motivo: Optional[str]):
+        super().__init__(timeout=120.0)
+        self.cog, self.actor_id, self.action, self.role, self.filtro, self.motivo = cog, actor_id, action, role, filtro, motivo
+        self.used = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_id:
+            await interaction.response.send_message("Este mensaje no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirmar", emoji="✅", style=discord.ButtonStyle.danger)
+    async def confirmar(self, interaction: discord.Interaction, button):
+        if self.used:
+            return await _say(interaction, "ℹ️ Esto ya se está procesando.")
+        self.used = True
+        self.stop()
+        await self.cog._masivo_run(interaction, self)
+
+    @discord.ui.button(label="Cancelar", emoji="✖️", style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button):
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="✖️ Cancelado: no se cambió ningún rol.", view=None)
+
+
+def masivo_targets(guild, role, filtro, action: str) -> list:
+    """Miembros (sin bots) a los que les falta (dar) o tienen (quitar) el rol, opcionalmente solo los que tengan `filtro`."""
+    out = []
+    for m in getattr(guild, "members", []):
+        if getattr(m, "bot", False):
+            continue
+        ids = _ids(m)
+        if filtro is not None and filtro.id not in ids:
+            continue
+        if (role.id in ids) == (action == "quitar"):
+            out.append(m)
+    return out
+
+
+def masivo_role_problem(guild, actor, role, action: str) -> Optional[str]:
+    """Motivo por el que no se puede manejar el rol en masa (None si se puede)."""
+    if role.id == getattr(guild, "id", None) or role == getattr(guild, "default_role", None):
+        return "❌ No se puede usar con @everyone."
+    if getattr(role, "managed", False):
+        return f"❌ {role.mention} lo maneja una integración o un bot: Discord no deja asignarlo a mano."
+    perms = getattr(role, "permissions", None)
+    if action == "dar" and perms is not None and any(getattr(perms, p, False) for p in PERMISOS_PELIGROSOS):
+        return f"🔒 {role.mention} tiene permisos de moderación o administración: no se puede dar a todos."
+    top = getattr(getattr(guild, "me", None), "top_role", None)
+    if top is not None and getattr(role, "position", 0) >= getattr(top, "position", 0):
+        return f"❌ {role.mention} está por encima del rol del bot: subí el rol del bot para poder manejarlo."
+    actor_top = getattr(actor, "top_role", None)
+    if (getattr(guild, "owner_id", None) != actor.id and actor_top is not None
+            and getattr(role, "position", 0) >= getattr(actor_top, "position", 0)):
+        return f"🔒 {role.mention} está a la altura o por encima de tu rol más alto."
+    return None
+
+
 class RolesMgmtCog(commands.Cog):
     def __init__(self, bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         rdb.init_schema(db_path)
         bot.add_view(ObsVoteView(self))
+        self._masivo_busy = False
 
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(fn, self.db_path, *a, **kw)
@@ -272,7 +341,7 @@ class RolesMgmtCog(commands.Cog):
         else:
             await _say(interaction, f"✅ A {usuario.mention} se le quitó el rol **{name}**. Lo hizo {actor.mention}.")
 
-    rol = app_commands.Group(name="rol", description="Dar o quitar roles de Observación y CTA (queda registrado)", guild_only=True)
+    rol = app_commands.Group(name="rol", description="Dar o quitar roles (Observación, CTA o masivo); queda registrado", guild_only=True)
 
     @rol.command(name="dar", description="(Staff/Council/Coaching/Opinólogo) Da el rol de Observación o de CTA a una persona")
     @app_commands.describe(usuario="Persona", rol="Rol a dar", motivo="Motivo (opcional, queda en el registro)")
@@ -285,6 +354,71 @@ class RolesMgmtCog(commands.Cog):
     @app_commands.choices(rol=CHOICES)
     async def rol_quitar(self, interaction: discord.Interaction, usuario: discord.Member, rol: app_commands.Choice[str], motivo: Optional[str] = None):
         await self._change(interaction, usuario, rol, motivo, "quitar")
+
+    @rol.command(name="masivo", description="(Council/Admin) Da o quita un rol a todos los miembros (o a los que tengan otro rol)")
+    @app_commands.describe(accion="Dar o quitar", rol="Rol a dar o quitar", filtro="Solo a quienes tengan este rol (opcional)",
+                           motivo="Motivo (opcional, queda en el registro)")
+    @app_commands.choices(accion=[app_commands.Choice(name="Dar", value="dar"), app_commands.Choice(name="Quitar", value="quitar")])
+    async def rol_masivo(self, interaction: discord.Interaction, accion: app_commands.Choice[str], rol: discord.Role,
+                         filtro: Optional[discord.Role] = None, motivo: Optional[str] = None):
+        action = getattr(accion, "value", accion)
+        if interaction.guild is None or not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo **Council** o un **Administrador** pueden usar `/rol masivo`.")
+        if self._masivo_busy:
+            return await _say(interaction, "⏳ Ya hay un `/rol masivo` en curso. Esperá a que termine.")
+        problem = masivo_role_problem(interaction.guild, interaction.user, rol, action)
+        if problem:
+            return await _say(interaction, problem)
+        targets = masivo_targets(interaction.guild, rol, filtro, action)
+        quienes = f"los miembros con {filtro.mention}" if filtro else "todos los miembros"
+        if not targets:
+            ya = "ya tienen" if action == "dar" else "no tienen"
+            return await _say(interaction, f"ℹ️ No hay nadie para cambiar: {quienes} {ya} {rol.mention}.")
+        verbo = "Dar" if action == "dar" else "Quitar"
+        await interaction.response.send_message(
+            f"⚠️ **{verbo}** {rol.mention} a {quienes}: son **{len(targets)}** miembro{'s' if len(targets) != 1 else ''} "
+            f"(sin contar bots ni a quien ya {'lo tiene' if action == 'dar' else 'no lo tiene'}).\n"
+            f"Tarda unos {max(1, round(len(targets) * MASIVO_PAUSA))} s. ¿Confirmás?",
+            view=MasivoConfirmView(self, interaction.user.id, action, rol, filtro, motivo), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    async def _masivo_run(self, interaction: discord.Interaction, view: "MasivoConfirmView"):
+        if self._masivo_busy:
+            return await interaction.response.edit_message(content="⏳ Ya hay un `/rol masivo` en curso. Esperá a que termine.", view=None)
+        guild, actor, role, action = interaction.guild, interaction.user, view.role, view.action
+        problem = masivo_role_problem(guild, actor, role, action)          # se revisa otra vez: pudo cambiar mientras tanto
+        if problem:
+            return await interaction.response.edit_message(content=problem, view=None)
+        targets = masivo_targets(guild, role, view.filtro, action)
+        self._masivo_busy = True
+        try:
+            await interaction.response.edit_message(content=f"⏳ Procesando {len(targets)} miembros…", view=None)
+            reason = f"/rol masivo por {actor} ({actor.id}): {view.motivo or 'sin motivo'}"[:400]
+            log_reason = f"Masivo: {view.motivo}" if view.motivo else "Masivo"
+            ok, failed = 0, 0
+            for n, m in enumerate(targets, 1):
+                try:
+                    if action == "dar":
+                        await m.add_roles(role, reason=reason)
+                    else:
+                        await m.remove_roles(role, reason=reason)
+                    ok += 1
+                    await self.run(rdb.log_change, m.id, role.id, role.name, action, actor.id, log_reason)
+                except discord.HTTPException:
+                    failed += 1
+                if n % MASIVO_PROGRESO == 0 and n < len(targets):
+                    try:
+                        await interaction.edit_original_response(content=f"⏳ Procesando… {n}/{len(targets)}")
+                    except Exception:
+                        pass
+                if MASIVO_PAUSA:
+                    await asyncio.sleep(MASIVO_PAUSA)
+        finally:
+            self._masivo_busy = False
+        hecho = "recibieron" if action == "dar" else "perdieron"
+        text = f"✅ {ok} miembro{'s' if ok != 1 else ''} {hecho} {role.mention}. Lo hizo {actor.mention}."
+        if failed:
+            text += f"\n⚠️ {failed} no se pudieron cambiar (revisá que el bot tenga *Gestionar roles* y esté por encima del rol)."
+        await _say(interaction, text)
 
     @rol.command(name="historial", description="(Staff/Council/Coaching/Opinólogo) Quién dio o quitó roles")
     @app_commands.describe(usuario="Persona (si no, se muestran los últimos movimientos)")
