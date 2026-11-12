@@ -5236,9 +5236,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
 async def cta_handle_staff_command(message, run: dict, snapshot: dict, mentions: list, action: str, number):
     """Comandos del Staff en el hilo: «@persona 21» la pone en la posición 21 (o la mueve) y
     «@persona -21» (o «@persona -» / «@persona salir») la saca. El Staff puede asignar aunque la posición
-    pida roles; queda anotado en la auditoría."""
-    if not cta_is_organizer(message.author):
-        await cta_reply_short(message, "Solo el Staff puede anotar o sacar a otras personas.", 8)
+    pida roles; queda anotado en la auditoría. En un /content también puede el Content Creator."""
+    content_ok = run.get("kind") == "content" and is_content_manager(message.author)
+    if not (cta_is_organizer(message.author) or content_ok):
+        await cta_reply_short(message, "Solo el Staff (o el Content Creator en un content) puede anotar o sacar a otras personas.", 8)
         return True
     if len(mentions) > 1:
         await cta_reply_short(message, "Etiquetá a una sola persona por mensaje.", 8)
@@ -6875,7 +6876,7 @@ HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. Al cerrar o cancelar la CTA se borra su hilo."),
-        ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones."),
+        ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/compo content nombre activar", "Council / Admin", "true/false: marca si la composición se puede publicar con /content."),
         ("/config", "Administrador", "Panel para cambiar, sin tocar código, los canales del bot (logs, CTA, content, tareas, splits…) y qué roles pueden usar cada comando de economía/casino. Los cambios valen al instante y quedan avisados en el canal de logs."),
