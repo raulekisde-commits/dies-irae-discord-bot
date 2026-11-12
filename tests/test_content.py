@@ -54,6 +54,14 @@ class ContentFuente(unittest.TestCase):
         self.assertIn('content_ok = run.get("kind") == "content" and is_content_manager(message.author)', self.src)
         self.assertIn("if not (cta_is_organizer(message.author) or content_ok):", self.src)
 
+    def test_combat_looter_en_el_hilo(self):
+        self.assertIn("cl_action = cu.parse_cta_cl_text(message.content)", self.src)
+        self.assertIn("cl_ids = [] if is_content else cu.cl_list(DB_PATH, run_id)", self.src)
+        self.assertIn("looters=cl_ids)", self.src)
+        self.assertIn("tag_bomb, tag_cl = cu.parse_cta_bomb_text(rest), cu.parse_cta_cl_text(rest)", self.src)
+        self.assertIn("cta_bomb_join(t, rid, by=message.author)", self.src)
+        self.assertIn("cta_cl_join(t, rid, by=message.author)", self.src)
+
     def test_cancelar_borra_tareas(self):
         self.assertIn('enc.cancel_by_prefix(f"cta:{run_id}:"', self.src)
 
