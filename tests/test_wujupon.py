@@ -109,6 +109,34 @@ class WujuponDbTests(DbBase):
         self.assertEqual(eco.get_balance(self.db, 5), PRICE)
         self.assertEqual(wdb.get_spins(self.db, 5), 2)
 
+    def test_suerte_por_rol_sube_las_raras_y_baja_comunes_y_malas(self):
+        prizes = wdb.list_prizes(self.db)
+        prizes = [p for p in prizes if p.enabled]
+        def share(luck, pred):
+            tot = sum(wdb.luck_weight(p, luck) for p in prizes)
+            return sum(wdb.luck_weight(p, luck) for p in prizes if pred(p)) / tot
+        good = lambda p: p.rarity in wdb.LUCKY_RARITIES and not p.forced
+        self.assertEqual([wdb.luck_weight(p, 0) for p in prizes], [p.weight for p in prizes])
+        self.assertGreater(share(20, good), share(0, good))
+        self.assertLess(share(20, lambda p: p.forced), share(0, lambda p: p.forced))
+        self.assertLess(share(20, lambda p: p.rarity == "common"), share(0, lambda p: p.rarity == "common"))
+
+    def test_suerte_por_rol_usa_la_mayor_y_se_guarda_en_la_tirada(self):
+        self.assertEqual(wdb.luck_percent(self.db, [77, 88]), 0)
+        wdb.set_luck_role(self.db, 77, 20, 1)
+        wdb.set_luck_role(self.db, 88, 50, 1)
+        self.assertEqual(wdb.luck_percent(self.db, [77, 88]), 50)
+        self.assertEqual(wdb.list_luck_roles(self.db), [(88, 50), (77, 20)])
+        wdb.set_luck_role(self.db, 88, 0, 1)
+        self.assertEqual(wdb.luck_percent(self.db, [77, 88]), 20)
+        with self.assertRaises(wdb.WujuponError):
+            wdb.set_luck_role(self.db, 77, wdb.MAX_LUCK + 1, 1)
+        wdb.gift_spins(self.db, actor_id=1, user_id=5, count=1, request_key="g", reason="t")
+        r = wdb.pull(self.db, 5, "p1", role_ids=[77])
+        self.assertEqual(r.weight, wdb.luck_weight(r.prize, 20))
+        enabled = [p for p in wdb.list_prizes(self.db) if p.enabled]
+        self.assertEqual(r.total_weight, sum(wdb.luck_weight(p, 20) for p in enabled))
+
     def test_compra_sin_fondos_no_cambia_nada(self):
         self.fund(5, PRICE - 1)
         r = wdb.buy_spins(self.db, 5, 1, "k")
