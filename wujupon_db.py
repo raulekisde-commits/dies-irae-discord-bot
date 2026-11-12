@@ -46,15 +46,15 @@ PHOTO_ASSET = "gendarme_photo"       # imagen que se guarda en la base (nunca en
 SHIELD_NOTE = " El escudo y los inmunes la bloquean."
 CATALOG = [
     # ⚪ Comunes — 45 %
-    ("casino_block", "Bloqueo de casino 2 h", "common", 6200, "Bot", None, 0, 0, "", 1,
+    ("casino_block", "Bloqueo de casino 2 h", "common", 5700, "Bot", None, 0, 0, "", 1,
      "Bloqueás a un jugador del casino por 2 horas. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
-    ("sell_cooldown", "Cancelar cooldown de cobro", "common", 6200, "Bot", "sell_cooldown", 0, 0, "", 0,
+    ("sell_cooldown", "Cancelar cooldown de cobro", "common", 5700, "Bot", "sell_cooldown", 0, 0, "", 0,
      "Te saca el cooldown de «Cobrar balance». Si no tenés cooldown, la carta no se gasta.", 0),
-    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 6200, "Bot", "photo", 0, 0, "", 0,
+    ("gendarme_photo", "Foto de la cola de Gendarme", "common", 5700, "Bot", "photo", 0, 0, "", 0,
      "Te llega la foto en el canal +18, como spoiler, y se borra a los 60 s.", 0),
     ("wuju_100k", "Hasta 130.000 Wuju Coins", "common", 5000, "Bot", "wuju", 130_000, 130_000, "wuju", 0,
      "Se acreditan al instante en tu balance: un monto al azar entre 1 y 130.000.", 0),
-    ("embo_50", "Hasta 65 de embo", "common", 1500, "Bot", "embo", 65, 65, "embo", 0,
+    ("embo_50", "Hasta 65 de embo", "common", 3000, "Bot", "embo", 65, 65, "embo", 0,
      "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 65.", 0),
     ("mute_chat_5", "Mute de chat 15 min", "common", 3500, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 15 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
@@ -79,21 +79,21 @@ CATALOG = [
     ("bad_cd_4h", "☠️ Cooldown de cobro +4 h", "common", 1000, "Bot", None, 0, 0, "", 0,
      "Carta mala: suma 4 h de cooldown a «Cobrar balance». Se aplica sola; el escudo la bloquea.", 1),
     # 🔵 Raras — 35 %
-    ("mute_15", "Mute de chat 45 min", "rare", 3400, "Bot", None, 0, 0, "", 1,
+    ("mute_15", "Mute de chat 45 min", "rare", 2900, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 45 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("voice_mute_15", "Mute de voice 45 min", "rare", 2300, "Bot", None, 0, 0, "", 1,
      "Muteás a un jugador en el voice por 45 minutos. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
-    ("undo_coinflip", "Coinflip hasta 10M", "rare", 4300, "Bot", None, 0, 0, "", 0,
+    ("undo_coinflip", "Coinflip hasta 10M", "rare", 3300, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 10M. Rigen todas las reglas del coinflip.", 0),
     ("casino_open", "Abrir el casino", "rare", 2400, "Bot", None, 0, 0, "", 0,
      "Abrís el casino si está cerrado.", 0),
     ("casino_close", "Cerrar el casino", "rare", 2400, "Bot", None, 0, 0, "", 0,
      "Cerrás el casino si está abierto.", 0),
-    ("free_build_p1", "Build libre en Party PRIO 1", "rare", 3300, "Staff", None, 0, 0, "", 0,
+    ("free_build_p1", "Build libre en Party PRIO 1", "rare", 2800, "Staff", None, 0, 0, "", 0,
      "En Party PRIO 1 jugás con la build que quieras.", 0),
     ("wuju_500k", "Hasta 650.000 Wuju Coins", "rare", 4000, "Bot", "wuju", 650_000, 650_000, "wuju", 0,
      "Se acreditan al instante en tu balance: un monto al azar entre 1 y 650.000.", 0),
-    ("embo_100", "Hasta 130 de embo", "rare", 2000, "Bot", "embo", 130, 130, "embo", 0,
+    ("embo_100", "Hasta 130 de embo", "rare", 4000, "Bot", "embo", 130, 130, "embo", 0,
      "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 130.", 0),
     ("freeze_30m", "Congelar balance 30 min", "rare", 1000, "Bot", None, 0, 0, "", 1,
      "Durante 30 min el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
@@ -123,7 +123,7 @@ CATALOG = [
     # 🟣 Épicas — 15,2 %
     ("regear_4m", "Reequipo próxima CTA (4M)", "epic", 600, "Staff", None, 0, 4_000_000, "silver", 0,
      "Te reequipan para la próxima CTA con un presupuesto de hasta 4M.", 0),
-    ("mount_escort", "Montura libre en un porte de la guild", "epic", 650, "Staff", None, 0, 0, "", 0,
+    ("mount_escort", "Montura libre en un porte de la guild", "epic", 450, "Staff", None, 0, 0, "", 0,
      "En un porte de la guild vas con la montura que quieras.", 0),
     ("loot_3_items", "Tres ítems de loot (7M)", "epic", 500, "Staff", None, 0, 7_000_000, "silver", 0,
      "Tres ítems del loot por un valor estimado de 7M.", 0),
@@ -147,7 +147,7 @@ CATALOG = [
      "En el próximo /cta te podés anotar en el rol que quieras.", 0),
     ("party_switch", "Staff a tu elección en la CTA", "epic", 500, "Bot", None, 0, 0, "", 1,
      "En una CTA activa, elegís a alguien del Staff y el slot libre donde tiene que jugar." + SHIELD_NOTE, 0),
-    ("party1_slot", "Slot libre en Party 1", "epic", 700, "Bot", None, 0, 0, "", 0,
+    ("party1_slot", "Slot libre en Party 1", "epic", 500, "Bot", None, 0, 0, "", 0,
      "Te anotás en Party 1 en cualquier rol libre, sin la espera de 5 min de Legacy.", 0),
     ("weapon_63", "Arma 6.3 del Guild Shop (2M)", "epic", 600, "Staff", None, 0, 2_000_000, "silver", 0,
      "Un arma 6.3 del Guild Shop de hasta 2M.", 0),
@@ -155,14 +155,14 @@ CATALOG = [
      "Un pecho 6.3 del Guild Shop de hasta 2M.", 0),
     ("wuju_2m", "Hasta 2.600.000 Wuju Coins", "epic", 750, "Bot", "wuju", 2_600_000, 2_600_000, "wuju", 0,
      "Se acreditan al instante en tu balance: un monto al azar entre 1 y 2.600.000.", 0),
-    ("embo_500", "Hasta 650 de embo", "epic", 650, "Bot", "embo", 650, 650, "embo", 0,
+    ("embo_500", "Hasta 650 de embo", "epic", 1300, "Bot", "embo", 650, 650, "embo", 0,
      "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 650.", 0),
     ("freeze_2h", "Congelar balance 2 h", "epic", 600, "Bot", None, 0, 0, "", 1,
      "Durante 2 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
      + SHIELD_NOTE, 0),
     ("split_no_join", "Split sin participar", "epic", 500, "Staff", None, 0, 0, "", 0,
      "Cobrás el split de una CTA del día sin haber ido.", 0),
-    ("coinflip_15m", "Coinflip hasta 15M", "epic", 650, "Bot", None, 0, 0, "", 0,
+    ("coinflip_15m", "Coinflip hasta 15M", "epic", 400, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 15M. Rigen todas las reglas del coinflip.", 0),
     ("morgana_chest", "Cofre de Morgana en el HO", "epic", 400, "Staff", None, 0, 0, "", 0,
      "Ponés un cofre de Morgana en el HO, sobre un spot que no sea de la guild.", 0),
@@ -196,7 +196,7 @@ CATALOG = [
      "Armás una bomb con 5 personas a elección.", 0),
     ("cta_free_mount", "CTA con montura de combate libre", "legendary", 200, "Staff", None, 0, 0, "", 0,
      "Vas a una CTA con la montura de combate que quieras. La montura la ponés vos, no el staff.", 0),
-    ("embo_1000", "Hasta 1.300 de embo", "legendary", 100, "Bot", "embo", 1_300, 1_300, "embo", 0,
+    ("embo_1000", "Hasta 1.300 de embo", "legendary", 200, "Bot", "embo", 1_300, 1_300, "embo", 0,
      "Se acreditan al instante en tu balance de embo: un monto al azar entre 1 y 1.300.", 0),
     ("freeze_12h", "Congelar balance 12 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Durante 12 h el jugador no puede cobrar, jugar al casino, usar give-money ni el Guild Shop. Los splits le llegan igual."
@@ -215,7 +215,7 @@ CATALOG = [
      "Un alter de crafteo durante 7 días.", 0),
     ("coinflip_20m", "Coinflip hasta 20M", "legendary", 200, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 20M. Rigen todas las reglas del coinflip.", 0),
-    ("mute_chat_60", "Mute de chat 6 h", "legendary", 350, "Bot", None, 0, 0, "", 1,
+    ("mute_chat_60", "Mute de chat 6 h", "legendary", 250, "Bot", None, 0, 0, "", 1,
      "Le muteás el chat a un jugador por 6 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("mute_voice_60", "Mute de voice 6 h", "legendary", 300, "Bot", None, 0, 0, "", 1,
      "Muteás a un jugador en el voice por 6 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
@@ -294,7 +294,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 14
+CATALOG_VERSION = 15
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -323,6 +323,8 @@ CATALOG_CHANGES = {
          "mute_voice_60", "mute_chat_180", "mute_voice_180"),
     13: ("wuju_100k", "wuju_500k", "wuju_2m", "wuju_15m", "embo_50", "embo_100", "embo_500", "embo_1000"),   # topes +30 %
     14: ("farm_node_84", "ho_perms_remove_4h", "regear_full_5m", "mute_chat_60"),
+    15: ("embo_50", "embo_100", "embo_500", "embo_1000", "sell_cooldown", "gendarme_photo", "casino_block", "undo_coinflip",
+         "mute_15", "free_build_p1", "party1_slot", "mount_escort", "coinflip_15m", "mute_chat_60"),   # chance de embo ×2
 }
 
 SCHEMA = """
