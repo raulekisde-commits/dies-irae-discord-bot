@@ -378,7 +378,7 @@ NODES_SOURCE_GUILD_ID = 1086080340587712584      # servidor del otro bot (solo s
 NODES_SOURCE_CHANNEL_ID = 1546326872097427516    # canal donde el otro bot mantiene su panel de timers
 NODES_SOURCE_BOT_ID = 1546325145503928431
 NODES_SOURCE_OWNER_ID = 542775576461705218       # los timers copiados quedan a nombre de la persona dueña de ese bot
-PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista"}          # comandos con «!» que siguen funcionando (el resto está apagado)
+PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista", "votacion"}          # comandos con «!» que siguen funcionando (el resto está apagado)
 EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
@@ -2061,20 +2061,16 @@ OBSERVACION_ROLE_ID = int(os.getenv("OBSERVACION_ROLE_ID", "1559680220800360519"
 
 
 class RecruitRolesView(discord.ui.View):
-    """Paso al aceptar (efímero, solo para el reclutador): roles de CTA que se le dan + si lleva el rol Observación."""
+    """Paso al aceptar (efímero, solo para el reclutador): roles de CTA que se le dan (Observación se da siempre)."""
     def __init__(self, ticket_view, origin: discord.Interaction, default_role_id: int):
         super().__init__(timeout=300)
         self.ticket_view = ticket_view
         self.origin = origin
-        self.observacion = False
         opts = [discord.SelectOption(label=name, value=str(rid), default=(rid == default_role_id)) for rid, name in RECRUIT_CTA_ROLES.items()]
         self.select = discord.ui.Select(placeholder="Roles de CTA a dar", min_values=0, max_values=len(opts), options=opts)
         self.select.callback = self.picked
         self.add_item(self.select)
         self.chosen = [default_role_id] if default_role_id in RECRUIT_CTA_ROLES else []
-        self.obs_btn = discord.ui.Button(label="Observación: No", emoji="👁️", style=discord.ButtonStyle.secondary)
-        self.obs_btn.callback = self.toggle_obs
-        self.add_item(self.obs_btn)
         ok = discord.ui.Button(label="Confirmar y aceptar", emoji="✅", style=discord.ButtonStyle.success)
         ok.callback = self.confirm
         self.add_item(ok)
@@ -2091,21 +2087,13 @@ class RecruitRolesView(discord.ui.View):
             o.default = o.value in self.select.values
         await interaction.response.edit_message(view=self)
 
-    async def toggle_obs(self, interaction: discord.Interaction):
-        self.observacion = not self.observacion
-        self.obs_btn.label = "Observación: Sí" if self.observacion else "Observación: No"
-        self.obs_btn.style = discord.ButtonStyle.primary if self.observacion else discord.ButtonStyle.secondary
-        await interaction.response.edit_message(view=self)
-
     async def confirm(self, interaction: discord.Interaction):
         ids = list(self.chosen)
         names = [RECRUIT_CTA_ROLES[i] for i in ids]
         extra = ids[1:]
-        if self.observacion:
-            extra.append(OBSERVACION_ROLE_ID)
-            names.append("Observación")
+        extra.append(OBSERVACION_ROLE_ID)             # todo recluta entra con Observación
         primary = ids[0] if ids else MIEMBRO_ROLE_ID
-        label = ", ".join(names) or "Miembro"
+        label = ", ".join(names + ["Observación"]) if names else "Miembro, Observación"
         for child in self.children:
             child.disabled = True
         self.stop()
@@ -2135,7 +2123,7 @@ class RecruitTicketView(discord.ui.View):
         role_id, _name = recruit_role_for_main(main)
         view = RecruitRolesView(self, interaction, role_id)
         await interaction.response.send_message("🎭 **¿Qué roles de CTA le vas a dar?** Elegí uno o más y confirmá.\n"
-                                                f"👁️ Rol Observación: **No** (cambialo con el botón).", view=view, ephemeral=True)
+                                                "👁️ El rol **Observación** se le da siempre.", view=view, ephemeral=True)
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7183,7 +7171,7 @@ def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Los comandos con prefijo «!» están apagados salvo los de PREFIX_COMMANDS_ON (hoy !bal, !coinflip, !1v1, !dados, !agregarlista, !agregarlistamitad y !eliminarlista): todo lo demás se hace con los comandos /.
+    # Los comandos con prefijo «!» están apagados salvo los de PREFIX_COMMANDS_ON (hoy !bal, !coinflip, !1v1, !dados, !agregarlista, !agregarlistamitad, !eliminarlista y !votacion): todo lo demás se hace con los comandos /.
     # Los objetos de comando siguen existiendo porque varios comandos / reutilizan su código con .callback.
     if message.guild is not None and not message.author.bot and message.content.startswith(bot.command_prefix):
         ctx = await bot.get_context(message)
