@@ -207,7 +207,7 @@ INFO_TEXTS["alters"] = ("🔗 Alters",
 INFO_TEXTS["roles"] = ("🎭 Roles de Observación y CTA",
                        "El equipo puede darte o quitarte el rol **Observación** y los roles de **CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb).\n\n"
                        "• Cada cambio **queda registrado**: a quién, qué rol, quién lo hizo y cuándo.\n"
-                       "• Si tenés Observación, tenés que subir tus VODs semanales (`/info zvz-vods`).\n"
+                       "• Si tenés Observación, tenés que subir tus VODs semanales (`/info zvz-vods`).\n• Observación se saca solo por votación: `!votacion` en tu post de VODs (votan Coaching y Council).\n"
                        "• Si creés que te falta un rol o te lo sacaron por error, hablá con el Staff o con Coaching.")
 
 INFO_STAFF.update({
@@ -252,7 +252,7 @@ INFO_STAFF.update({
                       "• Cada postulación abre un canal privado visible para el postulante y el rol **Reclutador**. Arriba queda el resumen con todos los datos y el nick de Albion.\n\n"
                       "**Cómo reclutar paso a paso**\n"
                       "1. Leé el resumen: nick, rol main, otros roles, horarios, gremio anterior, si graba CTAs, idioma y **amigos en la guild** (para vouch). Hablá con la persona en el canal.\n"
-                      "2. Tocá **✔ Aceptar**. El bot te pregunta qué **roles de CTA** darle (el main viene preseleccionado) y si le das el rol **Observación**. Confirmá.\n"
+                      "2. Tocá **✔ Aceptar**. El bot te pregunta qué **roles de CTA** darle (el main viene preseleccionado); el rol **Observación** se da siempre. Confirmá.\n"
                       "3. El bot **registra** al postulante con su nick de Albion (`/info-staff registro`).\n"
                       "4. Recibe al instante **Miembro** + los roles elegidos y se le saca **Public**. Si todavía no figura dentro de la guild, queda en `/reclutas-pendientes` hasta que el bot lo vea adentro.\n"
                       "5. Revisá los pendientes con `/reclutas-pendientes`.\n\n"
@@ -304,7 +304,7 @@ INFO_STAFF["alters"] = ("• `/alter agregar usuario personaje [descripcion]` �
                         "• `/alter ver [usuario] [alter]` — alters de una persona, o de quién es un alter (con quién lo autorizó). Máximo 10 por persona.\n"
                         "• Solo Staff, Council y administradores; se valida en el bot, no solo por permisos de Discord.")
 INFO_STAFF["roles"] = ("• `/rol dar usuario rol [motivo]` y `/rol quitar usuario rol [motivo]` — el bot cambia el rol y lo registra con quién lo hizo.\n"
-                       "• **Observación:** dar = Staff, Council, Admin, Coaching y Opinólogo · quitar = Staff, Council, Admin y Coaching.\n"
+                       "• **Observación:** dar = Staff, Council, Admin, Coaching y Opinólogo · quitar = **solo por votación**: `!votacion` en el post de VODs de la persona. Votan Coaching + Council; se saca con mayoría del total o si un Council toca 👑 Aprobar.\n"
                        "• **Roles de CTA** (Tank, Healer, Supp, DPS, Battle Mount, Flex, Bomb): dar = Staff, Council, Admin y Coaching · quitar = Staff, Council y Admin.\n"
                        "• `/rol historial [usuario]` — últimos movimientos (quién dio o quitó cada rol).\n"
                        "• No te podés cambiar roles a vos mismo, y el rol del bot tiene que estar por encima del rol que se cambia.")
