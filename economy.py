@@ -1107,6 +1107,41 @@ class EconomyCog(commands.Cog):
             traceback.print_exc()
             await self._ephemeral(interaction, "❌ No se pudo completar la operación. No se modificó el balance.")
 
+    @eco_g.command(name="embo-pagar", description="(Admin) Cobra en Wuju Coins el embo negativo de todos (precio por unidad) y les deja el embo en 0")
+    @app_commands.describe(precio="Wuju Coins por cada unidad de embo (ej: 5,000)")
+    async def embo_pagar_cmd(self, interaction: discord.Interaction, precio: str):
+        try:
+            member = interaction.user
+            if interaction.guild is None or not is_admin_member(member):   # solo propietario/Administrator: no es delegable
+                return await self._ephemeral(interaction, "❌ Este comando es solo para el propietario del servidor o administradores.")
+            try:
+                price = eco.parse_amount(precio)
+            except eco.AmountError as exc:
+                return await self._ephemeral(interaction, f"❌ {exc}")
+            await interaction.response.defer(ephemeral=True)
+            try:
+                rows = await self._db(eco.pay_embo_debts, price=price, actor_id=member.id,
+                                      request_key=f"embopay:{interaction.id}", reason="Pago de embo")
+            except OverflowError:
+                return await self._ephemeral(interaction, "❌ El monto supera el límite permitido. No se cobró nada.")
+            if not rows:
+                return await self._ephemeral(interaction, "ℹ️ Nadie tiene embo en negativo. No se cobró nada.")
+            units = sum(r[1] for r in rows)
+            total = sum(r[2] for r in rows)
+            lines = [f"<@{uid}>: {eco.format_amount(u)} embo → −{self.money(c)} (queda {self.money(a)})" for uid, u, c, a in rows]
+            detail = "\n".join(lines)
+            await self._ephemeral(interaction, f"✅ Pago de embo: **{len(rows)}** personas · **{eco.format_amount(units)}** embo × "
+                                               f"{self.money(price)} = **{self.money(total)}** cobrados. El embo de todos quedó en 0.")
+            emb = discord.Embed(title=f"{self.embo_icon} Pago de embo", color=discord.Color.teal())
+            emb.add_field(name="Ejecutado por", value=member.mention, inline=True)
+            emb.add_field(name="Precio por unidad", value=self.money(price), inline=True)
+            emb.add_field(name="Total", value=f"{len(rows)} personas · {eco.format_amount(units)} embo · {self.money(total)}", inline=False)
+            emb.description = detail if len(detail) <= 4000 else detail[:3990] + "\n…"
+            await self._audit_note(emb)
+        except Exception:
+            traceback.print_exc()
+            await self._ephemeral(interaction, "❌ No se pudo completar la operación. No se cobró nada.")
+
     embo_g = app_commands.Group(name="embo", description="Balance de embo (embotelladas)", parent=eco_g)
 
     async def _embo_op(self, interaction: discord.Interaction, mode: str, usuario: discord.Member, cantidad: str,
