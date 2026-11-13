@@ -6455,10 +6455,15 @@ async def compo_ver_armaduras(interaction: discord.Interaction, nombre: str):
     except Exception as exc:
         print(f"/compo ver-armaduras: {exc!r}")
         return await interaction.followup.send("❌ No pude leer las builds ahora.", ephemeral=True)
-    lines = []
+    lines, totals = [], {}
     for n, (title, armors) in enumerate(compoweb.plate_armors_by_party(parsed, builds), start=1):
         lines.append(f"**P{n}** ({title})" if title and title != f"Party {n}" else f"**P{n}**")
         lines.append("\n".join(f"• {a}: **{c}**" for a, c in armors) if armors else "• Sin armaduras de placas")
+        for a, c in armors:
+            totals[a] = totals.get(a, 0) + c
+    if totals:
+        lines.append("\n**Total**")
+        lines.extend(f"• {a}: **{c}**" for a, c in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0])))
     emb = discord.Embed(title=f"🛡️ Armaduras de placas — {comp['name']}", color=discord.Color.blurple(),
                         description="\n".join(lines)[:4000] or "La composición no tiene parties.")
     missing = len(ids) - len(builds)
