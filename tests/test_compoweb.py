@@ -212,3 +212,15 @@ class BuildCardTests(unittest.TestCase):
         png = bc.render(data, "Mi Tank")
         self.assertTrue(png.startswith(b"\x89PNG"))
         self.assertEqual(bc.to_type(data["build"]["draft"]["food"]), "T7_MEAL_X@2")
+
+
+class PlateArmorTests(unittest.TestCase):
+    def test_armaduras_de_placas_por_party(self):
+        def b(iid, name):
+            return {"build": {"draft": {"chest": {"itemId": iid, "itemName": name, "tier": "T8"}}}}
+        parsed = {"parties": [{"title": "Party 1", "slots": [["r1"], ["r2"], ["j"], ["cloth"], ["r1", "j"], [cw.FILL_BATTLEMOUNT_ID], []]},
+                              {"title": "Party 2", "slots": [["cloth"]]}]}
+        builds = {"r1": b("ARMOR_PLATE_ROYAL", "Royal Armor"), "r2": b("ARMOR_PLATE_ROYAL", "Royal Armor"),
+                  "j": b("ARMOR_PLATE_KEEPER", "Judicator Armor"), "cloth": b("ARMOR_CLOTH_SET1", "Scholar Robe")}
+        self.assertEqual(cw.plate_armors_by_party(parsed, builds),
+                         [("Party 1", [("Royal Armor", 3), ("Judicator Armor", 1)]), ("Party 2", [])])

@@ -338,6 +338,30 @@ def build_list(parsed: dict, weapon_name=None) -> List[dict]:
     return out
 
 
+def plate_armor_of(build: Optional[dict]) -> str:
+    """Nombre de la armadura de placas (pecho) de la build, o "" si no es de placas."""
+    b = (build or {}).get("build") or build or {}
+    chest = (b.get("draft") or b).get("chest") or {}
+    iid = str(chest.get("itemId") or "")
+    if "ARMOR_PLATE" not in iid.upper():
+        return ""
+    return str(chest.get("itemName") or iid)
+
+
+def plate_armors_by_party(parsed: dict, builds: Dict[str, dict]) -> List[Tuple[str, List[Tuple[str, int]]]]:
+    """[(título de la party, [(armadura de placas, cantidad), ...])] por party, contando la build principal de cada posición."""
+    out = []
+    for i, party in enumerate(parsed.get("parties", []), start=1):
+        counts: Dict[str, int] = {}
+        for slot in party.get("slots", []):
+            bid = next((x for x in slot or [] if x != FILL_BATTLEMOUNT_ID), None)
+            name = plate_armor_of(builds.get(bid)) if bid else ""
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+        out.append((party.get("title") or f"Party {i}", sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))))
+    return out
+
+
 def item_type(it: dict) -> str:
     """itemId de AlbionZvZ -> id de ítem de Albion para el render (T8_MAIN_MACE, T7_MEAL_X@2)."""
     iid = it.get("itemId") or ""
