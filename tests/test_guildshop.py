@@ -662,12 +662,12 @@ class ShopDiscordTests(unittest.TestCase):
         self.bot.get_cog = (lambda old: lambda name: FakeWujupon() if name == "WujuponCog" else old(name))(self.bot.get_cog)
         return given
 
-    def test_sale_over_3m_gives_spin_to_whoever_confirms(self):
+    def test_sale_over_4m_gives_spin_to_whoever_confirms(self):
         gdb.set_log_channel_id(self.db, LOG_CH)
         given = self.fake_wujupon()
         self.publish_panels()
         ch, _ = self.open_ticket()
-        self.start_sale(ch, self.seller, "silver", "3.000.001")                # valor total > 3M (lo cobrado es menos por el 10 %)
+        self.start_sale(ch, self.seller, "silver", "4.000.001")                # valor total > 4M (lo cobrado es menos por el 10 %)
         self.confirm(ch, self.seller2)                                          # confirma otro Seller: la tirada es para él
         self.assertEqual(len(given), 1)
         self.assertEqual(given[0][:2], (self.seller2.id, 1))
@@ -692,11 +692,11 @@ class ShopDiscordTests(unittest.TestCase):
         self.assertIn("Seller", i.text)
         self.assertEqual(given, [])
 
-    def test_sale_of_exactly_3m_or_less_gives_no_spin(self):
+    def test_sale_of_exactly_4m_or_less_gives_no_spin(self):
         given = self.fake_wujupon()
         self.publish_panels()
         ch, _ = self.open_ticket()
-        self.start_sale(ch, self.seller, "silver", "3.000.000")                 # justo 3M: no supera
+        self.start_sale(ch, self.seller, "silver", "4.000.000")                 # justo 4M: no supera
         self.confirm(ch, self.seller)
         self.assertEqual(given, [])
 
