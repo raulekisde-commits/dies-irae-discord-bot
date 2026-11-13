@@ -47,6 +47,41 @@ def voice_without_kb(present, signed, regs, kb_names):
     return missing, unknown
 
 
+def weapon_mismatches(expected: Dict[int, tuple], regs, used: Dict[str, Dict[str, int]]) -> List[tuple]:
+    """Anotados que en el killboard usaron un arma distinta a la de su posición.
+    expected = {user_id: (posición, {armas válidas})} · regs = [(discord_id, personaje)] · used = {personaje_norm: {arma: veces}}.
+    Quien no aparece con arma en el killboard no se lista. Devuelve [(user_id, posición, armas válidas, {arma: veces})]."""
+    chars: Dict[int, set] = {}
+    for did, name in regs:
+        chars.setdefault(int(did), set()).add(kb.norm(name))
+    out = []
+    for uid, (pos, valid) in expected.items():
+        if not valid:
+            continue
+        seen: Dict[str, int] = {}
+        for c in chars.get(int(uid), ()):
+            for w, n in (used.get(c) or {}).items():
+                seen[w] = seen.get(w, 0) + n
+        if seen and not (set(seen) & set(valid)):
+            out.append((int(uid), pos, set(valid), seen))
+    return out
+
+
+def weapon_check_text(rows: List[tuple], name_of, limit: int = 1900) -> str:
+    title = f"🔀 **Usaron otra arma que la de su posición** ({len(rows)})"
+    if not rows:
+        return title + "\nNadie: todos los que aparecen en el killboard usaron el arma de su posición."
+    lines = []
+    for uid, pos, valid, seen in rows:
+        want = " / ".join(sorted(name_of(w) for w in valid))
+        got = ", ".join(name_of(w) for w, _n in sorted(seen.items(), key=lambda x: -x[1]))
+        lines.append(f"• <@{uid}> · {pos} · anotado: {want} · usó: {got}")
+    text = title + "\n" + "\n".join(lines)
+    if len(text) > limit:
+        text = text[:limit].rsplit("\n", 1)[0] + "\n…"
+    return text
+
+
 def voice_kb_text(missing, unknown, has_kb: bool, limit: int = 1900) -> str:
     head = "🎧 **En voz, sin anotar y sin killboard**"
     if not has_kb:
@@ -489,6 +524,9 @@ class KillboardCog(commands.Cog):
             await _say(interaction, chunk)
 
     _voice_col_ready = False
+    _weapon_col_ready = False
+    expected_weapons = None          # bot.py lo define: async (cta_id) -> {user_id: (posición, {armas})}
+    weapon_name = None               # bot.py lo define: (arma) -> nombre
 
     async def refresh_voice_kb(self, cta_id: int):
         """Mantiene en el hilo de stats UN mensaje con «en voz, sin anotar y sin killboard» (se edita al cargar o borrar killboards). Solo con la CTA ya terminada."""
@@ -533,6 +571,58 @@ class KillboardCog(commands.Cog):
         except Exception as exc:
             print(f"CTA #{cta_id}: no pude actualizar la lista de voz sin killboard: {exc!r}")
 
+    async def refresh_weapon_check(self, cta_id: int):
+        """Mantiene en el hilo de stats UN mensaje con los anotados que usaron otra arma que la de su posición. Solo con la CTA terminada y killboard cargado."""
+        if self.expected_weapons is None:
+            return
+
+        def load():
+            conn = connect(self.db_path)
+            try:
+                if not KillboardCog._weapon_col_ready:
+                    try:
+                        conn.execute("ALTER TABLE cta_runs ADD COLUMN weapon_check_msg_id INTEGER")
+                    except Exception:
+                        pass
+                    KillboardCog._weapon_col_ready = True
+                return conn.execute("SELECT stats_thread_id, final_state, weapon_check_msg_id FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            finally:
+                conn.close()
+        try:
+            run = await asyncio.to_thread(load)
+            if not run or not run["stats_thread_id"] or run["final_state"] != "finished":
+                return
+            used = await self.run(kb.weapons_of_cta, cta_id)
+            thread = self.bot.get_channel(int(run["stats_thread_id"])) or await self.bot.fetch_channel(int(run["stats_thread_id"]))
+            old = None
+            if run["weapon_check_msg_id"]:
+                try:
+                    old = await thread.fetch_message(int(run["weapon_check_msg_id"]))
+                except discord.NotFound:
+                    old = None
+            if not used:                                        # sin killboard (o borrado): no hay nada que comparar
+                if old is not None:
+                    await old.delete()
+                return
+            expected = await self.expected_weapons(cta_id) or {}
+            regs = [(r.discord_id, r.char_name) for r in await self.run(rdb.all_registrations)]
+            rows = weapon_mismatches(expected, regs, used)
+            name_of = self.weapon_name or (lambda w: w)
+            text = weapon_check_text(rows, lambda w: name_of(w) or w)
+            if old is not None:
+                return await old.edit(content=text, allowed_mentions=NO_MENTIONS)
+            msg = await thread.send(text, allowed_mentions=NO_MENTIONS)
+
+            def save():
+                conn = connect(self.db_path)
+                try:
+                    conn.execute("UPDATE cta_runs SET weapon_check_msg_id=? WHERE id=?", (msg.id, cta_id))
+                finally:
+                    conn.close()
+            await asyncio.to_thread(save)
+        except Exception as exc:
+            print(f"CTA #{cta_id}: no pude actualizar la lista de armas: {exc!r}")
+
     async def refresh_stats_panel(self, cta_id: int):
         """Actualiza el check «Killboard» del panel de stats de la CTA."""
         conn = connect(self.db_path)
@@ -546,6 +636,7 @@ class KillboardCog(commands.Cog):
             traceback.print_exc()                               # si falla, el panel igual se actualiza
             skips = []
         await self.refresh_voice_kb(cta_id)                     # lista extra del hilo (solo si la CTA ya terminó)
+        await self.refresh_weapon_check(cta_id)                 # armas distintas a la de la posición (solo si la CTA ya terminó)
         if not run or not run["stats_message_id"]:
             return
         n = len(await self.run(kb.battles_of_cta, cta_id))

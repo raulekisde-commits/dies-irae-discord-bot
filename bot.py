@@ -621,6 +621,10 @@ class MyBot(commands.Bot):
             await _safe_setup("ausencias", setup_ausencias, self, DB_PATH, GUILD_ID)
             await _safe_setup("ctavoice", setup_ctavoice, self, DB_PATH, GUILD_ID)
             await _safe_setup("killboards", setup_killboards, self, DB_PATH, GUILD_ID)
+            _kb_cog = self.get_cog("KillboardCog")
+            if _kb_cog is not None:                       # para comparar el arma del killboard con la de la posición
+                _kb_cog.expected_weapons = cta_expected_weapons
+                _kb_cog.weapon_name = lambda w: _armas.weapon_names(DB_PATH, GUILD_ID).get(w)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
             await _safe_setup("config", setup_config, self, DB_PATH, GUILD_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
@@ -4942,6 +4946,7 @@ async def cta_post_voice_lists(run_id: int):
     kb_cog = bot.get_cog("KillboardCog")
     if kb_cog is not None:                                 # tercera lista: en voz, sin anotar y sin killboard (se actualiza al cargar el killboard)
         await kb_cog.refresh_voice_kb(run_id)
+        await kb_cog.refresh_weapon_check(run_id)          # armas distintas a la de la posición (si ya hay killboard)
 
 
 async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
@@ -6335,6 +6340,41 @@ async def cta_comp_parsed(comp: dict):
         parsed = await asyncio.to_thread(compoweb.fetch_comp, link["web_id"])
         await asyncio.to_thread(compoweb.save_parsed, DB_PATH, comp["id"], parsed)
     return parsed
+
+
+async def cta_expected_weapons(run_id: int) -> dict:
+    """{user_id: ("P1-3", {armas válidas})} para los anotados en una posición de la compo (no Bomb ni CL).
+    Las armas salen de las builds de la composición web (sin tier ni encantamiento). Sin builds: {}."""
+    run = cta_run_get(run_id)
+    if not run or compoweb is None:
+        return {}
+    crow = db_fetchall("SELECT * FROM cta_compositions WHERE id=?", (run["composition_id"],))
+    if not crow:
+        return {}
+    try:
+        parsed = await cta_comp_parsed(dict(crow[0]))
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude leer las builds para comparar armas: {exc!r}")
+        return {}
+    if not parsed:
+        return {}
+    weapons = parsed.get("weapons", {})
+    by_pos: dict = {}
+    for bid, positions in compoweb.build_usage(parsed).items():
+        w = _armas.normalize_id(weapons.get(bid, ""))
+        if w:
+            for p in positions:
+                by_pos.setdefault(p, set()).add(w)
+    out = {}
+    for r in await asyncio.to_thread(cu.positions, DB_PATH, run_id):
+        try:
+            pn, pos = (int(x) for x in str(r["slot_key"]).split(":", 1))
+        except Exception:
+            continue                                       # Bomb, CL o posición sin número
+        label = f"P{pn}-{pos}"
+        if by_pos.get(label):
+            out[int(r["user_id"])] = (label, by_pos[label])
+    return out
 
 
 async def cta_build_autocomplete(interaction: discord.Interaction, current: str):

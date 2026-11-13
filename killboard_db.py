@@ -2,6 +2,7 @@
 
 Todo sale de aquí (no de la web de AlbionBB): solo cuentan las batallas que alguien autorizado cargó."""
 import json
+import re
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -35,6 +36,13 @@ CREATE TABLE IF NOT EXISTS kb_players (
     FOREIGN KEY (battle_id) REFERENCES kb_battles(battle_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_kb_players_name ON kb_players(name_norm);
+CREATE TABLE IF NOT EXISTS kb_weapons (         -- arma (mano principal) con la que aparece cada jugador en los eventos de la batalla
+    battle_id TEXT NOT NULL,
+    name_norm TEXT NOT NULL,
+    weapon    TEXT NOT NULL,                       -- id sin tier ni encantamiento: T8_2H_HOLYSTAFF@3 -> 2H_HOLYSTAFF
+    uses      INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (battle_id, name_norm, weapon)
+);
 CREATE TABLE IF NOT EXISTS kb_online (          -- lista de conectados de una CTA (los que figuraban "Online")
     cta_id    INTEGER NOT NULL,
     name_norm TEXT NOT NULL,
@@ -72,6 +80,20 @@ def init_schema(db_path: str) -> None:
 
 
 # ---------- parseo ----------
+_TIER_RE = re.compile(r"^T\d+_")
+
+
+def weapon_id(item_type) -> str:
+    """T8_2H_HOLYSTAFF@3 -> 2H_HOLYSTAFF (mismo criterio que armas_roles.normalize_id)."""
+    return _TIER_RE.sub("", str(item_type or "").strip().upper().split("@")[0])
+
+
+def _main_hand(p) -> str:
+    eq = (p or {}).get("Equipment") or (p or {}).get("equipment") or {} if isinstance(p, dict) else {}
+    mh = (eq.get("MainHand") or eq.get("mainHand") or {}) if isinstance(eq, dict) else {}
+    return weapon_id(mh.get("Type") or mh.get("type")) if isinstance(mh, dict) else ""
+
+
 def _num(v) -> Optional[float]:
     try:
         f = float(v)
@@ -102,7 +124,7 @@ def parse_events(events: Iterable[dict], guild_name: str) -> dict:
         guild = p.get("GuildName") or p.get("guildName")
         if not name or norm(guild) != gl:
             return None
-        e = players.setdefault(norm(name), {"name": str(name), "kills": 0, "deaths": 0, "ips": [], "death_time": None, "deaths_list": []})
+        e = players.setdefault(norm(name), {"name": str(name), "kills": 0, "deaths": 0, "ips": [], "death_time": None, "deaths_list": [], "weapons": {}})
         return e
 
     deaths: List[Tuple[Optional[datetime], int, str]] = []
@@ -116,6 +138,9 @@ def parse_events(events: Iterable[dict], guild_name: str) -> dict:
         def note_ip(p, e):
             if e is None or id(e) in seen_ip:
                 return
+            w = _main_hand(p)
+            if w:
+                e["weapons"][w] = e["weapons"].get(w, 0) + 1
             ip = _num((p or {}).get("AverageItemPower") if isinstance(p, dict) else None)
             if ip:
                 e["ips"].append(ip)
@@ -176,6 +201,8 @@ def save_battle(db_path: str, battle_id: str, cta_id: Optional[int], loaded_by: 
             conn.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at, events, smogg_deaths, ts_missing) VALUES (?,?,?,?,?,?,?)",
                          (battle_id, cta_id, loaded_by, utcnow_iso(), parsed["events"], parsed["smogg_deaths"], parsed["ts_missing"]))
             for nm, e in parsed["players"].items():
+                for w, uses in (e.get("weapons") or {}).items():
+                    conn.execute("INSERT OR IGNORE INTO kb_weapons(battle_id, name_norm, weapon, uses) VALUES (?,?,?,?)", (battle_id, nm, w, int(uses)))
                 conn.execute("INSERT INTO kb_players(battle_id,name_norm,name,kills,deaths,ip_avg,ip_max,ip_min,first5,death_rank,death_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                              (battle_id, nm, e["name"], e["kills"], e["deaths"], e["ip_avg"], e["ip_max"], e["ip_min"], int(bool(e["first5"])),
                               e.get("death_rank"), e.get("death_time")))
@@ -216,6 +243,7 @@ def delete_battle(db_path: str, battle_id: str, actor_id: int) -> bool:
                 return False
             n = conn.execute("SELECT COUNT(*) FROM kb_players WHERE battle_id=?", (battle_id,)).fetchone()[0]
             conn.execute("DELETE FROM kb_players WHERE battle_id=?", (battle_id,))
+            conn.execute("DELETE FROM kb_weapons WHERE battle_id=?", (battle_id,))
             conn.execute("DELETE FROM kb_battles WHERE battle_id=?", (battle_id,))
             conn.execute("INSERT INTO kb_audit(battle_id, action, actor_id, at, details) VALUES (?,?,?,?,?)",
                          (battle_id, "delete", actor_id, utcnow_iso(), json.dumps({"cta_id": r["cta_id"], "players": n})))
@@ -406,6 +434,21 @@ def players_of_cta(db_path: str, cta_id: int) -> set:
     try:
         return {r["name_norm"] for r in conn.execute(
             "SELECT p.name_norm FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id WHERE b.cta_id=?", (cta_id,))}
+    finally:
+        conn.close()
+
+
+def weapons_of_cta(db_path: str, cta_id: int) -> Dict[str, Dict[str, int]]:
+    """{nombre normalizado: {arma: veces}} de los killboards cargados de la CTA (solo batallas cargadas con este dato)."""
+    conn = connect(db_path)
+    try:
+        out: Dict[str, Dict[str, int]] = {}
+        for r in conn.execute("SELECT w.name_norm, w.weapon, SUM(w.uses) AS n FROM kb_weapons w JOIN kb_battles b ON b.battle_id=w.battle_id "
+                              "WHERE b.cta_id=? GROUP BY w.name_norm, w.weapon", (cta_id,)):
+            out.setdefault(r["name_norm"], {})[r["weapon"]] = int(r["n"])
+        return out
+    except Exception:
+        return {}
     finally:
         conn.close()
 
