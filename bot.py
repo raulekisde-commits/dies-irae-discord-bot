@@ -3624,6 +3624,7 @@ def cta_db_init():
         db_ensure_column(conn, "cta_compositions", "ava", "INTEGER NOT NULL DEFAULT 0")     # 1 = el split de esta composición es un split-ava
         db_ensure_column(conn, "cta_compositions", "content", "INTEGER NOT NULL DEFAULT 0") # 1 = composición para /content
         db_ensure_column(conn, "cta_runs", "kind", "TEXT NOT NULL DEFAULT 'cta'")           # 'cta' | 'content' (/content: sin Bomb ni tareas de combatlog)
+        db_ensure_column(conn, "cta_runs", "locked", "INTEGER NOT NULL DEFAULT 0")          # !lock: solo el Council anota o saca a otras personas
         db_ensure_column(conn, "cta_runs", "track", "INTEGER NOT NULL DEFAULT 0")
         db_ensure_column(conn, "cta_runs", "tab", "TEXT")
         db_ensure_column(conn, "cta_runs", "city", "TEXT")
@@ -5176,6 +5177,32 @@ class CTAAddTimeModal(discord.ui.Modal, title="Agregar tiempo a la CTA"):
                     pass
 
 
+CTA_LOCK_RE = re.compile(r"^!(lock|unlock)$", re.I)
+
+
+def cta_can_manage_others(member, run: dict) -> bool:
+    """Quién puede anotar o sacar a otra persona en el hilo. Con !lock, solo el Council (y administradores)."""
+    if run.get("locked"):
+        return is_council_or_admin(member)
+    return cta_is_organizer(member) or (run.get("kind") == "content" and is_content_manager(member))
+
+
+async def cta_set_lock(message: discord.Message, run: dict, lock: bool):
+    """!lock / !unlock en el hilo de la CTA o del content (solo Council)."""
+    if not is_council_or_admin(message.author):
+        return await cta_reply_short(message, "🔒 Solo el Council puede usar `!lock` y `!unlock`.", 8)
+    if bool(run.get("locked")) == lock:
+        return await cta_reply_short(message, "🔒 El hilo ya estaba bloqueado." if lock else "🔓 El hilo no estaba bloqueado.", 8)
+    db_execute("UPDATE cta_runs SET locked=? WHERE id=?", (1 if lock else 0, int(run["id"])))
+    cta_audit(int(run["guild_id"]), message.author.id, "thread_lock" if lock else "thread_unlock", int(run["id"]), "")
+    text = ("🔒 **Hilo bloqueado:** cada uno se sigue anotando y desanotando solo, pero solo el Council puede anotar o sacar a otra persona. "
+            "`!unlock` lo desbloquea.") if lock else "🔓 **Hilo desbloqueado:** Staff, Caller y Council vuelven a poder anotar o sacar a otras personas."
+    try:
+        await message.channel.send(text, allowed_mentions=CTA_NO_PINGS)
+    except discord.HTTPException:
+        pass
+
+
 async def cta_handle_thread_message(message: discord.Message) -> bool:
     """Procesa los mensajes escritos en el hilo de una CTA. Devuelve True si el hilo pertenece a una CTA."""
     rows = db_fetchall("SELECT * FROM cta_runs WHERE thread_id=?", (message.channel.id,))
@@ -5187,6 +5214,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     add_time = CTA_ADD_TIME_RE.match((message.content or "").strip())
     if add_time:
         await cta_add_time(message, run, add_time.group(1))
+        return True
+    lock_cmd = CTA_LOCK_RE.match((message.content or "").strip())
+    if lock_cmd:
+        await cta_set_lock(message, run, lock_cmd.group(1).lower() == "lock")
         return True
     bomb_action = cu.parse_cta_bomb_text(message.content)
     if bomb_action and not message.mentions and run.get("kind") != "content":     # `bomb` / `- bomb`: lista Bomb del panel
@@ -5216,8 +5247,9 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         rest = re.sub(r"<@!?\d+>", "", message.content or "")
         tag_bomb, tag_cl = cu.parse_cta_bomb_text(rest), cu.parse_cta_cl_text(rest)
         if tag_bomb or tag_cl:
-            if not cta_is_organizer(message.author):
-                await cta_reply_short(message, "Solo Staff, Caller y Council pueden anotar o sacar a otras personas.", 8)
+            if not cta_can_manage_others(message.author, run):
+                await cta_reply_short(message, "🔒 El hilo está bloqueado: solo el Council puede anotar o sacar a otras personas." if run.get("locked")
+                                      else "Solo Staff, Caller y Council pueden anotar o sacar a otras personas.", 8)
                 return True
             targets = [m for m in message.mentions if not getattr(m, "bot", False)]
             rid = int(run["id"])
@@ -5272,7 +5304,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         if slot is None:
             await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {len(snapshot['slots'])}.")
             return True
-        organizer = cta_is_organizer(member)
+        organizer = cta_can_manage_others(member, run)
         code, other = cta_release_slot(run_id, cta_slot_key(slot), only_user=None if organizer else member.id)
         if code == "closed":
             await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
@@ -5354,9 +5386,9 @@ async def cta_handle_staff_command(message, run: dict, snapshot: dict, mentions:
     """Comandos del Staff en el hilo: «@persona 21» la pone en la posición 21 (o la mueve) y
     «@persona -21» (o «@persona -» / «@persona salir») la saca. El Staff puede asignar aunque la posición
     pida roles; queda anotado en la auditoría. En un /content también puede el Content Creator."""
-    content_ok = run.get("kind") == "content" and is_content_manager(message.author)
-    if not (cta_is_organizer(message.author) or content_ok):
-        await cta_reply_short(message, "Solo el Staff (o el Content Creator en un content) puede anotar o sacar a otras personas.", 8)
+    if not cta_can_manage_others(message.author, run):
+        await cta_reply_short(message, "🔒 El hilo está bloqueado: solo el Council puede anotar o sacar a otras personas." if run.get("locked")
+                              else "Solo el Staff (o el Content Creator en un content) puede anotar o sacar a otras personas.", 8)
         return True
     if len(mentions) > 1:
         await cta_reply_short(message, "Etiquetá a una sola persona por mensaje.", 8)
@@ -6994,7 +7026,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
-        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. El rol Combat Looter se anota con `cl` (y se desanota con `- cl`) y entra al split como looter. Staff, Caller y Council pueden anotar o sacar a otros con «@persona bomb», «@persona cl», «@persona - bomb» o «@persona - cl». Al cerrar o cancelar la CTA se borra su hilo."),
+        ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. El rol Combat Looter se anota con `cl` (y se desanota con `- cl`) y entra al split como looter. Staff, Caller y Council pueden anotar o sacar a otros con «@persona bomb», «@persona cl», «@persona - bomb» o «@persona - cl». El Council puede escribir `!lock` en el hilo (CTA o content) para que solo el Council anote o saque a otras personas; `!unlock` lo vuelve atrás. Al cerrar o cancelar la CTA se borra su hilo."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/compo content nombre activar", "Council / Admin", "true/false: marca si la composición se puede publicar con /content."),
