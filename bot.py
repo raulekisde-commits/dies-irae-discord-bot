@@ -7126,6 +7126,7 @@ HELP_SECTIONS = [
         ("/eco historico-bal reset", "Admin", "Pone en cero el Balance histórico de todos (no toca los balances)."),
         ("/eco embo icono emoji", "Admin", "Cambia el icono del embo (emoji del servidor o común); 'quitar' vuelve a 🍾."),
         ("/top tipo:embo", "Miembros", "Quién debe más embo (balance negativo), de la mayor deuda a la menor."),
+        ("/top tipo:wujupon", "Miembros", "Quién más ganó con Wujupón: Wuju neto (premios − cartas malas) + silver entregado."),
         ("/eco embo importar-historico archivo", "Admin", "Carga al balance de embo todos los movimientos del archivo a los jugadores registrados con ese nick y lista los no encontrados (sin duplicar si se sube dos veces)."),
         ("/eco embo cargar-dia archivo [fecha]", "Staff", "Carga las embotelladas de un día desde el log de la guild (ignora otros días), lista los no encontrados y cierra el encargo diario de las 00:00 UTC."),
         ("/verhistorial [usuario] [completo]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. Con `completo:true` te llega TODO el historial como archivo CSV, solo visible para vos en el canal. El staff puede ver los de otra persona."),

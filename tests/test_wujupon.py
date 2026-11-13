@@ -1150,6 +1150,21 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIn(f"<@{self.alice.id}>", e.description)
         self.assertIn("24,000,000", e.description)
 
+    def test_top_wujupon(self):
+        import economy
+        import efectos_db as edb
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=1, request_key="g", reason="t")
+        wdb.pull(self.db, self.alice.id, "p0", rng=FixedRng(offset_of("wuju_2m")))
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.alice.id, prize_key="bad_wuju_300k", reason="t")
+        edb.apply_forced(self.db, card_id=cid, user_id=self.alice.id, prize_key="bad_wuju_300k", action="wuju", amount=300_000, minutes=None)
+        cid = wdb.give_card(self.db, actor_id=1, user_id=self.bob.id, prize_key="weapon_73", reason="t")
+        r = wdb.redeem(self.db, card_id=cid, user_id=self.bob.id, details="", request_key="w", guild_id=GUILD_ID)
+        wdb.deliver_request(self.db, r.request.id, 1)
+        rows = wdb.top_winners(self.db)
+        self.assertEqual([(w.user_id, w.wuju, w.silver, w.pulls) for w in rows],
+                         [(self.bob.id, 0, 8_000_000, 0), (self.alice.id, 2_300_000, 0, 1)])
+        self.assertIn("wujupon", [c.value for c in economy.EconomyCog.TOP_CHOICES])
+
     def test_regalar_tiradas_a_un_rol(self):
         i = self.inter(self.council)
         run(self.cog.gift.callback(self.cog, i, 2, None, None, None))
