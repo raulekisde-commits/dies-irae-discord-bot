@@ -1161,8 +1161,8 @@ class WujuponDiscordTests(DiscordBase):
         r = wdb.redeem(self.db, card_id=cid, user_id=self.bob.id, details="", request_key="w", guild_id=GUILD_ID)
         wdb.deliver_request(self.db, r.request.id, 1)
         rows = wdb.top_winners(self.db)
-        self.assertEqual([(w.user_id, w.wuju, w.silver) for w in rows],
-                         [(self.bob.id, 0, 8_000_000), (self.alice.id, 2_300_000, 0)])
+        self.assertEqual([(w.user_id, w.wuju, w.silver, w.pulls) for w in rows],
+                         [(self.bob.id, 0, 8_000_000, 0), (self.alice.id, 2_300_000, 0, 1)])
         self.assertIn("wujupon", [c.value for c in economy.EconomyCog.TOP_CHOICES])
 
     def test_regalar_tiradas_a_un_rol(self):

@@ -1769,6 +1769,7 @@ class TopWinner:
     user_id: int
     wuju: int      # neto de Wuju Coins: premios − cartas malas
     silver: int    # premios en silver entregados (costo máximo de catálogo)
+    pulls: int = 0
 
     @property
     def total(self) -> int:
@@ -1787,7 +1788,10 @@ def top_winners(db_path: str) -> List[TopWinner]:
                               "WHERE r.status IN ('auto', 'delivered') AND p.cost_currency = 'silver' GROUP BY r.user_id"):
             u = int(r["user_id"])
             out.setdefault(u, TopWinner(u, 0, 0)).silver = int(r["t"] or 0)
-        rows = [w for w in out.values() if w.wuju or w.silver]
+        for r in conn.execute("SELECT user_id, COUNT(*) AS n FROM wjp_pulls GROUP BY user_id"):
+            u = int(r["user_id"])
+            out.setdefault(u, TopWinner(u, 0, 0)).pulls = int(r["n"])
+        rows = [w for w in out.values() if w.wuju or w.silver or w.pulls]
         rows.sort(key=lambda w: w.total, reverse=True)
         return rows
     finally:

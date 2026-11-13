@@ -777,7 +777,7 @@ class EconomyCog(commands.Cog):
         for n, page in enumerate(pages, start=1):
             emb = discord.Embed(title="🃏 Top Wujupón — los que más ganaron", color=discord.Color.gold(),
                                 description="\n".join(f"`{i}.` <@{w.user_id}> — **{f(w.total)}** "
-                                                      f"(Wuju {f(w.wuju)} · Silver {f(w.silver)})" for i, w in page)
+                                                      f"(Wuju {f(w.wuju)} · Silver {f(w.silver)} · {w.pulls} tiradas)" for i, w in page)
                                 or "Todavía nadie ganó nada con Wujupón.")
             emb.set_footer(text="Wuju neto (premios − cartas malas) + silver entregado"
                                 + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else ""))
