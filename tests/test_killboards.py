@@ -192,6 +192,44 @@ class TopStatsTests(KBBase):
         self.assertIn("Healer", txt); self.assertIn("33%", txt)               # la CTA abierta (24) no cuenta
 
 
+
+class WeaponCheckThread(KBBase):
+    def test_mensaje_en_el_hilo_se_crea_edita_y_borra(self):
+        self.bot.channels[555] = self.thread
+        rdb.admin_link(self.db, 101, "Ana", 1); rdb.admin_link(self.db, 103, "Bob", 1)
+
+        async def expected(cta_id):
+            return {101: ("P1-1", {"2H_HOLYSTAFF"}), 103: ("P1-2", {"MAIN_MACE"})}
+        self.cog.expected_weapons = expected
+        self.cog.weapon_name = lambda w: {"2H_HOLYSTAFF": "Holy Staff", "2H_FIRESTAFF": "Fire Staff"}.get(w)
+        run(self.cog.refresh_weapon_check(5))
+        self.assertEqual([m for m in self.thread.sent if "🔀" in (m.content or "")], [])     # sin killboard: nada
+        c = connect(self.db)
+        c.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES ('b1', 5, 1, 'x')")
+        c.execute("INSERT INTO kb_weapons(battle_id, name_norm, weapon, uses) VALUES ('b1', 'ana', '2H_FIRESTAFF', 2)")
+        c.execute("INSERT INTO kb_weapons(battle_id, name_norm, weapon, uses) VALUES ('b1', 'bob', 'MAIN_MACE', 1)")
+        c.close()
+        run(self.cog.refresh_weapon_check(5))
+        msgs = [m for m in self.thread.sent if "🔀" in (m.content or "")]
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("<@101> · P1-1 · anotado: Holy Staff · usó: Fire Staff", msgs[0].content)
+        self.assertNotIn("<@103>", msgs[0].content)
+        c = connect(self.db); c.execute("UPDATE kb_weapons SET weapon='2H_HOLYSTAFF' WHERE name_norm='ana'"); c.close()
+        run(self.cog.refresh_weapon_check(5))
+        self.assertEqual(len([m for m in self.thread.sent if "🔀" in (m.content or "")]), 1)  # se edita el mismo mensaje
+
+
+class WeaponCheckTests(unittest.TestCase):
+    def test_compara_arma_de_la_posicion(self):
+        expected = {1: ("P1-1", {"2H_HOLYSTAFF"}), 2: ("P1-2", {"MAIN_MACE", "2H_HAMMER"}), 3: ("P1-3", {"MAIN_SWORD"}), 4: ("P2-1", set())}
+        regs = [(1, "Ana"), (2, "Bob"), (3, "Cami"), (4, "Dan")]
+        used = {"ana": {"2H_HOLYSTAFF": 3}, "bob": {"2H_FIRESTAFF": 2, "MAIN_CURSEDSTAFF": 1}, "dan": {"MAIN_MACE": 1}}
+        rows = kc.weapon_mismatches(expected, regs, used)
+        self.assertEqual([(u, p) for u, p, _v, _s in rows], [(2, "P1-2")])            # Cami sin datos y Dan sin build: no se listan
+        text = kc.weapon_check_text(rows, lambda w: w.title())
+        self.assertIn("<@2> · P1-2 · anotado: 2H_Hammer / Main_Mace · usó: 2H_Firestaff, Main_Cursedstaff", text)
+        self.assertIn("Nadie", kc.weapon_check_text([], str))
+
 if __name__ == "__main__":
     unittest.main()
 

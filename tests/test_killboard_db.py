@@ -102,5 +102,30 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(kb.role_counts(self.db, 55), {"Scout": 2})
 
 
+
+class WeaponTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "t.db")
+        kb.init_schema(self.db); cu.init_positions(self.db)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_arma_por_jugador_y_borrado(self):
+        def W(name, w, guild="Smogg"):
+            return dict(P(name, guild), Equipment={"MainHand": {"Type": w}})
+        evs = [ev(W("Ana", "T8_2H_HOLYSTAFF@3"), P("Rival", "Otros"), "2026-10-31T22:00:00Z", parts=[W("Ana", "T8_2H_HOLYSTAFF@3"), W("Bob", "T7_MAIN_MACE")]),
+               ev(P("Enemigo", "Otros"), W("Ana", "T8_2H_HOLYSTAFF@1"), "2026-10-31T22:01:00Z"),
+               ev(P("Enemigo", "Otros"), P("Cami"), "2026-10-31T22:02:00Z")]                 # Cami sin equipo: no tiene arma
+        self.assertEqual(kb.weapon_id("T8_2H_HOLYSTAFF@3"), "2H_HOLYSTAFF")
+        p = kb.parse_events(evs, "Smogg")
+        self.assertEqual(p["players"]["ana"]["weapons"], {"2H_HOLYSTAFF": 2})
+        kb.save_battle(self.db, "100", 7, 1, p)
+        self.assertEqual(kb.weapons_of_cta(self.db, 7), {"ana": {"2H_HOLYSTAFF": 2}, "bob": {"MAIN_MACE": 1}})
+        self.assertEqual(kb.weapons_of_cta(self.db, 8), {})
+        kb.delete_battle(self.db, "100", 1)
+        self.assertEqual(kb.weapons_of_cta(self.db, 7), {})
+
 if __name__ == "__main__":
     unittest.main()
