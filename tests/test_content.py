@@ -51,8 +51,15 @@ class ContentFuente(unittest.TestCase):
         self.assertIn('run.get("kind") == "content" and int(run["created_by"]) == interaction.user.id', self.src)
 
     def test_content_creator_anota_en_el_hilo_del_content(self):
-        self.assertIn('content_ok = run.get("kind") == "content" and is_content_manager(message.author)', self.src)
-        self.assertIn("if not (cta_is_organizer(message.author) or content_ok):", self.src)
+        self.assertIn('return cta_is_organizer(member) or (run.get("kind") == "content" and is_content_manager(member))', self.src)
+        self.assertIn("if not cta_can_manage_others(message.author, run):", self.src)
+
+    def test_lock_solo_council_anota_a_otros(self):
+        self.assertIn('CTA_LOCK_RE = re.compile(r"^!(lock|unlock)$", re.I)', self.src)
+        self.assertIn('db_ensure_column(conn, "cta_runs", "locked", "INTEGER NOT NULL DEFAULT 0")', self.src)
+        self.assertIn('if run.get("locked"):\n        return is_council_or_admin(member)', self.src)
+        self.assertIn("organizer = cta_can_manage_others(member, run)", self.src)
+        self.assertIn('await cta_set_lock(message, run, lock_cmd.group(1).lower() == "lock")', self.src)
 
     def test_combat_looter_en_el_hilo(self):
         self.assertIn("cl_action = cu.parse_cta_cl_text(message.content)", self.src)
