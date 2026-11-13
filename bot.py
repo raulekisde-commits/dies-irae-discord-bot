@@ -6431,6 +6431,45 @@ async def compo_ver_builds(interaction: discord.Interaction, nombre: str, build:
     await interaction.followup.send(embed=emb, view=view, ephemeral=True)
 
 
+@compo_group.command(name="ver-armaduras", description="Cuántas armaduras de placas hay en cada party de una composición")
+@app_commands.describe(nombre="Composición")
+async def compo_ver_armaduras(interaction: discord.Interaction, nombre: str):
+    comp = cta_get_composition(interaction.guild_id, nombre)
+    if not comp:
+        return await interaction.response.send_message("No existe esa composición. Mirá las guardadas con `/compo listar`.", ephemeral=True)
+    if compoweb is None:
+        return await interaction.response.send_message("Las builds no están disponibles ahora.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        parsed = await cta_comp_parsed(comp)
+        if parsed is None:
+            return await interaction.followup.send(f"**{comp['name']}** no tiene builds detalladas (no viene de AlbionZvZ).", ephemeral=True)
+        ids = list(dict.fromkeys(b for p in parsed.get("parties", []) for s in p.get("slots", []) for b in (s or [])[:1]
+                                 if b != compoweb.FILL_BATTLEMOUNT_ID))
+        builds = {}
+        for bid in ids:
+            try:
+                builds[bid] = await asyncio.to_thread(compoweb.fetch_build_any_age, DB_PATH, bid)
+            except Exception as exc:
+                print(f"/compo ver-armaduras {bid}: {exc!r}")
+    except Exception as exc:
+        print(f"/compo ver-armaduras: {exc!r}")
+        return await interaction.followup.send("❌ No pude leer las builds ahora.", ephemeral=True)
+    lines = []
+    for n, (title, armors) in enumerate(compoweb.plate_armors_by_party(parsed, builds), start=1):
+        lines.append(f"**P{n}** ({title})" if title and title != f"Party {n}" else f"**P{n}**")
+        lines.append("\n".join(f"• {a}: **{c}**" for a, c in armors) if armors else "• Sin armaduras de placas")
+    emb = discord.Embed(title=f"🛡️ Armaduras de placas — {comp['name']}", color=discord.Color.blurple(),
+                        description="\n".join(lines)[:4000] or "La composición no tiene parties.")
+    missing = len(ids) - len(builds)
+    if missing:
+        emb.set_footer(text=f"No pude leer {missing} build(s); no se cuentan.")
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+
+compo_ver_armaduras.autocomplete("nombre")(cta_name_autocomplete)
+
+
 buildcard_error = ""
 try:
     import buildcard
@@ -7034,6 +7073,7 @@ async def topdeaths_cmd(ctx: commands.Context):
 HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
+        ("/compo ver-armaduras nombre", "Miembros", "Cuántas armaduras de placas (pecho) hay en cada party de una composición importada de AlbionZvZ, por ejemplo P1: Royal Armor 3, Judicator Armor 3. Cuenta la build principal de cada posición."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. El rol Combat Looter se anota con `cl` (y se desanota con `- cl`) y entra al split como looter. Staff, Caller y Council pueden anotar o sacar a otros con «@persona bomb», «@persona cl», «@persona - bomb» o «@persona - cl». Al cerrar o cancelar la CTA se borra su hilo."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
