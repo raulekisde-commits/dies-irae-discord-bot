@@ -38,6 +38,12 @@ class ContentFuente(unittest.TestCase):
         self.assertIn('if run.get("kind") != "content":', self.src)                      # sin panel/tarea de combatlog
         self.assertIn('if cog is not None and run.get("kind") != "content":', self.src)  # sin tarea de revisar el combat log
 
+    def test_content_sin_stats(self):
+        self.assertIn('stats_note = "" if run.get("kind") == "content" else await cta_create_stats_panel_once(run, actor_id)', self.src)
+        self.assertIn('if run.get("kind") != "content":                        # /content: solo el split (sin combatlog ni stats)\n'
+                      '        task2 = asyncio.create_task(cta_create_combatlog_task(run))\n        cta_role_tasks.add(task2)\n'
+                      '        task2.add_done_callback(cta_role_tasks.discard)\n        task4 = asyncio.create_task(cta_create_stats_panel_once(', self.src)
+
     def test_migraciones(self):
         self.assertIn('"cta_runs", "kind"', self.src)
         self.assertIn('"cta_compositions", "ava"', self.src)
