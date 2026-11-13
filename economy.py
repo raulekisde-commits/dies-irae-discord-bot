@@ -698,7 +698,8 @@ class EconomyCog(commands.Cog):
                       app_commands.Choice(name="🔥 Rachas de coinflip", value="racha"),
                       app_commands.Choice(name="🛠️ Tareas del staff", value="tareas"),
                       app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach"),
-                      app_commands.Choice(name="🍾 Embo: mayor deuda", value="embo")])
+                      app_commands.Choice(name="🍾 Embo: mayor deuda", value="embo"),
+                      app_commands.Choice(name="🃏 Wujupón: los que más ganaron", value="wujupon")])
 
     @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
     @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
@@ -732,6 +733,8 @@ class EconomyCog(commands.Cog):
             return await other.send_top(interaction)
         if key == "embo":
             return await self.send_top_embo_debt(interaction)
+        if key == "wujupon":
+            return await self.send_top_wujupon(interaction)
         if key == "coach":
             other = self.bot.get_cog("EncargosCog")
             if other is None:
@@ -754,6 +757,34 @@ class EconomyCog(commands.Cog):
                 emb.set_footer(text=f"{len(rows)} con deuda · total -{eco.format_amount(-total)} embo"
                                     + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else ""))
             embeds.append(emb)
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
+
+    async def send_top_wujupon(self, interaction: discord.Interaction):
+        """`/top wujupon`: quién más ganó con Wujupón (Wuju neto + silver entregado), de a 10 por página."""
+        import wujupon_db as wdb
+        f = eco.format_amount
+        rows = await self._db(wdb.top_winners)
+        pages = chunk(list(enumerate(rows, start=1)), 10)
+        embeds = []
+        for n, page in enumerate(pages, start=1):
+            emb = discord.Embed(title="🃏 Top Wujupón — los que más ganaron", color=discord.Color.gold(),
+                                description="\n".join(f"`{i}.` <@{w.user_id}> — **{f(w.total)}** "
+                                                      f"(Wuju {f(w.wuju)} · Silver {f(w.silver)})" for i, w in page)
+                                or "Todavía nadie ganó nada con Wujupón.")
+            emb.set_footer(text="Wuju neto (premios − cartas malas) + silver entregado"
+                                + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else ""))
+            embeds.append(emb)
+        if not embeds:
+            embeds = [discord.Embed(title="🃏 Top Wujupón — los que más ganaron", color=discord.Color.gold(),
+                                    description="Todavía nadie ganó nada con Wujupón.")]
         if len(embeds) > 1:
             view = PagedView(embeds, owner_id=interaction.user.id)
             await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)

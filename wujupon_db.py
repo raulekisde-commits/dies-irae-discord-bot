@@ -1764,6 +1764,36 @@ def pending_by_user(db_path: str) -> List[PendingUser]:
         conn.close()
 
 
+@dataclass
+class TopWinner:
+    user_id: int
+    wuju: int      # neto de Wuju Coins: premios − cartas malas
+    silver: int    # premios en silver entregados (costo máximo de catálogo)
+
+    @property
+    def total(self) -> int:
+        return self.wuju + self.silver
+
+
+def top_winners(db_path: str) -> List[TopWinner]:
+    """Quiénes más ganaron con Wujupón (Wuju neto + silver entregado), de mayor a menor."""
+    conn = _open(db_path)
+    try:
+        out: Dict[int, TopWinner] = {}
+        for r in conn.execute("SELECT user_id, SUM(delta) AS t FROM eco_movements "
+                              "WHERE kind IN ('wujupon_prize', 'wujupon_penalty') GROUP BY user_id"):
+            out[int(r["user_id"])] = TopWinner(int(r["user_id"]), int(r["t"] or 0), 0)
+        for r in conn.execute("SELECT r.user_id, SUM(p.cost) AS t FROM wjp_requests r JOIN wjp_prizes p ON p.key = r.prize_key "
+                              "WHERE r.status IN ('auto', 'delivered') AND p.cost_currency = 'silver' GROUP BY r.user_id"):
+            u = int(r["user_id"])
+            out.setdefault(u, TopWinner(u, 0, 0)).silver = int(r["t"] or 0)
+        rows = [w for w in out.values() if w.wuju or w.silver]
+        rows.sort(key=lambda w: w.total, reverse=True)
+        return rows
+    finally:
+        conn.close()
+
+
 def silver_equivalent(by_currency: Dict[str, int]) -> int:
     """Wuju = silver 1:1, embo = 10.000. VAL no se convierte (se informa aparte)."""
     return (by_currency.get("wuju", 0) + by_currency.get("silver", 0) + by_currency.get("embo", 0) * EMBO_SILVER_VALUE)
