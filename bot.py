@@ -4327,13 +4327,13 @@ async def cta_close_run(run_id: int, reason="timeout"):
     task = asyncio.create_task(cta_create_track_split(run_id))
     cta_role_tasks.add(task)
     task.add_done_callback(cta_role_tasks.discard)
-    if run.get("kind") != "content":                        # /content: sin panel ni tarea de combatlog
+    if run.get("kind") != "content":                        # /content: solo el split (sin combatlog ni stats)
         task2 = asyncio.create_task(cta_create_combatlog_task(run))
         cta_role_tasks.add(task2)
         task2.add_done_callback(cta_role_tasks.discard)
-    task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
-    cta_role_tasks.add(task4)
-    task4.add_done_callback(cta_role_tasks.discard)
+        task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
+        cta_role_tasks.add(task4)
+        task4.add_done_callback(cta_role_tasks.discard)
 
 
 async def cta_create_split_task(run: dict):
@@ -4886,7 +4886,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
     if voice is not None:
         await voice.stop_run(run_id)
     await cta_move_voice_after_close(run)                 # después de cortar el seguimiento de voz
-    stats_note = await cta_create_stats_panel_once(run, actor_id)         # normalmente ya existe desde que cerró la inscripción
+    stats_note = "" if run.get("kind") == "content" else await cta_create_stats_panel_once(run, actor_id)   # /content: sin stats
     await cta_post_voice_lists(run_id)                                    # recién ahora hay datos de voz completos
     await cta_delete_thread(run)                          # el hilo donde se anotaron se borra al cerrar la CTA
     try:
@@ -4902,7 +4902,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
                              link=f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}")
         except Exception as exc:
             print(f"CTA #{run_id}: no pude crear la tarea de revisar el combat log: {exc!r}")
-    return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}", True
+    return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}".rstrip(), True
 
 
 def _stats_thread_mention(run_id: int) -> str:
@@ -6696,7 +6696,7 @@ def is_content_manager(member) -> bool:
         is_council_or_admin(member) or any(r.id == CONTENT_CREATOR_ROLE_ID for r in member.roles))
 
 
-@bot.tree.command(name="content", description="Publicar una CTA de content en este canal (composición de content, split-ava, sin Bomb ni combatlog)", guild=GUILD_OBJ)
+@bot.tree.command(name="content", description="Publicar una CTA de content en este canal (split-ava, sin Bomb, combatlog ni stats)", guild=GUILD_OBJ)
 @app_commands.describe(nombre="Nombre de la composición",
                        tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)")
 async def content_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None):
@@ -7035,7 +7035,7 @@ HELP_SECTIONS = [
     ("🛡️ CTA y composiciones", [
         ("/compo ver-builds nombre [build]", "Miembros", "Muestra las builds de una composición importada de AlbionZvZ: la lista con las posiciones donde se usa cada una y un menú para elegir una y ver su imagen (equipo, comida, poción y habilidades). Con `build` va directo a la imagen. Usa lo ya guardado: no consulta el sitio."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. El rol Combat Looter se anota con `cl` (y se desanota con `- cl`) y entra al split como looter. Staff, Caller y Council pueden anotar o sacar a otros con «@persona bomb», «@persona cl», «@persona - bomb» o «@persona - cl». Al cerrar o cancelar la CTA se borra su hilo."),
-        ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
+        ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb, sin combatlog y sin panel ni tareas de stats: solo se crea el split, que es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/compo content nombre activar", "Council / Admin", "true/false: marca si la composición se puede publicar con /content."),
         ("/config", "Administrador", "Panel para cambiar, sin tocar código, los canales del bot (logs, CTA, content, tareas, splits…) y qué roles pueden usar cada comando de economía/casino. Los cambios valen al instante y quedan avisados en el canal de logs."),
