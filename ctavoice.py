@@ -123,6 +123,12 @@ def compare_with_signups(db_path: str, cta_id: int, now: Optional[datetime] = No
     return sorted(signed - voice), sorted(voice - signed)
 
 
+def live_gaps(signed: Iterable[int], in_voice: Iterable[int]) -> Tuple[List[int], List[int]]:
+    """Estado en vivo para «!voice»: (en voz y NO anotados, anotados y NO en voz)."""
+    signed, in_voice = set(signed), set(in_voice)
+    return sorted(in_voice - signed), sorted(signed - in_voice)
+
+
 class CTAVoiceCog(commands.Cog):
     def __init__(self, bot, db_path: str, guild_id: int, channel_id: int = cu.CTA_VOICE_ID):
         self.bot, self.db_path, self.guild_id, self.channel_id = bot, db_path, guild_id, channel_id

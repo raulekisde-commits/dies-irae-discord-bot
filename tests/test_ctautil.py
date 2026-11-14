@@ -118,6 +118,23 @@ class PositionsTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_role_lock(self):
+        H, T = self.HEAL, self.TANK
+        self.assertEqual(cu.role_locks(self.db, 1), [])
+        self.assertTrue(cu.role_lock_add(self.db, 1, H, 99))
+        self.assertFalse(cu.role_lock_add(self.db, 1, H, 99))
+        self.assertEqual(cu.role_locks(self.db, 1), [H])
+        self.assertEqual(cu.role_locks(self.db, 2), [])                           # es por CTA
+        self.assertEqual(cu.role_lock_block([H, T], [H], [str(T)]), [H])           # Healer + Tank: no puede ir de Tank
+        self.assertEqual(cu.role_lock_block([H, T], [H], [str(H)]), [])            # sí de Healer
+        self.assertEqual(cu.role_lock_block([H], [H], []), [H])                    # ni en posición sin rol
+        self.assertEqual(cu.role_lock_block([T], [H], [str(T)]), [])               # sin el rol bloqueado: normal
+        self.assertEqual(cu.role_lock_block([H, T], [H, T], [str(T)]), [])         # dos bloqueados: cualquiera de los dos
+        self.assertEqual(cu.role_lock_remove(self.db, 1, H), 1)
+        self.assertEqual(cu.role_locks(self.db, 1), [])
+        cu.role_lock_add(self.db, 1, H, 99); cu.role_lock_add(self.db, 1, T, 99)
+        self.assertEqual(cu.role_lock_remove(self.db, 1), 2)
+
     def test_bomb(self):
         BOMB = cu.BOMB_ROLE_ID
         self.assertEqual(cu.bomb_add(self.db, 1, 50), "new")
