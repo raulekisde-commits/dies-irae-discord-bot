@@ -62,5 +62,12 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(extra, [99])
 
 
+class LiveGapsTests(unittest.TestCase):
+    def test_live_gaps(self):
+        import ctavoice
+        self.assertEqual(ctavoice.live_gaps([1, 2, 3], [2, 3, 4, 5]), ([4, 5], [1]))
+        self.assertEqual(ctavoice.live_gaps([], []), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5120,6 +5120,8 @@ async def cta_ack_ok(message: discord.Message, fallback_text: str):
 
 
 CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
+CTA_VOICE_RE = re.compile(r"^!voice\s*$", re.I)
+CTA_LOCK_RE = re.compile(r"^!(un)?lock\b\s*(.*)$", re.I | re.S)
 
 
 async def cta_extend_close(run: dict, member, arg: Optional[str]):
@@ -5158,6 +5160,117 @@ async def cta_add_time(message: discord.Message, run: dict, arg: str):
         pass
 
 
+async def cta_voice_check(message: discord.Message, run: dict):
+    """«!voice» dentro del hilo: quién está en el canal de voz de la CTA sin anotarse y quién está anotado sin estar en voz (Staff, Caller, Council)."""
+    import ctavoice
+    if not cta_is_organizer(message.author):
+        return await cta_reply_short(message, "Solo Staff, Caller y Council pueden usar `!voice`.", 8)
+    channel = message.guild.get_channel(cu.CTA_VOICE_ID)
+    if channel is None:
+        return await cta_reply_short(message, "❌ No encuentro el canal de voz de las CTA.", 10)
+    rid = int(run["id"])
+    in_voice = [m.id for m in getattr(channel, "members", []) if not getattr(m, "bot", False)]
+    signed = {int(r["user_id"]) for r in cta_get_signups(rid)}
+    if run.get("kind") != "content":                                              # Bomb y Combat Looter también cuentan como anotados
+        signed |= set(cu.bomb_list(DB_PATH, rid)) | set(cu.cl_list(DB_PATH, rid))
+    voice_only, signed_only = ctavoice.live_gaps(signed, in_voice)
+
+    def block(title, ids):
+        return f"{title} (**{len(ids)}**):\n" + ("\n".join(f"• <@{u}>" for u in ids) if ids else "• nadie")
+
+    text = (f"🔊 **{channel.name}**: {len(in_voice)} en voz · {len(signed)} anotados\n\n"
+            + block("🎧 En voz y **no** anotados", voice_only) + "\n\n"
+            + block("📝 Anotados y **no** en voz", signed_only))
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > 1900:
+            chunks.append(cur)
+            cur = ""
+        cur += line + "\n"
+    chunks.append(cur)
+    for chunk in chunks:
+        try:
+            await message.channel.send(chunk, allowed_mentions=CTA_NO_PINGS)
+        except discord.HTTPException:
+            pass
+
+
+def cta_lock_role_label(guild, role_id: int) -> str:
+    role = guild.get_role(role_id) if guild else None
+    return role.mention if role else cu.PLAYED_ROLES.get(role_id, f"rol {role_id}")
+
+
+async def cta_role_lock_command(message: discord.Message, run: dict, unlock: bool, arg: str):
+    """«!lock @Rol» / «!unlock @Rol» (o el nombre del rol; varios separados por coma) dentro del hilo (Staff, Caller, Council).
+    Mientras un rol está bloqueado, quien lo tenga solo puede anotarse en posiciones de ese rol. «!unlock» solo saca todos;
+    «!lock» solo muestra los bloqueos. El Staff igual puede anotar a cualquiera a mano («@persona 21» o /cta-admin asignar)."""
+    if not cta_is_organizer(message.author):
+        return await cta_reply_short(message, "Solo Staff, Caller y Council pueden usar `!lock` / `!unlock`.", 8)
+    guild, rid = message.guild, int(run["id"])
+    snapshot = json.loads(run["snapshot_json"])
+    allowed = set(cu.PLAYED_ROLES) | {r for r in (cu.required_role(sl.get("role_ids")) for sl in snapshot["slots"]) if r is not None}
+    roles = [r.id for r in message.role_mentions]
+    names = [p.strip() for p in re.sub(r"<@&\d+>", "", arg or "").split(",") if p.strip()]
+    for name in names:
+        hit = next((rid_ for rid_, n in cu.PLAYED_ROLES.items() if n.casefold() == name.casefold()), None)
+        if hit is None:
+            role = discord.utils.find(lambda r: r.name.casefold() == name.casefold(), guild.roles)
+            hit = role.id if role else None
+        if hit is None:
+            return await cta_reply_short(message, f"No encuentro el rol **{discord.utils.escape_markdown(name)}**. Usá `!{'un' if unlock else ''}lock @Rol`.", 12)
+        roles.append(hit)
+    roles = list(dict.fromkeys(roles))
+    bad = [r for r in roles if r not in allowed]
+    if bad:
+        return await cta_reply_short(message, "Solo se pueden bloquear roles de permiso de las posiciones: "
+                                     + ", ".join(cta_lock_role_label(guild, r) for r in bad) + " no lo es.", 12)
+    if not roles:
+        if unlock:
+            n = cu.role_lock_remove(DB_PATH, rid)
+            if n:
+                cta_audit(int(run["guild_id"]), message.author.id, "role_unlock", rid, "all")
+            text = f"🔓 Saqué todos los bloqueos de rol ({n})." if n else "No había roles bloqueados en esta CTA."
+        else:
+            locked = cu.role_locks(DB_PATH, rid)
+            text = ("🔒 Roles bloqueados en esta CTA: " + ", ".join(cta_lock_role_label(guild, r) for r in locked)) if locked \
+                else "No hay roles bloqueados. Usá `!lock @Rol`."
+        try:
+            await message.channel.send(text, allowed_mentions=CTA_NO_PINGS)
+        except discord.HTTPException:
+            pass
+        return
+    done = []
+    for r in roles:
+        if (cu.role_lock_remove(DB_PATH, rid, r) if unlock else cu.role_lock_add(DB_PATH, rid, r, message.author.id)):
+            done.append(r)
+    if done:
+        cta_audit(int(run["guild_id"]), message.author.id, "role_unlock" if unlock else "role_lock", rid, ",".join(map(str, done)))
+    labels = ", ".join(cta_lock_role_label(guild, r) for r in roles)
+    if unlock:
+        text = f"🔓 Desbloqueado: {labels}. Ya pueden anotarse en cualquier posición que les permitan sus roles."
+    else:
+        text = (f"🔒 Bloqueado: {labels}. Quien tenga ese rol solo puede anotarse en posiciones de ese rol, "
+                "hasta `!unlock` o que el Staff lo anote a mano.")
+    try:
+        await message.channel.send(text, allowed_mentions=CTA_NO_PINGS)
+    except discord.HTTPException:
+        pass
+
+
+def cta_role_lock_error(member: discord.Member, slot: dict, snapshot: dict, run_id: int, guild) -> Optional[str]:
+    """Error si la persona tiene un rol bloqueado con !lock y la posición no es de ese rol."""
+    locked = cu.role_locks(DB_PATH, run_id)
+    if not locked:
+        return None
+    block = cu.role_lock_block([r.id for r in member.roles], locked, slot.get("role_ids", []))
+    if not block:
+        return None
+    nums = [n for n, sl in cta_number_slots(snapshot["slots"]) if cu.required_role(sl.get("role_ids")) in block]
+    where = f" Posiciones: {', '.join(map(str, nums))}." if nums else ""
+    return (f"🔒 Tu rol {', '.join(cta_lock_role_label(guild, r) for r in block)} está bloqueado en esta CTA: "
+            f"solo podés anotarte en posiciones de ese rol.{where}")
+
+
 class CTAAddTimeModal(discord.ui.Modal, title="Agregar tiempo a la CTA"):
     amount = discord.ui.TextInput(label="Tiempo a sumar", placeholder="10, 15m, 1h, 1h30 o 00:15 (vacío = 10 min)",
                                   required=False, max_length=10)
@@ -5188,6 +5301,13 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         return False
     run = dict(rows[0])
     if not isinstance(message.author, discord.Member):
+        return True
+    if CTA_VOICE_RE.match((message.content or "").strip()):
+        await cta_voice_check(message, run)
+        return True
+    lock_cmd = CTA_LOCK_RE.match((message.content or "").strip())
+    if lock_cmd:
+        await cta_role_lock_command(message, run, bool(lock_cmd.group(1)), lock_cmd.group(2))
         return True
     add_time = CTA_ADD_TIME_RE.match((message.content or "").strip())
     if add_time:
@@ -5319,6 +5439,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         if order_err:
             await cta_reply_short(message, order_err, 12)
             return True
+    lock_err = cta_role_lock_error(member, slot, snapshot, run_id, message.guild)
+    if lock_err:                                   # !lock: no se saltea con cartas; solo el Staff puede anotarlo a mano
+        await cta_reply_short(message, lock_err, 12)
+        return True
     legacy_err = cta_legacy_error(member, slot, snapshot, run)
     access_err = cta_access_error(member, slot, message.guild)
     error = legacy_err or access_err
@@ -7093,6 +7217,8 @@ HELP_SECTIONS = [
         ("/compo reglas listar|agregar|quitar|discord|restablecer", "Council / Admin", "Qué rol de combate (tank, healer, dps...) es cada arma. Viene con una lista por defecto y se puede editar."),
     ]),
     ("✍️ Dentro del hilo de una CTA", [
+        ("`!lock @Rol` · `!unlock [@Rol]`", "Staff, Caller, Council", "Dentro del hilo de la CTA: bloquea un rol de permiso (ej. `!lock @Healer`, también por nombre y varios separados por coma). Quien tenga ese rol solo puede anotarse en posiciones de ese rol, aunque tenga otros. Dura hasta `!unlock @Rol` (o `!unlock` para todos). El Staff igual puede anotarlo a mano. `!lock` solo muestra los bloqueos."),
+        ("`!voice`", "Staff, Caller, Council", "Dentro del hilo de la CTA: quién está en el canal de voz de la CTA sin estar anotado y quién está anotado (posición, Bomb o CL) sin estar en voz."),
         ("`!agregartiempo [minutos]`", "Staff, Caller, Council", "Dentro del hilo de la CTA: suma tiempo a la inscripción abierta (10 min si no ponés cuántos; ej: `!agregartiempo 15` o `1h`). Máx. 2 horas por vez."),
         ("`21`", "Todos", "Te anota en la posición 21 (si escribís otro número libre, te cambia)."),
         ("`-21` · `salir`", "Todos", "Te saca de la posición 21 / de donde estés."),
