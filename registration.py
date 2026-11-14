@@ -180,6 +180,62 @@ class YesNoView(discord.ui.View):
         await interaction.response.edit_message(content="Cancelado. No se cambió nada.", view=None)
 
 
+KICK_SELECT_MAX = 100          # 4 listas de 25 (Discord permite hasta 25 opciones por lista y 5 filas por mensaje)
+
+
+class KickOutsidersView(discord.ui.View):
+    """Listas para marcar a quién expulsar (de /fuera-de-guild) + botón con confirmación. Solo quien usó el comando puede tocarlo."""
+
+    def __init__(self, cog, owner_id: int, members: list):
+        super().__init__(timeout=300.0)
+        self.cog, self.owner_id = cog, owner_id
+        self.selects = []
+        for n in range(0, len(members), 25):
+            part = members[n:n + 25]
+            sel = discord.ui.Select(placeholder=f"Marcá a quiénes expulsar ({n + 1}-{n + len(part)})", min_values=0, max_values=len(part),
+                                    options=[discord.SelectOption(label=f"{m.display_name}"[:100], value=str(m.id), description=f"Personaje: {char}"[:100])
+                                             for m, char in part], row=len(self.selects))
+            sel.callback = self._ack
+            self.selects.append(sel)
+            self.add_item(sel)
+        kick = discord.ui.Button(label="Expulsar marcados", style=discord.ButtonStyle.danger, row=4)
+        cancel = discord.ui.Button(label="Cancelar", style=discord.ButtonStyle.secondary, row=4)
+        kick.callback, cancel.callback = self._kick, self._cancel
+        self.add_item(kick)
+        self.add_item(cancel)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Este mensaje no es tuyo.")
+            return False
+        return True
+
+    def marked(self) -> List[int]:
+        return [int(v) for sel in self.selects for v in sel.values]
+
+    async def _ack(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+    async def _cancel(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelado. No se expulsó a nadie.", view=None)
+
+    async def _kick(self, interaction: discord.Interaction):
+        ids = self.marked()
+        if not ids:
+            return await _say(interaction, "ℹ️ No marcaste a nadie.")
+        self.stop()
+        cog = self.cog
+
+        async def yes(i: discord.Interaction):
+            await cog.kick_outsiders(i, ids)
+
+        await interaction.response.edit_message(
+            content=f"⚠️ ¿Expulsar del Discord a **{len(ids)}** personas?\n" + " ".join(f"<@{u}>" for u in ids)[:1700]
+                    + "\nPueden volver a entrar con una invitación nueva.",
+            view=YesNoView(self.owner_id, yes, "Sí, expulsar"), allowed_mentions=NO_MENTIONS)
+
+
 # ============================================================
 # Cog
 # ============================================================
@@ -1218,8 +1274,8 @@ class RegistrationCog(commands.Cog):
     @app_commands.command(name="fuera-de-guild", description="(Staff) Registrados cuyo personaje ya no está en la guild de Albion")
     @app_commands.guild_only()
     async def fuera_de_guild(self, interaction: discord.Interaction):
-        if not can_manage(interaction.user):
-            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         await interaction.response.defer(ephemeral=True)
         res = await self._registration_gaps(interaction)
         if res is None:
@@ -1239,7 +1295,7 @@ class RegistrationCog(commands.Cog):
 
         current = await asyncio.gather(*(guild_of(r) for r in out))
         head = f"🚪 **{len(out)}** de {len(links)} personajes registrados ya no están en la guild {guild_name}:"
-        lines = []
+        lines, kickable = [], []
         for r, g in zip(out, current):
             gremio = "❓ no se pudo consultar" if g is None else (f"gremio **{discord.utils.escape_markdown(g)}**" if g else "sin gremio")
             guest = await asyncio.to_thread(self._guest_info, interaction.guild.id, r.discord_id)
@@ -1248,9 +1304,46 @@ class RegistrationCog(commands.Cog):
                 gremio += f" · {tipo} de <@{guest['invited_by']}>"
             member = interaction.guild.get_member(r.discord_id)
             where = "" if member is not None else " · ⚠️ ya no está en el Discord"
+            if member is not None and not guest and not getattr(member, "bot", False):
+                kickable.append((member, r.char_name))
             lines.append(f"• <@{r.discord_id}> → **{discord.utils.escape_markdown(r.char_name)}** · {gremio}{where}")
         for n, chunk in enumerate(self._chunks(lines)):
             await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+        if kickable:
+            shown = kickable[:KICK_SELECT_MAX]
+            extra = f" (se muestran los primeros {len(shown)} de {len(kickable)})" if len(kickable) > len(shown) else ""
+            await interaction.followup.send(
+                f"👢 **{len(kickable)}** no están en la guild y no son invitados ni invitados premium{extra}.\n"
+                "Marcá en las listas a quiénes expulsar del Discord y apretá **Expulsar marcados**.",
+                view=KickOutsidersView(self, interaction.user.id, shown), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    async def kick_outsiders(self, interaction: discord.Interaction, ids: List[int]):
+        """Expulsa a los marcados, revalidando cada uno con las mismas reglas que /expulsar."""
+        from expulsar import check_target
+        guild, actor = interaction.guild, interaction.user
+        if not can_admin_registro(actor):
+            return await interaction.response.edit_message(content="🔒 Solo el Staff, el Council o los administradores pueden expulsar.", view=None)
+        await interaction.response.edit_message(content=f"⏳ Expulsando a {len(ids)} personas…", view=None)
+        done, failed = [], []
+        for uid in ids:
+            target = guild.get_member(uid)
+            if target is None:
+                failed.append(f"<@{uid}>: ya no está en el servidor")
+                continue
+            problem = check_target(actor, target, guild)
+            if problem:
+                failed.append(f"<@{uid}>: {problem}")
+                continue
+            try:
+                await target.kick(reason=f"Fuera de la guild {self.required_guild or 'Smogg'} · expulsado por {actor} ({actor.id})")
+                done.append(f"<@{uid}> ({discord.utils.escape_markdown(target.display_name)})")
+            except Exception as exc:
+                failed.append(f"<@{uid}>: {type(exc).__name__}")
+        text = f"✅ Expulsados: **{len(done)}**" + (f"\n❌ Sin expulsar: **{len(failed)}**\n" + "\n".join(failed) if failed else "")
+        await interaction.edit_original_response(content=text[:1900])
+        if done:
+            for n, chunk in enumerate(self._chunks(done, limit=1700)):
+                await self.audit_log((f"👢 <@{actor.id}> expulsó del Discord a {len(done)} registrados fuera de la guild:\n" if n == 0 else "") + chunk)
 
     async def registro_canal(self, interaction: discord.Interaction, canal: discord.TextChannel):
         if not can_manage(interaction.user):
