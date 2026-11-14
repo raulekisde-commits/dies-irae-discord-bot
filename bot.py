@@ -3653,6 +3653,8 @@ def cta_db_init():
         db_ensure_column(conn, "cta_runs", "combatlog_channel_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "combatlog_message_id", "INTEGER")
         db_ensure_column(conn, "cta_runs", "combatlog_thread_id", "INTEGER")
+        db_ensure_column(conn, "cta_runs", "combatlog_priv_message_id", "INTEGER")   # copia del panel en el canal privado (solo administración)
+        db_ensure_column(conn, "cta_runs", "combatlog_priv_thread_id", "INTEGER")    # hilo privado donde llegan los archivos
         db_ensure_column(conn, "cta_runs", "stats_state", "INTEGER")        # NULL = sin crear; -1 = creándose; 1 = creado
         # Cada posición pide exactamente UN rol de juego: si tenía varios queda el primero (las que no tienen ninguno se marcan en /compo ver).
         for row in conn.execute("SELECT id, role_ids_json FROM cta_slots").fetchall():
@@ -4363,6 +4365,9 @@ async def cta_create_split_task(run: dict):
 
 COMBATLOG_CHANNEL_ID = int(os.getenv("COMBATLOG_CHANNEL_ID", "1562975589756043364"))
 bs.register("combatlog", "Paneles de combatlog", COMBATLOG_CHANNEL_ID, "Acá se publica el panel para enviar el combatlog de una CTA")
+COMBATLOG_PRIVATE_CHANNEL_ID = int(os.getenv("COMBATLOG_PRIVATE_CHANNEL_ID", "1571247913215070379"))
+bs.register("combatlog_privado", "Combatlog privado", COMBATLOG_PRIVATE_CHANNEL_ID,
+            "Copia del panel de combatlog: en su hilo llegan los archivos que se suben con el botón (solo lo ve la administración)")
 COMBATLOG_LINK_RE = re.compile(r"https?://\S+")
 
 
@@ -4371,36 +4376,161 @@ def cta_combatlog_has_log(message: discord.Message) -> bool:
     return bool(message.attachments) or bool(COMBATLOG_LINK_RE.search(message.content or ""))
 
 
-async def cta_create_combatlog_panel(run: dict) -> Optional[str]:
-    """Panel + hilo donde se envían los combatlog de la CTA. Devuelve el link del panel (None si no se pudo)."""
+def cta_combatlog_embed(run: dict, *, private: bool = False) -> discord.Embed:
+    run_id = int(run["id"])
+    title = cta_run_title(run)
+    cta_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}"
+    desc = ("Acá llegan los archivos de combatlog que se suben con el botón del panel público (en el hilo de este mensaje)."
+            if private else
+            "Activá el combatlog en el juego y tocá **📤 Subir combatlog** para mandar el archivo.\n"
+            "🔒 El archivo lo ve **solo la administración**: no queda en el hilo.\n"
+            "Con que se suba uno, la tarea del Staff se da por hecha.")
+    emb = discord.Embed(title=f"🧾 Combatlog — {title}", color=discord.Color(0xE67E22), description=desc)
+    emb.add_field(name="🔗 CTA", value=f"[Hilo de la CTA]({cta_url})", inline=False)
+    emb.set_footer(text=f"CTA #{run_id}")
+    return emb
+
+
+async def cta_combatlog_channel(guild, key: str):
+    ch = guild.get_channel(bs.get(key))
+    if ch is None:
+        try:
+            ch = await bot.fetch_channel(bs.get(key))
+        except Exception:
+            return None
+    return ch
+
+
+async def cta_combatlog_private_thread(run: dict):
+    """Hilo privado de la CTA (en el canal de solo administración). Lo crea con su panel si todavía no existe."""
     run_id = int(run["id"])
     guild = bot.get_guild(int(run["guild_id"]))
     if guild is None:
         return None
-    ch = guild.get_channel(bs.get("combatlog"))
+    if run.get("combatlog_priv_thread_id"):
+        th = guild.get_thread(int(run["combatlog_priv_thread_id"])) or guild.get_channel(int(run["combatlog_priv_thread_id"]))
+        if th is None:
+            try:
+                th = await bot.fetch_channel(int(run["combatlog_priv_thread_id"]))
+            except Exception:
+                th = None
+        if th is not None:
+            if getattr(th, "archived", False):
+                try:
+                    await th.edit(archived=False)
+                except Exception:
+                    pass
+            return th
+    ch = await cta_combatlog_channel(guild, "combatlog_privado")
     if ch is None:
-        try:
-            ch = await bot.fetch_channel(bs.get("combatlog"))
-        except Exception:
-            print(f"CTA #{run_id}: no encuentro el canal de combatlog ({bs.get("combatlog")}).")
-            return None
-    title = cta_run_title(run)
-    cta_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}"
-    emb = discord.Embed(title=f"🧾 Combatlog — {title}", color=discord.Color(0xE67E22),
-                        description="Activá el combatlog en el juego y **enviá el archivo (o el link) en el hilo de este mensaje**.\n"
-                                    "Con que se suba uno, la tarea del Staff se da por hecha.")
-    emb.add_field(name="🔗 CTA", value=f"[Hilo de la CTA]({cta_url})", inline=False)
-    emb.set_footer(text=f"CTA #{run_id}")
+        print(f"CTA #{run_id}: no encuentro el canal privado de combatlog ({bs.get('combatlog_privado')}).")
+        return None
     try:
-        msg = await ch.send(embed=emb, allowed_mentions=CTA_NO_PINGS)
+        msg = await ch.send(embed=cta_combatlog_embed(run, private=True), allowed_mentions=CTA_NO_PINGS)
+        th = await msg.create_thread(name=f"Combatlog {cta_run_title(run)}"[:100], auto_archive_duration=10080)
+    except Exception as exc:
+        print(f"CTA #{run_id}: no pude crear el panel privado de combatlog: {exc!r}")
+        return None
+    db_execute("UPDATE cta_runs SET combatlog_priv_message_id=?, combatlog_priv_thread_id=? WHERE id=?", (msg.id, th.id, run_id))
+    run["combatlog_priv_message_id"], run["combatlog_priv_thread_id"] = msg.id, th.id
+    return th
+
+
+async def cta_create_combatlog_panel(run: dict) -> Optional[str]:
+    """Panel público (con el botón para subir el archivo) + hilo, y la copia del panel en el canal privado, donde llegan los archivos.
+    Devuelve el link del hilo público (None si no se pudo)."""
+    run_id = int(run["id"])
+    guild = bot.get_guild(int(run["guild_id"]))
+    if guild is None:
+        return None
+    ch = await cta_combatlog_channel(guild, "combatlog")
+    if ch is None:
+        print(f"CTA #{run_id}: no encuentro el canal de combatlog ({bs.get("combatlog")}).")
+        return None
+    title = cta_run_title(run)
+    try:
+        msg = await ch.send(embed=cta_combatlog_embed(run), view=CombatlogPanelView(), allowed_mentions=CTA_NO_PINGS)
         thread = await msg.create_thread(name=f"Combatlog {title}"[:100], auto_archive_duration=10080)
-        await thread.send("📎 Enviá acá el combatlog (archivo o link). Con el primero que llegue, la tarea queda terminada.", allowed_mentions=CTA_NO_PINGS)
+        await thread.send("📤 Subí el combatlog con el botón **Subir combatlog** del panel: así el archivo lo ve solo la administración.\n"
+                          "Acá queda el aviso de quién lo subió.", allowed_mentions=CTA_NO_PINGS)
     except Exception as exc:
         print(f"CTA #{run_id}: no pude crear el panel de combatlog: {exc!r}")
         return None
     db_execute("UPDATE cta_runs SET combatlog_channel_id=?, combatlog_message_id=?, combatlog_thread_id=? WHERE id=?",
                (ch.id, msg.id, thread.id, run_id))
+    await cta_combatlog_private_thread(dict(cta_run_get(run_id) or run))
     return f"https://discord.com/channels/{run['guild_id']}/{thread.id}"
+
+
+class CombatlogUploadModal(discord.ui.Modal):
+    """Formulario con el archivo: lo recibe solo el bot y lo reenvía al hilo privado."""
+    def __init__(self, cta_id: int):
+        super().__init__(title="Subir combatlog", timeout=600)
+        self.cta_id = cta_id
+        self.upload = discord.ui.FileUpload(min_values=1, max_values=5, required=True)
+        self.add_item(discord.ui.Label(text="Archivo del combatlog", description="Solo lo ve la administración", component=self.upload))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await cta_combatlog_upload(interaction, self.cta_id, list(getattr(self.upload, "values", None) or []))
+
+
+class CombatlogPanelView(discord.ui.View):
+    """Botón persistente del panel de combatlog: la CTA se busca por el id del mensaje."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Subir combatlog", style=discord.ButtonStyle.primary, custom_id="combatlog:upload", emoji="📤")
+    async def upload(self, interaction: discord.Interaction, button: discord.ui.Button):
+        rows = db_fetchall("SELECT id FROM cta_runs WHERE combatlog_message_id=?", (interaction.message.id,)) if interaction.message else []
+        if not rows:
+            return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
+        if not (hasattr(discord.ui, "FileUpload") and hasattr(discord.ui, "Label")):
+            return await interaction.response.send_message("❌ Esta versión del bot no permite subir archivos con formulario.", ephemeral=True)
+        await interaction.response.send_modal(CombatlogUploadModal(int(rows[0]["id"])))
+
+
+async def cta_combatlog_upload(interaction: discord.Interaction, cta_id: int, files) -> None:
+    """Envío del formulario: reenvía los archivos al hilo privado, avisa en el hilo público, cierra la tarea y da la tirada."""
+    if not files:
+        return await interaction.response.send_message("❌ No llegó ningún archivo.", ephemeral=True)
+    run = cta_run_get(cta_id)
+    if not run:
+        return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+    run = dict(run)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    th = await cta_combatlog_private_thread(run)
+    if th is None:
+        return await interaction.followup.send("❌ No pude guardar el archivo (no encuentro el canal privado). Avisale a un admin.", ephemeral=True)
+    try:
+        out = [await a.to_file() for a in files]
+    except Exception as exc:
+        print(f"CTA #{cta_id}: no pude descargar el combatlog: {exc!r}")
+        return await interaction.followup.send("❌ No pude descargar el archivo. Probá de nuevo.", ephemeral=True)
+    user = interaction.user
+    try:
+        await th.send(f"📎 {user.mention} (**{discord.utils.escape_markdown(user.display_name)}**) · CTA #{cta_id} · <t:{int(time.time())}:f>",
+                      files=out, allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{cta_id}: no pude reenviar el combatlog: {exc!r}")
+        return await interaction.followup.send("❌ No pude guardar el archivo. Probá de nuevo.", ephemeral=True)
+    cog = bot.get_cog("EncargosCog")
+    if cog is not None:
+        try:
+            await cog.complete_by_source(f"cta:{cta_id}:combatlog", user.id)
+        except Exception as exc:
+            print(f"CTA #{cta_id}: no pude terminar la tarea del combatlog: {exc!r}")
+    public = interaction.guild.get_thread(int(run["combatlog_thread_id"])) if run.get("combatlog_thread_id") and interaction.guild else None
+    notice = None
+    if public is not None:
+        try:
+            notice = await public.send(f"✅ {user.mention} subió su combatlog.", allowed_mentions=CTA_NO_PINGS)
+        except Exception:
+            notice = None
+    texty = any((getattr(a, "content_type", None) or "").lower().startswith("text/")
+                or (getattr(a, "filename", "") or "").lower().endswith(COMBATLOG_TEXT_EXT) for a in files)
+    if texty:
+        await cta_combatlog_reward_user(user, cta_id, notice)
+    await interaction.followup.send("✅ Combatlog enviado. Lo ve solo la administración.", ephemeral=True)
 
 
 async def cta_create_combatlog_task(run: dict):
@@ -4441,28 +4571,35 @@ def cta_combatlog_text_file(message: discord.Message) -> bool:
 
 async def cta_combatlog_reward(message: discord.Message, cta_id: int) -> None:
     """1 tirada de Wujupón a los primeros COMBATLOG_REWARD_CAP que suben el combatlog de esta CTA. Nunca rompe el hilo."""
+    await cta_combatlog_reward_user(message.author, cta_id, message)
+
+
+async def cta_combatlog_reward_user(user, cta_id: int, message: Optional[discord.Message] = None) -> None:
+    """Igual que cta_combatlog_reward, para quien lo subió con el botón (`message` = aviso en el hilo público, si hay)."""
     wcog = bot.get_cog("WujuponCog")
     if wcog is None:
         return
     try:
         import wujupon_db as _wdb
-        after = await wcog.run(_wdb.gift_spins_capped, actor_id=bot.user.id if bot.user else 0, user_id=message.author.id, count=1,
+        after = await wcog.run(_wdb.gift_spins_capped, actor_id=bot.user.id if bot.user else 0, user_id=user.id, count=1,
                                group=f"combatlog:{cta_id}", cap=COMBATLOG_REWARD_CAP, reason=f"Combatlog de la CTA #{cta_id}")
     except Exception as exc:
         print(f"CTA #{cta_id}: no pude dar la tirada del combatlog: {exc!r}")
         return
     if after is None:                                     # ya la recibió o se llenó el cupo
         return
-    texto = f"🎰 {message.author.mention} ganó **1** tirada de Wujupón por subir el combatlog (ahora tiene {after})."
-    try:
-        await message.add_reaction("🎰")
-        await message.reply(texto, mention_author=False, allowed_mentions=CTA_NO_PINGS)
-    except Exception as exc:
-        print(f"CTA #{cta_id}: no pude avisar la tirada del combatlog: {exc!r}")
+    texto = f"🎰 {user.mention} ganó **1** tirada de Wujupón por subir el combatlog (ahora tiene {after})."
+    if message is not None:
+        try:
+            await message.add_reaction("🎰")
+            await message.reply(texto, mention_author=False, allowed_mentions=CTA_NO_PINGS)
+        except Exception as exc:
+            print(f"CTA #{cta_id}: no pude avisar la tirada del combatlog: {exc!r}")
     try:
         log = await wcog._channel("gift_log_channel")
         if log is not None:
-            await log.send(f"{texto}\n🧾 CTA #{cta_id} · en {message.channel.mention}\n🕒 <t:{int(time.time())}:f>", allowed_mentions=CTA_NO_PINGS)
+            where = f" · en {message.channel.mention}" if message is not None else ""
+            await log.send(f"{texto}\n🧾 CTA #{cta_id}{where}\n🕒 <t:{int(time.time())}:f>", allowed_mentions=CTA_NO_PINGS)
     except Exception as exc:
         print(f"CTA #{cta_id}: no pude registrar la tirada del combatlog: {exc!r}")
 
@@ -7403,6 +7540,7 @@ async def on_ready():
         bot.add_view(TimerDeleteView())
         bot.add_view(CTAPanelView())
         bot.add_view(BombPanelView())
+        bot.add_view(CombatlogPanelView())
         bot._views_registered = True
         print("✅ Views persistentes registradas")
 
