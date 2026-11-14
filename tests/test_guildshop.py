@@ -642,11 +642,11 @@ class ShopDiscordTests(unittest.TestCase):
         self.start_sale(ch, self.seller, "silver", "3.000.000")
         conf = ch.sent[-1]
         self.assertIn("silver", conf.embeds[0].title)
-        self.assertTrue(any("3,000,000" in str(f[1]) for f in conf.embeds[0].fields if f[0] == "A cobrar"))   # silver: sin descuento
+        self.assertTrue(any("2,700,000" in str(f[1]) for f in conf.embeds[0].fields if f[0] == "A cobrar"))   # silver: también 10 %
         self.assertEqual(gdb.top_sellers(self.db, GUILD_ID), [])              # nada hasta confirmar
         self.confirm(ch, self.seller)
         self.assertEqual(self.bal(self.buyer), 50)
-        self.assertIn("3,000,000", self.shopch.sent[0].embeds[0].description)
+        self.assertIn("2,700,000", self.shopch.sent[0].embeds[0].description)
         self.assertIn("silver", self.logch.sent[0].embeds[0].title)
 
     def fake_wujupon(self):

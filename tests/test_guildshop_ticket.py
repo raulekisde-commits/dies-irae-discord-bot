@@ -140,7 +140,7 @@ class TicketDescuentoTests(_Harness):
         self.choose(ch, self.buyer)
         self.start_sale(ch, self.seller, "silver", "10.000.000", "")
         v = self.offer_values(ch)
-        self.assertIn("10,000,000", v["A cobrar"])                         # silver: sin descuento ni ticket
+        self.assertIn("9,000,000", v["A cobrar"])                          # silver: 10 % normal, sin ticket
         self.assertNotIn("🎟️ Ticket de descuento", v)
         self.confirm(ch, self.seller2)
         self.assertEqual(wdb.get_card(self.db, cid).status, "available")    # la carta vuelve al inventario

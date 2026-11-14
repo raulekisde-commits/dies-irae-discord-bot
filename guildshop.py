@@ -348,7 +348,7 @@ class GuildShopCog(commands.Cog):
         emb = discord.Embed(title="🛒 Shop de la guild", color=0x2ECC71)
         emb.description = (
             "Comprá ítems directamente a la guild.\n\n"
-            "**🏷️ Pagando con Wuju Coins todos los ítems tienen un 10% de descuento** (con silver no hay descuento).\n\n"
+            "**🏷️ Todos los ítems tienen un 10% de descuento**, pagando con Wuju Coins o con silver.\n\n"
             "**🎟️ Tickets de descuento**\n"
             + "\n".join(f"• **{gdb.format_pct(bp)}** de descuento hasta {gdb.eco.format_amount(cap)} (lo que pase, al 10%)."
                         for bp, cap in gdb.TICKETS.values())
@@ -563,7 +563,7 @@ class GuildShopCog(commands.Cog):
         emb.add_field(name="Comprador", value=interaction.user.mention, inline=False)
         emb.add_field(name="Lista de compra", value=items[:1000], inline=False)
         emb.add_field(name="Quiere pagar con", value=PAYMENT_LABEL.get(payment, payment), inline=True)
-        emb.add_field(name="Descuento", value="**10% de descuento** pagando con Wuju Coins (con silver no hay descuento).", inline=False)
+        emb.add_field(name="Descuento", value="**10% de descuento** pagando con Wuju Coins o con silver.", inline=False)
         emb.set_footer(text="Solo los Seller pueden usar los botones.")
         ping = f"<@&{SELLER_ROLE_ID}> {interaction.user.mention}"
         try:
@@ -697,7 +697,7 @@ class GuildShopCog(commands.Cog):
         await interaction.response.send_modal(SaleModal(self, ticket.id, currency))
 
     async def on_sale_submitted(self, interaction: discord.Interaction, ticket_id: int, currency: str, total_text: str, discount_text: Optional[str] = None):
-        # el descuento lo fija el bot (el Seller no lo puede tocar): 10 % (o el ticket de descuento) solo pagando con Wuju Coins; silver sin descuento
+        # el descuento lo fija el bot (el Seller no lo puede tocar): 10 % con Wuju Coins y con silver; el ticket de descuento solo con Wuju Coins
         # los permisos se revisan otra vez: el modal se pudo abrir antes de que le quitaran el rol
         if interaction.guild is None or not can_sell(interaction.user):
             return await _reply(interaction, "❌ Solo los **Seller** (o Council) pueden hacer esto.")
@@ -705,7 +705,7 @@ class GuildShopCog(commands.Cog):
         if ticket is None or ticket.status != "open":
             return await _reply(interaction, "ℹ️ Este ticket ya fue cerrado o vendido.")
         try:
-            gross, bp, net = gdb.build_offer(total_text, "" if currency == "wuju" else "0")
+            gross, bp, net = gdb.build_offer(total_text, "")
         except gdb.ShopError as exc:
             return await _reply(interaction, f"❌ {exc}")
         card_prize = await self.run(gdb.ticket_card_prize, ticket.id) if ticket.wjp_card_id and currency == "wuju" else None
