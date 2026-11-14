@@ -318,6 +318,37 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertNotIn("Cazador", sent)
         self.assertIn("fuera-de-guild", rg.EXEMPT_COMMANDS)
 
+    def test_fuera_de_guild_staff_puede_y_expulsa_marcados(self):
+        from unittest import mock
+        import expulsar
+        self._gaps_setup()
+        rdb.admin_link(self.db, self.outsider.id, "Perdido", 1, char_id="id-Perdido")
+        staff = discord.Member(777, "Staffer", roles=[discord.Role(rg.STAFF_ROLE_ID, "Staff", self.guild)], guild=self.guild)
+        kicked = []
+
+        async def kick(reason=None):
+            kicked.append(reason)
+        self.outsider.kick = kick
+        i = self.inter(staff)
+        run(self.cog.fuera_de_guild.callback(self.cog, i))
+        view = [x for x in i.response.sent if x[1].get("view") is not None][-1][1]["view"]
+        self.assertEqual([o.value for o in view.selects[0].options], [str(self.outsider.id)])
+        self.assertFalse(run(view.interaction_check(self.inter(self.council))))
+        view.selects[0].values = [str(self.outsider.id)]
+        j = self.inter(staff)
+        run(view.children[-2].callback(j))                                      # Expulsar marcados → pide confirmación
+        self.assertEqual(kicked, [])
+        confirm = j.response.edits[-1]["view"]
+        k = self.inter(staff)
+
+        async def eor(content=None, **kw):
+            k.response.edits.append({"content": content})
+        k.edit_original_response = eor
+        with mock.patch.object(expulsar, "check_target", return_value=None):
+            run(confirm.children[0].callback(k))
+        self.assertEqual(len(kicked), 1)
+        self.assertIn("Expulsados: **1**", k.response.edits[-1]["content"])
+
     def test_sin_albion_lists_discord_members_and_mentions_only_when_asked(self):
         self._gaps_setup()
         i = self.inter(self.alice)
