@@ -51,7 +51,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "sincronizar-registros",
-                   "canal registro", "registro_obligatorio", "sin-albion", "sin-discord", "guild-sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
+                   "canal registro", "registro_obligatorio", "sin-albion", "sin-discord", "fuera-de-guild", "guild-sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
 
 
 MAX_EXPORT_BYTES = 2_000_000
@@ -1186,6 +1186,69 @@ class RegistrationCog(commands.Cog):
         if not guild_unlinked:
             return await interaction.followup.send("✅ Todos los jugadores de la guild tienen Discord vinculado.", ephemeral=True)
         lines = [f"• {discord.utils.escape_markdown(n)}" for n in guild_unlinked]
+        for n, chunk in enumerate(self._chunks(lines)):
+            await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    async def _current_guild(self, r) -> Optional[str]:
+        """Gremio actual del personaje según la API de Albion ('' = sin gremio, None = no se pudo consultar)."""
+        bases = sorted(GAMEINFO_BASES, key=lambda rb: rb[0] != r.region)
+        for region, base in bases:
+            try:
+                if r.char_id:
+                    data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/players/{r.char_id}"), HTTP_TIMEOUT + 5)
+                    if isinstance(data, dict) and data.get("Id"):
+                        return str(data.get("GuildName") or "")
+                else:
+                    data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/search", {"q": r.char_name}), HTTP_TIMEOUT + 5)
+                    for p in (data.get("players", []) if isinstance(data, dict) else []):
+                        if isinstance(p, dict) and str(p.get("Name", "")).casefold() == r.char_name.casefold():
+                            return str(p.get("GuildName") or "")
+            except Exception:
+                continue
+        return None
+
+    def _guest_info(self, guild_id: int, user_id: int) -> Optional[dict]:
+        try:
+            import invitados
+            g = invitados.get_guest(self.db_path, guild_id, user_id)
+            return g if g and g.get("active") else None
+        except Exception:
+            return None
+
+    @app_commands.command(name="fuera-de-guild", description="(Staff) Registrados cuyo personaje ya no está en la guild de Albion")
+    @app_commands.guild_only()
+    async def fuera_de_guild(self, interaction: discord.Interaction):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        res = await self._registration_gaps(interaction)
+        if res is None:
+            return
+        links, *_ = res
+        ids = {c.char_id for c in self.roster.values() if c.char_id}
+        out = [r for r in links if not ((r.char_id and r.char_id in ids) or r.char_name.casefold() in self.roster)]
+        guild_name = self.required_guild or "Smogg"
+        if not out:
+            return await interaction.followup.send(f"✅ Los {len(links)} personajes registrados siguen en la guild {guild_name}.", ephemeral=True)
+        out.sort(key=lambda r: r.char_name.casefold())
+        sem = asyncio.Semaphore(5)
+
+        async def guild_of(r):
+            async with sem:
+                return await self._current_guild(r)
+
+        current = await asyncio.gather(*(guild_of(r) for r in out))
+        head = f"🚪 **{len(out)}** de {len(links)} personajes registrados ya no están en la guild {guild_name}:"
+        lines = []
+        for r, g in zip(out, current):
+            gremio = "❓ no se pudo consultar" if g is None else (f"gremio **{discord.utils.escape_markdown(g)}**" if g else "sin gremio")
+            guest = await asyncio.to_thread(self._guest_info, interaction.guild.id, r.discord_id)
+            if guest:
+                tipo = "⭐ invitado premium" if guest.get("kind") == "premium" else "🎟️ invitado"
+                gremio += f" · {tipo} de <@{guest['invited_by']}>"
+            member = interaction.guild.get_member(r.discord_id)
+            where = "" if member is not None else " · ⚠️ ya no está en el Discord"
+            lines.append(f"• <@{r.discord_id}> → **{discord.utils.escape_markdown(r.char_name)}** · {gremio}{where}")
         for n, chunk in enumerate(self._chunks(lines)):
             await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 

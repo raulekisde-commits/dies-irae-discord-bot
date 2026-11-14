@@ -284,7 +284,7 @@ INFO_STAFF.update({
     "registro": ("• `/admin_registro usuario` — ver los personajes vinculados a un miembro.\n"
                  "• `/admin_desvincular usuario` — quitar un personaje vinculado. También sirve si dos personas reclaman el mismo.\n"
                  "• `/admin_vincular` (excepcional) — vincula a mano sin que la persona acepte.\n"
-                 "• `/sin-albion` — miembros de Discord sin personaje (con `mencionar:true` los etiqueta). `/sin-discord` — jugadores de la guild sin Discord vinculado.\n"
+                 "• `/sin-albion` — miembros de Discord sin personaje (con `mencionar:true` los etiqueta). `/sin-discord` — jugadores de la guild sin Discord vinculado. `/fuera-de-guild` — registrados cuyo personaje ya no está en la guild.\n"
                  "• `/guild-sin-discord archivo` (Council / Admin) — subís el export de la guild de Albion (Character Name / Last Seen / Roles) y publica quiénes están en la guild sin Discord registrado, y aparte los registrados sin el rol Miembro. Los alters enlazados no se listan.\n"
                  "• `/limpiar-miembros [dar_public]` (Admin) — muestra quiénes tienen **Miembro** sin cuenta enlazada y, si confirmás, les saca el rol (y les da Public, salvo `dar_public:false`). No toca bots, admins, Staff, Council, invitados premium ni aceptados en espera. No borra balance ni estadísticas.\n"
                  "• `/sincronizar-registros` — vuelve a buscar en Albion los registros que quedaron sin ID (vínculos con `/admin_vincular` hechos con la API caída o con el nombre sin verificar), los vincula bien y corrige el apodo; lista los que no pudo verificar. `/sincronizar-apodos` solo revisa apodos.\n"

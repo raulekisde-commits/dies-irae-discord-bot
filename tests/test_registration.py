@@ -291,6 +291,33 @@ class RegistrationDiscordTests(DiscordBase):
         self.assertNotIn("• Cazador", sent)                                    # ya vinculado
         self.assertNotIn(str(self.bob.id), sent)                               # esta lista no habla de Discord
 
+    def test_fuera_de_guild_lists_registered_not_in_roster(self):
+        self._gaps_setup()
+        rdb.admin_link(self.db, self.bob.id, "Ausente", 1, char_id="id-Ausente")
+        import invitados
+        invitados.ensure_schema(self.db)
+        invitados.add_guest(self.db, self.guild.id, self.bob.id, self.council.id, "amigo", kind="premium")
+        prev = self.cog.fetch_json
+
+        async def fake(url, params=None):
+            if url.endswith("/players/id-Ausente"):
+                return {"Id": "id-Ausente", "Name": "Ausente", "GuildName": "OtraGuild"}
+            return await prev(url, params)
+
+        self.cog.fetch_json = fake
+        i = self.inter(self.alice)
+        run(self.cog.fuera_de_guild.callback(self.cog, i))
+        self.assertIn("el Council o los administradores", i.text)
+        i = self.inter(self.council)
+        run(self.cog.fuera_de_guild.callback(self.cog, i))
+        sent = " ".join(str(m) for m in i.response.sent)
+        self.assertIn("Ausente", sent)
+        self.assertIn("OtraGuild", sent)
+        self.assertIn("invitado premium", sent)
+        self.assertIn(str(self.council.id), sent)
+        self.assertNotIn("Cazador", sent)
+        self.assertIn("fuera-de-guild", rg.EXEMPT_COMMANDS)
+
     def test_sin_albion_lists_discord_members_and_mentions_only_when_asked(self):
         self._gaps_setup()
         i = self.inter(self.alice)
