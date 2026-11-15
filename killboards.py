@@ -886,10 +886,14 @@ class KillboardCog(commands.Cog):
             pass
         skips = await self.run(kb.skip_count, names)
         roles_field = await self._roles_field(interaction.guild, target.id, names)
+        looted = await self.run(sdb.looted_total, target.id)
+        looted_value = f"**{looted:,}**".replace(",", ".")
         if not s["attendance"]:
             emb.description = f"{target.mention}\n\nTodavía no aparece en ningún killboard cargado."
             if skips:
                 emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
+            if looted:
+                emb.add_field(name="💰 Total looteado", value=looted_value, inline=True)
             if roles_field:
                 emb.add_field(name="🎭 Roles más jugados", value=roles_field, inline=False)
         else:
@@ -904,6 +908,8 @@ class KillboardCog(commands.Cog):
             emb.add_field(name="🔥 Daño por pelea", value=f"**{s['avg_damage']:,.0f}**".replace(",", "."), inline=True)
             emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
             emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
+            if looted:
+                emb.add_field(name="💰 Total looteado", value=looted_value, inline=True)
             if roles_field:
                 emb.add_field(name="🎭 Roles más jugados", value=roles_field, inline=False)
             if s["avg_ip"]:

@@ -4127,12 +4127,8 @@ def cta_board_specs(run: dict) -> list:
     header = {"title": f"⚔️ SMOGG · {cta_run_title(run)} · {run['composition_name']}",
               "description": f"{status}\n{count_line}{builds_line}{legacy_line}", "color": color}
     specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
-    if bombs:                                         # lista aparte, solo para mostrar: cuentan como anotados pero no ocupan posición
-        lines = [f"• <@{u}>" for u in bombs]
-        chunk_text = "\n".join(lines)
-        if len(chunk_text) > 3800:
-            chunk_text = chunk_text[:3800].rsplit("\n", 1)[0] + "\n…"
-        specs.append({"title": f"💣 BOMB · {len(bombs)}", "description": chunk_text, "color": discord.Color.dark_orange()})
+    if bombs:                                         # aparte, solo para mostrar: cuentan como anotados pero no ocupan posición
+        specs += cta_bomb_group_specs(int(run["guild_id"]), bombs)
     if cls:                                           # Combat Looters: también aparte, van al split como looters
         chunk_text = "\n".join(f"• <@{u}>" for u in cls)
         if len(chunk_text) > 3800:
@@ -4141,6 +4137,34 @@ def cta_board_specs(run: dict) -> list:
     footer_count = (f"{occupied + len(bombs) + len(cls)}" + (f" (💣 {len(bombs)})" if bombs else "") + (f" (🪙 {len(cls)})" if cls else "")
                     if (bombs or cls) else f"{occupied}/{total}")
     specs[-1] = dict(specs[-1], footer=f"Anotados: {footer_count} · CTA #{run['id']}")
+    return specs
+
+
+def cta_bomb_group_specs(guild_id: int, bombs: list) -> list:
+    """Un panel por cada bomb registrada con /bomb con los anotados como Bomb que la integran (las que no tienen a nadie
+    anotado no aparecen). Quien no está en ninguna bomb va en «Sin bomb»; quien está en varias aparece en cada una."""
+    import bombs_db as _bdb
+    try:
+        groups = _bdb.groups(DB_PATH, guild_id)
+    except Exception as exc:
+        print(f"No pude leer las bombs registradas: {exc!r}")
+        groups = []
+    out, placed = [], set()
+    for g in groups:
+        ids = [u for u in bombs if u in g["members"]]
+        if not ids:
+            continue
+        placed.update(ids)
+        out.append((f"💣 {g['name']} · {len(ids)}", ids))
+    rest = [u for u in bombs if u not in placed]
+    if rest:
+        out.append((f"💣 BOMB · Sin bomb · {len(rest)}" if out else f"💣 BOMB · {len(rest)}", rest))
+    specs = []
+    for title, ids in out:
+        text = "\n".join(f"• <@{u}>" for u in ids)
+        if len(text) > 3800:
+            text = text[:3800].rsplit("\n", 1)[0] + "\n…"
+        specs.append({"title": title, "description": text, "color": discord.Color.dark_orange()})
     return specs
 
 
@@ -4330,13 +4354,13 @@ async def cta_close_run(run_id: int, reason="timeout"):
     task = asyncio.create_task(cta_create_track_split(run_id))
     cta_role_tasks.add(task)
     task.add_done_callback(cta_role_tasks.discard)
-    if run.get("kind") != "content":                        # /content: sin panel ni tarea de combatlog
+    if run.get("kind") != "content":                        # /content: solo el split (sin combatlog, panel de stats ni tareas)
         task2 = asyncio.create_task(cta_create_combatlog_task(run))
         cta_role_tasks.add(task2)
         task2.add_done_callback(cta_role_tasks.discard)
-    task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
-    cta_role_tasks.add(task4)
-    task4.add_done_callback(cta_role_tasks.discard)
+        task4 = asyncio.create_task(cta_create_stats_panel_once(run, int(run["created_by"])))      # hilo de stats + tareas del Staff, ya al cerrar la inscripción
+        cta_role_tasks.add(task4)
+        task4.add_done_callback(cta_role_tasks.discard)
 
 
 async def cta_create_split_task(run: dict):
@@ -5024,7 +5048,8 @@ async def cta_finish_run(run_id: int, actor_id: int):
     if voice is not None:
         await voice.stop_run(run_id)
     await cta_move_voice_after_close(run)                 # después de cortar el seguimiento de voz
-    stats_note = await cta_create_stats_panel_once(run, actor_id)         # normalmente ya existe desde que cerró la inscripción
+    is_content = run.get("kind") == "content"             # /content: solo el split (sin panel de stats ni tareas)
+    stats_note = "" if is_content else await cta_create_stats_panel_once(run, actor_id)   # normalmente ya existe desde que cerró la inscripción
     await cta_post_voice_lists(run_id)                                    # recién ahora hay datos de voz completos
     await cta_delete_thread(run)                          # el hilo donde se anotaron se borra al cerrar la CTA
     try:
@@ -5032,14 +5057,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
     except Exception as exc:
         print(f"CTA #{run_id}: no pude refrescar el tablero final: {exc!r}")
     await cta_refresh_panel(bot, run_id)
-    await cta_create_split_task(run)                      # tarea del Staff: repartir el split (recién ahora que la CTA terminó)
-    cog = bot.get_cog("EncargosCog")
-    if cog is not None and run.get("kind") != "content":  # tarea para el staff: revisar el combat log de esta CTA (no en /content)
-        try:
-            await cog.create(text=f"Revisar el combat log de {cta_run_title(run)}", created_by=actor_id, source=f"cta:{run_id}:combatlog_review",
-                             link=f"https://discord.com/channels/{run['guild_id']}/{run['thread_id'] or run['channel_id']}")
-        except Exception as exc:
-            print(f"CTA #{run_id}: no pude crear la tarea de revisar el combat log: {exc!r}")
+    # ya no se crean las tareas «Repartir el split» ni «Revisar el combat log» (ni en /cta ni en /content)
     return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}", True
 
 
