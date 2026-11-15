@@ -45,6 +45,20 @@ class BlacklistTests(DiscordBase):
         self.assertEqual({r["kind"] for r in m}, {"albion", "discord"})
         self.assertEqual(bdb.find_matches(self.db, self.alice.id, ["Bueno"]), [])
 
+    def test_miembro_puede_listar(self):
+        self.add(self.stf, "robó loot", "Malo")
+        i = self.inter(self.alice)
+        run(self.cog.bl_listar.callback(self.cog, i))
+        self.assertIn("Solo los Miembros", i.text)
+        r_m = discord.Role(bl.MIEMBRO_ROLE_ID, "Miembro", self.guild)
+        self.guild.roles.append(r_m)
+        m = discord.Member(7201, "Mie", roles=[r_m], guild=self.guild)
+        self.guild.members.append(m)
+        i = self.inter(m)
+        run(self.cog.bl_listar.callback(self.cog, i))
+        self.assertIn("Malo", i.text)
+        self.assertIn("Solo el Staff", self.add(m, "x", "Otro"))
+
 
 if __name__ == "__main__":
     unittest.main()

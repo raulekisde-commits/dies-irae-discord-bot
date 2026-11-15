@@ -13,11 +13,16 @@ import blacklist_db as bdb
 from guildshop import can_manage
 
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
+MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
 def can_add(member) -> bool:
     return can_manage(member) or any(getattr(r, "id", None) == STAFF_ROLE_ID for r in getattr(member, "roles", []))
+
+
+def can_view(member) -> bool:
+    return can_add(member) or any(getattr(r, "id", None) == MIEMBRO_ROLE_ID for r in getattr(member, "roles", []))
 
 
 def can_remove(member) -> bool:
@@ -101,10 +106,10 @@ class BlacklistCog(commands.Cog):
                          else f"ℹ️ `{discord.utils.escape_markdown(str(personaje if kind == 'albion' else usuario))}` no está en la blacklist.")
         await _say(interaction, "\n".join(lines))
 
-    @bl_g.command(name="listar", description="(Staff/Council) Lista la blacklist")
+    @bl_g.command(name="listar", description="(Miembros) Lista la blacklist")
     async def bl_listar(self, interaction: discord.Interaction):
-        if not can_add(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff y el Council pueden ver la blacklist.")
+        if not can_view(interaction.user):
+            return await _say(interaction, "🔒 Solo los Miembros, el Staff y el Council pueden ver la blacklist.")
         rows = await self.run(bdb.all_entries)
         if not rows:
             return await _say(interaction, "La blacklist está vacía.")
