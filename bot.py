@@ -167,6 +167,13 @@ except Exception:
     async def setup_blacklist(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar blacklist.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from exmiembros import setup_exmiembros
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_exmiembros(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar exmiembros.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from bombs import setup_bombs
 except Exception:
     import traceback as _tb
@@ -621,6 +628,7 @@ class MyBot(commands.Bot):
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
             await _safe_setup("blacklist", setup_blacklist, self, DB_PATH, GUILD_ID)
+            await _safe_setup("exmiembros", setup_exmiembros, self, DB_PATH, GUILD_ID)
             await _safe_setup("bombs", setup_bombs, self, DB_PATH, GUILD_ID)
             await _safe_setup("rolesmgmt", setup_rolesmgmt, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
@@ -2681,6 +2689,16 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
                                   + ", ".join(f"<@{u}>" for u in bl_by))
     except Exception:
         traceback.print_exc()
+    ex_cog, ex_matches = bot.get_cog("ExMembersCog"), []
+    try:                                      # ex-miembro: se marca en el ticket que quiere volver a entrar
+        if ex_cog is not None:
+            ex_matches = await ex_cog.ticket_matches(user.id, answers.get("nick") or "")
+            if ex_matches:
+                import exmiembros as _exm
+                bl_embeds.append(_exm.ticket_embed(ex_matches))
+                await send_log(guild, f"🔁 **EX-MIEMBRO QUIERE VOLVER** {user} → {channel.mention}")
+    except Exception:
+        traceback.print_exc()
     await channel.send(
         content=f"{user.mention} {recruiter_role.mention}"
                 + (f"\n⛔ Blacklisteado por " + ", ".join(f"<@{u}>" for u in bl_by) if bl_by else ""),
@@ -2688,6 +2706,11 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
         view=RecruitTicketView(),
         allowed_mentions=discord.AllowedMentions(users=[user] + [discord.Object(id=u) for u in bl_by], roles=[recruiter_role], everyone=False),
     )
+    if ex_matches:
+        try:
+            await ex_cog.post_ticket_question(channel, user, ex_matches)
+        except Exception:
+            traceback.print_exc()
     await send_log(guild, f"📥 **NUEVA POSTULACIÓN** {user} → {channel.mention}")
     await say(f"✅ Postulación creada: {channel.mention}")
 
@@ -7513,6 +7536,7 @@ HELP_SECTIONS = [
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
         ("/blacklist agregar motivo [personaje] [usuario] · sacar · listar", "Staff / Council (sacar: solo Council · listar: también Miembros)", "Blacklist de personajes de Albion y cuentas de Discord con motivo. Si alguien en la lista abre un ticket de reclutamiento, el ticket se abre igual pero muestra el aviso con el motivo para todos."),
+        ("/exmiembros listar · ver [personaje] [usuario]", "Staff / Council / Reclutador", "Gente que estuvo en la guild de Albion y se fue (historial reconstruido + cada salida nueva, detectada sola). Si un ex-miembro abre ticket de reclutamiento, el ticket se marca como «quiere volver a entrar» y se le pregunta por qué se fue y por qué vuelve."),
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (respuesta privada)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/canal entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
