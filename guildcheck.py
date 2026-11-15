@@ -1,6 +1,6 @@
 """/miembros: control de miembros guild de Albion ↔ Discord en un solo bloque, más un panel con botones.
 
-  /miembros panel            Publica el panel con un botón por cada reporte (los resultados le llegan solo a quien toca).
+  /miembros panel            Mensaje privado con un botón por cada reporte (dura 10 min).
   /miembros sin-vincular     Con rol Miembro y sin personaje registrado (no lista invitados premium).
   /miembros fuera-discord    En la guild y sin Discord vinculado (con o sin el archivo exportado; no lista alters).
   /miembros inactivos        Más de N días sin conectarse a Albion (según el último archivo de la guild subido).
@@ -66,30 +66,41 @@ def _is_admin(m) -> bool:
 
 
 # ============================================================
-# Vistas persistentes (sobreviven a reinicios: custom_id fijo + el mensaje se busca en la base)
+# Vistas
 # ============================================================
-class PanelView(discord.ui.View):
-    def __init__(self, cog: "GuildCheckCog"):
-        super().__init__(timeout=None)
-        self.cog = cog
+PANEL_TIMEOUT = 600.0
 
-    @discord.ui.button(label="Sin vincular", emoji="🔗", style=discord.ButtonStyle.secondary, custom_id="gchk:panel:sinvinc", row=0)
+
+class PanelView(discord.ui.View):
+    """Panel privado (solo lo ve y lo usa quien hizo /miembros panel); deja de funcionar a los 10 min."""
+
+    def __init__(self, cog: "GuildCheckCog", owner_id: int):
+        super().__init__(timeout=PANEL_TIMEOUT)
+        self.cog, self.owner_id = cog, owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _say(interaction, "❌ Este panel no es tuyo: usá `/miembros panel`.")
+            return False
+        return True
+
+    @discord.ui.button(label="Sin vincular", emoji="🔗", style=discord.ButtonStyle.secondary, row=0)
     async def b_sin_vincular(self, interaction: discord.Interaction, button):
         await self.cog.do_sin_vincular(interaction, False)
 
-    @discord.ui.button(label="En la guild sin Discord", emoji="🎮", style=discord.ButtonStyle.secondary, custom_id="gchk:panel:fueradiscord", row=0)
+    @discord.ui.button(label="En la guild sin Discord", emoji="🎮", style=discord.ButtonStyle.secondary, row=0)
     async def b_fuera_discord(self, interaction: discord.Interaction, button):
         await self.cog.do_fuera_discord(interaction, None)
 
-    @discord.ui.button(label="Inactivos +7 días", emoji="💤", style=discord.ButtonStyle.secondary, custom_id="gchk:panel:inactivos", row=0)
+    @discord.ui.button(label="Inactivos +7 días", emoji="💤", style=discord.ButtonStyle.secondary, row=0)
     async def b_inactivos(self, interaction: discord.Interaction, button):
         await self.cog.do_inactivos(interaction, gdb.INACTIVE_DAYS, None)
 
-    @discord.ui.button(label="Lista para expulsar", emoji="👢", style=discord.ButtonStyle.danger, custom_id="gchk:panel:kick", row=1)
+    @discord.ui.button(label="Lista para expulsar", emoji="👢", style=discord.ButtonStyle.danger, row=1)
     async def b_kick(self, interaction: discord.Interaction, button):
         await self.cog.do_kick_lista(interaction, "anterior")
 
-    @discord.ui.button(label="Salieron de la guild", emoji="🚪", style=discord.ButtonStyle.danger, custom_id="gchk:panel:fueraguild", row=1)
+    @discord.ui.button(label="Salieron de la guild", emoji="🚪", style=discord.ButtonStyle.danger, row=1)
     async def b_fuera_guild(self, interaction: discord.Interaction, button):
         await self.cog.do_fuera_guild(interaction)
 
@@ -121,7 +132,6 @@ class GuildCheckCog(commands.Cog):
 
     async def cog_load(self):
         await self.run(gdb.init_schema)
-        self.bot.add_view(PanelView(self))
         self.bot.add_view(LeaveAlertView(self))
         if not self.leave_loop.is_running():
             self.leave_loop.start()
@@ -459,19 +469,19 @@ class GuildCheckCog(commands.Cog):
     # ============================================================
     # Comandos
     # ============================================================
-    @miembros_g.command(name="panel", description="(Staff) Publica el panel con botones de todos los reportes de miembros")
+    @miembros_g.command(name="panel", description="(Staff) Panel privado con botones de todos los reportes de miembros")
     async def panel(self, interaction: discord.Interaction):
         if not can_admin_registro(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         emb = discord.Embed(title="🛡️ Control de miembros", color=discord.Color.blurple(), description=(
-            "Los resultados te llegan solo a vos.\n\n"
+            "Solo lo ves vos. Los botones funcionan durante 10 minutos.\n\n"
             "🔗 **Sin vincular**: con rol Miembro y sin personaje de Albion (no lista invitados premium).\n"
             "🎮 **En la guild sin Discord**: jugadores de la guild sin Discord vinculado (no lista alters).\n"
             f"💤 **Inactivos**: más de {gdb.INACTIVE_DAYS} días sin conectarse (según el último archivo de la guild).\n"
             f"👢 **Lista para expulsar**: semana anterior; inactivos, menos de {gdb.CTA_WEEKLY_MIN} CTA, menos de {cdb.WEEKLY_MIN} VODs. Marca quién tiene /ausencia.\n"
             "🚪 **Salieron de la guild**: registrados que ya no están en la guild, con listas para expulsar.\n\n"
             "Con opciones (archivo, días, semana en curso): `/miembros ...`"))
-        await interaction.response.send_message(embed=emb, view=PanelView(self))
+        await interaction.response.send_message(embed=emb, view=PanelView(self, interaction.user.id), ephemeral=True)
 
     @miembros_g.command(name="sin-vincular", description="(Council) Con rol Miembro y sin personaje de Albion registrado")
     @app_commands.describe(mencionar="true: los etiqueta en un mensaje público (por defecto false)")
