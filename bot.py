@@ -5382,6 +5382,7 @@ CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
 CTA_VOICE_RE = re.compile(r"^!voice\s*$", re.I)
 CTA_LOCK_RE = re.compile(r"^!(un)?lock\b\s*(.*)$", re.I | re.S)
 CTA_FREE_RE = re.compile(r"^!(no)?libre\b\s*(.*)$", re.I | re.S)
+CTA_PARTYLOCK_RE = re.compile(r"^!party(un)?lock\b\s*(.*)$", re.I | re.S)
 
 
 async def cta_extend_close(run: dict, member, arg: Optional[str]):
@@ -5534,6 +5535,49 @@ async def cta_role_lock_command(message: discord.Message, run: dict, unlock: boo
         pass
 
 
+async def cta_party_lock_command(message: discord.Message, run: dict, unlock: bool, arg: str):
+    """«!partylock 3» (varias: «!partylock 3, 4») dentro del hilo (Staff, Caller, Council): nadie puede anotarse en esa party
+    hasta que el resto de parties esté completo. «!partyunlock 3» la abre; «!partyunlock» solo abre todas;
+    «!partylock» solo muestra las cerradas. El Staff igual puede anotar a cualquiera a mano («@persona 21» o /cta-admin asignar)."""
+    if not cta_is_organizer(message.author):
+        return await cta_reply_short(message, "Solo Staff, Caller y Council pueden usar `!partylock` / `!partyunlock`.", 8)
+    rid = int(run["id"])
+    snapshot = json.loads(run["snapshot_json"])
+    parties = sorted({int(s["party_no"]) for s in snapshot["slots"]})
+    parts = [p.strip() for p in re.split(r"[,\s]+", arg or "") if p.strip()]
+    if any(not p.isdigit() for p in parts):
+        return await cta_reply_short(message, "Usá el número de party. Ej: `!partylock 3` o `!partylock 3, 4`.", 12)
+    nums = list(dict.fromkeys(int(p) for p in parts))
+    bad = [n for n in nums if n not in parties]
+    if bad:
+        return await cta_reply_short(message, f"La Party {', '.join(map(str, bad))} no existe en esta CTA. "
+                                     f"Parties: {', '.join(map(str, parties))}.", 12)
+    if not nums:
+        if unlock:
+            n = cu.party_lock_remove(DB_PATH, rid)
+            if n:
+                cta_audit(int(run["guild_id"]), message.author.id, "party_unlock", rid, "all")
+            text = f"🔓 Abrí todas las parties cerradas ({n})." if n else "No había parties cerradas en esta CTA."
+        else:
+            locked = cu.party_locks(DB_PATH, rid)
+            text = ("🔒 Parties cerradas en esta CTA: " + ", ".join(f"Party {p}" for p in locked)) if locked \
+                else "No hay parties cerradas. Usá `!partylock 3`."
+    else:
+        if not unlock and set(nums) | set(cu.party_locks(DB_PATH, rid)) >= set(parties):
+            return await cta_reply_short(message, "No podés cerrar todas las parties: tiene que quedar al menos una abierta.", 12)
+        done = [n for n in nums if (cu.party_lock_remove(DB_PATH, rid, n) if unlock else cu.party_lock_add(DB_PATH, rid, n, message.author.id))]
+        if done:
+            cta_audit(int(run["guild_id"]), message.author.id, "party_unlock" if unlock else "party_lock", rid, ",".join(map(str, done)))
+        labels = ", ".join(f"Party {n}" for n in nums)
+        text = (f"🔓 Abierta: **{labels}**. Ya se pueden anotar ahí." if unlock
+                else f"🔒 Cerrada: **{labels}**. Nadie puede anotarse ahí hasta que se completen las demás parties "
+                     "(o hasta `!partyunlock`).")
+    try:
+        await message.channel.send(text, allowed_mentions=CTA_NO_PINGS)
+    except discord.HTTPException:
+        pass
+
+
 def cta_role_lock_error(member: discord.Member, slot: dict, snapshot: dict, run_id: int, guild) -> Optional[str]:
     """Error si la persona tiene un rol bloqueado con !lock y la posición no es de ese rol."""
     locked = cu.role_locks(DB_PATH, run_id)
@@ -5585,6 +5629,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     lock_cmd = CTA_LOCK_RE.match((message.content or "").strip())
     if lock_cmd:
         await cta_role_lock_command(message, run, bool(lock_cmd.group(1)), lock_cmd.group(2))
+        return True
+    party_cmd = CTA_PARTYLOCK_RE.match((message.content or "").strip())
+    if party_cmd:
+        await cta_party_lock_command(message, run, bool(party_cmd.group(1)), party_cmd.group(2))
         return True
     free_cmd = CTA_FREE_RE.match((message.content or "").strip())
     if free_cmd:
@@ -5723,6 +5771,13 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
                                         lock_p34=bool(snapshot.get("lock_p34")), dps_last=bool(snapshot.get("dps_last")))
         if order_err:
             await cta_reply_short(message, order_err, 12)
+            return True
+    locked_parties = cu.party_locks(DB_PATH, run_id)
+    if locked_parties:                             # !partylock: no se saltea con cartas; solo el Staff puede anotarlo a mano
+        taken = {s["slot_key"]: s["user_id"] for s in cta_get_signups(run_id)}
+        party_err = cu.party_lock_error(snapshot["slots"], taken, slot, member.id, locked_parties)
+        if party_err:
+            await cta_reply_short(message, party_err, 12)
             return True
     lock_err = cta_role_lock_error(member, slot, snapshot, run_id, message.guild)
     if lock_err:                                   # !lock: no se saltea con cartas; solo el Staff puede anotarlo a mano

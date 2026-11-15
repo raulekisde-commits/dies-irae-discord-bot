@@ -465,6 +465,69 @@ def role_free(db_path: str, cta_id: int) -> List[int]:
         conn.close()
 
 
+# ---------- !partylock N: esa party queda cerrada hasta que el resto de parties esté completo (por CTA) ----------
+PARTY_LOCKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cta_party_locks (
+    cta_id INTEGER NOT NULL,
+    party_no INTEGER NOT NULL,
+    locked_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (cta_id, party_no)
+);
+"""
+
+
+def party_lock_add(db_path: str, cta_id: int, party_no: int, actor_id: int) -> bool:
+    """True si quedó cerrada; False si ya lo estaba."""
+    conn = connect(db_path)
+    try:
+        conn.executescript(PARTY_LOCKS_SCHEMA)
+        with write_tx(conn):
+            cur = conn.execute("INSERT OR IGNORE INTO cta_party_locks(cta_id, party_no, locked_by, created_at) VALUES (?,?,?,?)",
+                               (cta_id, int(party_no), actor_id, utcnow_iso()))
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def party_lock_remove(db_path: str, cta_id: int, party_no: Optional[int] = None) -> int:
+    """Abre una party (o todas si party_no es None). Devuelve cuántas abrió."""
+    conn = connect(db_path)
+    try:
+        conn.executescript(PARTY_LOCKS_SCHEMA)
+        with write_tx(conn):
+            if party_no is None:
+                return conn.execute("DELETE FROM cta_party_locks WHERE cta_id=?", (cta_id,)).rowcount
+            return conn.execute("DELETE FROM cta_party_locks WHERE cta_id=? AND party_no=?", (cta_id, int(party_no))).rowcount
+    finally:
+        conn.close()
+
+
+def party_locks(db_path: str, cta_id: int) -> List[int]:
+    conn = connect(db_path)
+    try:
+        return [int(r["party_no"]) for r in conn.execute("SELECT party_no FROM cta_party_locks WHERE cta_id=? ORDER BY party_no", (cta_id,))]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def party_lock_error(slots, taken: dict, slot, user_id: int, locked: Iterable[int]) -> Optional[str]:
+    """`taken` = {slot_key: user_id}. La plaza actual de `user_id` cuenta como libre (si se mueve, la deja vacía).
+    Una party cerrada con !partylock se abre cuando todas las posiciones de las parties NO cerradas están ocupadas."""
+    locked = {int(p) for p in locked}
+    party = int(slot["party_no"])
+    if party not in locked:
+        return None
+    occupied = {k for k, u in taken.items() if int(u) != int(user_id)}
+    missing = [s for s in slots if int(s["party_no"]) not in locked and slot_key(s) not in occupied]
+    if not missing:
+        return None
+    return (f"🔒 La **Party {party}** está cerrada hasta que se completen las demás parties "
+            f"(faltan {len(missing)}). Anotate en una posición libre de otra party.")
+
+
 def role_lock_block(member_role_ids: Iterable[int], locked: Iterable[int], slot_role_ids) -> List[int]:
     """Roles bloqueados que tiene la persona y que NO pide esta posición. Vacío = puede anotarse.
     Si tiene varios roles bloqueados, puede anotarse en una posición de cualquiera de ellos."""
