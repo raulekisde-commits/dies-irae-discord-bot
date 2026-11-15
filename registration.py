@@ -51,7 +51,7 @@ ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a baja
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
 EXEMPT_COMMANDS = {"registrar", "mi_registro", "desvincular", "admin_registro", "admin_desvincular", "admin_vincular", "sincronizar-apodos", "sincronizar-registros",
-                   "canal registro", "registro_obligatorio", "sin-albion", "sin-discord", "fuera-de-guild", "guild-sin-discord", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
+                   "canal registro", "registro_obligatorio", "miembros", "reclutas-pendientes", "info", "info-staff", "recuperar-lista", "recuperar", "estado-api"}
 
 
 MAX_EXPORT_BYTES = 2_000_000
@@ -184,7 +184,7 @@ KICK_SELECT_MAX = 100          # 4 listas de 25 (Discord permite hasta 25 opcion
 
 
 class KickOutsidersView(discord.ui.View):
-    """Listas para marcar a quién expulsar (de /fuera-de-guild) + botón con confirmación. Solo quien usó el comando puede tocarlo."""
+    """Listas para marcar a quién expulsar (de /miembros fuera-guild) + botón con confirmación. Solo quien usó el comando puede tocarlo."""
 
     def __init__(self, cog, owner_id: int, members: list):
         super().__init__(timeout=300.0)
@@ -855,9 +855,7 @@ class RegistrationCog(commands.Cog):
         discord_unlinked = sorted((m for m in discord_pool if m.id not in linked_discord), key=lambda m: m.display_name.casefold())
         return links, guild_unlinked, discord_pool, discord_unlinked, role
 
-    @app_commands.command(name="sin-albion", description="(Staff) Miembros de Discord que todavía no registraron su personaje de Albion")
-    @app_commands.describe(mencionar="true: etiqueta a todas las personas sin registrar en un mensaje público (por defecto false)")
-    @app_commands.guild_only()
+    # /miembros sin-vincular (guildcheck.py)
     async def sin_albion(self, interaction: discord.Interaction, mencionar: Optional[bool] = False):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
@@ -866,8 +864,13 @@ class RegistrationCog(commands.Cog):
         if res is None:
             return
         links, _guild_unlinked, discord_pool, discord_unlinked, role = res
+        premium = await asyncio.to_thread(self._premium_ids)          # los invitados premium tienen Miembro pero no son de la guild
+        n_premium = sum(1 for m in discord_unlinked if m.id in premium)
+        discord_unlinked = [m for m in discord_unlinked if m.id not in premium]
         who = f"con el rol **{role.name}**" if role is not None else "del servidor"
         head = f"💬 **{len(discord_unlinked)}** de {len(discord_pool)} miembros {who} no tienen personaje de Albion registrado ({len(links)} cuentas vinculadas)."
+        if n_premium:
+            head += f"\nℹ️ {n_premium} invitado(s) premium sin personaje no se listan."
         if not discord_unlinked:
             return await interaction.followup.send("✅ Todos los miembros están registrados.", ephemeral=not mencionar, allowed_mentions=NO_MENTIONS)
         if mencionar:
@@ -893,6 +896,18 @@ class RegistrationCog(commands.Cog):
             finally:
                 conn.close()
         except sqlite3.Error:
+            return set()
+
+    def _alter_names(self) -> set:
+        """Nombres (casefold) de los alters enlazados con /alter; vacío si la tabla no existe."""
+        try:
+            import alters_db
+            conn = alters_db.connect(self.db_path)
+            try:
+                return {r[0].casefold() for r in conn.execute("SELECT alter_name FROM alters")}
+            finally:
+                conn.close()
+        except Exception:
             return set()
 
     async def _unlinked_members(self, guild) -> list:
@@ -1173,9 +1188,7 @@ class RegistrationCog(commands.Cog):
         if done:
             await self.audit_log(f"🔎 <@{interaction.user.id}> completó el ID de **{len(done)}** registro(s) con `/sincronizar-registros`.")
 
-    @app_commands.command(name="guild-sin-discord", description="(Staff) Con el archivo de la guild de Albion: quiénes están en la guild y no en Discord (mensaje público)")
-    @app_commands.describe(archivo="Archivo exportado de la lista de la guild (Character Name / Last Seen / Roles)")
-    @app_commands.guild_only()
+    # /miembros fuera-discord archivo:... (guildcheck.py)
     async def guild_sin_discord(self, interaction: discord.Interaction, archivo: discord.Attachment):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
@@ -1183,7 +1196,8 @@ class RegistrationCog(commands.Cog):
             return await _say(interaction, "❌ El archivo es demasiado grande (máx. 2 MB).")
         await interaction.response.defer(ephemeral=False)
         try:
-            names = parse_guild_export(await archivo.read())
+            raw = await archivo.read()
+            names = parse_guild_export(raw)
         except Exception:
             traceback.print_exc()
             return await interaction.followup.send("❌ No pude leer el archivo. Tiene que ser el export de la guild (Character Name / Last Seen / Roles).",
@@ -1194,16 +1208,12 @@ class RegistrationCog(commands.Cog):
         role = guild.get_role(self.member_role_id) if self.member_role_id else None
         regs = await self.run(rdb.all_registrations)
         by_name = {r.char_name.casefold(): r.discord_id for r in regs}
-        alters = set()
-        try:
-            import alters_db
-            conn = alters_db.connect(self.db_path)
-            try:
-                alters = {r[0].casefold() for r in conn.execute("SELECT alter_name FROM alters")}
-            finally:
-                conn.close()
+        alters = await asyncio.to_thread(self._alter_names)
+        try:                                              # de paso se guarda la última conexión de cada uno (/miembros inactivos)
+            import guildcheck_db
+            await asyncio.to_thread(guildcheck_db.save_from_export, self.db_path, raw)
         except Exception:
-            pass
+            traceback.print_exc()
         sin_discord, sin_rol, n_alters = [], [], 0
         for n in names:
             uid = by_name.get(n.casefold())
@@ -1228,8 +1238,7 @@ class RegistrationCog(commands.Cog):
         for chunk in self._chunks(lines):
             await interaction.followup.send(chunk, ephemeral=False, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="sin-discord", description="(Staff) Jugadores de la guild de Albion que todavía no tienen Discord vinculado")
-    @app_commands.guild_only()
+    # /miembros fuera-discord sin archivo (guildcheck.py)
     async def sin_discord(self, interaction: discord.Interaction):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
@@ -1238,7 +1247,12 @@ class RegistrationCog(commands.Cog):
         if res is None:
             return
         _links, guild_unlinked, *_ = res
+        alters = await asyncio.to_thread(self._alter_names)
+        n_alters = sum(1 for n in guild_unlinked if n.casefold() in alters)
+        guild_unlinked = [n for n in guild_unlinked if n.casefold() not in alters]
         head = f"🎮 **{len(guild_unlinked)}** de {len(self.roster)} jugadores de la guild {self.required_guild or ''} no tienen Discord vinculado.".replace("  ", " ")
+        if n_alters:
+            head += f"\nℹ️ {n_alters} son alters enlazados con `/alter` y no se listan."
         if not guild_unlinked:
             return await interaction.followup.send("✅ Todos los jugadores de la guild tienen Discord vinculado.", ephemeral=True)
         lines = [f"• {discord.utils.escape_markdown(n)}" for n in guild_unlinked]
@@ -1271,8 +1285,7 @@ class RegistrationCog(commands.Cog):
         except Exception:
             return None
 
-    @app_commands.command(name="fuera-de-guild", description="(Staff) Registrados cuyo personaje ya no está en la guild de Albion")
-    @app_commands.guild_only()
+    # /miembros fuera-guild (guildcheck.py)
     async def fuera_de_guild(self, interaction: discord.Interaction):
         if not can_admin_registro(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")

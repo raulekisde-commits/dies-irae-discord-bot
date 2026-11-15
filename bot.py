@@ -139,6 +139,13 @@ except Exception:
     async def setup_miembros(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar miembros.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from guildcheck import setup_guildcheck
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_guildcheck(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar guildcheck.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from reactionroles import setup_reactionroles
 except Exception:
     import traceback as _tb
@@ -639,6 +646,7 @@ class MyBot(commands.Bot):
             await _safe_setup("splits", setup_splits, self, DB_PATH, GUILD_ID)
             await _safe_setup("utcclock", setup_utcclock, self, DB_PATH, GUILD_ID)
             await _safe_setup("registration", _setup_registration, self, DB_PATH, GUILD_ID)
+            await _safe_setup("guildcheck", setup_guildcheck, self, DB_PATH, GUILD_ID)
             await _safe_setup("diagnostico", setup_diagnostico, self, DB_PATH, GUILD_ID)
             await _safe_setup("expulsar", setup_expulsar, self, GUILD_ID)
             await _safe_setup("nodesync", self._setup_nodesync)
@@ -7504,9 +7512,9 @@ HELP_SECTIONS = [
         ("/casino abrir|cerrar", "Council", "Abre o cierra el casino: mientras está cerrado se bloquean /casino dados, /casino coinflip y /casino 1v1."),
         ("/casino limite juego cantidad", "Council", "Pone la apuesta máxima de dados, coinflip o 1v1 (0 quita el límite). Se aplica a las partidas nuevas."),
         ("/registrar usuario_de_albion [usuario]", "Miembros", "Vincula tu cuenta con un personaje de Albion (un personaje solo puede tener un Discord; un Discord puede tener varios personajes). Con `usuario` iniciás el registro de otra persona, pero ella tiene que aceptar desde su cuenta."),
-        ("/sin-albion [mencionar] · /sin-discord", "Council / Admin", "Quién falta registrar: miembros de Discord sin personaje de Albion (con `mencionar:true` los etiqueta en un mensaje público) y jugadores de la guild sin Discord vinculado."),
-        ("/fuera-de-guild", "Staff / Council / Admin", "Registrados cuyo personaje de Albion ya no está en la guild: gremio actual, si es invitado/premium y quién lo invitó. Después permite marcar a los que no son invitados y expulsarlos del Discord (con confirmación)."),
-        ("/guild-sin-discord archivo", "Council / Admin", "Con el archivo exportado de la guild de Albion, publica quiénes están en la guild y no tienen Discord registrado (y aparte, los registrados sin el rol Miembro)."),
+        ("/miembros panel · sin-vincular · fuera-discord [archivo]", "Council / Admin", "Panel con botones de todos los reportes. Miembros con rol y sin personaje de Albion (no lista invitados premium) y jugadores de la guild sin Discord vinculado (no lista alters; con archivo, el mensaje es público)."),
+        ("/miembros inactivos · kick-lista · fuera-guild", "Staff / Council / Admin", "Más de 7 días sin conectarse (según el último export de la guild), candidatos a expulsar por motivo (inactivos, menos de 5 CTA, menos de 3 VODs) marcando quién tiene /ausencia, y registrados que ya no están en la guild con opción de expulsarlos."),
+        ("/miembros canal-avisos", "Council / Admin", "Canal donde el bot avisa solo cuando un registrado sale de la guild de Albion, con botones Expulsar / Ignorar."),
         ("/limpiar-miembros [dar_public]", "Admin", "Saca el rol Miembro (y da Public) a quienes no tienen cuenta de Albion enlazada, con confirmación. No toca Staff, Council, admins, invitados premium ni aceptados en espera; no borra balance ni estadísticas."),
         ("/tarea crear titulo descripcion [tags] [foto] [cuando] [tiradas]", "Council", "Publica una tarea en el canal de tareas con el botón Tarea terminada (no hay que tomarla). `tiradas` = tiradas de Wujupón que gana quien la termina (0 a 100, por defecto 1; se ven en el panel). `foto` = para terminarla hay que subir una foto, que queda en el log (`/canal logs tareas`). Las tareas automáticas no tienen botón: se cierran solas cuando el bot detecta que se hicieron. `tags` = una o varias personas y/o roles: se etiqueta solo a ellos y solo ellos (y el Council) la pueden terminar; sin tags se etiqueta al Staff y la terminan Staff, Council, Opinólogo o Coaching. `cuando` = HH:MM UTC o +90m para programarla."),
         ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),

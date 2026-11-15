@@ -281,10 +281,10 @@ class RegistrationDiscordTests(DiscordBase):
     def test_sin_discord_lists_guild_players_without_discord_and_is_protected(self):
         self._gaps_setup()
         i = self.inter(self.alice)
-        run(self.cog.sin_discord.callback(self.cog, i))
+        run(self.cog.sin_discord(i))
         self.assertIn("el Council o los administradores", i.text)
         i = self.inter(self.council)
-        run(self.cog.sin_discord.callback(self.cog, i))
+        run(self.cog.sin_discord(i))
         sent = " ".join(str(m) for m in i.response.sent)
         self.assertIn("Dos", sent)
         self.assertIn("Tres", sent)
@@ -306,17 +306,17 @@ class RegistrationDiscordTests(DiscordBase):
 
         self.cog.fetch_json = fake
         i = self.inter(self.alice)
-        run(self.cog.fuera_de_guild.callback(self.cog, i))
+        run(self.cog.fuera_de_guild(i))
         self.assertIn("el Council o los administradores", i.text)
         i = self.inter(self.council)
-        run(self.cog.fuera_de_guild.callback(self.cog, i))
+        run(self.cog.fuera_de_guild(i))
         sent = " ".join(str(m) for m in i.response.sent)
         self.assertIn("Ausente", sent)
         self.assertIn("OtraGuild", sent)
         self.assertIn("invitado premium", sent)
         self.assertIn(str(self.council.id), sent)
         self.assertNotIn("Cazador", sent)
-        self.assertIn("fuera-de-guild", rg.EXEMPT_COMMANDS)
+        self.assertIn("miembros", rg.EXEMPT_COMMANDS)
 
     def test_fuera_de_guild_staff_puede_y_expulsa_marcados(self):
         from unittest import mock
@@ -330,7 +330,7 @@ class RegistrationDiscordTests(DiscordBase):
             kicked.append(reason)
         self.outsider.kick = kick
         i = self.inter(staff)
-        run(self.cog.fuera_de_guild.callback(self.cog, i))
+        run(self.cog.fuera_de_guild(i))
         view = [x for x in i.response.sent if x[1].get("view") is not None][-1][1]["view"]
         self.assertEqual([o.value for o in view.selects[0].options], [str(self.outsider.id)])
         self.assertFalse(run(view.interaction_check(self.inter(self.council))))
@@ -352,17 +352,17 @@ class RegistrationDiscordTests(DiscordBase):
     def test_sin_albion_lists_discord_members_and_mentions_only_when_asked(self):
         self._gaps_setup()
         i = self.inter(self.alice)
-        run(self.cog.sin_albion.callback(self.cog, i, False))
+        run(self.cog.sin_albion(i, False))
         self.assertIn("el Council o los administradores", i.text)
         i = self.inter(self.council)
-        run(self.cog.sin_albion.callback(self.cog, i, False))
+        run(self.cog.sin_albion(i, False))
         sent = " ".join(str(m) for m in i.response.sent)
         self.assertIn(str(self.bob.id), sent)                                  # Bob tiene el rol y no está vinculado
         self.assertNotIn(str(self.robot.id), sent)                             # los bots no cuentan
         self.assertNotIn(str(self.alice.id), sent)                             # Alice ya está vinculada
         self.assertTrue(all(m[1].get("ephemeral") for m in i.response.sent))   # sin mencionar: privado
         i = self.inter(self.council)
-        run(self.cog.sin_albion.callback(self.cog, i, True))
+        run(self.cog.sin_albion(i, True))
         pub = [m for m in i.response.sent if not m[1].get("ephemeral")]
         self.assertTrue(pub)                                                   # mencionando: público
         self.assertIn(f"<@{self.bob.id}>", pub[0][0])
@@ -370,8 +370,8 @@ class RegistrationDiscordTests(DiscordBase):
 
     def test_old_command_is_gone_and_new_ones_are_exempt(self):
         self.assertFalse(hasattr(self.cog, "listarregistros"))
-        self.assertIn("sin-albion", rg.EXEMPT_COMMANDS)
-        self.assertIn("sin-discord", rg.EXEMPT_COMMANDS)
+        self.assertIn("miembros", rg.EXEMPT_COMMANDS)
+        self.assertNotIn("sin-albion", rg.EXEMPT_COMMANDS)
 
     def _recruit_setup(self):
         self.r_main = discord.Role(7001, "Tank", self.guild)
@@ -413,10 +413,10 @@ class RegistrationDiscordTests(DiscordBase):
             return export.encode("utf-16")
         archivo = types.SimpleNamespace(size=len(export) * 2, filename="guild.txt", read=read)
         i = self.inter(self.alice)
-        run(self.cog.guild_sin_discord.callback(self.cog, i, archivo))
+        run(self.cog.guild_sin_discord(i, archivo))
         self.assertIn("el Council o los administradores", i.text)
         i = self.inter(self.council)
-        run(self.cog.guild_sin_discord.callback(self.cog, i, archivo))
+        run(self.cog.guild_sin_discord(i, archivo))
         out = i.text
         self.assertIn("sin Discord registrado (2)", out)
         self.assertIn("Ramirinho74", out); self.assertIn("MatiPCK", out)
