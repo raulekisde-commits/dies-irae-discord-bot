@@ -24,7 +24,7 @@ from dbutil import connect, utcnow_iso, write_tx
 DEFAULT_TAX_SALE = 20.0
 DEFAULT_TAX_GUILD = 5.0
 DEFAULT_TAX_LOOTER = 10.0
-MAX_PEOPLE = 100
+MAX_PEOPLE = 300
 MAX_LOOTERS = 25
 MAX_TITLE, MAX_TEXT = 100, 60
 

@@ -3775,10 +3775,11 @@ def cta_run_title(run: dict) -> str:
     return (run.get("title") or f"CTA {run['composition_name']} #{run['id']}")
 
 
-def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild) -> Optional[str]:
-    """Cada posición pide un único rol de juego. Flex ignora el permiso (la posición igual cuenta con su rol)."""
+def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild, run_id: Optional[int] = None) -> Optional[str]:
+    """Cada posición pide un único rol de juego. Flex ignora el permiso (la posición igual cuenta con su rol).
+    Con run_id: si ese rol se liberó con «!libre» en la CTA, cualquiera puede anotarse."""
     missing = cu.access_missing_role([r.id for r in member.roles], slot.get("role_ids", []), FLEX_ROLE_ID)
-    if missing is None:
+    if missing is None or (run_id is not None and missing in cu.role_free(DB_PATH, int(run_id))):
         return None
     role = guild.get_role(missing)
     name = role.mention if role else f"rol eliminado ({missing})"
@@ -5259,6 +5260,7 @@ async def cta_ack_ok(message: discord.Message, fallback_text: str):
 CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
 CTA_VOICE_RE = re.compile(r"^!voice\s*$", re.I)
 CTA_LOCK_RE = re.compile(r"^!(un)?lock\b\s*(.*)$", re.I | re.S)
+CTA_FREE_RE = re.compile(r"^!(no)?libre\b\s*(.*)$", re.I | re.S)
 
 
 async def cta_extend_close(run: dict, member, arg: Optional[str]):
@@ -5337,12 +5339,18 @@ def cta_lock_role_label(guild, role_id: int) -> str:
     return role.mention if role else cu.PLAYED_ROLES.get(role_id, f"rol {role_id}")
 
 
-async def cta_role_lock_command(message: discord.Message, run: dict, unlock: bool, arg: str):
+async def cta_role_lock_command(message: discord.Message, run: dict, unlock: bool, arg: str, free: bool = False):
     """«!lock @Rol» / «!unlock @Rol» (o el nombre del rol; varios separados por coma) dentro del hilo (Staff, Caller, Council).
     Mientras un rol está bloqueado, quien lo tenga solo puede anotarse en posiciones de ese rol. «!unlock» solo saca todos;
-    «!lock» solo muestra los bloqueos. El Staff igual puede anotar a cualquiera a mano («@persona 21» o /cta-admin asignar)."""
+    «!lock» solo muestra los bloqueos. El Staff igual puede anotar a cualquiera a mano («@persona 21» o /cta-admin asignar).
+    Con free=True es «!libre @Rol» / «!nolibre [@Rol]»: cualquiera puede anotarse en posiciones de ese rol aunque no lo tenga
+    (el !lock se sigue chequeando antes, así que tiene prioridad)."""
+    cmd, uncmd = ("libre", "nolibre") if free else ("lock", "unlock")
     if not cta_is_organizer(message.author):
-        return await cta_reply_short(message, "Solo Staff, Caller y Council pueden usar `!lock` / `!unlock`.", 8)
+        return await cta_reply_short(message, f"Solo Staff, Caller y Council pueden usar `!{cmd}` / `!{uncmd}`.", 8)
+    add_fn, remove_fn, list_fn = ((cu.role_free_add, cu.role_free_remove, cu.role_free) if free
+                                  else (cu.role_lock_add, cu.role_lock_remove, cu.role_locks))
+    act_on, act_off = ("role_free", "role_unfree") if free else ("role_lock", "role_unlock")
     guild, rid = message.guild, int(run["id"])
     snapshot = json.loads(run["snapshot_json"])
     allowed = set(cu.PLAYED_ROLES) | {r for r in (cu.required_role(sl.get("role_ids")) for sl in snapshot["slots"]) if r is not None}
@@ -5354,23 +5362,30 @@ async def cta_role_lock_command(message: discord.Message, run: dict, unlock: boo
             role = discord.utils.find(lambda r: r.name.casefold() == name.casefold(), guild.roles)
             hit = role.id if role else None
         if hit is None:
-            return await cta_reply_short(message, f"No encuentro el rol **{discord.utils.escape_markdown(name)}**. Usá `!{'un' if unlock else ''}lock @Rol`.", 12)
+            return await cta_reply_short(message, f"No encuentro el rol **{discord.utils.escape_markdown(name)}**. Usá `!{uncmd if unlock else cmd} @Rol`.", 12)
         roles.append(hit)
     roles = list(dict.fromkeys(roles))
     bad = [r for r in roles if r not in allowed]
     if bad:
-        return await cta_reply_short(message, "Solo se pueden bloquear roles de permiso de las posiciones: "
+        return await cta_reply_short(message, f"Solo se pueden {'liberar' if free else 'bloquear'} roles de permiso de las posiciones: "
                                      + ", ".join(cta_lock_role_label(guild, r) for r in bad) + " no lo es.", 12)
     if not roles:
         if unlock:
-            n = cu.role_lock_remove(DB_PATH, rid)
+            n = remove_fn(DB_PATH, rid)
             if n:
-                cta_audit(int(run["guild_id"]), message.author.id, "role_unlock", rid, "all")
-            text = f"🔓 Saqué todos los bloqueos de rol ({n})." if n else "No había roles bloqueados en esta CTA."
+                cta_audit(int(run["guild_id"]), message.author.id, act_off, rid, "all")
+            if free:
+                text = f"🔐 Saqué todos los roles libres ({n})." if n else "No había roles libres en esta CTA."
+            else:
+                text = f"🔓 Saqué todos los bloqueos de rol ({n})." if n else "No había roles bloqueados en esta CTA."
         else:
-            locked = cu.role_locks(DB_PATH, rid)
-            text = ("🔒 Roles bloqueados en esta CTA: " + ", ".join(cta_lock_role_label(guild, r) for r in locked)) if locked \
-                else "No hay roles bloqueados. Usá `!lock @Rol`."
+            locked = list_fn(DB_PATH, rid)
+            if free:
+                text = ("🆓 Roles libres en esta CTA: " + ", ".join(cta_lock_role_label(guild, r) for r in locked)) if locked \
+                    else "No hay roles libres. Usá `!libre @Rol`."
+            else:
+                text = ("🔒 Roles bloqueados en esta CTA: " + ", ".join(cta_lock_role_label(guild, r) for r in locked)) if locked \
+                    else "No hay roles bloqueados. Usá `!lock @Rol`."
         try:
             await message.channel.send(text, allowed_mentions=CTA_NO_PINGS)
         except discord.HTTPException:
@@ -5378,12 +5393,16 @@ async def cta_role_lock_command(message: discord.Message, run: dict, unlock: boo
         return
     done = []
     for r in roles:
-        if (cu.role_lock_remove(DB_PATH, rid, r) if unlock else cu.role_lock_add(DB_PATH, rid, r, message.author.id)):
+        if (remove_fn(DB_PATH, rid, r) if unlock else add_fn(DB_PATH, rid, r, message.author.id)):
             done.append(r)
     if done:
-        cta_audit(int(run["guild_id"]), message.author.id, "role_unlock" if unlock else "role_lock", rid, ",".join(map(str, done)))
+        cta_audit(int(run["guild_id"]), message.author.id, act_off if unlock else act_on, rid, ",".join(map(str, done)))
     labels = ", ".join(cta_lock_role_label(guild, r) for r in roles)
-    if unlock:
+    if free:
+        text = (f"🔐 {labels} vuelve a pedir el rol: solo quien lo tenga puede anotarse en esas posiciones." if unlock
+                else f"🆓 Libre: {labels}. Cualquiera puede anotarse en posiciones de ese rol aunque no lo tenga "
+                     "(los `!lock` siguen aplicando), hasta `!nolibre`.")
+    elif unlock:
         text = f"🔓 Desbloqueado: {labels}. Ya pueden anotarse en cualquier posición que les permitan sus roles."
     else:
         text = (f"🔒 Bloqueado: {labels}. Quien tenga ese rol solo puede anotarse en posiciones de ese rol, "
@@ -5445,6 +5464,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     lock_cmd = CTA_LOCK_RE.match((message.content or "").strip())
     if lock_cmd:
         await cta_role_lock_command(message, run, bool(lock_cmd.group(1)), lock_cmd.group(2))
+        return True
+    free_cmd = CTA_FREE_RE.match((message.content or "").strip())
+    if free_cmd:
+        await cta_role_lock_command(message, run, bool(free_cmd.group(1)), free_cmd.group(2), free=True)
         return True
     add_time = CTA_ADD_TIME_RE.match((message.content or "").strip())
     if add_time:
@@ -5581,7 +5604,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         await cta_reply_short(message, lock_err, 12)
         return True
     legacy_err = cta_legacy_error(member, slot, snapshot, run)
-    access_err = cta_access_error(member, slot, message.guild)
+    access_err = cta_access_error(member, slot, message.guild, run_id)
     error = legacy_err or access_err
     if error:
         # cartas de Wujupón «Anotación libre en CTA» / «Slot libre en Party 1»: si tiene una, se le ofrece usarla en esta CTA
@@ -5645,7 +5668,7 @@ async def cta_handle_staff_command(message, run: dict, snapshot: dict, mentions:
             await cta_reply_short(message, f"La posición {number} ya está ocupada por <@{extra}>. Sacalo primero con `-{number}`.")
         else:
             restricted = ""
-            if isinstance(target, discord.Member) and cta_access_error(target, slot, message.guild):
+            if isinstance(target, discord.Member) and cta_access_error(target, slot, message.guild, run_id):
                 restricted = "; override=sin los roles pedidos"
             cta_audit(int(run["guild_id"]), message.author.id, "manual_assign_thread" if code == "assigned" else "manual_move_thread",
                       run_id, f"member={target.id}; slot={cta_slot_key(slot)}{restricted}")
@@ -7121,7 +7144,7 @@ async def cta_asignar(interaction: discord.Interaction, cta_id: int, miembro: di
     slot = cta_slot_by_number(snapshot["slots"], numero)
     if not slot:
         return await interaction.response.send_message(f"La posición {numero} no existe. Esta CTA tiene posiciones del 1 al {len(snapshot['slots'])}.", ephemeral=True)
-    error = cta_access_error(miembro, slot, interaction.guild)
+    error = cta_access_error(miembro, slot, interaction.guild, cta_id)
     if error and not excepcion:
         return await interaction.response.send_message(error + " Si querés asignarlo igual, marcá `excepcion` e indicá el motivo.", ephemeral=True)
     if excepcion and not (motivo and motivo.strip()):
@@ -7203,7 +7226,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         try:
             snapshot = json.loads(row["snapshot_json"])
             slot = next((x for x in snapshot["slots"] if cta_slot_key(x) == row["slot_key"]), None)
-            if not slot or not cta_access_error(after, slot, after.guild):
+            if not slot or not cta_access_error(after, slot, after.guild, int(row["cta_id"])):
                 continue
             target = after.guild.get_channel(int(row["thread_id"])) if row["thread_id"] else None
             if target is None:
@@ -7355,6 +7378,7 @@ HELP_SECTIONS = [
     ]),
     ("✍️ Dentro del hilo de una CTA", [
         ("`!lock @Rol` · `!unlock [@Rol]`", "Staff, Caller, Council", "Dentro del hilo de la CTA: bloquea un rol de permiso (ej. `!lock @Healer`, también por nombre y varios separados por coma). Quien tenga ese rol solo puede anotarse en posiciones de ese rol, aunque tenga otros. Dura hasta `!unlock @Rol` (o `!unlock` para todos). El Staff igual puede anotarlo a mano. `!lock` solo muestra los bloqueos."),
+        ("`!libre @Rol` · `!nolibre [@Rol]`", "Staff, Caller, Council", "Dentro del hilo de la CTA: libera un rol de permiso (ej. `!libre @Tank`, también por nombre y varios separados por coma). Cualquiera puede anotarse en posiciones de ese rol aunque no lo tenga. El `!lock` tiene prioridad. Dura hasta `!nolibre @Rol` (o `!nolibre` para todos). `!libre` solo muestra los roles libres."),
         ("`!voice`", "Staff, Caller, Council", "Dentro del hilo de la CTA: quién está en el canal de voz de la CTA sin estar anotado y quién está anotado (posición, Bomb o CL) sin estar en voz."),
         ("`!agregartiempo [minutos]`", "Staff, Caller, Council", "Dentro del hilo de la CTA: suma tiempo a la inscripción abierta (10 min si no ponés cuántos; ej: `!agregartiempo 15` o `1h`). Máx. 2 horas por vez."),
         ("`21`", "Todos", "Te anota en la posición 21 (si escribís otro número libre, te cambia)."),
