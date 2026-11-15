@@ -3,7 +3,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from dbutil import connect, write_tx, utcnow_iso
 
@@ -222,8 +222,11 @@ def init_positions(db_path: str) -> None:
         conn.executescript(POSITIONS_SCHEMA)
         conn.executescript(BOMBS_SCHEMA)
         conn.executescript(LOOTERS_SCHEMA)
-        if "panel_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(cta_bombs)")}:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cta_bombs)")}
+        if "panel_id" not in cols:
             conn.execute("ALTER TABLE cta_bombs ADD COLUMN panel_id INTEGER")
+        if "bomb_id" not in cols:                  # bomb de /bomb elegida por quien integra varias (NULL = no eligió)
+            conn.execute("ALTER TABLE cta_bombs ADD COLUMN bomb_id INTEGER")
     finally:
         conn.close()
 
@@ -551,6 +554,28 @@ def parse_cta_bomb_text(text: Optional[str]) -> Optional[str]:
     """En el hilo de la CTA: `bomb` -> 'join' · `- bomb` -> 'leave' · otro texto -> None."""
     m = CTA_BOMB_RE.fullmatch((text or "").strip().strip(".!¡ "))
     return None if m is None else ("leave" if m.group(1) else "join")
+
+
+def bomb_set_group(db_path: str, cta_id: int, user_id: int, bomb_id: int) -> bool:
+    """Guarda con qué bomb de /bomb juega esta CTA quien está anotado como Bomb. False si ya no está anotado."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("UPDATE cta_bombs SET bomb_id=? WHERE cta_id=? AND user_id=?", (bomb_id, cta_id, user_id)).rowcount > 0
+    finally:
+        conn.close()
+
+
+def bomb_choices(db_path: str, cta_id: int) -> Dict[int, int]:
+    """{user_id: bomb_id} de los anotados como Bomb que eligieron con qué bomb juegan."""
+    conn = connect(db_path)
+    try:
+        return {int(r["user_id"]): int(r["bomb_id"]) for r in conn.execute(
+            "SELECT user_id, bomb_id FROM cta_bombs WHERE cta_id=? AND bomb_id IS NOT NULL", (cta_id,))}
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        conn.close()
 
 
 def bomb_list(db_path: str, cta_id: int, panel_id: Optional[int] = None) -> List[int]:

@@ -4128,7 +4128,7 @@ def cta_board_specs(run: dict) -> list:
               "description": f"{status}\n{count_line}{builds_line}{legacy_line}", "color": color}
     specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
     if bombs:                                         # aparte, solo para mostrar: cuentan como anotados pero no ocupan posición
-        specs += cta_bomb_group_specs(int(run["guild_id"]), bombs)
+        specs += cta_bomb_group_specs(int(run["guild_id"]), bombs, cu.bomb_choices(DB_PATH, int(run["id"])))
     if cls:                                           # Combat Looters: también aparte, van al split como looters
         chunk_text = "\n".join(f"• <@{u}>" for u in cls)
         if len(chunk_text) > 3800:
@@ -4140,9 +4140,11 @@ def cta_board_specs(run: dict) -> list:
     return specs
 
 
-def cta_bomb_group_specs(guild_id: int, bombs: list) -> list:
+def cta_bomb_group_specs(guild_id: int, bombs: list, chosen: Optional[dict] = None) -> list:
     """Un panel por cada bomb registrada con /bomb con los anotados como Bomb que la integran (las que no tienen a nadie
-    anotado no aparecen). Quien no está en ninguna bomb va en «Sin bomb»; quien está en varias aparece en cada una."""
+    anotado no aparecen). Quien no está en ninguna bomb va en «Sin bomb»; quien está en varias aparece en la que eligió
+    al anotarse (`chosen` = {user_id: bomb_id}) o, si no eligió, en cada una."""
+    chosen = chosen or {}
     import bombs_db as _bdb
     try:
         groups = _bdb.groups(DB_PATH, guild_id)
@@ -4150,8 +4152,9 @@ def cta_bomb_group_specs(guild_id: int, bombs: list) -> list:
         print(f"No pude leer las bombs registradas: {exc!r}")
         groups = []
     out, placed = [], set()
+    valid = {g["id"] for g in groups}
     for g in groups:
-        ids = [u for u in bombs if u in g["members"]]
+        ids = [u for u in bombs if (chosen[u] == g["id"] if chosen.get(u) in valid else u in g["members"])]
         if not ids:
             continue
         placed.update(ids)
@@ -4759,6 +4762,63 @@ async def cta_bomb_join(user, run_id: int, panel_id: Optional[int] = None, by=No
     return f"💣 Quedaste anotado como Bomb en **{cta_run_title(run)}**.{note}"
 
 
+def cta_member_bombs(member, guild_id: int) -> list:
+    """Bombs de /bomb que integra la persona (por estar agregada en la bomb o por tener su rol)."""
+    import bombs_db as _bdb
+    role_ids = {r.id for r in getattr(member, "roles", [])}
+    try:
+        return [g for g in _bdb.groups(DB_PATH, guild_id) if member.id in g["members"] or g.get("role_id") in role_ids]
+    except Exception as exc:
+        print(f"No pude leer las bombs registradas: {exc!r}")
+        return []
+
+
+class BombChoiceView(discord.ui.View):
+    """Botones para que quien integra varias bombs elija con cuál juega esta CTA. Solo los puede usar esa persona."""
+    def __init__(self, run_id: int, user_id: int, groups: list):
+        super().__init__(timeout=600)
+        self.run_id, self.user_id = run_id, user_id
+        for g in groups[:25]:
+            b = discord.ui.Button(label=str(g["name"])[:80], style=discord.ButtonStyle.secondary, emoji="💣")
+            b.callback = self._make_cb(int(g["id"]), str(g["name"]))
+            self.add_item(b)
+
+    def _make_cb(self, bomb_id: int, name: str):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                return await interaction.response.send_message("Esta elección no es para vos.", ephemeral=True)
+            ok = await asyncio.to_thread(cu.bomb_set_group, DB_PATH, self.run_id, self.user_id, bomb_id)
+            self.stop()
+            text = f"💣 <@{self.user_id}> juega esta CTA con **{discord.utils.escape_markdown(name)}**." if ok else "Ya no estás anotado como Bomb en esta CTA."
+            await interaction.response.edit_message(content=text, view=None, allowed_mentions=CTA_NO_PINGS)
+            if ok:
+                cta_request_board_refresh(self.run_id)
+        return cb
+
+
+async def cta_bomb_ask_group(user, run_id: int):
+    """Si la persona (recién anotada como Bomb) integra 2 o más bombs: (texto, vista) para preguntarle con cuál juega. Si no, None."""
+    run = cta_run_get(run_id)
+    if not run or not isinstance(user, discord.Member):
+        return None
+    groups = await asyncio.to_thread(cta_member_bombs, user, int(run["guild_id"]))
+    if len(groups) < 2:
+        return None
+    return (f"💣 {user.mention}, estás en varias bombs: ¿con cuál jugás **{cta_run_title(run)}**?",
+            BombChoiceView(run_id, user.id, groups))
+
+
+async def cta_bomb_ask_in_channel(channel, user, run_id: int):
+    """Pregunta en el canal (hilo) con qué bomb juega; el mensaje se borra solo si no responde."""
+    ask = await cta_bomb_ask_group(user, run_id)
+    if ask is None:
+        return
+    try:
+        await channel.send(ask[0], view=ask[1], delete_after=600, allowed_mentions=discord.AllowedMentions(users=[user]))
+    except discord.HTTPException as exc:
+        print(f"CTA #{run_id}: no pude preguntar la bomb de {user.id}: {exc!r}")
+
+
 async def cta_bomb_leave(user, run_id: int, by=None) -> str:
     """Desanota a un Bomb («- bomb» en el hilo de la CTA). Si ya hay split abierto, también sale de él.
     `by`: organizador que lo saca etiquetándolo («@persona - bomb»)."""
@@ -4868,7 +4928,11 @@ class BombPanelView(discord.ui.View):
         if not p:
             return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(await cta_bomb_join(interaction.user, int(p["cta_id"]), int(p["id"])), ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+        text = await cta_bomb_join(interaction.user, int(p["cta_id"]), int(p["id"]))
+        await interaction.followup.send(text, ephemeral=True, allowed_mentions=CTA_NO_PINGS)
+        ask = await cta_bomb_ask_group(interaction.user, int(p["cta_id"])) if text.startswith("💣") else None
+        if ask is not None:
+            await interaction.followup.send(ask[0], view=ask[1], ephemeral=True, allowed_mentions=CTA_NO_PINGS)
 
 
 async def cta_handle_bomb_message(message: discord.Message) -> bool:
@@ -4883,6 +4947,7 @@ async def cta_handle_bomb_message(message: discord.Message) -> bool:
                 await message.add_reaction("💣")
             except Exception:
                 pass
+            await cta_bomb_ask_in_channel(message.channel, message.author, int(p["cta_id"]))
         else:
             await cta_reply_short(message, text, 10)
     return True
@@ -5500,6 +5565,8 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
                 await message.add_reaction("💣" if bomb_action == "join" else "👋")
             except Exception:
                 pass
+            if text.startswith("💣"):
+                await cta_bomb_ask_in_channel(message.channel, message.author, rid)
         else:
             await cta_reply_short(message, text, 10)
         return True
@@ -5528,6 +5595,8 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
             for t in targets:
                 if tag_bomb:
                     texts.append(await (cta_bomb_join(t, rid, by=message.author) if tag_bomb == "join" else cta_bomb_leave(t, rid, by=message.author)))
+                    if tag_bomb == "join" and texts[-1].startswith("💣"):
+                        await cta_bomb_ask_in_channel(message.channel, t, rid)
                 else:
                     texts.append(await (cta_cl_join(t, rid, by=message.author) if tag_cl == "join" else cta_cl_leave(t, rid, by=message.author)))
             if texts:
