@@ -160,6 +160,13 @@ except Exception:
     async def setup_alters(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar alters.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from blacklist import setup_blacklist
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_blacklist(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar blacklist.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from bombs import setup_bombs
 except Exception:
     import traceback as _tb
@@ -613,6 +620,7 @@ class MyBot(commands.Bot):
             await _safe_setup("wujupon_efectos", setup_efectos, self, DB_PATH, GUILD_ID)
             await _safe_setup("invitados", setup_invitados, self, DB_PATH, GUILD_ID)
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
+            await _safe_setup("blacklist", setup_blacklist, self, DB_PATH, GUILD_ID)
             await _safe_setup("bombs", setup_bombs, self, DB_PATH, GUILD_ID)
             await _safe_setup("rolesmgmt", setup_rolesmgmt, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
@@ -2662,11 +2670,23 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
         ),
         color=discord.Color.gold(),
     )
+    bl_embeds, bl_by = [], []
+    try:                                      # blacklist: se avisa en el ticket (visible para todos) pero el ticket se abre igual
+        import blacklist as _bl, blacklist_db as _bldb
+        bl_matches = await asyncio.to_thread(_bldb.find_matches, DB_PATH, user.id, [answers.get("nick") or ""])
+        if bl_matches:
+            bl_embeds = [_bl.ticket_warning_embed(bl_matches)]
+            bl_by = list(dict.fromkeys(int(r["added_by"]) for r in bl_matches))
+            await send_log(guild, f"⛔ **POSTULANTE EN BLACKLIST** {user} → {channel.mention} · blacklisteado por "
+                                  + ", ".join(f"<@{u}>" for u in bl_by))
+    except Exception:
+        traceback.print_exc()
     await channel.send(
-        content=f"{user.mention} {recruiter_role.mention}",
-        embeds=[pedido, data],
+        content=f"{user.mention} {recruiter_role.mention}"
+                + (f"\n⛔ Blacklisteado por " + ", ".join(f"<@{u}>" for u in bl_by) if bl_by else ""),
+        embeds=bl_embeds + [pedido, data],
         view=RecruitTicketView(),
-        allowed_mentions=discord.AllowedMentions(users=[user], roles=[recruiter_role], everyone=False),
+        allowed_mentions=discord.AllowedMentions(users=[user] + [discord.Object(id=u) for u in bl_by], roles=[recruiter_role], everyone=False),
     )
     await send_log(guild, f"📥 **NUEVA POSTULACIÓN** {user} → {channel.mention}")
     await say(f"✅ Postulación creada: {channel.mention}")
@@ -7492,6 +7512,7 @@ HELP_SECTIONS = [
         ("/invitar usuario quien_es personaje_de_albion", "Legacy", "Invita a alguien: indicás su personaje de Albion y confirmás que es tu amigo; se registra, pierde Public, recibe Invitado (con acceso a la economía) y queda registrado quién lo invitó."),
         ("/quien-invito usuario", "Miembros", "Muestra quién invitó a un invitado y el motivo."),
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
+        ("/blacklist agregar motivo [personaje] [usuario] · sacar · listar", "Staff / Council (sacar: solo Council · listar: también Miembros)", "Blacklist de personajes de Albion y cuentas de Discord con motivo. Si alguien en la lista abre un ticket de reclutamiento, el ticket se abre igual pero muestra el aviso con el motivo para todos."),
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (respuesta privada)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/canal entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
