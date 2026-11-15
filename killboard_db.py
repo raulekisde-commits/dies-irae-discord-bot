@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS kb_players (
     first5     INTEGER NOT NULL DEFAULT 0,
     death_rank INTEGER,
     death_time TEXT,
+    assists    INTEGER NOT NULL DEFAULT 0,
+    damage     REAL NOT NULL DEFAULT 0,      -- suma de DamageDone en los eventos
+    death_fame INTEGER NOT NULL DEFAULT 0,   -- fame que dieron sus muertes (TotalVictimKillFame)
     PRIMARY KEY (battle_id, name_norm),
     FOREIGN KEY (battle_id) REFERENCES kb_battles(battle_id) ON DELETE CASCADE
 );
@@ -75,6 +78,11 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(kb_players)")}
+        for col, ddl in (("assists", "INTEGER NOT NULL DEFAULT 0"), ("damage", "REAL NOT NULL DEFAULT 0"),
+                         ("death_fame", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE kb_players ADD COLUMN {col} {ddl}")
     finally:
         conn.close()
 
@@ -124,7 +132,7 @@ def parse_events(events: Iterable[dict], guild_name: str) -> dict:
         guild = p.get("GuildName") or p.get("guildName")
         if not name or norm(guild) != gl:
             return None
-        e = players.setdefault(norm(name), {"name": str(name), "kills": 0, "deaths": 0, "ips": [], "death_time": None, "deaths_list": [], "weapons": {}})
+        e = players.setdefault(norm(name), {"name": str(name), "kills": 0, "deaths": 0, "assists": 0, "damage": 0.0, "death_fame": 0, "ips": [], "death_time": None, "deaths_list": [], "weapons": {}})
         return e
 
     deaths: List[Tuple[Optional[datetime], int, str]] = []
@@ -153,8 +161,18 @@ def parse_events(events: Iterable[dict], guild_name: str) -> dict:
             note_ip(k, ke)
         if ve is not None:
             ve["deaths"] += 1
+            ve["death_fame"] += int(_num(ev.get("TotalVictimKillFame") or ev.get("totalVictimKillFame")) or 0)
             note_ip(v, ve)
             deaths.append((_ts(ev.get("TimeStamp") or ev.get("timeStamp")), idx, norm(v.get("Name") or v.get("name"))))
+        seen_part = set()
+        for p in ev.get("Participants") or ev.get("participants") or []:
+            e = entry(p)
+            if e is None or id(e) in seen_part:
+                continue
+            seen_part.add(id(e))
+            e["damage"] += _num(p.get("DamageDone") or p.get("damageDone")) or 0.0
+            if e is not ke:
+                e["assists"] += 1
         for key in ("Participants", "GroupMembers"):
             for p in ev.get(key) or []:
                 e = entry(p)
@@ -186,7 +204,7 @@ def parse_events(events: Iterable[dict], guild_name: str) -> dict:
 def add_attendees(parsed: dict, names: Iterable[str]) -> None:
     """Suma a la asistencia a quienes la ficha de la batalla lista como de la guild aunque no aparezcan en ningún evento."""
     for n in names:
-        parsed["players"].setdefault(norm(n), {"name": str(n), "kills": 0, "deaths": 0, "ip_avg": None, "ip_max": None, "ip_min": None,
+        parsed["players"].setdefault(norm(n), {"name": str(n), "kills": 0, "deaths": 0, "assists": 0, "damage": 0.0, "death_fame": 0, "ip_avg": None, "ip_max": None, "ip_min": None,
                                                "first5": False, "death_rank": None, "death_time": None})
 
 
@@ -203,9 +221,10 @@ def save_battle(db_path: str, battle_id: str, cta_id: Optional[int], loaded_by: 
             for nm, e in parsed["players"].items():
                 for w, uses in (e.get("weapons") or {}).items():
                     conn.execute("INSERT OR IGNORE INTO kb_weapons(battle_id, name_norm, weapon, uses) VALUES (?,?,?,?)", (battle_id, nm, w, int(uses)))
-                conn.execute("INSERT INTO kb_players(battle_id,name_norm,name,kills,deaths,ip_avg,ip_max,ip_min,first5,death_rank,death_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                conn.execute("INSERT INTO kb_players(battle_id,name_norm,name,kills,deaths,ip_avg,ip_max,ip_min,first5,death_rank,death_time,assists,damage,death_fame) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                              (battle_id, nm, e["name"], e["kills"], e["deaths"], e["ip_avg"], e["ip_max"], e["ip_min"], int(bool(e["first5"])),
-                              e.get("death_rank"), e.get("death_time")))
+                              e.get("death_rank"), e.get("death_time"), int(e.get("assists") or 0), float(e.get("damage") or 0), int(e.get("death_fame") or 0)))
             conn.execute("INSERT INTO kb_audit(battle_id, action, actor_id, at, details) VALUES (?,?,?,?,?)",
                          (battle_id, "load", loaded_by, utcnow_iso(), json.dumps({"cta_id": cta_id, "players": len(parsed["players"])})))
             return "new"
@@ -277,7 +296,13 @@ def _aggregate(rows) -> dict:
     ips_min = [r["ip_min"] for r in rows if r["ip_min"]]
     att = len(rows)
     first5 = sum(r["first5"] for r in rows)
-    return {"attendance": att, "kills": sum(r["kills"] for r in rows), "deaths": sum(r["deaths"] for r in rows), "first5": first5,
+    kills, deaths = sum(r["kills"] for r in rows), sum(r["deaths"] for r in rows)
+    assists = sum(r["assists"] or 0 for r in rows)
+    damage = sum(r["damage"] or 0 for r in rows)
+    return {"attendance": att, "kills": kills, "deaths": deaths, "first5": first5,
+            "assists": assists, "kda": (kills + assists) / max(deaths, 1) if att else 0.0,
+            "damage": damage, "avg_damage": (damage / att) if att else 0.0,
+            "death_fame": sum(r["death_fame"] or 0 for r in rows),
             "first5_pct": (100.0 * first5 / att) if att else 0.0,
             "avg_ip": (sum(ips_avg) / len(ips_avg)) if ips_avg else None,
             "max_ip": max(ips_max) if ips_max else None, "min_ip": min(ips_min) if ips_min else None}
@@ -316,6 +341,10 @@ def all_player_stats(db_path: str) -> Dict[str, dict]:
 TOP_KEYS = {
     "kills": ("⚔️ Top kills", "kills", True, "kills"),
     "deaths": ("💀 Top muertes", "deaths", True, "muertes"),
+    "assists": ("🤝 Top asistencias a kills", "assists", True, "asistencias"),
+    "kda": ("🎯 Mejor KDA", "kda", True, "KDA"),
+    "damage": ("🔥 Top daño", "damage", True, "de daño"),
+    "death_fame": ("⚰️ Top fame perdida en muertes", "death_fame", True, "fame"),
     "attendance": ("🛡️ Top asistencia", "attendance", True, "asistencias"),
     "first5": ("💥 Muertes en el primer engage", "first5", True, "veces"),
     "avg_ip": ("📈 Mejor IP promedio", "avg_ip", True, "IP"),

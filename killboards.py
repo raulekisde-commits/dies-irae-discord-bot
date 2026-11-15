@@ -696,10 +696,12 @@ class KillboardCog(commands.Cog):
             return await _say(interaction, "❌ La respuesta no es una lista de eventos. Formato inesperado.")
         p = kb.parse_events(events, GUILD_NAME)
         with_ts = sum(1 for e in events if isinstance(e, dict) and e.get("TimeStamp"))
+        with_dmg = sum(1 for e in events if isinstance(e, dict) and any(isinstance(x, dict) and x.get("DamageDone") for x in e.get("Participants") or []))
+        with_fame = sum(1 for e in events if isinstance(e, dict) and e.get("TotalVictimKillFame"))
         with_ip = sum(1 for e in events if isinstance(e, dict) and isinstance(e.get("Victim"), dict) and e["Victim"].get("AverageItemPower"))
         firsts = sorted((v for v in p["players"].values() if v.get("death_rank")), key=lambda v: v["death_rank"])[:5]
         txt = (f"🔎 Batalla `{ids[0]}`\n• Eventos recibidos: **{len(events)}**\n• Con hora de muerte (TimeStamp): **{with_ts}**\n"
-               f"• Víctimas con IP: **{with_ip}**\n• Jugadores de {GUILD_NAME}: **{len(p['players'])}** · muertes propias: **{p['smogg_deaths']}**\n"
+               f"• Víctimas con IP: **{with_ip}**\n• Con daño de participantes: **{with_dmg}** · con fame: **{with_fame}**\n• Jugadores de {GUILD_NAME}: **{len(p['players'])}** · muertes propias: **{p['smogg_deaths']}**\n"
                f"• Primeras muertes propias: " + (", ".join(f"{v['name']} ({(v['death_time'] or 'sin hora')[11:19]})" for v in firsts) or "—") +
                "\n\nSi los eventos son muchos menos que las muertes reales de la batalla, AlbionBB está recortando la lista: avisame antes de confiar en estos números.")
         await _say(interaction, txt)
@@ -711,7 +713,7 @@ class KillboardCog(commands.Cog):
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = []
         for i, (name, value, d) in enumerate(rows, start=1):
-            v = f"{value:,.0f}".replace(",", ".")
+            v = f"{value:.2f}" if key == "kda" else f"{value:,.0f}".replace(",", ".")
             extra = f" ({d['first5_pct']:.0f}% de sus peleas)" if key == "first5" else ""
             lines.append(f"{medals.get(i, f'`{i:>2}.`')} **{discord.utils.escape_markdown(name)}** — {v} {unit}{extra}")
         emb = discord.Embed(title=f"{title} · {GUILD_NAME}", description="\n".join(lines) or "Todavía no hay killboards cargados.", color=discord.Color.gold())
@@ -795,6 +797,11 @@ class KillboardCog(commands.Cog):
             emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="💀 Muertes", value=f"**{s['deaths']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="🛡️ Asistencia", value=f"**{s['attendance']:,}**".replace(",", ".") + " peleas", inline=True)
+            emb.add_field(name="🤝 Asistencias a kills", value=f"**{s['assists']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="🎯 KDA", value=f"**{s['kda']:.2f}**", inline=True)
+            emb.add_field(name="⚰️ Fame perdida", value=f"**{s['death_fame']:,}**".replace(",", "."), inline=True)
+            emb.add_field(name="🔥 Daño total", value=f"**{s['damage']:,.0f}**".replace(",", "."), inline=True)
+            emb.add_field(name="🔥 Daño por pelea", value=f"**{s['avg_damage']:,.0f}**".replace(",", "."), inline=True)
             emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
             emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
             if roles_field:
