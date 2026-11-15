@@ -12,6 +12,7 @@ from discord.ext import commands
 
 import ctautil as cu
 import ctavoice as cv
+import cta_autowarn as aw
 import killboard_db as kb
 import registration_db as rdb
 import splits_db as sdb
@@ -279,6 +280,7 @@ class KillboardCog(commands.Cog):
 
     async def cog_load(self):
         await asyncio.to_thread(kb.init_schema, self.db_path)
+        await asyncio.to_thread(aw.init_schema, self.db_path)
         self.bot.add_view(StatsPanelView(self))
 
     async def run(self, fn, *a):
@@ -623,6 +625,105 @@ class KillboardCog(commands.Cog):
         except Exception as exc:
             print(f"CTA #{cta_id}: no pude actualizar la lista de armas: {exc!r}")
 
+    _autowarn_col_ready = False
+    AUTOWARN_HEADERS = {
+        "voice_missing": "📵 **Anotados que NO estuvieron en voz**",
+        "voice_extra": "🎧 **Estuvieron en voz sin estar anotados**",
+        "kb_missing": "🗡️ **Anotados que NO aparecen en el killboard**",
+        "weapon_mismatch": "🔀 **Usaron otra arma que la de su posición**",
+        "skipper": "🚫 **Skippers** (conectados, sin anotarse y sin killboard)",
+    }
+
+    async def refresh_auto_warnings(self, cta_id: int):
+        """Warnings automáticos de la CTA terminada (ver cta_autowarn): se recalculan sin duplicar y el hilo de stats
+        muestra UN mensaje (o varios si no entra) con los warnings vigentes, agrupados por caso. Se edita en cada cambio."""
+        def load():
+            conn = connect(self.db_path)
+            try:
+                if not KillboardCog._autowarn_col_ready:
+                    try:
+                        conn.execute("ALTER TABLE cta_runs ADD COLUMN autowarn_msg_ids TEXT")
+                    except Exception:
+                        pass
+                    KillboardCog._autowarn_col_ready = True
+                return conn.execute("SELECT * FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            finally:
+                conn.close()
+        try:
+            run = await asyncio.to_thread(load)
+            if not run or run["final_state"] != "finished" or self.bot.user is None:
+                return
+            run = dict(run)
+            chars: Dict[int, set] = {}
+            for r in await self.run(rdb.all_registrations):
+                chars.setdefault(int(r.discord_id), set()).add(kb.norm(r.char_name))
+            name2id = {c: u for u, cs in chars.items() for c in cs}
+            kb_loaded = bool(await self.run(kb.battles_of_cta, cta_id))
+            online = await self.run(kb.online_of_cta, cta_id)
+            weapon_rows = []
+            if kb_loaded and self.expected_weapons is not None:   # mismo criterio que tenía la lista de armas del hilo
+                regs = [(u, c) for u, cs in chars.items() for c in cs]
+                weapon_rows = weapon_mismatches(await self.expected_weapons(cta_id) or {}, regs, await self.run(kb.weapons_of_cta, cta_id))
+            skip_names = {kb.norm(n): n for n in await self.run(kb.skips_of_cta, cta_id)}
+            skippers = {name2id[n] for n in skip_names if n in name2id}
+            desired = aw.compute(await self.run(cu.positions, cta_id), await self.run(cv.seconds_by_user, cta_id), cv.MIN_PRESENT_SECONDS,
+                                 kb_loaded, chars, await self.run(kb.names_in_cta, cta_id), [r[0] for r in weapon_rows], skippers)
+            title = run.get("title") or f"CTA {run.get('composition_name')} #{cta_id}"
+            await self.run(aw.reconcile, int(run["guild_id"]), cta_id, desired, title, self.bot.user.id)
+            if not run.get("stats_thread_id"):
+                return
+            # ---- mensaje del hilo ----
+            name_of = self.weapon_name or (lambda w: w)
+            extra: Dict[str, Dict[int, str]] = {"weapon_mismatch": {}, "skipper": {}}
+            for uid, pos, valid, seen in weapon_rows:
+                want = " / ".join(sorted((name_of(w) or w) for w in valid))
+                got = ", ".join((name_of(w) or w) for w, _n in sorted(seen.items(), key=lambda x: -x[1]))
+                extra["weapon_mismatch"][uid] = f" · {pos} · anotado: {want} · usó: {got}"
+            for n, shown in skip_names.items():
+                if n in name2id:
+                    extra["skipper"][name2id[n]] = f" · {shown}"
+            cur = await self.run(aw.current, cta_id)
+            parts = []
+            for kind in aw.KINDS:
+                ids = cur.get(kind) or []
+                if ids:
+                    parts.append(f"{self.AUTOWARN_HEADERS[kind]} ({len(ids)})\n" +
+                                 "\n".join(f"• <@{u}>{extra.get(kind, {}).get(u, '')}" for u in ids))
+            pending = [t for t, ok in (("killboard", kb_loaded), ("lista de conectados", bool(online))) if not ok]
+            text = f"⚠️ **Warnings automáticos** · {discord.utils.escape_markdown(title)}\n\n" + ("\n\n".join(parts) or "✅ Nadie tiene warnings.")
+            if pending:
+                text += "\n\n⏳ Falta cargar: " + " y ".join(pending) + " (se actualiza solo al cargarlo)."
+            chunks = _chunks(text)
+            thread = self.bot.get_channel(int(run["stats_thread_id"])) or await self.bot.fetch_channel(int(run["stats_thread_id"]))
+            old_ids = [int(x) for x in str(run.get("autowarn_msg_ids") or "").split(",") if x.strip().isdigit()]
+            new_ids = []
+            for i, chunk in enumerate(chunks):
+                msg = None
+                if i < len(old_ids):
+                    try:
+                        msg = await thread.fetch_message(old_ids[i])
+                        await msg.edit(content=chunk, allowed_mentions=NO_MENTIONS)
+                    except discord.NotFound:
+                        msg = None
+                if msg is None:
+                    msg = await thread.send(chunk, allowed_mentions=NO_MENTIONS)
+                new_ids.append(msg.id)
+            for mid in old_ids[len(chunks):]:                  # sobran mensajes de una versión más larga
+                try:
+                    await (await thread.fetch_message(mid)).delete()
+                except discord.NotFound:
+                    pass
+
+            def save():
+                conn = connect(self.db_path)
+                try:
+                    conn.execute("UPDATE cta_runs SET autowarn_msg_ids=? WHERE id=?", (",".join(map(str, new_ids)), cta_id))
+                finally:
+                    conn.close()
+            await asyncio.to_thread(save)
+        except Exception as exc:
+            print(f"CTA #{cta_id}: no pude actualizar los warnings automáticos: {exc!r}")
+
     async def refresh_stats_panel(self, cta_id: int):
         """Actualiza el check «Killboard» del panel de stats de la CTA."""
         conn = connect(self.db_path)
@@ -635,8 +736,7 @@ class KillboardCog(commands.Cog):
         except Exception:
             traceback.print_exc()                               # si falla, el panel igual se actualiza
             skips = []
-        await self.refresh_voice_kb(cta_id)                     # lista extra del hilo (solo si la CTA ya terminó)
-        await self.refresh_weapon_check(cta_id)                 # armas distintas a la de la posición (solo si la CTA ya terminó)
+        await self.refresh_auto_warnings(cta_id)                # único mensaje del hilo: warnings por caso (solo si la CTA ya terminó)
         if not run or not run["stats_message_id"]:
             return
         n = len(await self.run(kb.battles_of_cta, cta_id))
