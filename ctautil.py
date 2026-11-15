@@ -414,6 +414,54 @@ def role_locks(db_path: str, cta_id: int) -> List[int]:
         conn.close()
 
 
+# ---------- !libre @rol: cualquiera puede anotarse en posiciones de ese rol aunque no lo tenga (por CTA; !lock tiene prioridad) ----------
+ROLE_FREE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cta_role_free (
+    cta_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    freed_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (cta_id, role_id)
+);
+"""
+
+
+def role_free_add(db_path: str, cta_id: int, role_id: int, actor_id: int) -> bool:
+    """True si quedó libre; False si ya lo estaba."""
+    conn = connect(db_path)
+    try:
+        conn.executescript(ROLE_FREE_SCHEMA)
+        with write_tx(conn):
+            cur = conn.execute("INSERT OR IGNORE INTO cta_role_free(cta_id, role_id, freed_by, created_at) VALUES (?,?,?,?)",
+                               (cta_id, int(role_id), actor_id, utcnow_iso()))
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def role_free_remove(db_path: str, cta_id: int, role_id: Optional[int] = None) -> int:
+    """Saca la liberación de un rol (o de todos si role_id es None). Devuelve cuántos sacó."""
+    conn = connect(db_path)
+    try:
+        conn.executescript(ROLE_FREE_SCHEMA)
+        with write_tx(conn):
+            if role_id is None:
+                return conn.execute("DELETE FROM cta_role_free WHERE cta_id=?", (cta_id,)).rowcount
+            return conn.execute("DELETE FROM cta_role_free WHERE cta_id=? AND role_id=?", (cta_id, int(role_id))).rowcount
+    finally:
+        conn.close()
+
+
+def role_free(db_path: str, cta_id: int) -> List[int]:
+    conn = connect(db_path)
+    try:
+        return [int(r["role_id"]) for r in conn.execute("SELECT role_id FROM cta_role_free WHERE cta_id=? ORDER BY created_at", (cta_id,))]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
 def role_lock_block(member_role_ids: Iterable[int], locked: Iterable[int], slot_role_ids) -> List[int]:
     """Roles bloqueados que tiene la persona y que NO pide esta posición. Vacío = puede anotarse.
     Si tiene varios roles bloqueados, puede anotarse en una posición de cualquiera de ellos."""

@@ -118,6 +118,19 @@ class PositionsTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_role_free(self):
+        H, T = self.HEAL, self.TANK
+        self.assertEqual(cu.role_free(self.db, 1), [])
+        self.assertTrue(cu.role_free_add(self.db, 1, T, 99))
+        self.assertFalse(cu.role_free_add(self.db, 1, T, 99))
+        self.assertTrue(cu.role_free_add(self.db, 1, H, 99))
+        self.assertEqual(cu.role_free(self.db, 1), [T, H])
+        self.assertEqual(cu.role_free(self.db, 2), [])                            # es por CTA
+        self.assertEqual(cu.role_free_remove(self.db, 1, T), 1)
+        self.assertEqual(cu.role_free(self.db, 1), [H])
+        self.assertEqual(cu.role_free_remove(self.db, 1), 1)                      # sin rol: saca todos
+        self.assertEqual(cu.role_free(self.db, 1), [])
+
     def test_role_lock(self):
         H, T = self.HEAL, self.TANK
         self.assertEqual(cu.role_locks(self.db, 1), [])
