@@ -207,6 +207,16 @@ class GuildCheckTests(DiscordBase):
         run(self.cog.do_canal_avisos(i, self.panelch))
         self.assertEqual(gdb.get_setting(self.db, gdb.CHANNEL_KEY), str(self.panelch.id))
 
+    def test_panel_privado_y_solo_para_quien_lo_abrio(self):
+        i = self.inter(self.staff)
+        run(self.cog.panel.callback(self.cog, i))
+        content, kw = i.response.sent[-1]
+        self.assertTrue(kw.get("ephemeral"))
+        view = kw["view"]
+        self.assertEqual(view.timeout, gc.PANEL_TIMEOUT)
+        self.assertFalse(run(view.interaction_check(self.inter(self.council))))
+        self.assertTrue(run(view.interaction_check(self.inter(self.staff))))
+
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
         self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos"})
