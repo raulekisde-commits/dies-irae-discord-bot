@@ -805,6 +805,28 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIsInstance(i.response.sent[0][1]["view"], wj.InventoryView)
         self.assertIn("×1", i.response.sent[0][1]["embed"].description)
 
+    def test_inventario_paginado_mas_de_25(self):
+        from types import SimpleNamespace as N
+        k = next(iter(wdb.RARITIES))
+        rows = [N(prize=N(name=f"C{n}", rarity=k), first_card_id=n + 1, available=1) for n in range(60)]
+        v = wj.InventoryView(self.cog, self.alice.id, rows)
+        self.assertEqual(v.pages, 3)
+        sel, prev, nxt = v.children
+        self.assertEqual(len(sel.options), 25)
+        self.assertTrue(prev.disabled)
+        edited = []
+
+        class R:
+            async def edit_message(self, **kw):
+                edited.append(kw)
+        run(v._go(N(response=R()), 1))
+        run(v._go(N(response=R()), 1))
+        sel, prev, nxt = v.children
+        self.assertEqual((v.page, len(sel.options), nxt.disabled, prev.disabled), (2, 10, True, False))
+        self.assertEqual(sel.options[0].value, "51")
+        self.assertEqual(len(edited), 2)
+        self.assertEqual(len(wj.InventoryView(self.cog, self.alice.id, rows[:5]).children), 1)   # sin botones
+
     def test_canal_anuncios_fijar_y_quitar(self):
         i = self.inter(self.bob, self.feedch)
         run(self.cog.feed_channel.callback(self.cog, i, None, False))
