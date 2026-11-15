@@ -433,6 +433,7 @@ class KillboardCog(commands.Cog):
     async def sync_split_suggestions(self, cta_id: int) -> None:
         """Cruza conectados y killboard con la lista del split de la CTA y deja las preguntas en el hilo del split:
         · anotados (con personaje registrado) que no estaban conectados ni salen en el killboard → ¿sacarlos?
+        · anotados que estaban conectados (o sin lista de conectados) pero no salen en el killboard → ¿sacarlos?
         · gente del killboard que no estaba en la lista → ¿sumarla?"""
         splits_cog = self.bot.get_cog("SplitsCog")
         if splits_cog is None:
@@ -446,13 +447,22 @@ class KillboardCog(commands.Cog):
             for r in regs:
                 chars.setdefault(int(r.discord_id), set()).add(kb.norm(r.char_name))
             name2id = {kb.norm(r.char_name): int(r.discord_id) for r in regs}
+            try:                                          # un alter que peleó cuenta como su dueño
+                import alters_db
+                for al in await self.run(alters_db.all_alters):
+                    name2id.setdefault(kb.norm(al["alter_name"]), int(al["user_id"]))
+            except Exception:
+                pass
             online = await self.run(kb.online_of_cta, cta_id)
             kb_names = await self.run(kb.names_in_cta, cta_id)
             kb_ids = {name2id[n] for n in kb_names if n in name2id}
             remove = []
             if online:
                 remove = [u for u in s.people if u in chars and not (chars[u] & set(online)) and u not in kb_ids]
-            await splits_cog.apply_suggestions(cta_id, remove, sorted(kb_ids - set(s.people)))
+            no_kb = None                                  # None = sin killboard cargado: no se toca lo ya preguntado
+            if kb_names:
+                no_kb = [u for u in s.people if u in chars and u not in kb_ids and u not in remove]
+            await splits_cog.apply_suggestions(cta_id, remove, sorted(kb_ids - set(s.people)), no_kb=no_kb)
         except Exception:
             traceback.print_exc()
 
