@@ -751,6 +751,36 @@ class SplitDiscordTests(DiscordBase):
         self.assertEqual(sdb.get_split(self.db, split.id).people, [self.bob.id])
         self.assertIn("Sacado", i.response.edits[0]["content"])
 
+    def test_killboard_link_compara_lista_y_deja_botones(self):
+        import registration_db as rdb
+        rdb.init_schema(self.db)
+        rdb.admin_link(self.db, self.alice.id, "Ana", 1)
+        rdb.admin_link(self.db, self.bob.id, "Beto", 1)
+        rdb.admin_link(self.db, self.outsider.id, "Fuera", 1)
+        split, thread = self._split_cta7([self.alice.id, self.bob.id])
+        pedidos = []
+
+        class FakeKB:
+            async def fetch_battle(s_, bid):
+                pedidos.append(bid)
+                return {"players": {"ana": {"name": "Ana"}, "fuera": {"name": "Fuera"}, "sinvincular": {"name": "SinVincular"}}}
+        self.bot.cogs["KillboardCog"] = FakeKB()
+        self.assertIn("Usalo dentro del hilo", run(self.cog.compare_killboard(self.council, self.panelch.id, "123456")))
+        self.assertIn("🔒", run(self.cog.compare_killboard(self.alice, thread.id, "123456")))
+        self.assertIn("Pasame el link", run(self.cog.compare_killboard(self.council, thread.id, "hola")))
+        out = run(self.cog.compare_killboard(self.council, thread.id, "https://europe.albionbb.com/battles/1234567"))
+        self.assertEqual(pedidos, ["1234567"])
+        self.assertIn(f"no en el killboard (1)**\n<@{self.bob.id}>", out)
+        self.assertIn(f"no en la lista (1)**\n<@{self.outsider.id}>", out)
+        self.assertIn("SinVincular", out)
+        qs = [m for m in thread.sent if m.view is not None and "no aparece en el killboard" in m.content]
+        self.assertEqual(len(qs), 1)
+        self.assertIn(str(self.bob.id), qs[0].content)
+        self.assertTrue(any(m.view is not None and str(self.outsider.id) in m.content and "¿Lo sumo" in m.content for m in thread.sent))
+        i = self.inter(self.council, thread, message=qs[0])
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.alice.id])
+
     def test_sugerencia_sumar_del_killboard_y_dejarlo(self):
         split, thread = self._split_cta7([self.alice.id])
         self.assertEqual(run(self.cog.apply_suggestions(7, [], [self.bob.id, self.alice.id])), (0, 1))      # alice ya está
