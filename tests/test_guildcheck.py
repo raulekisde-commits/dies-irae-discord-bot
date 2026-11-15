@@ -78,7 +78,7 @@ class GuildCheckTests(DiscordBase):
         self.assertIn("**Andresra** → sin Discord", out)
         self.assertNotIn("zabonin", out)
 
-    def _cta(self, cta_id, closes_at, signed, voice=(), kb=()):
+    def _cta(self, cta_id, closes_at, signed, voice=(), kb=(), minutes=30):
         conn = connect(self.db)
         try:
             conn.executescript("""
@@ -92,7 +92,7 @@ class GuildCheckTests(DiscordBase):
                 conn.execute("INSERT INTO cta_positions(cta_id, user_id, slot_key) VALUES (?,?,?)", (cta_id, u, "p1"))
             for u in voice:
                 conn.execute("INSERT INTO cta_voice_sessions(cta_id, user_id, joined_at, left_at) VALUES (?,?,?,?)",
-                             (cta_id, u, closes_at.isoformat(), (closes_at + timedelta(minutes=30)).isoformat()))
+                             (cta_id, u, closes_at.isoformat(), (closes_at + timedelta(minutes=minutes)).isoformat()))
             conn.execute("INSERT OR IGNORE INTO kb_battles VALUES (?,?)", (f"b{cta_id}", cta_id))
             for n in kb:
                 conn.execute("INSERT INTO kb_players VALUES (?,?,?)", (f"b{cta_id}", gdb.norm(n), n))
@@ -108,6 +108,26 @@ class GuildCheckTests(DiscordBase):
         n, att = gdb.cta_attendance(self.db, GUILD_ID, start, end, gdb.chars_by_user(self.db))
         self.assertEqual(n, 3)
         self.assertEqual(att, {a: 1, b: 1})
+        self._cta(4, start + timedelta(days=3), [a], voice=[a], minutes=15)        # anotada pero solo 15 min en voz: no cuenta
+        self._cta(5, start + timedelta(days=4), [], kb=["Kingnian"])               # killboard sin anotarse: cuenta
+        n, att = gdb.cta_attendance(self.db, GUILD_ID, start, end, gdb.chars_by_user(self.db))
+        self.assertEqual((n, att), (5, {a: 2, b: 1}))
+        self.assertEqual(gdb.cta_attendance(self.db, GUILD_ID, None, None, gdb.chars_by_user(self.db), user_id=a)[1], {a: 2})
+
+    def test_comando_asistencias(self):
+        start, _ = gdb.week_bounds(0)
+        self._cta(1, start + timedelta(minutes=1), [self.alice.id], voice=[self.alice.id])
+        i = self.inter(self.alice)
+        run(self.cog.do_asistencias(i))
+        self.assertIn("🔒", i.text)
+        i = self.inter(self.staff)
+        run(self.cog.do_asistencias(i, "actual"))
+        self.assertIn(f"<@{self.alice.id}> · **1/1**", i.text)
+        self.assertIn(f"<@{self.bob.id}> · **0/1** ⚠️", i.text)
+        i = self.inter(self.staff)
+        run(self.cog.do_asistencias(i, "actual", self.alice))
+        self.assertIn("Esta semana: **1** de 1", i.text)
+        self.assertIn("Total: **1**", i.text)
 
     def test_kick_lista_por_motivo_y_ausencia(self):
         gdb.save_from_export(self.db, EXPORT.encode(), datetime.now(timezone.utc))
@@ -219,7 +239,7 @@ class GuildCheckTests(DiscordBase):
 
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 

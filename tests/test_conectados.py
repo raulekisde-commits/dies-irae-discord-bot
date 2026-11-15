@@ -73,6 +73,24 @@ class Conectados(KBBase):
         run(self.cog.process_online(5, b'"Character Name"\t"Last Seen"\t"Roles"\n"A"\t"10/31/2026 01:00:00"\t""\n', self.stf.id))
         self.assertEqual(list(gdb.snapshot(self.db)[0]), ["a"])                 # sin nadie Online también actualiza
 
+    def test_stats_muestra_asistencias_a_cta(self):
+        from datetime import datetime, timezone
+        rdb.admin_link(self.db, self.mem.id, "Zeta", 1)
+        c = connect(self.db)
+        c.execute("ALTER TABLE cta_runs ADD COLUMN guild_id INTEGER")
+        c.execute("ALTER TABLE cta_runs ADD COLUMN closes_at TEXT")
+        c.execute("UPDATE cta_runs SET guild_id=?, closes_at=? WHERE id=5", (self.guild.id, datetime.now(timezone.utc).isoformat()))
+        c.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES ('b1', 5, 1, 'x')")
+        c.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES ('b1', 'zeta', 'Zeta')")
+        c.close()
+        i = self.inter(self.mem)
+        run(self.cog.stats.callback(self.cog, i, None))
+        emb = i.response.sent[0][1]["embed"]
+        f = [x for x in emb.fields if "Asistencias a CTA" in str(x)]
+        self.assertTrue(f)
+        self.assertIn("Total: **1**", str(f[0]))
+        self.assertIn("Esta semana: **1** de 1", str(f[0]))
+
     def test_bad_file(self):
         self.assertIn("No pude leer", run(self.cog.process_online(5, b"hola", self.stf.id)))
         self.assertIn("ninguno figura", run(self.cog.process_online(5, b'"Character Name"\t"Last Seen"\t"Roles"\n"A"\t"10/31/2026 01:00:00"\t""\n', self.stf.id)))
