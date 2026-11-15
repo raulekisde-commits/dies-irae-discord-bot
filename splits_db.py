@@ -602,6 +602,19 @@ def set_looter(db_path: str, split_id: int, user_id: int, *, looted=None, repair
         conn.close()
 
 
+def looted_total(db_path: str, user_id: int) -> int:
+    """Total looteado por la persona como looter, sumando los splits cerrados (solo estadística para /stats)."""
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT COALESCE(SUM(l.looted), 0) FROM split_looters l JOIN splits s ON s.id=l.split_id "
+                         "WHERE l.user_id=? AND s.status='closed'", (user_id,)).fetchone()
+        return int(r[0] or 0)
+    except sqlite3.OperationalError:               # tablas de splits todavía no creadas
+        return 0
+    finally:
+        conn.close()
+
+
 def remove_looters(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
     """Quita el apartado de looter (la persona sigue en la lista general)."""
     n = 0
