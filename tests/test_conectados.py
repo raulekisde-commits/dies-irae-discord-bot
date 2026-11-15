@@ -63,6 +63,16 @@ class Conectados(KBBase):
         emb = i.response.sent[0][1]["embed"]
         self.assertTrue(any("skipeadas" in str(f) for f in emb.fields))
 
+    def test_guarda_la_ultima_conexion_de_toda_la_guild(self):
+        import guildcheck_db as gdb
+        run(self.cog.process_online(5, SAMPLE, self.stf.id))
+        snap, at = gdb.snapshot(self.db)
+        self.assertEqual(len(snap), 6)
+        self.assertEqual(snap["daitza"][1].isoformat(), "2026-10-31T05:05:56+00:00")
+        self.assertEqual(snap["zeta"][1], at)                                    # Online = hora de subida
+        run(self.cog.process_online(5, b'"Character Name"\t"Last Seen"\t"Roles"\n"A"\t"10/31/2026 01:00:00"\t""\n', self.stf.id))
+        self.assertEqual(list(gdb.snapshot(self.db)[0]), ["a"])                 # sin nadie Online también actualiza
+
     def test_bad_file(self):
         self.assertIn("No pude leer", run(self.cog.process_online(5, b"hola", self.stf.id)))
         self.assertIn("ninguno figura", run(self.cog.process_online(5, b'"Character Name"\t"Last Seen"\t"Roles"\n"A"\t"10/31/2026 01:00:00"\t""\n', self.stf.id)))

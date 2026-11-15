@@ -461,6 +461,11 @@ class KillboardCog(commands.Cog):
         names, total = kb.parse_online_file(raw)
         if not total:
             return "❌ No pude leer el archivo. Tiene que ser el bloc de notas con las columnas \"Character Name\", \"Last Seen\" y \"Roles\"."
+        try:                                          # el mismo archivo trae la última conexión de toda la guild (/miembros inactivos)
+            import guildcheck_db
+            await self.run(guildcheck_db.save_from_export, raw)
+        except Exception:
+            traceback.print_exc()
         if not names:
             return f"⚠️ El archivo tiene {total} jugadores pero ninguno figura como **Online**. No se guardó."
         await self.run(kb.save_online, cta_id, names)
