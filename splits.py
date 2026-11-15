@@ -991,64 +991,129 @@ class SplitsCog(commands.Cog):
         if s is None or s.status != "open":
             return 0, 0
         async with self._lock(-cta_id):
-            th = await self._get_channel(s.thread_id)
-            if th is None:
-                return 0, 0
-            s = await self.run(sdb.get_split, s.id)
-            remove_ids = [int(u) for u in dict.fromkeys(remove_ids) if int(u) in s.people]
-            add_ids = [int(u) for u in dict.fromkeys(add_ids) if int(u) not in s.people]
-            late = set()
-            for u in add_ids:
-                if (await self.run(sdb.mirror_of, s.id, u)) != (None, None):
-                    late.add(u)                               # ya pidió entrar tarde: se decide por ese otro mensaje
-            add_ids = [u for u in add_ids if u not in late]
-            kinds = [("remove", remove_ids), ("add", add_ids)]
-            if no_kb is not None:
-                kinds.append(("nokb", [int(u) for u in dict.fromkeys(no_kb) if int(u) in s.people and int(u) not in remove_ids]))
-            made = []
-            for kind, wanted in kinds:
-                have = await self.run(sdb.suggestions_of, s.id, kind)
-                for uid, sug in have.items():
-                    if sug.status == "pending" and uid not in wanted:
-                        mid = await self.run(sdb.void_suggestion, s.id, uid, kind)
-                        if mid:
-                            try:
-                                m = await th.fetch_message(mid)
-                                await m.edit(content=f"ℹ️ Ya no aplica: <@{uid}>.", view=None, allowed_mentions=NO_MENTIONS)
-                            except Exception:
-                                pass
-                new = [u for u in wanted if u not in have][:self.MAX_SUGGESTIONS]
-                made.append(new)
-            n_rm, n_add = len(made[0]), len(made[1])
+            made = await self._post_suggestions(s.id, remove_ids, add_ids, no_kb)
+        return len(made.get("remove", [])), len(made.get("add", []))
+
+    async def _post_suggestions(self, split_id: int, remove_ids, add_ids, no_kb) -> Dict[str, List[int]]:
+        """Publica las preguntas con botones en el hilo del split. Cada lista en None = ese tipo de pregunta no se toca.
+        Devuelve {tipo: [usuarios con pregunta nueva]}."""
+        s = await self.run(sdb.get_split, split_id)
+        th = await self._get_channel(s.thread_id) if s is not None and s.status == "open" else None
+        if th is None:
+            return {}
+        rm = None if remove_ids is None else [int(u) for u in dict.fromkeys(remove_ids) if int(u) in s.people]
+        add = None
+        if add_ids is not None:
+            add = []
+            for u in (int(x) for x in dict.fromkeys(add_ids) if int(x) not in s.people):
+                if (await self.run(sdb.mirror_of, s.id, u)) == (None, None):     # si ya pidió entrar tarde, se decide por ese otro mensaje
+                    add.append(u)
+        nokb = None if no_kb is None else [int(u) for u in dict.fromkeys(no_kb) if int(u) in s.people and int(u) not in (rm or [])]
+        made: Dict[str, List[int]] = {}
+        for kind, wanted in (("remove", rm), ("add", add), ("nokb", nokb)):
+            if wanted is None:
+                continue
+            have = await self.run(sdb.suggestions_of, s.id, kind)
+            for uid, sug in have.items():
+                if sug.status == "pending" and uid not in wanted:
+                    mid = await self.run(sdb.void_suggestion, s.id, uid, kind)
+                    if mid:
+                        try:
+                            m = await th.fetch_message(mid)
+                            await m.edit(content=f"ℹ️ Ya no aplica: <@{uid}>.", view=None, allowed_mentions=NO_MENTIONS)
+                        except Exception:
+                            pass
+            made[kind] = [u for u in wanted if u not in have][:self.MAX_SUGGESTIONS]
+        texts = {
+            "remove": ("🔌 **Anotados que no estaban conectados** ({n}). Según la lista de conectados, estas personas se anotaron pero no "
+                       "estuvieron online. Decidí con los botones si salen del split.",
+                       "🔌 <@{u}> estaba anotado pero no estaba conectado. ¿Lo saco del split?"),
+            "add": ("⚔️ **Estuvieron en el killboard sin anotarse** ({n}). Decidí con los botones si se suman al split.",
+                    "⚔️ <@{u}> apareció en el killboard pero no estaba anotado. ¿Lo sumo al split?"),
+            "nokb": ("🚫 **Anotados que no aparecen en el killboard** ({n}). Se anotaron pero no figuran en el killboard. "
+                     "Decidí con los botones si salen del split.",
+                     "🚫 <@{u}> estaba anotado pero no aparece en el killboard. ¿Lo saco del split?"),
+        }
+        try:
+            for kind in ("remove", "add", "nokb"):
+                users = made.get(kind) or []
+                if not users:
+                    continue
+                head, one = texts[kind]
+                await th.send(head.format(n=len(users)), allowed_mentions=NO_MENTIONS)
+                for uid in users:
+                    if await self.run(sdb.add_suggestion, s.id, uid, kind):
+                        m = await th.send(one.format(u=uid), view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
+                        await self.run(sdb.set_suggestion_message, s.id, uid, kind, m.id)
+        except Exception as exc:
+            print(f"⚠️ Split #{s.id}: no pude publicar las sugerencias: {exc!r}")
+        return made
+
+    # ---------- !killboard link (dentro del hilo de un split) ----------
+    async def compare_killboard(self, author, channel_id: Optional[int], texto: str) -> str:
+        """Compara la lista del split con los jugadores de la guild Smogg en los killboards indicados (no los guarda)
+        y deja las preguntas con botones para sacar / sumar."""
+        s = await self.run(sdb.find_by_thread, channel_id or 0)
+        if s is None:
+            return "❌ Usalo dentro del hilo de un split: `!killboard link_de_albionbb`."
+        if not can_decide_late(author, s):
+            return "🔒 Solo el Council, el Staff, el Caller o quien creó el split puede comparar el killboard."
+        import killboards as kbmod
+        ids = kbmod.parse_ids(texto or "")
+        if not ids:
+            return "❌ Pasame el link (o el ID) de la batalla de AlbionBB: `!killboard https://europe.albionbb.com/battles/123456`."
+        if len(ids) > kbmod.MAX_BATTLES_PER_LOAD:
+            return f"❌ Máximo {kbmod.MAX_BATTLES_PER_LOAD} batallas por vez."
+        kbcog = self.bot.get_cog("KillboardCog")
+        if kbcog is None:
+            return "❌ El módulo de killboards no está cargado."
+        names: Dict[str, str] = {}
+        failed = []
+        for bid in ids:
             try:
-                if n_rm:
-                    await th.send(f"🔌 **Anotados que no estaban conectados** ({n_rm}). Según la lista de conectados, estas personas se anotaron pero no "
-                                  "estuvieron online. Decidí con los botones si salen del split.", allowed_mentions=NO_MENTIONS)
-                for uid in made[0]:
-                    if await self.run(sdb.add_suggestion, s.id, uid, "remove"):
-                        m = await th.send(f"🔌 <@{uid}> estaba anotado pero no estaba conectado. ¿Lo saco del split?",
-                                          view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
-                        await self.run(sdb.set_suggestion_message, s.id, uid, "remove", m.id)
-                if n_add:
-                    await th.send(f"⚔️ **Estuvieron en el killboard sin anotarse** ({n_add}). Decidí con los botones si se suman al split.",
-                                  allowed_mentions=NO_MENTIONS)
-                for uid in made[1]:
-                    if await self.run(sdb.add_suggestion, s.id, uid, "add"):
-                        m = await th.send(f"⚔️ <@{uid}> apareció en el killboard pero no estaba anotado. ¿Lo sumo al split?",
-                                          view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
-                        await self.run(sdb.set_suggestion_message, s.id, uid, "add", m.id)
-                nokb = made[2] if len(made) > 2 else []
-                if nokb:
-                    await th.send(f"🚫 **Anotados que no aparecen en el killboard** ({len(nokb)}). Se anotaron pero no figuran en el killboard "
-                                  "de la CTA. Decidí con los botones si salen del split.", allowed_mentions=NO_MENTIONS)
-                for uid in nokb:
-                    if await self.run(sdb.add_suggestion, s.id, uid, "nokb"):
-                        m = await th.send(f"🚫 <@{uid}> estaba anotado pero no aparece en el killboard. ¿Lo saco del split?",
-                                          view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
-                        await self.run(sdb.set_suggestion_message, s.id, uid, "nokb", m.id)
+                parsed = await kbcog.fetch_battle(bid)
             except Exception as exc:
-                print(f"⚠️ Split #{s.id}: no pude publicar las sugerencias: {exc!r}")
-            return n_rm, n_add
+                failed.append(f"`{bid}` ({type(exc).__name__})")
+                continue
+            for n, p in parsed.get("players", {}).items():
+                names.setdefault(n, p.get("name") or n)
+        if not names:
+            return "❌ No encontré jugadores de la guild en ese killboard." + (f" Fallaron: {', '.join(failed)}." if failed else "")
+        import guildcheck_db as gdb
+        chars = await self.run(gdb.chars_by_user)
+        owner = gdb.owner_of_names(chars)
+        kb_users = {owner[n] for n in names if n in owner}
+        unknown = sorted((v for n, v in names.items() if n not in owner), key=str.casefold)
+        people = list(s.people)
+        no_char = [u for u in people if u not in chars]
+        missing = [u for u in people if u in chars and u not in kb_users]
+        extra = sorted(kb_users - set(people))
+        lines = [f"⚔️ **Killboard vs lista del split #{s.id}** · {len(names)} jugadores de {kbmod.GUILD_NAME} en el killboard · {len(people)} en la lista"]
+        if failed:
+            lines.append(f"⚠️ No pude leer: {', '.join(failed)}")
+        lines.append(f"\n**🚫 En la lista y no en el killboard ({len(missing)})**")
+        lines.append(" ".join(f"<@{u}>" for u in missing) or "✅ Ninguno.")
+        lines.append(f"\n**➕ En el killboard y no en la lista ({len(extra)})**")
+        lines.append(" ".join(f"<@{u}>" for u in extra) or "✅ Ninguno.")
+        if unknown:
+            lines.append(f"\n**❓ En el killboard sin Discord vinculado ({len(unknown)})**")
+            lines.append(", ".join(discord.utils.escape_markdown(n) for n in unknown))
+        if no_char:
+            lines.append(f"\nℹ️ {len(no_char)} de la lista no tienen personaje registrado y no se pueden comparar: " + " ".join(f"<@{u}>" for u in no_char))
+        if s.status == "open" and (missing or extra):
+            async with self._lock(-s.source_cta_id if s.source_cta_id else -10 ** 12 - s.id):
+                await self._post_suggestions(s.id, None, extra, missing)
+            lines.append("\nAbajo quedan las preguntas con botones para sacar o sumar a cada uno.")
+        elif s.status != "open":
+            lines.append("\nℹ️ El split no está abierto: solo comparo, no cambio la lista.")
+        return "\n".join(lines)[:1990]
+
+    @commands.command(name="killboard")
+    async def killboard_prefix(self, ctx: commands.Context, *, texto: str = ""):
+        if ctx.guild is None or getattr(ctx.author, "bot", False):
+            return
+        reply = await self.compare_killboard(ctx.author, getattr(ctx.channel, "id", None), texto)
+        await ctx.reply(reply, mention_author=False, allowed_mentions=NO_MENTIONS)
 
     async def on_suggestion_decision(self, interaction: discord.Interaction, accept: bool):
         msg = getattr(interaction, "message", None)
