@@ -3,8 +3,8 @@
 • Última conexión: se toma del archivo que exporta Albion con la lista de la guild ("Character Name" / "Last Seen" / "Roles").
   Cada vez que se sube (en /miembros o como lista de conectados de una CTA) se reemplaza la foto completa.
   "Last Seen" viene en UTC con formato MM/DD/YYYY HH:MM:SS; "Online" = la hora en que se subió el archivo.
-• Asistencia a CTA: cuenta si la persona estaba ANOTADA en la composición Y además estuvo en el canal de voz
-  (mínimo de ctavoice) o aparece en el killboard de esa CTA con un personaje registrado o un alter.
+• Asistencia a CTA: cuenta si la persona aparece en el killboard de esa CTA (personaje registrado o alter)
+  o si estaba ANOTADA en la composición y estuvo más de 20 minutos en el canal de voz.
 • Avisos de salida de la guild: uno por persona; se borra cuando el personaje vuelve a figurar en la guild."""
 import csv
 import io
@@ -200,39 +200,53 @@ def owner_of_names(chars: Dict[int, Set[str]]) -> Dict[str, int]:
 
 
 # ---------- asistencia a CTA ----------
-def cta_attendance(db_path: str, guild_id: int, start: datetime, end: datetime, chars: Dict[int, Set[str]],
-                   min_voice_secs: int = 120) -> Tuple[int, Dict[int, int]]:
-    """(CTAs de la semana, {usuario: CTAs con asistencia}). Solo CTAs normales cerradas (no /content ni canceladas)."""
+ATTEND_VOICE_SECS = 20 * 60          # anotado + más de 20 min en el canal de voz de la CTA
+
+
+def cta_attendance(db_path: str, guild_id: int, start: Optional[datetime], end: Optional[datetime], chars: Dict[int, Set[str]],
+                   min_voice_secs: int = ATTEND_VOICE_SECS, user_id: Optional[int] = None) -> Tuple[int, Dict[int, int]]:
+    """(CTAs del período, {usuario: CTAs con asistencia}). start/end None = desde siempre / hasta ahora.
+    Asistencia = aparece en el killboard de la CTA (personaje registrado o alter) o se anotó y estuvo más de 20 min en el canal de voz.
+    Solo CTAs normales cerradas (no /content ni canceladas). user_id: calcula solo para esa persona (más rápido)."""
     owner = owner_of_names(chars)
     conn = connect(db_path)
     try:
-        if not _has_table(conn, "cta_runs") or not _has_table(conn, "cta_positions"):
+        if not _has_table(conn, "cta_runs"):
             return 0, {}
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(cta_runs)")}
-        sql = "SELECT id FROM cta_runs WHERE guild_id=? AND status='closed' AND closes_at>=? AND closes_at<?"
+        sql, args = "SELECT id FROM cta_runs WHERE guild_id=? AND status='closed'", [guild_id]
+        if start is not None:
+            sql += " AND closes_at>=?"
+            args.append(start.astimezone(timezone.utc).isoformat())
+        if end is not None:
+            sql += " AND closes_at<?"
+            args.append(end.astimezone(timezone.utc).isoformat())
         if "kind" in cols:
             sql += " AND kind='cta'"
-        runs = [int(r["id"]) for r in conn.execute(sql, (guild_id, start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()))]
-        has_voice, has_kb = _has_table(conn, "cta_voice_sessions"), _has_table(conn, "kb_players") and _has_table(conn, "kb_battles")
+        runs = [int(r["id"]) for r in conn.execute(sql, args)]
+        has_pos, has_voice = _has_table(conn, "cta_positions"), _has_table(conn, "cta_voice_sessions")
+        has_kb = _has_table(conn, "kb_players") and _has_table(conn, "kb_battles")
+        uf, ua = (" AND user_id=?", (user_id,)) if user_id is not None else ("", ())
         counts: Dict[int, int] = {}
         now = datetime.now(timezone.utc)
         for cta_id in runs:
-            signed = {int(r["user_id"]) for r in conn.execute("SELECT user_id FROM cta_positions WHERE cta_id=?", (cta_id,))}
-            if not signed:
-                continue
             present: Set[int] = set()
-            if has_voice:
-                secs: Dict[int, float] = {}
-                for r in conn.execute("SELECT user_id, joined_at, left_at FROM cta_voice_sessions WHERE cta_id=?", (cta_id,)):
-                    stop = _dt(r["left_at"]) if r["left_at"] else now
-                    secs[int(r["user_id"])] = secs.get(int(r["user_id"]), 0.0) + max(0.0, (stop - _dt(r["joined_at"])).total_seconds())
-                present |= {u for u, s in secs.items() if s >= min_voice_secs}
             if has_kb:
                 for r in conn.execute("SELECT p.name_norm FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id WHERE b.cta_id=?", (cta_id,)):
                     uid = owner.get(norm(r["name_norm"]))
                     if uid is not None:
                         present.add(uid)
-            for uid in signed & present:
+            if has_pos and has_voice:
+                signed = {int(r["user_id"]) for r in conn.execute(f"SELECT user_id FROM cta_positions WHERE cta_id=?{uf}", (cta_id, *ua))}
+                if signed:
+                    secs: Dict[int, float] = {}
+                    for r in conn.execute(f"SELECT user_id, joined_at, left_at FROM cta_voice_sessions WHERE cta_id=?{uf}", (cta_id, *ua)):
+                        stop = _dt(r["left_at"]) if r["left_at"] else now
+                        secs[int(r["user_id"])] = secs.get(int(r["user_id"]), 0.0) + max(0.0, (stop - _dt(r["joined_at"])).total_seconds())
+                    present |= {u for u in signed if secs.get(u, 0.0) > min_voice_secs}
+            if user_id is not None:
+                present &= {user_id}
+            for uid in present:
                 counts[uid] = counts.get(uid, 0) + 1
         return len(runs), counts
     finally:

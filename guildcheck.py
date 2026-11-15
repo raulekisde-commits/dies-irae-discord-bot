@@ -5,6 +5,7 @@
   /miembros fuera-discord    En la guild y sin Discord vinculado (con o sin el archivo exportado; no lista alters).
   /miembros inactivos        Más de N días sin conectarse a Albion (según el último archivo de la guild subido).
   /miembros kick-lista       Candidatos a expulsar por motivo: inactivos, poca asistencia a CTA, faltan VODs; marca quién tiene /ausencia.
+  /miembros asistencias      Asistencias a CTA por semana o de una persona (killboard, o anotado + 20 min en voz).
   /miembros fuera-guild      Registrados cuyo personaje ya no está en la guild, con listas para expulsar.
   /miembros canal-avisos     Canal donde el bot avisa solo cuando alguien sale de la guild, con botones Expulsar / Ignorar.
 
@@ -103,6 +104,10 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="Salieron de la guild", emoji="🚪", style=discord.ButtonStyle.danger, row=1)
     async def b_fuera_guild(self, interaction: discord.Interaction, button):
         await self.cog.do_fuera_guild(interaction)
+
+    @discord.ui.button(label="Asistencias CTA", emoji="🛡️", style=discord.ButtonStyle.secondary, row=1)
+    async def b_asistencias(self, interaction: discord.Interaction, button):
+        await self.cog.do_asistencias(interaction, "actual", None)
 
 
 class LeaveAlertView(discord.ui.View):
@@ -300,12 +305,51 @@ class GuildCheckCog(commands.Cog):
         if not n_ctas:
             lines.append("ℹ️ No hubo CTAs esa semana: no se evalúa.")
         else:
-            lines.append("Cuenta si se anotó y además estuvo en el canal de voz o aparece en el killboard.")
+            lines.append("Cuenta si aparece en el killboard o si se anotó y estuvo más de 20 min en el canal de voz.")
             lines += [f"• <@{m.id}> · **{n}/{need_cta}** CTA{tags(m)}" for m, n in order(low_cta, lambda mx: mx[1])] or ["✅ Nadie."]
 
         lines += ["", f"**🎥 Faltan VODs de coaching: menos de {cdb.WEEKLY_MIN} (solo Observación) ({len(low_vods)})**"]
         lines += [f"• <@{m.id}> · **{n}/{cdb.WEEKLY_MIN}** VODs{tags(m)}" for m, n in order(low_vods, lambda mx: mx[1])] or ["✅ Nadie."]
 
+        for chunk in _chunks(lines):
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    # ---------- asistencias a CTA ----------
+    async def do_asistencias(self, interaction, semana: str = "actual", persona: Optional[discord.Member] = None):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        chars = await self.run(gdb.chars_by_user)
+        rule = "Cuenta si aparece en el killboard o si se anotó y estuvo más de 20 min en el canal de voz."
+        if persona is not None:
+            ws, we = gdb.week_bounds(0)
+            ps, pe = gdb.week_bounds(-1)
+            n_w, w = await self.run(gdb.cta_attendance, guild.id, ws, we, chars, user_id=persona.id)
+            n_p, p = await self.run(gdb.cta_attendance, guild.id, ps, pe, chars, user_id=persona.id)
+            n_t, t = await self.run(gdb.cta_attendance, guild.id, None, None, chars, user_id=persona.id)
+            return await _say(interaction, f"🛡️ **Asistencias a CTA de {persona.mention}**\n"
+                                           f"• Esta semana: **{w.get(persona.id, 0)}** de {n_w}\n"
+                                           f"• Semana anterior: **{p.get(persona.id, 0)}** de {n_p}\n"
+                                           f"• Total: **{t.get(persona.id, 0)}**\n{rule}")
+        current = semana == "actual"
+        start, end = gdb.week_bounds(0 if current else -1)
+        n, att = await self.run(gdb.cta_attendance, guild.id, start, end, chars)
+        role = guild.get_role(MIEMBRO_ROLE_ID)
+        pool = [m for m in (role.members if role else []) if not getattr(m, "bot", False)]
+        need = min(gdb.CTA_WEEKLY_MIN, n)
+        rows = sorted(pool, key=lambda m: (-att.get(m.id, 0), m.display_name.casefold()))
+        label = f"<t:{_ts(start)}:D> → <t:{_ts(end - timedelta(seconds=1))}:D>"
+        lines = [f"🛡️ **Asistencias a CTA** · semana {'en curso' if current else 'anterior'} ({label}) · **{n}** CTA", rule]
+        if not n:
+            lines.append("ℹ️ No hubo CTAs en esa semana.")
+        else:
+            under = sum(1 for m in pool if att.get(m.id, 0) < need)
+            lines.append(f"Debajo de {need}: **{under}** de {len(pool)} miembros (marcados con ⚠️).")
+            lines += [f"• <@{m.id}> · **{att.get(m.id, 0)}/{n}**" + (" ⚠️" if att.get(m.id, 0) < need else "") for m in rows]
+        others = [u for u in att if u not in {m.id for m in pool}]
+        if others:
+            lines.append(f"\nℹ️ {len(others)} persona(s) sin rol Miembro también asistieron: " + ", ".join(f"<@{u}>" for u in others)[:600])
         for chunk in _chunks(lines):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
@@ -479,7 +523,8 @@ class GuildCheckCog(commands.Cog):
             "🎮 **En la guild sin Discord**: jugadores de la guild sin Discord vinculado (no lista alters).\n"
             f"💤 **Inactivos**: más de {gdb.INACTIVE_DAYS} días sin conectarse (según el último archivo de la guild).\n"
             f"👢 **Lista para expulsar**: semana anterior; inactivos, menos de {gdb.CTA_WEEKLY_MIN} CTA, menos de {cdb.WEEKLY_MIN} VODs. Marca quién tiene /ausencia.\n"
-            "🚪 **Salieron de la guild**: registrados que ya no están en la guild, con listas para expulsar.\n\n"
+            "🚪 **Salieron de la guild**: registrados que ya no están en la guild, con listas para expulsar.\n"
+            "🛡️ **Asistencias CTA**: semana en curso; killboard o anotado + 20 min en voz.\n\n"
             "Con opciones (archivo, días, semana en curso): `/miembros ...`"))
         await interaction.response.send_message(embed=emb, view=PanelView(self, interaction.user.id), ephemeral=True)
 
@@ -504,6 +549,14 @@ class GuildCheckCog(commands.Cog):
     @app_commands.choices(semana=[app_commands.Choice(name="Anterior", value="anterior"), app_commands.Choice(name="En curso", value="actual")])
     async def kick_lista_cmd(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None):
         await self.do_kick_lista(interaction, getattr(semana, "value", semana) or "anterior")
+
+    @miembros_g.command(name="asistencias", description="(Staff) Asistencias a CTA por semana (killboard o anotado + 20 min en voz)")
+    @app_commands.describe(semana="Semana (lunes a domingo, hora UTC). Por defecto la en curso",
+                           persona="Ver solo a una persona: esta semana, la anterior y el total")
+    @app_commands.choices(semana=[app_commands.Choice(name="En curso", value="actual"), app_commands.Choice(name="Anterior", value="anterior")])
+    async def asistencias_cmd(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None,
+                              persona: Optional[discord.Member] = None):
+        await self.do_asistencias(interaction, getattr(semana, "value", semana) or "actual", persona)
 
     @miembros_g.command(name="fuera-guild", description="(Staff) Registrados cuyo personaje ya no está en la guild, con opción de expulsarlos")
     async def fuera_guild_cmd(self, interaction: discord.Interaction):

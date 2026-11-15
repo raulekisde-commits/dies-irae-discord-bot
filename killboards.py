@@ -931,6 +931,17 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬇️ IP mínima", value=f"**{s['min_ip']:.0f}**", inline=True)
+        try:                                          # killboard, o anotado + más de 20 min en el canal de voz (guildcheck_db)
+            import guildcheck_db as gdb
+            chars = await self.run(gdb.chars_by_user)
+            ws, we = gdb.week_bounds(0)
+            gid, uid = interaction.guild.id, target.id
+            n_w, week = await asyncio.to_thread(lambda: gdb.cta_attendance(self.db_path, gid, ws, we, chars, user_id=uid))
+            n_t, tot = await asyncio.to_thread(lambda: gdb.cta_attendance(self.db_path, gid, None, None, chars, user_id=uid))
+            emb.add_field(name="🗓️ Asistencias a CTA",
+                          value=f"Total: **{tot.get(target.id, 0)}** · Esta semana: **{week.get(target.id, 0)}** de {n_w}", inline=False)
+        except Exception:
+            traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
 
