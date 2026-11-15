@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_split_requests_msg ON split_requests(message_id);
 CREATE TABLE IF NOT EXISTS split_suggestions (          -- el bot sugiere sacar (anotado sin conectarse) o sumar (estuvo en el killboard sin anotarse)
     split_id   INTEGER NOT NULL,
     user_id    INTEGER NOT NULL,
-    kind       TEXT NOT NULL,                           -- remove | add
+    kind       TEXT NOT NULL,                           -- remove (sin conectarse) | nokb (no salió en el killboard) | add
     status     TEXT NOT NULL DEFAULT 'pending',         -- pending | accepted | rejected | void
     message_id INTEGER,
     created_at TEXT NOT NULL,
@@ -840,7 +840,7 @@ def decide_suggestion(db_path: str, split_id: int, user_id: int, kind: str, acce
             if st is None or st["status"] != "open":
                 return "closed", []
             lost: List[int] = []
-            if accept and kind == "remove":
+            if accept and kind in ("remove", "nokb"):
                 conn.execute("DELETE FROM split_people WHERE split_id=? AND user_id=?", (split_id, user_id))
                 conn.execute("DELETE FROM split_half WHERE split_id=? AND user_id=?", (split_id, user_id))
                 if conn.execute("DELETE FROM split_looters WHERE split_id=? AND user_id=?", (split_id, user_id)).rowcount:

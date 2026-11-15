@@ -982,9 +982,10 @@ class SplitsCog(commands.Cog):
     # ---------- sugerencias por conectados / killboard ----------
     MAX_SUGGESTIONS = 40                                      # por tanda y por tipo; el resto sale en la próxima carga
 
-    async def apply_suggestions(self, cta_id: int, remove_ids, add_ids) -> Tuple[int, int]:
+    async def apply_suggestions(self, cta_id: int, remove_ids, add_ids, no_kb=None) -> Tuple[int, int]:
         """Deja en el hilo del split de la CTA las preguntas pendientes. `remove_ids`: anotados que no estaban conectados;
-        `add_ids`: gente del killboard que no estaba en la lista. Las pendientes que ya no aplican se anulan y a quien ya se le
+        `add_ids`: gente del killboard que no estaba en la lista; `no_kb`: anotados que no aparecen en el killboard
+        (None = no hay killboard cargado y no se tocan esas preguntas). Las pendientes que ya no aplican se anulan y a quien ya se le
         preguntó una vez no se le vuelve a preguntar. Devuelve (preguntas de sacar nuevas, preguntas de sumar nuevas)."""
         s = await self.run(sdb.find_by_cta, cta_id)
         if s is None or s.status != "open":
@@ -1001,8 +1002,11 @@ class SplitsCog(commands.Cog):
                 if (await self.run(sdb.mirror_of, s.id, u)) != (None, None):
                     late.add(u)                               # ya pidió entrar tarde: se decide por ese otro mensaje
             add_ids = [u for u in add_ids if u not in late]
+            kinds = [("remove", remove_ids), ("add", add_ids)]
+            if no_kb is not None:
+                kinds.append(("nokb", [int(u) for u in dict.fromkeys(no_kb) if int(u) in s.people and int(u) not in remove_ids]))
             made = []
-            for kind, wanted in (("remove", remove_ids), ("add", add_ids)):
+            for kind, wanted in kinds:
                 have = await self.run(sdb.suggestions_of, s.id, kind)
                 for uid, sug in have.items():
                     if sug.status == "pending" and uid not in wanted:
@@ -1033,6 +1037,15 @@ class SplitsCog(commands.Cog):
                         m = await th.send(f"⚔️ <@{uid}> apareció en el killboard pero no estaba anotado. ¿Lo sumo al split?",
                                           view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
                         await self.run(sdb.set_suggestion_message, s.id, uid, "add", m.id)
+                nokb = made[2] if len(made) > 2 else []
+                if nokb:
+                    await th.send(f"🚫 **Anotados que no aparecen en el killboard** ({len(nokb)}). Se anotaron pero no figuran en el killboard "
+                                  "de la CTA. Decidí con los botones si salen del split.", allowed_mentions=NO_MENTIONS)
+                for uid in nokb:
+                    if await self.run(sdb.add_suggestion, s.id, uid, "nokb"):
+                        m = await th.send(f"🚫 <@{uid}> estaba anotado pero no aparece en el killboard. ¿Lo saco del split?",
+                                          view=SplitSuggestionView(self), allowed_mentions=NO_MENTIONS)
+                        await self.run(sdb.set_suggestion_message, s.id, uid, "nokb", m.id)
             except Exception as exc:
                 print(f"⚠️ Split #{s.id}: no pude publicar las sugerencias: {exc!r}")
             return n_rm, n_add
@@ -1054,7 +1067,7 @@ class SplitsCog(commands.Cog):
         if res in ("decided", "missing"):
             return await _say(interaction, "ℹ️ Esto ya estaba decidido.")
         if res == "accepted":
-            verdict = "✅ Sacado del split" if sug.kind == "remove" else "✅ Sumado al split"
+            verdict = "✅ Sacado del split" if sug.kind in ("remove", "nokb") else "✅ Sumado al split"
         else:
             verdict = "✖️ Se queda como estaba"
         extra = " (también era looter: salió de los looters)" if lost else ""

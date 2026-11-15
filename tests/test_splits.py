@@ -738,6 +738,19 @@ class SplitDiscordTests(DiscordBase):
         run(self.cog.on_suggestion_decision(i, True))
         self.assertIn("ya estaba decidido", i.text)
 
+    def test_sugerencia_sacar_anotado_que_no_sale_en_el_killboard(self):
+        split, thread = self._split_cta7([self.alice.id, self.bob.id])
+        run(self.cog.apply_suggestions(7, [self.bob.id], [], no_kb=[self.alice.id, self.bob.id]))       # bob ya tiene la de "no conectado"
+        qs = [m for m in thread.sent if m.view is not None and "no aparece en el killboard" in m.content]
+        self.assertEqual(len(qs), 1)
+        self.assertIn(str(self.alice.id), qs[0].content)
+        run(self.cog.apply_suggestions(7, [self.bob.id], []))                                               # sin killboard: no se anula
+        self.assertNotIn("Ya no aplica", qs[0].content)
+        i = self.inter(self.council, thread, message=qs[0])
+        run(self.cog.on_suggestion_decision(i, True))
+        self.assertEqual(sdb.get_split(self.db, split.id).people, [self.bob.id])
+        self.assertIn("Sacado", i.response.edits[0]["content"])
+
     def test_sugerencia_sumar_del_killboard_y_dejarlo(self):
         split, thread = self._split_cta7([self.alice.id])
         self.assertEqual(run(self.cog.apply_suggestions(7, [], [self.bob.id, self.alice.id])), (0, 1))      # alice ya está

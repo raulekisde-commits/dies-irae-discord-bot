@@ -108,11 +108,12 @@ class SplitSuggestionsTests(KBBase):
         self.sid = sdb.create_split(self.db, guild_id=1, creator_id=9, title="CTA", people=[101, 102, 103, 105], source_cta_id=5)
         rdb.admin_link(self.db, 101, "Ana", 1); rdb.admin_link(self.db, 102, "Zoe", 1)
         rdb.admin_link(self.db, 103, "Bob", 1); rdb.admin_link(self.db, 104, "Gus", 1)       # 105: sin personaje registrado
-        self.got = []
+        self.got, self.nokb = [], []
 
         class Fake:
-            async def apply_suggestions(s_, cta_id, remove, add):
+            async def apply_suggestions(s_, cta_id, remove, add, no_kb=None):
                 self.got.append((cta_id, sorted(remove), sorted(add)))
+                self.nokb.append(None if no_kb is None else sorted(no_kb))
         self.bot.cogs["SplitsCog"] = Fake()
 
     def test_anotados_sin_conectarse_y_killboard_sin_anotarse(self):
@@ -126,6 +127,21 @@ class SplitSuggestionsTests(KBBase):
         c.close()
         run(self.cog.sync_split_suggestions(5))
         self.assertEqual(self.got[-1], (5, [102], [104]))                      # Bob estuvo en el killboard: no se saca; Gus no estaba anotado
+
+    def test_anotados_que_no_salen_en_el_killboard(self):
+        kb.save_online(self.db, 5, ["Ana", "Zoe", "Bob"])
+        run(self.cog.sync_split_suggestions(5))
+        self.assertIsNone(self.nokb[-1])                                        # sin killboard no se pregunta
+        c = connect(self.db)
+        c.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES ('b1', 5, 1, 'x')")
+        c.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES ('b1', 'bob', 'Bob')")
+        c.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES ('b1', 'altzoe', 'AltZoe')")
+        c.close()
+        import alters_db
+        alters_db.init_schema(self.db)
+        alters_db.add_alter(self.db, 102, "AltZoe", 1)                          # Zoe peleó con su alter
+        run(self.cog.sync_split_suggestions(5))
+        self.assertEqual(self.nokb[-1], [101])                                  # Ana conectada pero no en el killboard; 105 sin personaje
 
     def test_sin_lista_de_conectados_no_hay_sugerencias_de_sacar(self):
         c = connect(self.db)
