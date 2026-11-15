@@ -5067,24 +5067,11 @@ async def cta_create_stats_panel_once(run: dict, actor_id: int) -> str:
 
 
 async def cta_post_voice_lists(run_id: int):
-    """Al terminar la CTA: en el hilo de stats, quién anotado no estuvo en voz y quién estuvo sin estar anotado."""
-    row = db_fetchall("SELECT stats_thread_id FROM cta_runs WHERE id=?", (run_id,))
-    if not row or not row[0]["stats_thread_id"]:
-        return
-    try:
-        thread = bot.get_channel(int(row[0]["stats_thread_id"])) or await bot.fetch_channel(int(row[0]["stats_thread_id"]))
-        not_voice, extra = await asyncio.to_thread(cv.compare_with_signups, DB_PATH, run_id)
-        for header, ids in (("📵 **Anotados que NO estuvieron en voz** (menos de 2 min)", not_voice),
-                            ("🎧 **Estuvieron en voz pero NO estaban anotados**", extra)):
-            lines = [f"• <@{u}>" for u in ids] or ["Nadie."]
-            for i, chunk in enumerate(chunk_lines(lines)):
-                await thread.send((header + f" ({len(ids)})\n" if i == 0 else "") + chunk, allowed_mentions=CTA_NO_PINGS)
-    except Exception as exc:
-        print(f"CTA #{run_id}: no pude publicar las listas de voz: {exc!r}")
+    """Al terminar la CTA (recién ahí hay datos de voz completos): el hilo de stats solo muestra los warnings automáticos,
+    agrupados por caso (anotados sin voz, en voz sin anotar, sin killboard, otra arma, skippers)."""
     kb_cog = bot.get_cog("KillboardCog")
-    if kb_cog is not None:                                 # tercera lista: en voz, sin anotar y sin killboard (se actualiza al cargar el killboard)
-        await kb_cog.refresh_voice_kb(run_id)
-        await kb_cog.refresh_weapon_check(run_id)          # armas distintas a la de la posición (si ya hay killboard)
+    if kb_cog is not None:
+        await kb_cog.refresh_auto_warnings(run_id)
 
 
 async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
