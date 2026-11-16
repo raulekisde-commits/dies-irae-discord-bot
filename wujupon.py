@@ -257,14 +257,39 @@ class InventoryView(OwnerView):
     def __init__(self, cog: "WujuponCog", owner_id: int, rows: List[wdb.InventoryRow]):
         super().__init__(owner_id)
         self.cog = cog
-        options = [discord.SelectOption(label=r.prize.name[:100], value=str(r.first_card_id),
-                                        description=f"{wdb.RARITIES[r.prize.rarity][0]} · x{r.available}"[:100],
-                                        emoji=wdb.RARITIES[r.prize.rarity][1])
-                   for r in rows if r.first_card_id][:25]
-        if options:
-            sel = discord.ui.Select(placeholder="Elegí una carta para ver o canjear", options=options)
-            sel.callback = lambda inter, s=sel: self.cog.show_card(inter, int(s.values[0]))
-            self.add_item(sel)
+        self.options = [discord.SelectOption(label=r.prize.name[:100], value=str(r.first_card_id),
+                                             description=f"{wdb.RARITIES[r.prize.rarity][0]} · x{r.available}"[:100],
+                                             emoji=wdb.RARITIES[r.prize.rarity][1])
+                        for r in rows if r.first_card_id]
+        self.page = 0
+        self.pages = max(1, -(-len(self.options) // 25))
+        self._build()
+
+    def _build(self):
+        self.clear_items()
+        chunk = self.options[self.page * 25:(self.page + 1) * 25]
+        if not chunk:
+            return
+        ph = "Elegí una carta para ver o canjear"
+        if self.pages > 1:
+            ph += f" ({self.page + 1}/{self.pages})"
+        sel = discord.ui.Select(placeholder=ph, options=chunk)
+        sel.callback = lambda inter, s=sel: self.cog.show_card(inter, int(s.values[0]))
+        self.add_item(sel)
+        if self.pages > 1:
+            prev = discord.ui.Button(label="Anterior", emoji="◀️", style=discord.ButtonStyle.secondary,
+                                     disabled=self.page == 0)
+            nxt = discord.ui.Button(label="Siguiente", emoji="▶️", style=discord.ButtonStyle.secondary,
+                                    disabled=self.page >= self.pages - 1)
+            prev.callback = lambda inter: self._go(inter, -1)
+            nxt.callback = lambda inter: self._go(inter, 1)
+            self.add_item(prev)
+            self.add_item(nxt)
+
+    async def _go(self, interaction: discord.Interaction, step: int):
+        self.page = min(max(self.page + step, 0), self.pages - 1)
+        self._build()
+        await interaction.response.edit_message(view=self)
 
 
 class RedeemView(OwnerView):
