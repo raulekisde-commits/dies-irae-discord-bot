@@ -216,6 +216,13 @@ except Exception:
     async def setup_roulette(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar roulette.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from rentas import setup_rentas
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_rentas(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar rentas.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from nodesync import setup_nodesync
 except Exception:
     import traceback as _tb
@@ -401,6 +408,8 @@ NODES_SOURCE_BOT_ID = 1546325145503928431
 NODES_SOURCE_OWNER_ID = 542775576461705218       # los timers copiados quedan a nombre de la persona dueña de ese bot
 PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista", "votacion", "killboard"}          # comandos con «!» que siguen funcionando (el resto está apagado)
 EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
+RENT_GUILD_ID = 1571721151023947906           # servidor de rentas de Albion (rentas.py): solo slash, botones y formularios
+RENT_COUNCIL_ROLE_ID = 1571728246586740877    # rol Council del servidor de rentas
 CATEGORY_ID = 1257902293609742346
 LOG_CHANNEL_ID = 1462207061902496037
 bs.register("log", "Logs generales del bot", LOG_CHANNEL_ID, "Registro general de acciones del bot (staff, reclutamiento, etc.)")
@@ -658,6 +667,7 @@ class MyBot(commands.Bot):
             await _safe_setup("diagnostico", setup_diagnostico, self, DB_PATH, GUILD_ID)
             await _safe_setup("expulsar", setup_expulsar, self, GUILD_ID)
             await _safe_setup("nodesync", self._setup_nodesync)
+            await _safe_setup("rentas", setup_rentas, self, DB_PATH, RENT_GUILD_ID, RENT_COUNCIL_ROLE_ID)
             self.loop.create_task(_report_startup_errors(self))
             print("✅ Wuju Coins y apuestas cargados")
         except Exception as e:
@@ -670,6 +680,11 @@ class MyBot(commands.Bot):
         except Exception as e:
             STARTUP_INFO["sync"] = f"❌ falló la sincronización: {str(e)[:500]}"
             print("❌ Error sync slash commands [setup_hook]:", e)
+        try:
+            rent_synced = await self.tree.sync(guild=discord.Object(id=RENT_GUILD_ID))
+            print(f"✅ Slash commands sincronizados (servidor de rentas): {len(rent_synced)} comandos")
+        except Exception as e:
+            print("❌ Error sync slash commands (servidor de rentas):", e)
 
     async def close(self):
         if hasattr(self, "http_session"):
