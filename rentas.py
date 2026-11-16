@@ -407,6 +407,28 @@ class RentasCog(commands.Cog):
         g = self.guild
         return g.get_role(self.council_role_id) if g is not None else None
 
+    # ---------- comandos ----------
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild):
+        """Si el bot entra al servidor de rentas después de arrancar, registra /renta sin reiniciar."""
+        if getattr(guild, "id", None) == self.guild_id:
+            await self.sync_commands(notify=True)
+
+    async def sync_commands(self, notify: bool = False) -> str:
+        try:
+            synced = await self.bot.tree.sync(guild=discord.Object(id=self.guild_id))
+            msg = f"✅ /renta sincronizado en el servidor de rentas ({len(synced)} comando/s)."
+        except Exception as exc:
+            msg = f"❌ No pude sincronizar /renta en el servidor de rentas: {str(exc)[:500]}"
+        print(msg)
+        if notify:
+            try:
+                owner = (await self.bot.application_info()).owner
+                await owner.send(msg)
+            except Exception:
+                traceback.print_exc()
+        return msg
+
     # ---------- logs ----------
     async def log(self, kind: str, text: str, embed: Optional[discord.Embed] = None):
         try:
