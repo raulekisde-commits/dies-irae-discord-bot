@@ -565,6 +565,10 @@ async def _report_startup_errors(bot):
         lines = [f"🟢 **Bot iniciado** · <t:{int(datetime.now(timezone.utc).timestamp())}:f>",
                  f"📦 Versión: {_git_version()}",
                  f"🔁 Comandos: {sync}"]
+        rent = STARTUP_INFO.get("rent_sync", "sin dato")
+        if bot.get_guild(RENT_GUILD_ID) is None:
+            rent += " · ⚠️ el bot no está en el servidor de rentas (al entrar sincroniza solo)"
+        lines.append(f"🏰 Comandos /renta: {rent}")
         if STARTUP_INFO.get("clamped"):
             lines.append(f"✂️ Descripciones recortadas por ser muy largas: {STARTUP_INFO['clamped']} (revisá el log)")
         if STARTUP_ERRORS:
@@ -682,8 +686,10 @@ class MyBot(commands.Bot):
             print("❌ Error sync slash commands [setup_hook]:", e)
         try:
             rent_synced = await self.tree.sync(guild=discord.Object(id=RENT_GUILD_ID))
+            STARTUP_INFO["rent_sync"] = f"✅ {len(rent_synced)} sincronizado(s)"
             print(f"✅ Slash commands sincronizados (servidor de rentas): {len(rent_synced)} comandos")
         except Exception as e:
+            STARTUP_INFO["rent_sync"] = f"❌ falló la sincronización: {str(e)[:500]}"
             print("❌ Error sync slash commands (servidor de rentas):", e)
 
     async def close(self):
