@@ -729,7 +729,7 @@ def delete_ticket_image(user_id: int):
     db_execute("DELETE FROM ticket_images WHERE user_id = ?", (user_id,))
 
 
-RECRUIT_REJECT_COOLDOWN_DAYS = float(os.getenv("RECRUIT_REJECT_COOLDOWN_DAYS", "7") or 7)
+RECRUIT_REJECT_COOLDOWN_HOURS = float(os.getenv("RECRUIT_REJECT_COOLDOWN_HOURS", "1") or 1)
 
 
 def save_recruit_rejection(user_id: int, rejected_by: Optional[int]):
@@ -742,7 +742,7 @@ def recruit_reject_cooldown_left(user_id: int) -> float:
     rows = db_fetchall("SELECT rejected_at FROM recruit_rejections WHERE user_id = ?", (user_id,))
     if not rows:
         return 0.0
-    return max(0.0, rows[0]["rejected_at"] + RECRUIT_REJECT_COOLDOWN_DAYS * 86400 - time.time())
+    return max(0.0, rows[0]["rejected_at"] + RECRUIT_REJECT_COOLDOWN_HOURS * 3600 - time.time())
 
 
 def save_split_log_mapping(panel_message_id: int, log_message_id: int):
@@ -1893,11 +1893,11 @@ class RecruitView(discord.ui.View):
                 save_recruit_rejection(member.id, interaction.user.id)
             except Exception:
                 traceback.print_exc()
-            days = RECRUIT_REJECT_COOLDOWN_DAYS
+            hours = RECRUIT_REJECT_COOLDOWN_HOURS
             text = "❌ Tu postulación en **Smogg** fue rechazada."
             if reason:
                 text += f"\n\n📝 **Mensaje del reclutador:**\n{reason}"
-            text += f"\n\nPodés volver a postularte en **{days:g} día{'s' if days != 1 else ''}**."
+            text += f"\n\nPodés volver a postularte en **{hours:g} hora{'s' if hours != 1 else ''}**."
             try:
                 await member.send(text)
             except Exception:
@@ -1982,11 +1982,6 @@ class RecruitView(discord.ui.View):
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(RecruitRejectModal(self, interaction.message))
-
-    @discord.ui.button(label="🔒 Cerrar Postulación", style=discord.ButtonStyle.danger, custom_id="recruit_close")
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        await self.close_ticket(interaction)
 
 
 class RecruitRejectModal(discord.ui.Modal, title="Rechazar postulación"):
@@ -2131,7 +2126,7 @@ class RecruitRolesView(discord.ui.View):
 
 
 class RecruitTicketView(discord.ui.View):
-    """Botones del ticket de reclutamiento: SOLO aceptar, rechazar o cerrar."""
+    """Botones del ticket de reclutamiento: SOLO aceptar o rechazar."""
     interaction_check = RecruitView.interaction_check
     _get_applicant = RecruitView._get_applicant
     accept_player = RecruitView.accept_player
@@ -2156,11 +2151,6 @@ class RecruitTicketView(discord.ui.View):
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(RecruitRejectModal(self, interaction.message))
-
-    @discord.ui.button(label="🔒 Cerrar", style=discord.ButtonStyle.danger, custom_id="recruit2_close")
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        await self.close_ticket(interaction)
 
 
 # ================== FOCO DONOR SYSTEM ==================
