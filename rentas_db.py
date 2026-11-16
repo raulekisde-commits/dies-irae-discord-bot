@@ -163,7 +163,8 @@ class RentaError(ValueError):
 
 _MIGRATIONS = {
     "rent_mapas": (("calidad", "TEXT"), ("bioma", "TEXT")),
-    "rent_tickets": (("defensas", "INTEGER NOT NULL DEFAULT 0"), ("pack", "INTEGER NOT NULL DEFAULT 0")),
+    "rent_tickets": (("defensas", "INTEGER NOT NULL DEFAULT 0"), ("pack", "INTEGER NOT NULL DEFAULT 0"),
+                     ("con_terri", "INTEGER NOT NULL DEFAULT 0")),           # HO + territorio del mapa
     "rent_rentas": (("defensa_total", "INTEGER NOT NULL DEFAULT 0"), ("pack_total", "INTEGER NOT NULL DEFAULT 0"),
                     ("gratis_hasta", "TEXT"),           # pack: días gratis hasta esta fecha (exclusive)
                     ("pago_ok", "INTEGER NOT NULL DEFAULT 0"),      # etapa: el Council confirmó el pago inicial
@@ -557,6 +558,25 @@ def get_precio(db_path: str, concepto: str, mapa_id: int, titular_tipo: str) -> 
         conn.close()
 
 
+def terri_precio(db_path: str, mapa_id: int, titular_tipo: str = "guild") -> int:
+    """Precio semanal del territorio del mapa (el del titular o, si no hay, el de guild). 0 = ese territorio no se alquila."""
+    p = get_precio(db_path, "terri", mapa_id, titular_tipo)
+    if p is None:
+        p = get_precio(db_path, "terri", mapa_id, "guild")
+    return int(p or 0)
+
+
+def mapas_con_terri(db_path: str) -> List[int]:
+    """Ids de los mapas activos cuyo territorio se alquila (precio de terri > 0)."""
+    conn = connect(db_path)
+    try:
+        return [int(r["id"]) for r in conn.execute(
+            "SELECT DISTINCT m.id FROM rent_mapas m JOIN rent_precios p ON p.mapa_id = m.id AND p.concepto = 'terri' "
+            "WHERE m.activo = 1 AND p.monto > 0")]
+    finally:
+        conn.close()
+
+
 def list_precios(db_path: str) -> List[tuple]:
     """[(mapa, concepto, titular_tipo, monto)] de los mapas activos."""
     conn = connect(db_path)
@@ -589,6 +609,7 @@ class Ticket:
     alianza_tag: Optional[str] = None
     defensas: int = 0                 # 0, 1 o 2 fases de defensa
     pack: bool = False                # pack Q5/Q6: defensa de las 2 fases + 1 semana gratis
+    con_terri: bool = False           # HO: también renta el territorio del mapa
 
 
 def _ticket(r) -> Optional[Ticket]:
@@ -597,7 +618,7 @@ def _ticket(r) -> Optional[Ticket]:
     return Ticket(int(r["id"]), int(r["channel_id"]), int(r["user_id"]), r["idioma"], r["tipo"], int(r["mapa_id"]),
                   bool(r["nivel3"]), bool(r["ponemos"]), r["titular_tipo"], r["titular_nombre"], r["status"],
                   int(r["message_id"]) if r["message_id"] is not None else None, r["guild_nombre"], r["alianza_tag"],
-                  int(r["defensas"] or 0), bool(r["pack"]))
+                  int(r["defensas"] or 0), bool(r["pack"]), bool(r["con_terri"]) if "con_terri" in r.keys() else False)
 
 
 TAG_MAX = 5
@@ -633,10 +654,10 @@ def validate_request(tipo: str, titular_tipo: str, titular_nombre: str) -> str:
 
 def create_ticket(db_path: str, channel_id: int, user_id: int, idioma: str, tipo: str, mapa_id: int, nivel3: bool, ponemos: bool,
                   titular_tipo: str, titular_nombre: str, guild_nombre: Optional[str] = None, alianza_tag: Optional[str] = None,
-                  defensas: int = 0, pack: bool = False) -> int:
+                  defensas: int = 0, pack: bool = False, con_terri: bool = False) -> int:
     nombre = validate_request(tipo, titular_tipo, titular_nombre)
     if tipo != "ho":
-        nivel3 = ponemos = pack = False
+        nivel3 = ponemos = pack = con_terri = False
         defensas = 0
     if pack:
         defensas = 0                                   # el pack ya incluye la defensa de las 2 fases
@@ -646,9 +667,9 @@ def create_ticket(db_path: str, channel_id: int, user_id: int, idioma: str, tipo
         with write_tx(conn):
             cur = conn.execute(
                 "INSERT INTO rent_tickets(channel_id, user_id, idioma, tipo, mapa_id, nivel3, ponemos, titular_tipo, titular_nombre, "
-                "guild_nombre, alianza_tag, defensas, pack, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "guild_nombre, alianza_tag, defensas, pack, con_terri, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (channel_id, user_id, idioma, tipo, mapa_id, int(bool(nivel3)), int(bool(ponemos)), titular_tipo, nombre,
-                 guild_nombre, alianza_tag, defensas, int(bool(pack)), utcnow_iso()))
+                 guild_nombre, alianza_tag, defensas, int(bool(pack)), int(bool(con_terri)), utcnow_iso()))
             return int(cur.lastrowid)
     finally:
         conn.close()
@@ -967,7 +988,8 @@ def confirmar_pago(db_path: str, renta_id: int, actor_id: int) -> Optional[int]:
 def renta_by_ticket(db_path: str, ticket_id: int) -> Optional[Renta]:
     conn = connect(db_path)
     try:
-        return _renta(conn.execute("SELECT * FROM rent_rentas WHERE ticket_id = ? ORDER BY id DESC LIMIT 1", (ticket_id,)).fetchone())
+        return _renta(conn.execute("SELECT r.* FROM rent_rentas r JOIN rent_tickets t ON t.id = r.ticket_id "      # la del tipo del ticket
+                                   "WHERE r.ticket_id = ? AND r.tipo = t.tipo ORDER BY r.id DESC LIMIT 1", (ticket_id,)).fetchone())
     finally:
         conn.close()
 
