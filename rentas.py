@@ -72,6 +72,9 @@ T: Dict[str, Dict[str, str]] = {
         "tar_packs": "Packs", "tar_pack_line": "HO en {q}: defensa de las 2 fases + 1 semana gratis: **{amount}**",
         "tar_half": "⚠️ Defensas y packs: se paga la mitad por adelantado.",
         "tar_maps": "Mapas · calidad · bioma · precio semanal", "tar_ask": "a consultar", "tar_none": "Todavía no hay mapas cargados.",
+        "acc_title": "🔑 Acceso a HO", "acc_price": "Precio semanal: **{no}** no renters · **{si}** renters",
+        "acc_you": "Tu precio: **{p}** ({who})", "acc_renter": "sos renter", "acc_no_renter": "no sos renter",
+        "acc_maps": "Mapas", "acc_none": "Por ahora no hay HO con acceso disponible.", "acc_ask": "Para pedirlo, consultá al Council.",
     },
     "pt": {
         "panel_title": "🏰 Aluguéis no Albion",
@@ -115,6 +118,9 @@ T: Dict[str, Dict[str, str]] = {
         "tar_packs": "Packs", "tar_pack_line": "HO em {q}: defesa das 2 fases + 1 semana grátis: **{amount}**",
         "tar_half": "⚠️ Defesas e packs: paga-se metade adiantado.",
         "tar_maps": "Mapas · qualidade · bioma · preço semanal", "tar_ask": "a consultar", "tar_none": "Ainda não há mapas cadastrados.",
+        "acc_title": "🔑 Acesso à HO", "acc_price": "Preço semanal: **{no}** não locatários · **{si}** locatários",
+        "acc_you": "Seu preço: **{p}** ({who})", "acc_renter": "você é locatário", "acc_no_renter": "você não é locatário",
+        "acc_maps": "Mapas", "acc_none": "No momento não há HO com acesso disponível.", "acc_ask": "Para pedir, fale com o Council.",
     },
     "en": {
         "panel_title": "🏰 Albion rentals",
@@ -158,6 +164,9 @@ T: Dict[str, Dict[str, str]] = {
         "tar_packs": "Packs", "tar_pack_line": "HO on {q}: 2-phase defense + 1 free week: **{amount}**",
         "tar_half": "⚠️ Defenses and packs: half is paid upfront.",
         "tar_maps": "Maps · quality · biome · weekly price", "tar_ask": "ask us", "tar_none": "No maps have been added yet.",
+        "acc_title": "🔑 HO access", "acc_price": "Weekly price: **{no}** non-renters · **{si}** renters",
+        "acc_you": "Your price: **{p}** ({who})", "acc_renter": "you are a renter", "acc_no_renter": "you are not a renter",
+        "acc_maps": "Maps", "acc_none": "There is no HO with access available right now.", "acc_ask": "To request it, ask the Council.",
     },
 }
 LANG_NAMES = {"es": "Español", "pt": "Português", "en": "English"}
@@ -545,7 +554,7 @@ class RentasCog(commands.Cog):
         try:
             text = await self.run(rdb.get_info, lang)
             info = discord.Embed(title=t(lang, "btn_info"), description=(text or t(lang, "info_empty"))[:4096], color=BLUE)
-            await _reply(interaction, embeds=[info, await self.tarifas_embed(lang)])
+            await _reply(interaction, embeds=[info, await self.tarifas_embed(lang), await self.acceso_embed(lang, interaction.user.id)])
         except Exception:
             traceback.print_exc()
             await _reply(interaction, t(lang, "error"))
@@ -568,6 +577,21 @@ class RentasCog(commands.Cog):
         chunks = [text[i:i + 1024] for i in range(0, min(len(text), 3072), 1024)]
         for i, chunk in enumerate(chunks):
             emb.add_field(name=t(lang, "tar_maps") if i == 0 else "\u200b", value=chunk, inline=False)
+        return emb
+
+    async def acceso_embed(self, lang: str, user_id: Optional[int] = None) -> discord.Embed:
+        """Acceso a HO: mapas con HO disponible y precio semanal (no renter / renter). Con user_id, el precio que le toca."""
+        no, si = await self.run(rdb.acceso_precios)
+        maps = await self.run(rdb.acceso_mapas)
+        desc = t(lang, "acc_price", no=rdb.fmt_silver(no), si=rdb.fmt_silver(si))
+        if user_id is not None and maps:
+            renter = await self.run(rdb.is_renter, user_id)
+            desc += "\n" + t(lang, "acc_you", p=rdb.fmt_silver(si if renter else no), who=t(lang, "acc_renter" if renter else "acc_no_renter"))
+        emb = discord.Embed(title=t(lang, "acc_title"), color=GOLD, description=desc)
+        text = "\n".join(f"• **{m}**" for m in maps) or t(lang, "acc_none")
+        emb.add_field(name=t(lang, "acc_maps"), value=text[:1024], inline=False)
+        if maps:
+            emb.set_footer(text=t(lang, "acc_ask"))
         return emb
 
     async def on_request(self, interaction: discord.Interaction, lang: str, kind: str):
@@ -1048,6 +1072,7 @@ class RentasCog(commands.Cog):
     # ============================================================
     renta = app_commands.Group(name="renta", description="Rentas de Albion (Council)", guild_only=True)
     mapa_g = app_commands.Group(name="mapa", description="Lista de mapas", parent=renta)
+    acceso_g = app_commands.Group(name="acceso", description="Acceso a HO: mapas y precios", parent=renta)
 
     async def _map_autocomplete(self, interaction: discord.Interaction, current: str):
         mapas = await self.run(rdb.list_mapas)
@@ -1174,6 +1199,57 @@ class RentasCog(commands.Cog):
                  for m, p in rows]
         await _reply(interaction, embed=discord.Embed(title="🗺️ Mapas", color=BLUE, description="\n".join(lines)[:4000] or "No hay mapas."))
 
+    async def _acceso_autocomplete(self, interaction: discord.Interaction, current: str):
+        cur = (current or "").lower()
+        return [app_commands.Choice(name=m[:100], value=m[:100]) for m in await self.run(rdb.acceso_mapas) if cur in m.lower()][:25]
+
+    @acceso_g.command(name="agregar", description="(Council) Agrega un mapa donde hay HO con acceso a la venta")
+    @app_commands.describe(mapa="Nombre del mapa")
+    async def acceso_agregar(self, interaction: discord.Interaction, mapa: str):
+        if not await self._council(interaction):
+            return
+        try:
+            nombre = await self.run(rdb.add_acceso_mapa, mapa)
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        await _reply(interaction, f"✅ **{nombre}** agregado a los mapas con acceso a HO.")
+        await self.log("rentas", f"🔑 {interaction.user.mention} agregó **{nombre}** a los mapas con acceso a HO.")
+
+    @acceso_g.command(name="quitar", description="(Council) Quita un mapa de la lista de acceso a HO")
+    @app_commands.describe(mapa="Nombre del mapa")
+    async def acceso_quitar(self, interaction: discord.Interaction, mapa: str):
+        if not await self._council(interaction):
+            return
+        try:
+            nombre = await self.run(rdb.remove_acceso_mapa, mapa)
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        await _reply(interaction, f"✅ **{nombre}** quitado de los mapas con acceso a HO.")
+        await self.log("rentas", f"🔑 {interaction.user.mention} quitó **{nombre}** de los mapas con acceso a HO.")
+
+    @acceso_g.command(name="lista", description="(Council) Mapas con acceso a HO y precios")
+    async def acceso_lista(self, interaction: discord.Interaction):
+        if not await self._council(interaction):
+            return
+        await _reply(interaction, embed=await self.acceso_embed("es"))
+
+    @acceso_g.command(name="precio", description="(Council) Precio semanal del acceso a HO (sin datos = ver)")
+    @app_commands.describe(no_renter="Precio semanal para no renters (ej: 50M)", renter="Precio semanal para renters (ej: 35M)")
+    async def acceso_precio(self, interaction: discord.Interaction, no_renter: Optional[str] = None, renter: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            vals = {k: rdb.parse_silver(v) for k, v in (("acceso_no_renter", no_renter), ("acceso_renter", renter)) if v}
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        for k, v in vals.items():
+            await self.run(rdb.set_tarifa_fija, k, v)
+        no, si = await self.run(rdb.acceso_precios)
+        txt = f"Acceso a HO: **{rdb.fmt_silver(no)}**/semana no renters · **{rdb.fmt_silver(si)}**/semana renters"
+        await _reply(interaction, ("✅ Precios actualizados.\n" if vals else "") + txt)
+        if vals:
+            await self.log("rentas", f"💲 {interaction.user.mention} actualizó el precio del acceso a HO: {txt}")
+
     @renta.command(name="tarifas", description="(Council) Tarifas únicas: defensa, nivel 3, recargos y packs (sin datos = ver)")
     @app_commands.describe(defensa="Defensa del HO, precio por fase (ej: 40M)", nivel3="Pago único de subir el HO a nivel 3",
                            recargo_alianza="Nivel 3: recargo semanal si la guild tiene alianza (ej: 50M)",
@@ -1221,6 +1297,7 @@ class RentasCog(commands.Cog):
 
     mapa_quitar.autocomplete("nombre")(_map_autocomplete)
     mapa_editar.autocomplete("actual")(_map_autocomplete)
+    acceso_quitar.autocomplete("mapa")(_acceso_autocomplete)
 
     @renta.command(name="precio", description="(Council) Fija un precio (semanal o cargo fijo) por mapa y titular")
     @app_commands.choices(concepto=CONCEPTO_CHOICES, titular=TITULAR_CHOICES)

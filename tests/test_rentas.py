@@ -203,7 +203,10 @@ class Tarifas(Base):
         rdb.set_precio(self.db, "ho", m.id, "alianza", 9_000_000)                # la de alianza no se muestra
         rdb.set_mapa_detalle(self.db, self.mapa.id, "Q3", "Thetford")
         rows = [(x.nombre, x.detalle, p) for x, p in rdb.lista_tarifas(self.db)]
-        self.assertEqual(rows, [("Sleetwater", "Q3 · Thetford", None), ("Deadpine", "Q6 · Martlock", 1_500_000)])
+        self.assertEqual(rows, [("Deadpine", "Q6 · Martlock", 1_500_000), ("Sleetwater", "Q3 · Thetford", None)])
+        rdb.add_mapa(self.db, "Alfa", "Q4", "Lymhurst")
+        rdb.add_mapa(self.db, "Beta", "Q6", "Thetford")
+        self.assertEqual([x.nombre for x, _p in rdb.lista_tarifas(self.db)], ["Beta", "Deadpine", "Alfa", "Sleetwater"])   # Q6 → Q3
         with self.assertRaises(rdb.RentaError):
             rdb.add_mapa(self.db, "Otro", "Q9", "Thetford")
 
@@ -240,6 +243,50 @@ class Tarifas(Base):
         self.assertIn("half is paid upfront", emb.description)
         self.assertIn("ask us", txt)                                              # nivel 3 sin cargar
         self.assertIn("Sleetwater** · Q5 · Bridgewatch — 1.5M", txt)
+
+
+class AccesoHO(Base):
+    def test_precios_por_defecto_y_editables(self):
+        self.assertEqual(rdb.acceso_precios(self.db), (50_000_000, 35_000_000))
+        rdb.set_tarifa_fija(self.db, "acceso_renter", 30_000_000)
+        self.assertEqual(rdb.acceso_precios(self.db), (50_000_000, 30_000_000))
+
+    def test_mapas_de_acceso(self):
+        self.assertEqual(rdb.add_acceso_mapa(self.db, "  Deadpine   Hollow "), "Deadpine Hollow")
+        rdb.add_acceso_mapa(self.db, "Sleetwater")
+        with self.assertRaises(rdb.RentaError):
+            rdb.add_acceso_mapa(self.db, "deadpine hollow")                       # sin duplicados (sin importar mayúsculas)
+        self.assertEqual(rdb.acceso_mapas(self.db), ["Deadpine Hollow", "Sleetwater"])
+        self.assertEqual(rdb.remove_acceso_mapa(self.db, "SLEETWATER"), "Sleetwater")
+        with self.assertRaises(rdb.RentaError):
+            rdb.remove_acceso_mapa(self.db, "Sleetwater")
+        self.assertEqual(rdb.acceso_mapas(self.db), ["Deadpine Hollow"])
+
+    def test_renter_automatico(self):
+        self.assertFalse(rdb.is_renter(self.db, 10))
+        canal, rid = self.alta(tipo="permiso", holder="personaje", nombre="Pepe")      # permisos de crafteo no cuentan
+        rdb.add_miembro(self.db, canal.id, 10)
+        self.assertFalse(rdb.is_renter(self.db, 10))
+        canal, rid = self.alta(tipo="ho", nombre="Smogg", user=11)
+        rdb.add_miembro(self.db, canal.id, 10)
+        self.assertTrue(rdb.is_renter(self.db, 10))
+        rdb.dar_baja(self.db, rid, WED)
+        self.assertFalse(rdb.is_renter(self.db, 10))
+
+    def test_apartado_en_info(self):
+        cog = rentas.RentasCog(discord_stub.Bot(), self.db, 1, COUNCIL)
+        emb = asyncio.run(cog.acceso_embed("es", 10))
+        self.assertIn("50M", emb.description)
+        self.assertIn("no hay HO con acceso", str(emb.fields))
+        self.assertNotIn("Tu precio", emb.description)                              # sin mapas no se muestra el precio personal
+        rdb.add_acceso_mapa(self.db, "Deadpine")
+        emb = asyncio.run(cog.acceso_embed("es", 10))
+        self.assertIn("Tu precio: **50M** (no sos renter)", emb.description)
+        canal, _rid = self.alta(tipo="terri", nombre="Smogg")
+        rdb.add_miembro(self.db, canal.id, 10)
+        emb = asyncio.run(cog.acceso_embed("en", 10))
+        self.assertIn("Your price: **35M** (you are a renter)", emb.description)
+        self.assertIn("Deadpine", str(emb.fields))
 
 
 class Roles(Base):
