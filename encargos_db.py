@@ -387,6 +387,16 @@ REMIND_EVERY = 3600          # segundos entre avisos mientras la tarea siga toma
 REMIND_EVERY_COACH = 12 * 3600       # las devoluciones de coaching (source «coach:…») llevan más tiempo: aviso cada 12 h
 
 
+def set_reward_spins(db_path: str, task_id: int, spins: int) -> None:
+    """Cambia las tiradas que da una tarea todavía abierta (p. ej. 0 si quien la cierra está penalizado)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE tasks SET reward_spins = ? WHERE id = ? AND status <> 'done'", (max(0, int(spins)), task_id))
+    finally:
+        conn.close()
+
+
 def set_text(db_path: str, task_id: int, text: str) -> None:
     text = " ".join((text or "").split())[:MAX_TEXT]
     conn = connect(db_path)

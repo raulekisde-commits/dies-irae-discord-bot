@@ -3821,6 +3821,8 @@ async def cta_legacy_refresh_later(run_id: int, delay: float):
 
 def cta_legacy_error(member, slot: dict, snapshot: dict, run: dict, now: Optional[datetime] = None) -> Optional[str]:
     """Primeros minutos de la CTA: la Party 1 es solo para el rol Legacy (se suma a los demás permisos)."""
+    if run.get("kind") == "content":                   # /content: cualquiera se anota, sin importar el rol
+        return None
     end = cta_legacy_window_end(run, snapshot)
     if end is None or int(slot["party_no"]) != 1:
         return None
@@ -3840,6 +3842,8 @@ def cta_run_title(run: dict) -> str:
 def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild, run_id: Optional[int] = None) -> Optional[str]:
     """Cada posición pide un único rol de juego. Flex ignora el permiso (la posición igual cuenta con su rol).
     Con run_id: si ese rol se liberó con «!libre» en la CTA, cualquiera puede anotarse."""
+    if run_id is not None and cta_is_content(int(run_id)):    # /content: cualquiera se anota, sin importar el rol
+        return None
     missing = cu.access_missing_role([r.id for r in member.roles], slot.get("role_ids", []), FLEX_ROLE_ID)
     if missing is None or (run_id is not None and missing in cu.role_free(DB_PATH, int(run_id))):
         return None
@@ -5547,6 +5551,8 @@ async def cta_role_lock_command(message: discord.Message, run: dict, unlock: boo
 
 def cta_role_lock_error(member: discord.Member, slot: dict, snapshot: dict, run_id: int, guild) -> Optional[str]:
     """Error si la persona tiene un rol bloqueado con !lock y la posición no es de ese rol."""
+    if cta_is_content(run_id):                          # /content: sin restricciones de rol
+        return None
     locked = cu.role_locks(DB_PATH, run_id)
     if not locked:
         return None

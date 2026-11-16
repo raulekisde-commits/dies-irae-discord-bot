@@ -40,6 +40,25 @@ CREATE TABLE IF NOT EXISTS coaching_vods (
 );
 CREATE INDEX IF NOT EXISTS idx_coaching_vods_msg ON coaching_vods(message_id);
 CREATE INDEX IF NOT EXISTS idx_coaching_vods_time ON coaching_vods(created_at);
+CREATE TABLE IF NOT EXISTS coaching_reviews (
+    review_msg_id INTEGER PRIMARY KEY,
+    reply_msg_id  INTEGER NOT NULL,
+    thread_id     INTEGER NOT NULL,
+    coach_id      INTEGER NOT NULL,
+    vod_msgs      TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    voted_by      INTEGER,
+    kind          TEXT NOT NULL DEFAULT 'live',
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coaching_penalties (
+    user_id    INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coaching_flags (
+    key        TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -208,6 +227,109 @@ def mark_done(db_path: str, message_id: int) -> None:
     try:
         with write_tx(conn):
             conn.execute("UPDATE coaching_msgs SET done=1 WHERE message_id=?", (message_id,))
+    finally:
+        conn.close()
+
+
+# ---------- revisión de devoluciones cortas ----------
+def add_review(db_path: str, *, review_msg_id: int, reply_msg_id: int, thread_id: int, coach_id: int, vod_msgs: List[int],
+               kind: str = "live") -> None:
+    """kind: 'live' (devolución corta, la tirada espera el voto) o 'retro' (ya cobrada; si está mal, solo penaliza)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT OR IGNORE INTO coaching_reviews(review_msg_id,reply_msg_id,thread_id,coach_id,vod_msgs,kind,created_at) "
+                         "VALUES (?,?,?,?,?,?,?)", (review_msg_id, reply_msg_id, thread_id, coach_id,
+                                                    ",".join(str(int(m)) for m in vod_msgs), kind, utcnow_iso()))
+    finally:
+        conn.close()
+
+
+def get_review(db_path: str, review_msg_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM coaching_reviews WHERE review_msg_id=?", (review_msg_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["vod_msgs"] = [int(x) for x in d["vod_msgs"].split(",") if x]
+        return d
+    finally:
+        conn.close()
+
+
+def decide_review(db_path: str, review_msg_id: int, status: str, voted_by: int) -> bool:
+    """Primer voto del Staff ('ok' o 'bad'). False si ya estaba decidida."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("UPDATE coaching_reviews SET status=?, voted_by=? WHERE review_msg_id=? AND status='pending'",
+                                (status, voted_by, review_msg_id)).rowcount == 1
+    finally:
+        conn.close()
+
+
+def has_review_for_reply(db_path: str, reply_msg_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        return conn.execute("SELECT 1 FROM coaching_reviews WHERE reply_msg_id=?", (reply_msg_id,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def add_penalty(db_path: str, user_id: int) -> bool:
+    """Penaliza al coach (no acumulable: si ya tenía una, queda una). True si es nueva."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("INSERT OR IGNORE INTO coaching_penalties(user_id,created_at) VALUES (?,?)",
+                                (user_id, utcnow_iso())).rowcount == 1
+    finally:
+        conn.close()
+
+
+def has_penalty(db_path: str, user_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        return conn.execute("SELECT 1 FROM coaching_penalties WHERE user_id=?", (user_id,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def clear_penalty(db_path: str, user_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("DELETE FROM coaching_penalties WHERE user_id=?", (user_id,)).rowcount == 1
+    finally:
+        conn.close()
+
+
+def done_msgs(db_path: str, thread_id: int) -> List[int]:
+    """Mensajes con VODs de un post cuya devolución ya se dio."""
+    conn = connect(db_path)
+    try:
+        return [int(r["message_id"]) for r in conn.execute(
+            "SELECT message_id FROM coaching_msgs WHERE thread_id=? AND done=1 ORDER BY message_id", (thread_id,))]
+    finally:
+        conn.close()
+
+
+def all_threads(db_path: str) -> List[Tuple[int, int]]:
+    """(thread_id, user_id) de todos los posts."""
+    conn = connect(db_path)
+    try:
+        return [(int(r["thread_id"]), int(r["user_id"])) for r in conn.execute("SELECT thread_id, user_id FROM coaching_posts")]
+    finally:
+        conn.close()
+
+
+def take_flag(db_path: str, key: str) -> bool:
+    """Marca una acción de una sola vez. True la primera vez; False si ya se había hecho."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("INSERT OR IGNORE INTO coaching_flags(key,created_at) VALUES (?,?)", (key, utcnow_iso())).rowcount == 1
     finally:
         conn.close()
 

@@ -215,8 +215,11 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.mis_vods.callback(self.cog, i))
         return i.text
 
-    def reply_msg(self, user, thread, mid, reply_to=None):
-        m = self.video_msg(user, thread, "buen vod, mejorá el posicionamiento", mid)
+    LONG_REPLY = ("buen vod, mejorá el posicionamiento: en las peleas quedate detrás del tanque, "
+                  "usá el escape antes de que te encierren y mirá más el minimapa")
+
+    def reply_msg(self, user, thread, mid, reply_to=None, text=None):
+        m = self.video_msg(user, thread, text or self.LONG_REPLY, mid)
         m.reference = SimpleNamespace(message_id=reply_to) if reply_to else None
         return m
 
@@ -242,6 +245,89 @@ class CoachingDiscordTests(DiscordBase):
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["done", "done", "done"])
         self.assertIn("✅", m.reactions)
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [])
+
+    def test_devolucion_corta_espera_voto_del_staff(self):
+        self.open_post(self.novato)
+        th = self.vods(2)
+        before = len(self.tasks_ch.sent)
+        m = self.reply_msg(self.coach, th, 4400, reply_to=4100, text="buen vod")       # corta: no completa, pregunta al Staff
+        run(self.cog.process_message(m))
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        self.assertIn("⏳", m.reactions)
+        rev = self.tasks_ch.sent[before]
+        self.assertIn(f"<@&{co.STAFF_ROLE_ID}>", rev.content)
+        i = self.inter(self.coach, message=rev)                                           # el coach no puede votar
+        run(self.cog.on_review_vote(i, bad=False))
+        self.assertIn("Solo el Staff", i.text)
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        i = self.inter(self.council, message=rev)                                         # Staff: está bien → completa a nombre del coach
+        run(self.cog.on_review_vote(i, bad=False))
+        t = edb.find_by_source(self.db, "coach:4100")
+        self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
+        self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")
+        i = self.inter(self.council, message=rev)                                         # no se vota dos veces
+        run(self.cog.on_review_vote(i, bad=True))
+        self.assertIn("ya fue votada", i.text)
+
+    def test_devolucion_corta_mal_hecha_queda_abierta(self):
+        self.open_post(self.novato)
+        th = self.vods(1)
+        before = len(self.tasks_ch.sent)
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4500, text="ok")))
+        rev = self.tasks_ch.sent[before]
+        i = self.inter(self.council, message=rev)
+        run(self.cog.on_review_vote(i, bad=True))
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        self.assertEqual(cdb.pending_msgs(self.db, th.id), [4100])
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4501)))              # después responde bien: cobra
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, self.coach.id)
+
+    def test_mal_hecha_penaliza_una_vez_y_no_se_acumula(self):
+        self.open_post(self.novato)
+        th = self.vods(3)
+        for k, mid in enumerate((4700, 4701)):                                            # dos devoluciones cortas, las dos mal
+            before = len(self.tasks_ch.sent)
+            run(self.cog.process_message(self.reply_msg(self.coach, th, mid, reply_to=4100 + k, text="ok")))
+            run(self.cog.on_review_vote(self.inter(self.council, message=self.tasks_ch.sent[before]), bad=True))
+        self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4702, reply_to=4100)))  # primera bien hecha: sin tirada
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").reward_spins, 0)
+        self.assertFalse(cdb.has_penalty(self.db, self.coach.id))
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4703, reply_to=4101)))  # la siguiente ya cobra (no acumulable)
+        t = edb.find_by_source(self.db, "coach:4101")
+        self.assertEqual((t.status, t.reward_spins), ("done", 1))
+
+    def test_revision_retro_de_devoluciones_con_x(self):
+        self.open_post(self.novato)
+        th = self.vods(2)
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4800, reply_to=4100)))   # cobró la tirada
+        now = datetime.now(timezone.utc)
+        con_x = SimpleNamespace(id=4800, author=self.coach, content="X mal posicionado", created_at=now, jump_url="u1")
+        sin_x = SimpleNamespace(id=4801, author=self.coach, content="bien ahí, próximo", created_at=now, jump_url="u2")
+        vieja = SimpleNamespace(id=4802, author=self.coach, content="x", created_at=co.RETRO_SINCE - timedelta(hours=1), jump_url="u3")
+        dueno = SimpleNamespace(id=4803, author=self.novato, content="x", created_at=now, jump_url="u4")
+
+        async def history(limit=100, **kw):
+            for m in (con_x, sin_x, vieja, dueno):
+                m.channel = th
+                yield m
+        th.history = history
+        import dbutil
+        c = dbutil.connect(self.db); c.execute("DELETE FROM coaching_flags"); c.commit(); c.close()
+        before = len(self.tasks_ch.sent)
+        self.assertEqual(run(self.cog.retro_x_review()), 1)
+        self.assertEqual(run(self.cog.retro_x_review()), 0)                                     # solo una vez
+        rev = self.tasks_ch.sent[before]
+        self.assertIn("ya cobrada", rev.content)
+        run(self.cog.on_review_vote(self.inter(self.council, message=rev), bad=True))
+        self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
+        self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")            # no toca otros VODs
+
+    def test_devolucion_corta_del_staff_no_se_revisa(self):
+        self.open_post(self.novato)
+        th = self.vods(1)
+        run(self.cog.process_message(self.reply_msg(self.council, th, 4600, text="bien")))
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "done")
 
     def test_vod_tasks_close_only_when_a_coach_replies_and_top_coach(self):
         self.open_post(self.novato)

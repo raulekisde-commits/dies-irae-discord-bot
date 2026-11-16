@@ -2,6 +2,7 @@
 y control de los 3 VODs semanales del rol Observación (/coaching reporte, /coaching mis-vods)."""
 import asyncio
 import os
+import re
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -13,7 +14,7 @@ from discord.ext import commands
 import coaching_db as cdb
 import ctautil as cu
 import encargos_db as edb
-from encargos import can_take
+from encargos import can_take, is_staff_or_council
 from guildshop import can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -25,6 +26,12 @@ STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 COACHING_TASKS_CHANNEL_ID = int(os.getenv("COACHING_TASKS_CHANNEL_ID", "1566710577173102602"))     # canal donde salen las tareas de devolución
 ROLE_LABELS = [n for n in cu.PLAYED_ROLES.values() if n != "Bomb"]
+SHORT_REPLY_MIN = 100                                      # devoluciones con menos caracteres: las revisa el Staff antes de dar la tirada
+STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
+# Revisión única al subir el cambio: devoluciones ya cobradas desde esta hora (UTC) que tienen una «X» en el texto
+RETRO_FLAG = "retro_x_review_2026_11"
+RETRO_SINCE = datetime(2026, 11, 16, 1, 13, tzinfo=timezone.utc)
+X_RE = re.compile(r"(?<!\w)[xX❌✖❎](?!\w)")
 
 
 def _roles(m) -> set:
@@ -95,6 +102,21 @@ class CoachRoleView(discord.ui.View):
         await self.cog.on_role_pick(interaction, interaction.data["values"][0])
 
 
+class CoachReviewView(discord.ui.View):
+    """Votación persistente del Staff sobre una devolución corta: hasta que se vote, la tarea sigue abierta y no hay tirada."""
+    def __init__(self, cog: "CoachingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Sí, está mal hecha", style=discord.ButtonStyle.danger, custom_id="coach:rev_bad", emoji="❌")
+    async def bad(self, interaction: discord.Interaction, button):
+        await self.cog.on_review_vote(interaction, bad=True)
+
+    @discord.ui.button(label="No, está bien", style=discord.ButtonStyle.success, custom_id="coach:rev_ok", emoji="✅")
+    async def ok(self, interaction: discord.Interaction, button):
+        await self.cog.on_review_vote(interaction, bad=False)
+
+
 class CoachingCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
@@ -104,6 +126,8 @@ class CoachingCog(commands.Cog):
         await self.run(cdb.init_schema)
         self.bot.add_view(CoachPanelView(self))
         self.bot.add_view(CoachRoleView(self))
+        self.bot.add_view(CoachReviewView(self))
+        self._retro_task = asyncio.create_task(self._retro_when_ready())
 
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(fn, self.db_path, *a, **kw)
@@ -273,23 +297,154 @@ class CoachingCog(commands.Cog):
         ref = getattr(getattr(message, "reference", None), "message_id", None)
         if ref in pending:
             pending = [ref]
+        if not pending:
+            return
+        text = (message.content or "").strip()
+        if len(text) < SHORT_REPLY_MIN and not is_staff_or_council(message.author):
+            return await self.ask_review(message, pending, text)
+        if await self._complete(pending, message.author.id):
+            try:
+                await message.add_reaction("✅")
+            except Exception:
+                pass
+
+    async def _complete(self, pending: List[int], user_id: int) -> int:
+        """Completa las tareas de esos VODs a nombre de user_id (con su tirada). Devuelve cuántas cerró.
+        Si está penalizado, la primera que cierra no da tirada y se le levanta la penalización."""
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is None:
+            return 0
+        penalized = await self.run(cdb.has_penalty, user_id)
         done = 0
         for mid in pending:
             try:
-                if await enc.complete_by_source(f"coach:{mid}", message.author.id):
+                t = await enc.run(edb.find_by_source, f"coach:{mid}")
+                no_spin = penalized and t is not None and t.status not in ("done", "cancelled") and t.reward_spins > 0
+                if no_spin:
+                    await enc.run(edb.set_reward_spins, t.id, 0)
+                if await enc.complete_by_source(f"coach:{mid}", user_id):
                     done += 1
                     await self.run(cdb.mark_done, mid)
+                    if no_spin:
+                        penalized = False
+                        await self.run(cdb.clear_penalty, user_id)
                 else:
+                    if no_spin:
+                        await enc.run(edb.set_reward_spins, t.id, t.reward_spins)
                     t = await enc.run(edb.find_by_source, f"coach:{mid}")
                     if t is None or t.status == "done":              # ya la habían cerrado con el botón
                         await self.run(cdb.mark_done, mid)
             except Exception as exc:
                 print(f"coaching: no pude completar la tarea del VOD {mid}: {exc!r}")
-        if done:
+        return done
+
+    async def ask_review(self, message: discord.Message, pending: List[int], text: str, kind: str = "live", channel=None):
+        """Devolución corta: se le pregunta al Staff si está mal hecha. La tarea queda abierta y sin tirada hasta el voto.
+        kind='retro': devolución ya cobrada (revisión única); si está mal, solo se penaliza."""
+        ch = channel or await self._channel(COACHING_TASKS_CHANNEL_ID)
+        if ch is None:
+            return
+        post = await self.run(cdb.post_by_thread, message.channel.id)
+        owner = f" de <@{post['user_id']}>" if post else ""
+        quote = text[:300].replace("\n", "\n> ") or "(sin texto)"
+        if kind == "retro":
+            body = (f"<@&{STAFF_ROLE_ID}> 🔎 Revisión de una devolución ya cobrada: <@{message.author.id}> respondió {len(pending)} VOD(s)"
+                    f"{owner} y el mensaje tiene una X. **¿Está mal hecha la VOD review?**\n> {quote}\n{message.jump_url}\n"
+                    f"Si está mal, queda penalizado: su próxima VOD review bien hecha no da tirada.")
+        else:
+            body = (f"<@&{STAFF_ROLE_ID}> ⚠️ <@{message.author.id}> respondió {len(pending)} VOD(s){owner} con una devolución muy corta "
+                    f"({len(text)} caracteres). **¿Está mal hecha la VOD review?**\n> {quote}\n{message.jump_url}\n"
+                    f"Hasta que el Staff vote, no se da la tirada de Wujupón.")
+        try:
+            sent = await ch.send(body, view=CoachReviewView(self), allowed_mentions=STAFF_PING)
+            await self.run(cdb.add_review, review_msg_id=sent.id, reply_msg_id=message.id, thread_id=message.channel.id,
+                           coach_id=message.author.id, vod_msgs=pending, kind=kind)
+        except Exception as exc:
+            print(f"coaching: no pude pedir la revisión de la devolución {message.id}: {exc!r}")
+            return
+        if kind == "retro":
+            return
+        try:
+            await message.add_reaction("⏳")
+        except Exception:
+            pass
+
+    async def on_review_vote(self, interaction: discord.Interaction, bad: bool):
+        if not is_staff_or_council(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff puede votar esta revisión.")
+        msg = getattr(interaction, "message", None)
+        row = await self.run(cdb.get_review, msg.id) if msg else None
+        if row is None:
+            return await _say(interaction, "❌ No encuentro esta revisión.")
+        if not await self.run(cdb.decide_review, msg.id, "bad" if bad else "ok", interaction.user.id):
+            return await _say(interaction, "Esta revisión ya fue votada.")
+        coach_id = int(row["coach_id"])
+        coach, who = f"<@{coach_id}>", f"<@{interaction.user.id}>"
+        if bad:
+            await self.run(cdb.add_penalty, coach_id)                    # no acumulable
+            lost = "ya cobró esa tirada, así que" if row.get("kind") == "retro" else "no cobra la tirada y el VOD sigue pendiente;"
+            result = (f"❌ {who}: **mal hecha**. {coach} {lost} queda penalizado: su próxima VOD review bien hecha "
+                      f"no da tirada (la penalización no se acumula).")
+        elif row.get("kind") == "retro":
+            result = f"✅ {who}: **está bien**. {coach} se queda con su tirada."
+        else:
+            done = await self._complete(row["vod_msgs"], coach_id)
+            result = (f"✅ {who}: **está bien**. Se dio la devolución de {done} VOD(s) a nombre de {coach}."
+                      if done else f"✅ {who}: **está bien**, pero esos VODs ya los había devuelto otro coach: sin tirada.")
+        content = (getattr(msg, "content", "") or "") + "\n\n" + result
+        try:
+            await interaction.response.edit_message(content=content[:2000], view=None, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            await _say(interaction, result)
+
+    # ---------- revisión única de devoluciones viejas con «X» ----------
+    async def _retro_when_ready(self):
+        try:
+            await self.bot.wait_until_ready()
+            await self.retro_x_review()
+        except Exception:
+            traceback.print_exc()
+
+    async def retro_x_review(self) -> int:
+        """Una sola vez: devoluciones desde RETRO_SINCE con una «X» en el texto que ya cobraron su tirada → votación del Staff.
+        Si el Staff dice que está mal, el coach queda penalizado. Devuelve cuántas revisiones abrió."""
+        if not await self.run(cdb.take_flag, RETRO_FLAG):
+            return 0
+        enc = self.bot.get_cog("EncargosCog")
+        out = await self._channel(COACHING_TASKS_CHANNEL_ID)
+        if enc is None or out is None:
+            return 0
+        n = 0
+        for thread_id, owner_id in await self.run(cdb.all_threads):
+            done = await self.run(cdb.done_msgs, thread_id)
+            if not done:
+                continue
+            paid: Dict[int, List[int]] = {}                               # coach -> VODs que cerró y cobró en este post
+            for mid in done:
+                t = await enc.run(edb.find_by_source, f"coach:{mid}")
+                if t is not None and t.status == "done" and t.done_by and t.reward_spins > 0:
+                    paid.setdefault(int(t.done_by), []).append(mid)
+            if not paid:
+                continue
+            th = await self._channel(thread_id)
+            if th is None:
+                continue
             try:
-                await message.add_reaction("✅")
-            except Exception:
-                pass
+                async for m in th.history(limit=200):
+                    created = getattr(m, "created_at", None)
+                    author = getattr(m, "author", None)
+                    if created is None or created < RETRO_SINCE or author is None or getattr(author, "bot", False):
+                        continue
+                    if author.id == owner_id or author.id not in paid or not X_RE.search(m.content or ""):
+                        continue
+                    if await self.run(cdb.has_review_for_reply, m.id):
+                        continue
+                    await self.ask_review(m, paid[author.id], (m.content or "").strip(), kind="retro", channel=out)
+                    n += 1
+            except Exception as exc:
+                print(f"coaching: revisión retro, no pude leer el post {thread_id}: {exc!r}")
+        print(f"coaching: revisión retro de devoluciones con X: {n} enviadas al Staff")
+        return n
 
     async def on_role_pick(self, interaction: discord.Interaction, label: str):
         ref = getattr(getattr(interaction, "message", None), "reference", None)
