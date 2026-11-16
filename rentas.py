@@ -58,7 +58,9 @@ T: Dict[str, Dict[str, str]] = {
         "n_rem_desc": "Tenés **{amount}** sin pagar.", "n_paid": "✅ Pago registrado: **{amount}**. ¡Gracias!",
         "c_prorrateo": "Días hasta el domingo", "c_semana": "Semana", "c_nivel3": "Subir a nivel 3", "c_ponemos": "Lo ponemos nosotros", "c_defensa_ant": "Defensa del HO (50% adelantado)",
         "c_defensa_resto": "Defensa del HO (50% restante)", "c_pack_ant": "Pack HO (50% adelantado)", "c_pack_resto": "Pack HO (50% restante)",
-        "l_free": "Gratis hasta", "l_def": "Defensa", "l_def_n": "{n} fase(s)", "l_pack": "Pack (defensa 2 fases + 1 semana gratis)",
+        "l_free": "Gratis hasta", "l_stage": "Estado", "st_approved": "Aprobado", "st_paid": "Pago confirmado",
+        "st_placed": "HO colocado", "st_waiting": "⏳ Esperando que se coloque el HO (la renta semanal todavía no corre)",
+        "placed_msg": "🏠 ¡Tu HO ya está colocado! La renta semanal corre desde hoy.", "l_def": "Defensa", "l_def_n": "{n} fase(s)", "l_pack": "Pack (defensa 2 fases + 1 semana gratis)",
         "pack_only": "❌ El pack solo está disponible en mapas Q5 y Q6.", "n_rest": "💰 Saldo de defensa / pack (50% restante)",
         "c_baja": "Días usados (baja)", "week_of": "semana del {date}",
         "tipo_ho": "HO", "tipo_terri": "Territorio", "tipo_permiso": "Permisos de crafteo",
@@ -99,7 +101,9 @@ T: Dict[str, Dict[str, str]] = {
         "n_rem_desc": "Você tem **{amount}** em aberto.", "n_paid": "✅ Pagamento registrado: **{amount}**. Obrigado!",
         "c_prorrateo": "Dias até domingo", "c_semana": "Semana", "c_nivel3": "Subir para nível 3", "c_ponemos": "Nós colocamos", "c_defensa_ant": "Defesa da HO (50% adiantado)",
         "c_defensa_resto": "Defesa da HO (50% restante)", "c_pack_ant": "Pack HO (50% adiantado)", "c_pack_resto": "Pack HO (50% restante)",
-        "l_free": "Grátis até", "l_def": "Defesa", "l_def_n": "{n} fase(s)", "l_pack": "Pack (defesa 2 fases + 1 semana grátis)",
+        "l_free": "Grátis até", "l_stage": "Situação", "st_approved": "Aprovado", "st_paid": "Pagamento confirmado",
+        "st_placed": "HO colocada", "st_waiting": "⏳ Aguardando a colocação da HO (o aluguel semanal ainda não corre)",
+        "placed_msg": "🏠 Sua HO já foi colocada! O aluguel semanal corre a partir de hoje.", "l_def": "Defesa", "l_def_n": "{n} fase(s)", "l_pack": "Pack (defesa 2 fases + 1 semana grátis)",
         "pack_only": "❌ O pack só está disponível em mapas Q5 e Q6.", "n_rest": "💰 Saldo de defesa / pack (50% restante)",
         "c_baja": "Dias usados (cancelamento)", "week_of": "semana de {date}",
         "tipo_ho": "HO", "tipo_terri": "Território", "tipo_permiso": "Permissões de craft",
@@ -140,7 +144,9 @@ T: Dict[str, Dict[str, str]] = {
         "n_rem_desc": "You have **{amount}** unpaid.", "n_paid": "✅ Payment recorded: **{amount}**. Thanks!",
         "c_prorrateo": "Days until Sunday", "c_semana": "Week", "c_nivel3": "Level 3 upgrade", "c_ponemos": "We place it", "c_defensa_ant": "HO defense (50% upfront)",
         "c_defensa_resto": "HO defense (remaining 50%)", "c_pack_ant": "HO pack (50% upfront)", "c_pack_resto": "HO pack (remaining 50%)",
-        "l_free": "Free until", "l_def": "Defense", "l_def_n": "{n} phase(s)", "l_pack": "Pack (2-phase defense + 1 free week)",
+        "l_free": "Free until", "l_stage": "Status", "st_approved": "Approved", "st_paid": "Payment confirmed",
+        "st_placed": "HO placed", "st_waiting": "⏳ Waiting for the HO to be placed (weekly rent not running yet)",
+        "placed_msg": "🏠 Your HO has been placed! The weekly rent runs from today.", "l_def": "Defense", "l_def_n": "{n} phase(s)", "l_pack": "Pack (2-phase defense + 1 free week)",
         "pack_only": "❌ The pack is only available on Q5 and Q6 maps.", "n_rest": "💰 Defense / pack balance (remaining 50%)",
         "c_baja": "Days used (cancellation)", "week_of": "week of {date}",
         "tipo_ho": "HO", "tipo_terri": "Territory", "tipo_permiso": "Crafting permissions",
@@ -254,6 +260,24 @@ class TicketView(discord.ui.View):
     @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="rent:t:reject")
     async def reject(self, interaction: discord.Interaction, button):
         await self.cog.on_reject(interaction)
+
+
+class StageView(discord.ui.View):
+    """Etapas del ticket de HO (solo el Council): pago confirmado y HO colocado, en cualquier orden."""
+
+    def __init__(self, cog: "RentasCog", paid_done: bool = False, placed_done: bool = False):
+        super().__init__(timeout=None)
+        self.cog = cog
+        for kind, label, emoji, done in (("pay", "Pago confirmado", "💰", paid_done), ("place", "HO colocado", "🏠", placed_done)):
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary if done else discord.ButtonStyle.success,
+                                  custom_id=f"rent:st:{kind}", disabled=done)
+            b.callback = self._cb(kind)
+            self.add_item(b)
+
+    def _cb(self, kind: str):
+        async def cb(interaction: discord.Interaction):
+            await self.cog.on_stage(interaction, kind)
+        return cb
 
 
 class PaidView(discord.ui.View):
@@ -409,6 +433,7 @@ class RentasCog(commands.Cog):
             self.bot.add_view(PanelView(self, lang))
         self.bot.add_view(TicketView(self))
         self.bot.add_view(PaidView(self))
+        self.bot.add_view(StageView(self))
         if not self.scheduler.is_running():
             self.scheduler.start()
 
@@ -698,9 +723,13 @@ class RentasCog(commands.Cog):
             hoy = rdb.today_utc()
             rid = await self.run(rdb.create_renta, canal_id=canal.id, ticket=tk, precio=precio, modalidad=modalidad, inicio=hoy,
                                  actor_id=interaction.user.id, nivel3_monto=n3, ponemos_monto=pon, defensa_monto=defensa, pack_monto=pack)
-        await self._close_ticket_message(interaction.channel, tk, f"✅ Aprobado por {interaction.user.display_name}")
         client_ch = interaction.guild.get_channel(canal.channel_id)
         lang = canal.idioma
+        renta = await self.run(rdb.get_renta, rid)
+        if tk.tipo == "ho":
+            await self.show_stages(interaction.channel if moved else client_ch, tk, renta, interaction.user.display_name, new=not moved)
+        else:
+            await self._close_ticket_message(interaction.channel, tk, f"✅ Aprobado por {interaction.user.display_name}")
         if moved:
             await client_ch.send(t(lang, "approved"), allowed_mentions=NO_MENTIONS)
         else:
@@ -712,7 +741,7 @@ class RentasCog(commands.Cog):
         await self.refresh_panel(canal.id)
         pend = [c for c in await self.run(rdb.cargos_renta, rid) if not c.pagado]
         if pend and client_ch is not None:
-            await self.send_notice(canal, t(lang, "n_initial"), pend)
+            await self.send_notice(canal, t(lang, "n_initial"), pend, with_button=tk.tipo != "ho")   # HO: lo confirma el botón de etapa
         role_note = ""
         if gname:
             role_note = await self.give_guild_role(interaction.guild, tk.user_id, gname, tag)
@@ -721,6 +750,84 @@ class RentasCog(commands.Cog):
         await self.log("tickets", f"✅ Ticket #{tk.id} aprobado por {interaction.user.mention} → <#{canal.channel_id}>")
         await self.log("rentas", f"➕ Renta #{rid}: {TIPO_ES[tk.tipo]} · {mapa.nombre if mapa else tk.mapa_id} · {tk.titular_tipo} "
                                  f"**{tk.titular_nombre}** · {rdb.fmt_silver(precio)}/semana · {modalidad} · alta por {interaction.user.mention}")
+
+    # ---------- etapas del HO ----------
+    def stage_text(self, lang: str, r: rdb.Renta) -> str:
+        mark = lambda ok: "✅" if ok else "⏳"
+        return (f"✅ {t(lang, 'st_approved')}\n{mark(r.pago_ok)} {t(lang, 'st_paid')}\n{mark(r.colocado)} {t(lang, 'st_placed')}")
+
+    async def stage_embed(self, tk: rdb.Ticket, r: rdb.Renta, approved_by: Optional[str] = None) -> discord.Embed:
+        mapa = await self.run(rdb.get_mapa, tk.mapa_id)
+        emb = self.ticket_embed(tk, mapa.nombre if mapa else "?", f"<@{tk.user_id}>")
+        emb.add_field(name=t(tk.idioma, "l_stage"), value=self.stage_text(tk.idioma, r), inline=False)
+        done = r.pago_ok and r.colocado
+        emb.set_footer(text=f"Ticket #{tk.id} · " + ("Finalizado" if done else (f"Aprobado por {approved_by}" if approved_by else "En curso")))
+        return emb
+
+    async def show_stages(self, channel, tk: rdb.Ticket, r: rdb.Renta, approved_by: str, new: bool = False):
+        """Muestra las etapas en el mensaje del ticket (o en uno nuevo en el canal del cliente si se sumó a un canal existente)."""
+        if channel is None:
+            return
+        try:
+            emb = await self.stage_embed(tk, r, approved_by)
+            view = StageView(self, r.pago_ok, r.colocado)
+            if not new and tk.message_id:
+                try:
+                    msg = await channel.fetch_message(tk.message_id)
+                    await msg.edit(embed=emb, view=view)
+                    return
+                except discord.NotFound:
+                    pass
+            msg = await channel.send(embed=emb, view=view, allowed_mentions=NO_MENTIONS)
+            await self.run(rdb.set_ticket_message, tk.id, msg.id)
+        except Exception:
+            traceback.print_exc()
+
+    async def on_stage(self, interaction: discord.Interaction, kind: str):
+        try:
+            if not await self._council(interaction):
+                return
+            tk = await self.run(rdb.ticket_by_message, interaction.message.id)
+            r = await self.run(rdb.renta_by_ticket, tk.id) if tk else None
+            if r is None or not r.activa:
+                return await _reply(interaction, "❌ No encuentro una renta activa para este ticket.")
+            canal = await self.run(rdb.get_canal, r.canal_id)
+            client_ch = interaction.guild.get_channel(canal.channel_id) if canal else None
+            note = ""
+            if kind == "pay":
+                total = await self.run(rdb.confirmar_pago, r.id, interaction.user.id)
+                if total is None:
+                    note = "ℹ️ El pago ya estaba confirmado."
+                elif client_ch is not None and total:
+                    await client_ch.send(t(canal.idioma, "n_paid", amount=rdb.fmt_silver(total)), allowed_mentions=NO_MENTIONS)
+                if total is not None:
+                    note = f"✅ Pago confirmado ({rdb.fmt_silver(total)})."
+                    await self.log("pagos", f"💰 {interaction.user.mention} confirmó el pago inicial de la renta #{r.id} "
+                                            f"({r.titular_nombre}): {rdb.fmt_silver(total)}")
+            else:
+                cargos = await self.run(rdb.colocar, r.id, rdb.today_utc())
+                if cargos is None:
+                    note = "ℹ️ El HO ya estaba marcado como colocado."
+                else:
+                    note = "✅ HO colocado: la renta semanal corre desde hoy."
+                if cargos is not None and client_ch is not None:
+                    await client_ch.send(t(canal.idioma, "placed_msg"), allowed_mentions=NO_MENTIONS)
+                    if cargos:
+                        await self.send_notice(canal, t(canal.idioma, "n_rest"), cargos)
+                        note += f" Cargado: {rdb.fmt_silver(sum(c.monto for c in cargos))}."
+                if cargos is not None:
+                    await self.log("rentas", f"🏠 {interaction.user.mention} marcó el HO colocado (renta #{r.id}, {r.titular_nombre}).")
+            r = await self.run(rdb.get_renta, r.id)
+            try:
+                await interaction.response.edit_message(embed=await self.stage_embed(tk, r), view=None if (r.pago_ok and r.colocado)
+                                                        else StageView(self, r.pago_ok, r.colocado))
+            except Exception:
+                traceback.print_exc()
+            await self.refresh_panel(r.canal_id)
+            await _reply(interaction, note)
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude actualizar la etapa.")
 
     async def _client_channel_for(self, guild: discord.Guild, tk: rdb.Ticket, ticket_channel):
         """(canal, moved). Si el titular ya tiene canal en ese mapa, se reutiliza (moved=False); si no, el ticket se convierte en el canal."""
@@ -802,6 +909,8 @@ class RentasCog(commands.Cog):
             lines = [f"**{t(lang, 'l_price')}:** {rdb.fmt_silver(r.precio)}",
                      f"**{t(lang, 'l_mod')}:** {t(lang, 'mod_' + r.modalidad)}",
                      f"**{t(lang, 'l_start')}:** {ddmm(r.fecha_inicio)}"]
+            if not r.colocado:
+                lines[-1] = t(lang, "st_waiting")
             if r.gratis_hasta:
                 lines.append(f"**{t(lang, 'l_free')}:** {ddmm(r.gratis_hasta - timedelta(days=1))}")
             if fixed:
@@ -836,7 +945,7 @@ class RentasCog(commands.Cog):
         except Exception:
             traceback.print_exc()
 
-    async def send_notice(self, canal: rdb.Canal, title: str, cargos: List[rdb.Cargo], reminder: bool = False):
+    async def send_notice(self, canal: rdb.Canal, title: str, cargos: List[rdb.Cargo], reminder: bool = False, with_button: bool = True):
         """Aviso de cobro en el canal del cliente, con el botón «Marcar pagado»."""
         g = self.guild
         ch = g.get_channel(canal.channel_id) if g is not None else None
@@ -866,7 +975,7 @@ class RentasCog(commands.Cog):
         emb = discord.Embed(title=title, description=desc, color=RED if reminder else GOLD)
         pings = " ".join(f"<@{u}>" for u in await self.run(rdb.miembros, canal.id))
         try:
-            await ch.send(content=pings or None, embed=emb, view=PaidView(self), allowed_mentions=PING)
+            await ch.send(content=pings or None, embed=emb, view=PaidView(self) if with_button else None, allowed_mentions=PING)
         except Exception:
             traceback.print_exc()
 

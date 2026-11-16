@@ -23,7 +23,7 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def alta(self, tipo="ho", modalidad="adelantado", precio=7_000_000, inicio=WED, nombre="Smogg", holder="guild",
-             nivel3=False, ponemos=False, n3=0, pon=0, user=10, defensas=0, pack=False, defensa_monto=0, pack_monto=0):
+             nivel3=False, ponemos=False, n3=0, pon=0, user=10, defensas=0, pack=False, defensa_monto=0, pack_monto=0, colocar=True):
         self._n = getattr(self, "_n", 0) + 1
         tid = rdb.create_ticket(self.db, 1000 + self._n, user, "es", tipo, self.mapa.id, nivel3, ponemos, holder, nombre,
                                 defensas=defensas, pack=pack)
@@ -33,6 +33,8 @@ class Base(unittest.TestCase):
         canal = rdb.find_canal(self.db, self.mapa.id, nombre) or rdb.create_canal(self.db, 5000 + user, self.mapa.id, holder, nombre, "es")
         rid = rdb.create_renta(self.db, canal_id=canal.id, ticket=tk, precio=precio, modalidad=modalidad, inicio=inicio, actor_id=COUNCIL,
                                nivel3_monto=n3, ponemos_monto=pon, defensa_monto=defensa_monto, pack_monto=pack_monto)
+        if tipo == "ho" and colocar:
+            rdb.colocar(self.db, rid, inicio)                                   # el HO se coloca el mismo día
         return canal, rid
 
 
@@ -133,18 +135,40 @@ class Cobro(Base):
 
 
 class DefensasYPack(Base):
-    def test_defensa_mitad_adelantada_y_resto_una_vez(self):
-        canal, rid = self.alta(defensas=2, defensa_monto=80_000_000)
+    def test_defensa_mitad_adelantada_y_resto_al_colocar(self):
+        canal, rid = self.alta(defensas=2, defensa_monto=80_000_000, colocar=False)
         cargos = {c.concepto: c.monto for c in rdb.cargos_renta(self.db, rid)}
-        self.assertEqual(cargos, {"prorrateo": 4_000_000, "defensa_ant": 40_000_000})
-        self.assertEqual([c.monto for c in rdb.cargar_resto(self.db, canal.id)], [40_000_000])
+        self.assertEqual(cargos, {"defensa_ant": 40_000_000})                    # HO sin colocar: todavía no corre la renta
+        self.assertEqual(rdb.cargar_resto(self.db, canal.id), [])                 # el resto se carga al colocar
+        self.assertEqual(sorted((c.concepto, c.monto) for c in rdb.colocar(self.db, rid, WED)),
+                         [("defensa_resto", 40_000_000), ("prorrateo", 4_000_000)])
+        self.assertIsNone(rdb.colocar(self.db, rid, WED))                         # una sola vez
         self.assertEqual(rdb.cargar_resto(self.db, canal.id), [])                 # no se carga dos veces
         self.assertEqual(rdb.deuda_canal(self.db, canal.id), 84_000_000)
 
+    def test_etapas_ho(self):
+        canal, rid = self.alta(nivel3=True, n3=5_000_000, colocar=False)
+        r = rdb.get_renta(self.db, rid)
+        self.assertEqual((r.pago_ok, r.colocado), (False, False))
+        rdb.run_weekly(self.db, SUN)                                              # sin colocar no se cobra la semana
+        self.assertEqual([c.concepto for c in rdb.cargos_renta(self.db, rid)], ["nivel3"])
+        self.assertEqual(rdb.confirmar_pago(self.db, rid, COUNCIL), 5_000_000)
+        self.assertIsNone(rdb.confirmar_pago(self.db, rid, COUNCIL))
+        colocado = date(2026, 11, 24)                                             # martes: la renta corre desde ese día
+        rdb.colocar(self.db, rid, colocado)
+        r = rdb.get_renta(self.db, rid)
+        self.assertEqual((r.pago_ok, r.colocado, r.fecha_inicio), (True, True, colocado))
+        self.assertEqual([c.monto for c in rdb.cargos_renta(self.db, rid) if c.concepto == "prorrateo"], [5_000_000])   # mar-sáb
+
+    def test_territorio_corre_al_aprobar(self):
+        canal, rid = self.alta(tipo="terri", colocar=False)
+        self.assertTrue(rdb.get_renta(self.db, rid).colocado)
+        self.assertEqual([c.concepto for c in rdb.cargos_renta(self.db, rid)], ["prorrateo"])
+
     def test_pack_semana_gratis(self):
-        canal, rid = self.alta(pack=True, defensas=2, pack_monto=120_000_000)    # miércoles: gratis hasta el miércoles siguiente
+        canal, rid = self.alta(pack=True, defensas=2, pack_monto=120_000_000)    # colocado el miércoles: gratis hasta el miércoles siguiente
         cargos = {c.concepto: c.monto for c in rdb.cargos_renta(self.db, rid)}
-        self.assertEqual(cargos, {"pack_ant": 60_000_000})                       # sin prorrateo (días gratis) y sin defensa aparte
+        self.assertEqual(cargos, {"pack_ant": 60_000_000, "pack_resto": 60_000_000})   # sin prorrateo (días gratis) ni defensa aparte
         rdb.run_weekly(self.db, SUN)                                              # semana dom 22 - sáb 28: gratis hasta el mié 25 → 4 días
         semana = [c.monto for c in rdb.cargos_renta(self.db, rid) if c.concepto == "semana"]
         self.assertEqual(semana, [4_000_000])
@@ -274,6 +298,14 @@ class Discord(Base):
         self.assertEqual(opts, ["nivel3", "def1", "def2", "pack"])
         self.assertEqual(am.rol.default, "[Timba] Smogg")
         self.assertEqual(len(rentas.TipoChoiceView(cog, "es", 10).children), 2)
+        sv = rentas.StageView(cog, paid_done=True)
+        self.assertEqual([(c.custom_id, c.disabled) for c in sv.children], [("rent:st:pay", True), ("rent:st:place", False)])
+        canal, rid = self.alta(colocar=False)
+        r = rdb.get_renta(self.db, rid)
+        self.assertEqual(cog.stage_text("es", r), "✅ Aprobado\n⏳ Pago confirmado\n⏳ HO colocado")
+        tk = rdb.ticket_by_channel(self.db, 1000 + self._n)
+        emb = asyncio.run(cog.stage_embed(tk, r, "Council"))
+        self.assertIn("Estado", str(emb.fields))
         self.assertEqual(len(rentas.PanelView(cog, "es").children), 3)
         self.assertEqual(rentas.slug("Los Pibes ¡Ñu!"), "los-pibes-ñu")
 
