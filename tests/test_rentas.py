@@ -142,6 +142,48 @@ class Tickets(Base):
         self.assertIsNone(rdb.open_ticket_of(self.db, 10))
 
 
+class Tarifas(Base):
+    def test_mapa_con_calidad_bioma_y_lista(self):
+        m = rdb.add_mapa(self.db, "Deadpine", "Q6", "Martlock")
+        rdb.set_precio(self.db, "ho", m.id, "guild", 1_500_000)
+        rdb.set_precio(self.db, "ho", m.id, "alianza", 9_000_000)                # la de alianza no se muestra
+        rdb.set_mapa_detalle(self.db, self.mapa.id, "Q3", "Thetford")
+        rows = [(x.nombre, x.detalle, p) for x, p in rdb.lista_tarifas(self.db)]
+        self.assertEqual(rows, [("Sleetwater", "Q3 · Thetford", None), ("Deadpine", "Q6 · Martlock", 1_500_000)])
+        with self.assertRaises(rdb.RentaError):
+            rdb.add_mapa(self.db, "Otro", "Q9", "Thetford")
+
+    def test_tarifas_unicas(self):
+        self.assertIsNone(rdb.get_tarifa_fija(self.db, "ponemos"))
+        rdb.set_tarifa_fija(self.db, "ponemos", 2_000_000)
+        rdb.set_tarifa_fija(self.db, "nivel3", 5_000_000)
+        self.assertEqual((rdb.get_tarifa_fija(self.db, "ponemos"), rdb.get_tarifa_fija(self.db, "nivel3")), (2_000_000, 5_000_000))
+
+    def test_migra_base_vieja(self):
+        import sqlite3
+        old = os.path.join(self.tmp.name, "old.sqlite3")
+        c = sqlite3.connect(old)
+        c.execute("CREATE TABLE rent_mapas (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL UNIQUE COLLATE NOCASE, activo INTEGER NOT NULL DEFAULT 1)")
+        c.execute("INSERT INTO rent_mapas(nombre) VALUES('Viejo')")
+        c.commit(); c.close()
+        rdb.init_schema(old)
+        self.assertEqual(rdb.find_mapa(old, "viejo").detalle, "")
+        rdb.set_mapa_detalle(old, 1, "Q4", "Lymhurst")
+        self.assertEqual(rdb.find_mapa(old, "Viejo").detalle, "Q4 · Lymhurst")
+
+    def test_panel_de_tarifas(self):
+        cog = rentas.RentasCog(discord_stub.Bot(), self.db, 1, COUNCIL)
+        rdb.set_tarifa_fija(self.db, "ponemos", 2_000_000)
+        rdb.set_mapa_detalle(self.db, self.mapa.id, "Q5", "Bridgewatch")
+        rdb.set_precio(self.db, "ho", self.mapa.id, "guild", 1_500_000)
+        emb = asyncio.run(cog.tarifas_embed("en"))
+        vals = [f["value"] if isinstance(f, dict) else getattr(f, "value", f) for f in emb.fields]
+        txt = str(vals)
+        self.assertIn("2M", txt)
+        self.assertIn("ask us", txt)                                              # nivel 3 sin cargar
+        self.assertIn("Sleetwater** · Q5 · Bridgewatch — 1.5M", txt)
+
+
 class Roles(Base):
     def test_etiqueta(self):
         self.assertEqual(rdb.parse_guild_label(" [Timba]  Smogg "), ("Timba", "Smogg"))

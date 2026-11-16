@@ -61,6 +61,8 @@ T: Dict[str, Dict[str, str]] = {
         "h_personaje": "Personaje", "h_guild": "Guild", "h_alianza": "Alianza",
         "f_gtag": "Tu guild y tag de alianza (opcional)", "f_gtag_ph": "Ej: [Timba] Smogg — o solo Smogg si no tenés alianza",
         "l_role": "Rol", "choose_tipo": "¿Qué querés rentar?",
+        "tar_title": "💲 Tarifas", "tar_poner": "Poner el HO", "tar_nivel3": "Subir el HO a nivel 3", "tar_fixed": "Pago único",
+        "tar_maps": "Mapas · calidad · bioma · precio semanal", "tar_ask": "a consultar", "tar_none": "Todavía no hay mapas cargados.",
     },
     "pt": {
         "panel_title": "🏰 Aluguéis no Albion",
@@ -93,6 +95,8 @@ T: Dict[str, Dict[str, str]] = {
         "h_personaje": "Personagem", "h_guild": "Guild", "h_alianza": "Aliança",
         "f_gtag": "Sua guild e tag da aliança (opcional)", "f_gtag_ph": "Ex: [Timba] Smogg — ou só Smogg se não tiver aliança",
         "l_role": "Cargo", "choose_tipo": "O que você quer alugar?",
+        "tar_title": "💲 Tarifas", "tar_poner": "Colocar a HO", "tar_nivel3": "Subir a HO para nível 3", "tar_fixed": "Pagamento único",
+        "tar_maps": "Mapas · qualidade · bioma · preço semanal", "tar_ask": "a consultar", "tar_none": "Ainda não há mapas cadastrados.",
     },
     "en": {
         "panel_title": "🏰 Albion rentals",
@@ -125,6 +129,8 @@ T: Dict[str, Dict[str, str]] = {
         "h_personaje": "Character", "h_guild": "Guild", "h_alianza": "Alliance",
         "f_gtag": "Your guild and alliance tag (optional)", "f_gtag_ph": "E.g. [Timba] Smogg — or just Smogg with no alliance",
         "l_role": "Role", "choose_tipo": "What do you want to rent?",
+        "tar_title": "💲 Prices", "tar_poner": "HO placement", "tar_nivel3": "HO level 3 upgrade", "tar_fixed": "One-time fee",
+        "tar_maps": "Maps · quality · biome · weekly price", "tar_ask": "ask us", "tar_none": "No maps have been added yet.",
     },
 }
 LANG_NAMES = {"es": "Español", "pt": "Português", "en": "English"}
@@ -251,7 +257,8 @@ class RequestModal(discord.ui.Modal):
         super().__init__(title=title[:45])
         self.cog, self.lang, self.kind, self.tipo = cog, lang, kind, (tipo if kind == "rent" else "permiso")
         if len(mapas) <= SELECT_LIMIT:
-            self.map_select = discord.ui.Select(options=[discord.SelectOption(label=m.nombre[:100], value=str(m.id)) for m in mapas])
+            self.map_select = discord.ui.Select(options=[discord.SelectOption(label=m.nombre[:100], value=str(m.id),
+                                                                              description=(m.detalle or None)) for m in mapas])
             self.map_text = None
             self.add_item(_label(t(lang, "f_map"), self.map_select))
         else:
@@ -357,6 +364,8 @@ class InfoModal(discord.ui.Modal):
 # ============================================================
 IDIOMA_CHOICES = [app_commands.Choice(name=v, value=k) for k, v in LANG_NAMES.items()]
 CONCEPTO_CHOICES = [app_commands.Choice(name=v, value=k) for k, v in CONCEPTO_ES.items()]
+CALIDAD_CHOICES = [app_commands.Choice(name=q, value=q) for q in rdb.CALIDADES]
+BIOMA_CHOICES = [app_commands.Choice(name=b, value=b) for b in rdb.BIOMAS]
 TITULAR_CHOICES = [app_commands.Choice(name=n, value=v) for n, v in (("Personaje", "personaje"), ("Guild", "guild"), ("Alianza", "alianza"))]
 
 
@@ -481,10 +490,25 @@ class RentasCog(commands.Cog):
     async def on_info(self, interaction: discord.Interaction, lang: str):
         try:
             text = await self.run(rdb.get_info, lang)
-            await _reply(interaction, embed=discord.Embed(title=t(lang, "btn_info"), description=text or t(lang, "info_empty"), color=BLUE))
+            info = discord.Embed(title=t(lang, "btn_info"), description=(text or t(lang, "info_empty"))[:4096], color=BLUE)
+            await _reply(interaction, embeds=[info, await self.tarifas_embed(lang)])
         except Exception:
             traceback.print_exc()
             await _reply(interaction, t(lang, "error"))
+
+    async def tarifas_embed(self, lang: str) -> discord.Embed:
+        """Panel de tarifas: pagos únicos (poner el HO, nivel 3) y lista de mapas con calidad, bioma y precio semanal por guild."""
+        emb = discord.Embed(title=t(lang, "tar_title"), color=GOLD)
+        for concepto, key in (("ponemos", "tar_poner"), ("nivel3", "tar_nivel3")):
+            v = await self.run(rdb.get_tarifa_fija, concepto)
+            emb.add_field(name=f"{t(lang, key)} ({t(lang, 'tar_fixed')})", value=rdb.fmt_silver(v) if v else t(lang, "tar_ask"), inline=True)
+        lines = [f"• **{m.nombre}**" + (f" · {m.detalle}" if m.detalle else "") + f" — {rdb.fmt_silver(p) if p else t(lang, 'tar_ask')}"
+                 for m, p in await self.run(rdb.lista_tarifas)]
+        text = "\n".join(lines) or t(lang, "tar_none")
+        chunks = [text[i:i + 1024] for i in range(0, min(len(text), 4096), 1024)] if len(text) > 1024 else [text]
+        for i, chunk in enumerate(chunks):
+            emb.add_field(name=t(lang, "tar_maps") if i == 0 else "\u200b", value=chunk, inline=False)
+        return emb
 
     async def on_request(self, interaction: discord.Interaction, lang: str, kind: str):
         try:
@@ -581,8 +605,10 @@ class RentasCog(commands.Cog):
             if tk is None:
                 return
             precio = await self.run(rdb.get_precio, tk.tipo, tk.mapa_id, tk.titular_tipo)
-            n3 = await self.run(rdb.get_precio, "nivel3", tk.mapa_id, tk.titular_tipo) if tk.nivel3 else None
-            pon = await self.run(rdb.get_precio, "ponemos", tk.mapa_id, tk.titular_tipo) if tk.ponemos else None
+            n3 = (await self.run(rdb.get_tarifa_fija, "nivel3") or await self.run(rdb.get_precio, "nivel3", tk.mapa_id, tk.titular_tipo)) \
+                if tk.nivel3 else None
+            pon = (await self.run(rdb.get_tarifa_fija, "ponemos") or await self.run(rdb.get_precio, "ponemos", tk.mapa_id, tk.titular_tipo)) \
+                if tk.ponemos else None
             await interaction.response.send_modal(ApproveModal(self, tk, precio, n3, pon))
         except Exception:
             traceback.print_exc()
@@ -903,26 +929,25 @@ class RentasCog(commands.Cog):
         current = await self.run(rdb.get_info, idioma.value)
         await interaction.response.send_modal(InfoModal(self, idioma.value, current))
 
-    @mapa_g.command(name="agregar", description="(Council) Agrega un mapa con su precio semanal de HO y el precio fijo de poner el HO")
-    @app_commands.describe(semanal="Precio semanal sugerido del HO (ej: 1.5M)", poner_ho="Precio fijo sugerido de poner el HO (ej: 2M)")
-    async def mapa_agregar(self, interaction: discord.Interaction, nombre: str, semanal: Optional[str] = None, poner_ho: Optional[str] = None):
+    @mapa_g.command(name="agregar", description="(Council) Agrega un mapa con calidad, bioma y precio semanal del HO por guild")
+    @app_commands.describe(calidad="Calidad del mapa", bioma="Bioma", semanal="Precio semanal del HO para guild (ej: 1.5M); el de alianza va manual")
+    @app_commands.choices(calidad=CALIDAD_CHOICES, bioma=BIOMA_CHOICES)
+    async def mapa_agregar(self, interaction: discord.Interaction, nombre: str, calidad: app_commands.Choice[str],
+                           bioma: app_commands.Choice[str], semanal: Optional[str] = None):
         if not await self._council(interaction):
             return
         try:
             sem = rdb.parse_silver(semanal) if semanal else None
-            pon = rdb.parse_silver(poner_ho) if poner_ho else None
-            m = await self.run(rdb.add_mapa, nombre)
+            m = await self.run(rdb.add_mapa, nombre, calidad.value, bioma.value)
         except rdb.RentaError as exc:
             return await _reply(interaction, f"❌ {exc}")
-        for concepto, value in (("ho", sem), ("ponemos", pon)):
-            if value:
-                for holder in ("guild", "alianza"):
-                    await self.run(rdb.set_precio, concepto, m.id, holder, value)
-        precios = " · ".join(x for x in ((f"semanal {rdb.fmt_silver(sem)}" if sem else ""), (f"poner el HO {rdb.fmt_silver(pon)}" if pon else "")) if x)
+        if sem:
+            await self.run(rdb.set_precio, "ho", m.id, "guild", sem)
+        desc = f"{m.detalle}" + (f" · {rdb.fmt_silver(sem)}/semana" if sem else "")
         n = len(await self.run(rdb.list_mapas))
         warn = f"\n⚠️ Hay {n} mapas: el formulario pasa a pedir el mapa escrito (Discord admite 25 opciones)." if n > SELECT_LIMIT else ""
-        await _reply(interaction, f"✅ Mapa **{m.nombre}** agregado" + (f" ({precios})" if precios else "") + f".{warn}")
-        await self.log("rentas", f"🗺️ {interaction.user.mention} agregó el mapa **{m.nombre}**" + (f" ({precios})" if precios else "") + ".")
+        await _reply(interaction, f"✅ Mapa **{m.nombre}** agregado ({desc}).{warn}")
+        await self.log("rentas", f"🗺️ {interaction.user.mention} agregó el mapa **{m.nombre}** ({desc}).")
 
     @mapa_g.command(name="quitar", description="(Council) Quita un mapa (solo si no tiene rentas activas)")
     async def mapa_quitar(self, interaction: discord.Interaction, nombre: str):
@@ -935,35 +960,71 @@ class RentasCog(commands.Cog):
         await _reply(interaction, f"✅ Mapa **{m.nombre}** quitado de la lista.")
         await self.log("rentas", f"🗺️ {interaction.user.mention} quitó el mapa **{m.nombre}**.")
 
-    @mapa_g.command(name="editar", description="(Council) Cambia el nombre de un mapa (y de sus categorías)")
-    async def mapa_editar(self, interaction: discord.Interaction, actual: str, nuevo: str):
+    @mapa_g.command(name="editar", description="(Council) Cambia nombre, calidad, bioma o precio semanal por guild de un mapa")
+    @app_commands.describe(nuevo="Nombre nuevo (renombra también sus categorías)", semanal="Precio semanal del HO para guild (ej: 1.5M)")
+    @app_commands.choices(calidad=CALIDAD_CHOICES, bioma=BIOMA_CHOICES)
+    async def mapa_editar(self, interaction: discord.Interaction, actual: str, nuevo: Optional[str] = None,
+                          calidad: Optional[app_commands.Choice[str]] = None, bioma: Optional[app_commands.Choice[str]] = None,
+                          semanal: Optional[str] = None):
         if not await self._council(interaction):
             return
         try:
-            m = await self.run(rdb.rename_mapa, actual, nuevo)
+            m = await self.run(rdb.find_mapa, actual)
+            if m is None:
+                raise rdb.RentaError(f"No existe el mapa «{actual}».")
+            sem = rdb.parse_silver(semanal) if semanal else None
+            if nuevo and nuevo.strip() != m.nombre:
+                m = await self.run(rdb.rename_mapa, m.nombre, nuevo)
+            await self.run(rdb.set_mapa_detalle, m.id, calidad.value if calidad else None, bioma.value if bioma else None)
         except rdb.RentaError as exc:
             return await _reply(interaction, f"❌ {exc}")
         await interaction.response.defer(ephemeral=True, thinking=True)
-        for idx, cid in await self.run(rdb.categorias, m.id):
-            cat = interaction.guild.get_channel(cid)
-            if cat is not None:
-                try:
-                    await cat.edit(name=rdb.category_name(m.nombre, idx))
-                except Exception:
-                    traceback.print_exc()
-        for canal in await self.run(rdb.active_canales):
-            if canal.mapa_id == m.id:
-                await self.refresh_panel(canal.id)
-        await _reply(interaction, f"✅ Mapa renombrado a **{m.nombre}**.")
-        await self.log("rentas", f"🗺️ {interaction.user.mention} renombró el mapa **{actual}** → **{m.nombre}**.")
+        if sem:
+            await self.run(rdb.set_precio, "ho", m.id, "guild", sem)
+        m = await self.run(rdb.get_mapa, m.id)
+        if m.nombre != actual.strip():
+            for idx, cid in await self.run(rdb.categorias, m.id):
+                cat = interaction.guild.get_channel(cid)
+                if cat is not None:
+                    try:
+                        await cat.edit(name=rdb.category_name(m.nombre, idx))
+                    except Exception:
+                        traceback.print_exc()
+            for canal in await self.run(rdb.active_canales):
+                if canal.mapa_id == m.id:
+                    await self.refresh_panel(canal.id)
+        desc = m.detalle + (f" · {rdb.fmt_silver(sem)}/semana" if sem else "")
+        await _reply(interaction, f"✅ Mapa **{m.nombre}** actualizado ({desc}).")
+        await self.log("rentas", f"🗺️ {interaction.user.mention} editó el mapa **{actual}** → **{m.nombre}** ({desc}).")
 
     @mapa_g.command(name="lista", description="(Council) Muestra la lista de mapas")
     async def mapa_lista(self, interaction: discord.Interaction):
         if not await self._council(interaction):
             return
-        mapas = await self.run(rdb.list_mapas)
-        await _reply(interaction, embed=discord.Embed(title="🗺️ Mapas", color=BLUE,
-                                                      description="\n".join(f"• {m.nombre}" for m in mapas)[:4000] or "No hay mapas."))
+        rows = await self.run(rdb.lista_tarifas)
+        lines = [f"• **{m.nombre}**" + (f" · {m.detalle}" if m.detalle else "") + f" — {rdb.fmt_silver(p) + '/semana (guild)' if p else 'sin precio'}"
+                 for m, p in rows]
+        await _reply(interaction, embed=discord.Embed(title="🗺️ Mapas", color=BLUE, description="\n".join(lines)[:4000] or "No hay mapas."))
+
+    @renta.command(name="tarifas", description="(Council) Tarifas únicas: poner el HO y subir a nivel 3 (sin datos = ver las actuales)")
+    @app_commands.describe(poner_ho="Precio único de poner el HO (ej: 2M)", nivel3="Precio único de subir el HO a nivel 3 (ej: 5M)")
+    async def tarifas(self, interaction: discord.Interaction, poner_ho: Optional[str] = None, nivel3: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        try:
+            vals = {"ponemos": rdb.parse_silver(poner_ho) if poner_ho else None, "nivel3": rdb.parse_silver(nivel3) if nivel3 else None}
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        for concepto, v in vals.items():
+            if v is not None:
+                await self.run(rdb.set_tarifa_fija, concepto, v)
+        cur = {c: await self.run(rdb.get_tarifa_fija, c) for c in vals}
+        txt = (f"Poner el HO: **{rdb.fmt_silver(cur['ponemos']) if cur['ponemos'] else 'sin cargar'}** · "
+               f"Subir a nivel 3: **{rdb.fmt_silver(cur['nivel3']) if cur['nivel3'] else 'sin cargar'}**")
+        changed = any(v is not None for v in vals.values())
+        await _reply(interaction, ("✅ Tarifas actualizadas. " if changed else "") + txt)
+        if changed:
+            await self.log("rentas", f"💲 {interaction.user.mention} actualizó las tarifas únicas: {txt}")
 
     mapa_quitar.autocomplete("nombre")(_map_autocomplete)
     mapa_editar.autocomplete("actual")(_map_autocomplete)

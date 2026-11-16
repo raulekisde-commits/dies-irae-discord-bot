@@ -20,6 +20,9 @@ TITULARES_POR_TIPO = {"ho": ("guild", "alianza"), "terri": ("guild", "alianza"),
 MODALIDADES = ("adelantado", "vencido")
 CONCEPTOS_PRECIO = ("ho", "terri", "permiso", "nivel3", "ponemos")     # semanales + cargos fijos
 IDIOMAS = ("es", "pt", "en")
+CALIDADES = ("Q3", "Q4", "Q5", "Q6")
+BIOMAS = ("Thetford", "Lymhurst", "Martlock", "Bridgewatch", "Fort Sterling")
+TARIFAS_FIJAS = {"ponemos": "tarifa_poner", "nivel3": "tarifa_nivel3"}   # únicas para todos los mapas (rent_config)
 CATEGORY_LIMIT = 50                                                    # Discord: máx. 50 canales por categoría
 
 SCHEMA = """
@@ -29,8 +32,10 @@ CREATE TABLE IF NOT EXISTS rent_config (
 );
 CREATE TABLE IF NOT EXISTS rent_mapas (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    activo INTEGER NOT NULL DEFAULT 1
+    nombre  TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    activo  INTEGER NOT NULL DEFAULT 1,
+    calidad TEXT,                           -- Q3..Q6
+    bioma   TEXT                            -- Thetford / Lymhurst / Martlock / Bridgewatch / Fort Sterling
 );
 CREATE TABLE IF NOT EXISTS rent_categorias (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,10 +143,18 @@ class RentaError(ValueError):
     """Dato inválido que se le puede mostrar tal cual a quien lo ingresó."""
 
 
+_MIGRATIONS = {"rent_mapas": (("calidad", "TEXT"), ("bioma", "TEXT"))}
+
+
 def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        for table, cols in _MIGRATIONS.items():               # bases creadas antes de agregar estas columnas
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for col, typ in cols:
+                if col not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
     finally:
         conn.close()
 
@@ -256,13 +269,22 @@ def set_info(db_path: str, idioma: str, texto: str) -> None:
 class Mapa:
     id: int
     nombre: str
+    calidad: Optional[str] = None
+    bioma: Optional[str] = None
+
+    @property
+    def detalle(self) -> str:
+        return " · ".join(x for x in (self.calidad, self.bioma) if x)
+
+
+def _mapa(r) -> Optional[Mapa]:
+    return Mapa(int(r["id"]), r["nombre"], r["calidad"], r["bioma"]) if r else None
 
 
 def list_mapas(db_path: str) -> List[Mapa]:
     conn = connect(db_path)
     try:
-        return [Mapa(int(r["id"]), r["nombre"]) for r in
-                conn.execute("SELECT id, nombre FROM rent_mapas WHERE activo = 1 ORDER BY nombre COLLATE NOCASE")]
+        return [_mapa(r) for r in conn.execute("SELECT * FROM rent_mapas WHERE activo = 1 ORDER BY nombre COLLATE NOCASE")]
     finally:
         conn.close()
 
@@ -270,8 +292,7 @@ def list_mapas(db_path: str) -> List[Mapa]:
 def get_mapa(db_path: str, mapa_id: int) -> Optional[Mapa]:
     conn = connect(db_path)
     try:
-        r = conn.execute("SELECT id, nombre FROM rent_mapas WHERE id = ?", (mapa_id,)).fetchone()
-        return Mapa(int(r["id"]), r["nombre"]) if r else None
+        return _mapa(conn.execute("SELECT * FROM rent_mapas WHERE id = ?", (mapa_id,)).fetchone())
     finally:
         conn.close()
 
@@ -279,14 +300,21 @@ def get_mapa(db_path: str, mapa_id: int) -> Optional[Mapa]:
 def find_mapa(db_path: str, nombre: str) -> Optional[Mapa]:
     conn = connect(db_path)
     try:
-        r = conn.execute("SELECT id, nombre FROM rent_mapas WHERE activo = 1 AND nombre = ? COLLATE NOCASE",
-                         ((nombre or "").strip(),)).fetchone()
-        return Mapa(int(r["id"]), r["nombre"]) if r else None
+        return _mapa(conn.execute("SELECT * FROM rent_mapas WHERE activo = 1 AND nombre = ? COLLATE NOCASE",
+                                  ((nombre or "").strip(),)).fetchone())
     finally:
         conn.close()
 
 
-def add_mapa(db_path: str, nombre: str) -> Mapa:
+def _check_calidad_bioma(calidad: Optional[str], bioma: Optional[str]) -> None:
+    if calidad is not None and calidad not in CALIDADES:
+        raise RentaError(f"Calidad inválida: {calidad} (Q3, Q4, Q5 o Q6).")
+    if bioma is not None and bioma not in BIOMAS:
+        raise RentaError(f"Bioma inválido: {bioma}.")
+
+
+def add_mapa(db_path: str, nombre: str, calidad: Optional[str] = None, bioma: Optional[str] = None) -> Mapa:
+    _check_calidad_bioma(calidad, bioma)
     nombre = (nombre or "").strip()
     if not nombre or len(nombre) > 90:
         raise RentaError("Nombre de mapa inválido (1 a 90 caracteres).")
@@ -297,10 +325,11 @@ def add_mapa(db_path: str, nombre: str) -> Mapa:
             if r is not None:
                 if int(r["activo"]):
                     raise RentaError(f"El mapa «{nombre}» ya está en la lista.")
-                conn.execute("UPDATE rent_mapas SET activo = 1, nombre = ? WHERE id = ?", (nombre, r["id"]))
-                return Mapa(int(r["id"]), nombre)
-            cur = conn.execute("INSERT INTO rent_mapas(nombre) VALUES(?)", (nombre,))
-            return Mapa(int(cur.lastrowid), nombre)
+                conn.execute("UPDATE rent_mapas SET activo = 1, nombre = ?, calidad = ?, bioma = ? WHERE id = ?",
+                             (nombre, calidad, bioma, r["id"]))
+                return Mapa(int(r["id"]), nombre, calidad, bioma)
+            cur = conn.execute("INSERT INTO rent_mapas(nombre, calidad, bioma) VALUES(?, ?, ?)", (nombre, calidad, bioma))
+            return Mapa(int(cur.lastrowid), nombre, calidad, bioma)
     finally:
         conn.close()
 
@@ -329,6 +358,43 @@ def remove_mapa(db_path: str, nombre: str) -> Mapa:
     return m
 
 
+def set_mapa_detalle(db_path: str, mapa_id: int, calidad: Optional[str] = None, bioma: Optional[str] = None) -> None:
+    """Cambia calidad y/o bioma (None = no se toca)."""
+    _check_calidad_bioma(calidad, bioma)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if calidad is not None:
+                conn.execute("UPDATE rent_mapas SET calidad = ? WHERE id = ?", (calidad, mapa_id))
+            if bioma is not None:
+                conn.execute("UPDATE rent_mapas SET bioma = ? WHERE id = ?", (bioma, mapa_id))
+    finally:
+        conn.close()
+
+
+def get_tarifa_fija(db_path: str, concepto: str) -> Optional[int]:
+    v = get_config(db_path, TARIFAS_FIJAS[concepto])
+    return int(v) if v not in (None, "") else None
+
+
+def set_tarifa_fija(db_path: str, concepto: str, monto: int) -> None:
+    set_config(db_path, TARIFAS_FIJAS[concepto], int(monto))
+
+
+def lista_tarifas(db_path: str) -> List[tuple]:
+    """[(Mapa, precio semanal de HO para guild o None)] de los mapas activos, por bioma, calidad y nombre."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT m.*, p.monto AS precio FROM rent_mapas m LEFT JOIN rent_precios p ON p.mapa_id = m.id "
+                            "AND p.concepto = 'ho' AND p.titular_tipo = 'guild' WHERE m.activo = 1").fetchall()
+    finally:
+        conn.close()
+    out = [(_mapa(r), int(r["precio"]) if r["precio"] is not None else None) for r in rows]
+    border = {b: i for i, b in enumerate(BIOMAS)}
+    out.sort(key=lambda x: (border.get(x[0].bioma, 99), x[0].calidad or "Z", x[0].nombre.lower()))
+    return out
+
+
 def rename_mapa(db_path: str, actual: str, nuevo: str) -> Mapa:
     m = find_mapa(db_path, actual)
     if m is None:
@@ -345,7 +411,7 @@ def rename_mapa(db_path: str, actual: str, nuevo: str) -> Mapa:
             conn.execute("UPDATE rent_mapas SET nombre = ? WHERE id = ?", (nuevo, m.id))
     finally:
         conn.close()
-    return Mapa(m.id, nuevo)
+    return get_mapa(db_path, m.id)
 
 
 def categorias(db_path: str, mapa_id: Optional[int]) -> List[tuple]:
