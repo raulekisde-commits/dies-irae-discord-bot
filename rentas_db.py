@@ -30,7 +30,10 @@ TARIFAS_FIJAS = {
     "recargo_sin": "tarifa_n3_sin",           # HO nivel 3: recargo SEMANAL si la guild no tiene alianza
     "pack_q5": "tarifa_pack_q5",              # pack HO Q5: defensa de las 2 fases + 1 semana gratis
     "pack_q6": "tarifa_pack_q6",              # pack HO Q6: ídem
+    "acceso_no_renter": "tarifa_acceso_no",   # acceso a HO: precio SEMANAL para quien no renta con nosotros
+    "acceso_renter": "tarifa_acceso_si",      # acceso a HO: precio SEMANAL para quien tiene una renta activa de HO / territorio
 }
+ACCESO_DEFAULTS = {"acceso_no_renter": 50_000_000, "acceso_renter": 35_000_000}
 PACK_CALIDADES = ("Q5", "Q6")
 GRATIS_DIAS_PACK = 7
 CONCEPTOS_FIJOS = ("nivel3", "ponemos", "defensa_ant", "defensa_resto", "pack_ant", "pack_resto")
@@ -40,6 +43,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS rent_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rent_acceso_mapas (
+    nombre     TEXT PRIMARY KEY COLLATE NOCASE,   -- mapas donde hay HO con acceso a la venta
+    created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rent_mapas (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -400,7 +407,8 @@ def set_tarifa_fija(db_path: str, concepto: str, monto: int) -> None:
 
 
 def lista_tarifas(db_path: str) -> List[tuple]:
-    """[(Mapa, precio semanal de HO para guild o None)] de los mapas activos, por bioma, calidad y nombre."""
+    """[(Mapa, precio semanal de HO para guild o None)] de los mapas activos: por calidad (Q6 primero, sin calidad al final),
+    después bioma y nombre."""
     conn = connect(db_path)
     try:
         rows = conn.execute("SELECT m.*, p.monto AS precio FROM rent_mapas m LEFT JOIN rent_precios p ON p.mapa_id = m.id "
@@ -409,8 +417,64 @@ def lista_tarifas(db_path: str) -> List[tuple]:
         conn.close()
     out = [(_mapa(r), int(r["precio"]) if r["precio"] is not None else None) for r in rows]
     border = {b: i for i, b in enumerate(BIOMAS)}
-    out.sort(key=lambda x: (border.get(x[0].bioma, 99), x[0].calidad or "Z", x[0].nombre.lower()))
+    qrank = lambda q: -int(q[1:]) if q and q[1:].isdigit() else 99
+    out.sort(key=lambda x: (qrank(x[0].calidad), border.get(x[0].bioma, 99), x[0].nombre.lower()))
     return out
+
+
+# ============================================================
+# Acceso a HO (solo informativo: lista de mapas y precio semanal renter / no renter)
+# ============================================================
+def acceso_precios(db_path: str) -> tuple:
+    """(precio no renter, precio renter), con 50M / 35M si no se cambiaron."""
+    return tuple(get_tarifa_fija(db_path, k) or ACCESO_DEFAULTS[k] for k in ("acceso_no_renter", "acceso_renter"))
+
+
+def acceso_mapas(db_path: str) -> List[str]:
+    conn = connect(db_path)
+    try:
+        return [r["nombre"] for r in conn.execute("SELECT nombre FROM rent_acceso_mapas ORDER BY nombre COLLATE NOCASE")]
+    finally:
+        conn.close()
+
+
+def add_acceso_mapa(db_path: str, nombre: str) -> str:
+    nombre = " ".join((nombre or "").split())
+    if not nombre or len(nombre) > 100:
+        raise RentaError("Nombre de mapa inválido.")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("SELECT 1 FROM rent_acceso_mapas WHERE nombre = ?", (nombre,)).fetchone():
+                raise RentaError(f"«{nombre}» ya está en la lista de acceso a HO.")
+            conn.execute("INSERT INTO rent_acceso_mapas(nombre, created_at) VALUES(?, ?)", (nombre, utcnow_iso()))
+        return nombre
+    finally:
+        conn.close()
+
+
+def remove_acceso_mapa(db_path: str, nombre: str) -> str:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT nombre FROM rent_acceso_mapas WHERE nombre = ?", (" ".join((nombre or "").split()),)).fetchone()
+            if r is None:
+                raise RentaError(f"«{nombre}» no está en la lista de acceso a HO.")
+            conn.execute("DELETE FROM rent_acceso_mapas WHERE nombre = ?", (r["nombre"],))
+            return r["nombre"]
+    finally:
+        conn.close()
+
+
+def is_renter(db_path: str, user_id: int) -> bool:
+    """Renter = está en el canal de un cliente (no archivado) con una renta activa de HO o territorio."""
+    conn = connect(db_path)
+    try:
+        return conn.execute("SELECT 1 FROM rent_miembros m JOIN rent_canales c ON c.id = m.canal_id AND c.archivado = 0 "
+                            "JOIN rent_rentas r ON r.canal_id = c.id AND r.activa = 1 AND r.tipo IN ('ho', 'terri') "
+                            "WHERE m.user_id = ? LIMIT 1", (user_id,)).fetchone() is not None
+    finally:
+        conn.close()
 
 
 def rename_mapa(db_path: str, actual: str, nuevo: str) -> Mapa:
