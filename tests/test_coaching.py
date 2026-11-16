@@ -260,7 +260,10 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.on_review_vote(i, bad=False))
         self.assertIn("Solo el Staff", i.text)
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        i = self.inter(self.council, message=rev)                                         # Staff: está bien → completa a nombre del coach
+        i = self.vote_all(rev, bad=False, n=3)                                             # 3 votos: todavía no se define
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        self.assertIn("bien 3/4", i.response.edits[-1]["content"])
+        i = self.inter(self.council, message=rev)                                         # 4.º voto: está bien → completa a nombre del coach
         run(self.cog.on_review_vote(i, bad=False))
         t = edb.find_by_source(self.db, "coach:4100")
         self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
@@ -269,14 +272,29 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.on_review_vote(i, bad=True))
         self.assertIn("ya fue votada", i.text)
 
+    def test_voto_se_puede_cambiar_y_cuenta_uno_por_persona(self):
+        self.open_post(self.novato)
+        th = self.vods(1)
+        before = len(self.tasks_ch.sent)
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4900, text="ok")))
+        rev = self.tasks_ch.sent[before]
+        a = self.staff(1)[0]
+        for _ in range(5):                                                                # la misma persona no suma 4
+            i = self.inter(a, message=rev)
+            run(self.cog.on_review_vote(i, bad=True))
+        self.assertIn("mal hecha 1/4", i.response.edits[-1]["content"])
+        i = self.inter(a, message=rev)
+        run(self.cog.on_review_vote(i, bad=False))                                        # cambia su voto
+        self.assertIn("mal hecha 0/4 · ✅ bien 1/4", i.response.edits[-1]["content"])
+        self.assertFalse(cdb.has_penalty(self.db, self.coach.id))
+
     def test_devolucion_corta_mal_hecha_queda_abierta(self):
         self.open_post(self.novato)
         th = self.vods(1)
         before = len(self.tasks_ch.sent)
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4500, text="ok")))
         rev = self.tasks_ch.sent[before]
-        i = self.inter(self.council, message=rev)
-        run(self.cog.on_review_vote(i, bad=True))
+        self.vote_all(rev, bad=True)
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [4100])
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4501)))              # después responde bien: cobra
@@ -288,7 +306,7 @@ class CoachingDiscordTests(DiscordBase):
         for k, mid in enumerate((4700, 4701)):                                            # dos devoluciones cortas, las dos mal
             before = len(self.tasks_ch.sent)
             run(self.cog.process_message(self.reply_msg(self.coach, th, mid, reply_to=4100 + k, text="ok")))
-            run(self.cog.on_review_vote(self.inter(self.council, message=self.tasks_ch.sent[before]), bad=True))
+            self.vote_all(self.tasks_ch.sent[before], bad=True)
         self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4702, reply_to=4100)))  # primera bien hecha: sin tirada
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").reward_spins, 0)
@@ -319,7 +337,7 @@ class CoachingDiscordTests(DiscordBase):
         self.assertEqual(run(self.cog.retro_x_review()), 0)                                     # solo una vez
         rev = self.tasks_ch.sent[before]
         self.assertIn("ya cobrada", rev.content)
-        run(self.cog.on_review_vote(self.inter(self.council, message=rev), bad=True))
+        self.vote_all(rev, bad=True)
         self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")            # no toca otros VODs
 
@@ -343,6 +361,16 @@ class CoachingDiscordTests(DiscordBase):
         run(self.ecog.send_top_coach(i))
         emb = i.response.sent[0][1]["embed"]
         self.assertIn("Top coaches", emb.title)
+
+    def staff(self, n=4):
+        r = discord.Role(co.STAFF_ROLE_ID, "Staff", self.guild)
+        return [discord.Member(700000000000000100 + k, f"Staff{k}", roles=[r], guild=self.guild) for k in range(n)]
+
+    def vote_all(self, msg, bad, n=4):
+        for u in self.staff(n):
+            i = self.inter(u, message=msg)
+            run(self.cog.on_review_vote(i, bad=bad))
+        return i
 
     def inter_done(self, user, msg):
         i = self.inter(user, message=msg)

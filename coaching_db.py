@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS coaching_reviews (
     kind          TEXT NOT NULL DEFAULT 'live',
     created_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coaching_review_votes (
+    review_msg_id INTEGER NOT NULL,
+    user_id       INTEGER NOT NULL,
+    bad           INTEGER NOT NULL,
+    PRIMARY KEY (review_msg_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS coaching_penalties (
     user_id    INTEGER PRIMARY KEY,
     created_at TEXT NOT NULL
@@ -258,13 +264,27 @@ def get_review(db_path: str, review_msg_id: int) -> Optional[dict]:
         conn.close()
 
 
-def decide_review(db_path: str, review_msg_id: int, status: str, voted_by: int) -> bool:
-    """Primer voto del Staff ('ok' o 'bad'). False si ya estaba decidida."""
+REVIEW_VOTES_NEEDED = 4
+
+
+def vote_review(db_path: str, review_msg_id: int, user_id: int, bad: bool, needed: int = REVIEW_VOTES_NEEDED) -> Tuple[str, int, int]:
+    """Voto de un miembro del Staff (puede cambiarlo mientras siga abierta). Se decide cuando una opción llega a `needed`.
+    Devuelve (estado, votos 'mal', votos 'bien'): estado 'closed' si ya estaba decidida, 'pending', 'bad' u 'ok'."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            return conn.execute("UPDATE coaching_reviews SET status=?, voted_by=? WHERE review_msg_id=? AND status='pending'",
-                                (status, voted_by, review_msg_id)).rowcount == 1
+            r = conn.execute("SELECT status FROM coaching_reviews WHERE review_msg_id=?", (review_msg_id,)).fetchone()
+            if r is None or r["status"] != "pending":
+                return "closed", 0, 0
+            conn.execute("INSERT INTO coaching_review_votes(review_msg_id,user_id,bad) VALUES (?,?,?) "
+                         "ON CONFLICT(review_msg_id,user_id) DO UPDATE SET bad=excluded.bad", (review_msg_id, user_id, 1 if bad else 0))
+            c = conn.execute("SELECT COALESCE(SUM(bad),0) AS b, COUNT(*) - COALESCE(SUM(bad),0) AS g FROM coaching_review_votes "
+                             "WHERE review_msg_id=?", (review_msg_id,)).fetchone()
+            b, g = int(c["b"]), int(c["g"])
+            status = "bad" if b >= needed else "ok" if g >= needed else "pending"
+            if status != "pending":
+                conn.execute("UPDATE coaching_reviews SET status=?, voted_by=? WHERE review_msg_id=?", (status, user_id, review_msg_id))
+            return status, b, g
     finally:
         conn.close()
 

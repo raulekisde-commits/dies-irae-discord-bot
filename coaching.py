@@ -31,6 +31,7 @@ STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF
 # Revisión única al subir el cambio: devoluciones ya cobradas desde esta hora (UTC) que tienen una «X» en el texto
 RETRO_FLAG = "retro_x_review_2026_11"
 RETRO_SINCE = datetime(2026, 11, 16, 1, 13, tzinfo=timezone.utc)
+VOTES_MARK = "🗳️"
 X_RE = re.compile(r"(?<!\w)[xX❌✖❎](?!\w)")
 
 
@@ -350,11 +351,11 @@ class CoachingCog(commands.Cog):
         if kind == "retro":
             body = (f"<@&{STAFF_ROLE_ID}> 🔎 Revisión de una devolución ya cobrada: <@{message.author.id}> respondió {len(pending)} VOD(s)"
                     f"{owner} y el mensaje tiene una X. **¿Está mal hecha la VOD review?**\n> {quote}\n{message.jump_url}\n"
-                    f"Si está mal, queda penalizado: su próxima VOD review bien hecha no da tirada.")
+                    f"Se define con {cdb.REVIEW_VOTES_NEEDED} votos del Staff en una opción. Si está mal, queda penalizado: su próxima VOD review bien hecha no da tirada.")
         else:
             body = (f"<@&{STAFF_ROLE_ID}> ⚠️ <@{message.author.id}> respondió {len(pending)} VOD(s){owner} con una devolución muy corta "
                     f"({len(text)} caracteres). **¿Está mal hecha la VOD review?**\n> {quote}\n{message.jump_url}\n"
-                    f"Hasta que el Staff vote, no se da la tirada de Wujupón.")
+                    f"Se define con {cdb.REVIEW_VOTES_NEEDED} votos del Staff en una opción; hasta entonces no se da la tirada de Wujupón.")
         try:
             sent = await ch.send(body, view=CoachReviewView(self), allowed_mentions=STAFF_PING)
             await self.run(cdb.add_review, review_msg_id=sent.id, reply_msg_id=message.id, thread_id=message.channel.id,
@@ -376,10 +377,20 @@ class CoachingCog(commands.Cog):
         row = await self.run(cdb.get_review, msg.id) if msg else None
         if row is None:
             return await _say(interaction, "❌ No encuentro esta revisión.")
-        if not await self.run(cdb.decide_review, msg.id, "bad" if bad else "ok", interaction.user.id):
+        status, n_bad, n_ok = await self.run(cdb.vote_review, msg.id, interaction.user.id, bad)
+        if status == "closed":
             return await _say(interaction, "Esta revisión ya fue votada.")
+        base = (getattr(msg, "content", "") or "").split(VOTES_MARK)[0].rstrip()
+        need = cdb.REVIEW_VOTES_NEEDED
+        tally = f"{VOTES_MARK} Votos: ❌ mal hecha {n_bad}/{need} · ✅ bien {n_ok}/{need}"
+        if status == "pending":
+            try:
+                return await interaction.response.edit_message(content=f"{base}\n\n{tally}"[:2000], allowed_mentions=NO_MENTIONS)
+            except Exception:
+                return await _say(interaction, f"✅ Voto registrado. {tally}")
+        bad = status == "bad"
         coach_id = int(row["coach_id"])
-        coach, who = f"<@{coach_id}>", f"<@{interaction.user.id}>"
+        coach, who = f"<@{coach_id}>", f"Staff ({n_bad if bad else n_ok} votos)"
         if bad:
             await self.run(cdb.add_penalty, coach_id)                    # no acumulable
             lost = "ya cobró esa tirada, así que" if row.get("kind") == "retro" else "no cobra la tirada y el VOD sigue pendiente;"
@@ -391,7 +402,7 @@ class CoachingCog(commands.Cog):
             done = await self._complete(row["vod_msgs"], coach_id)
             result = (f"✅ {who}: **está bien**. Se dio la devolución de {done} VOD(s) a nombre de {coach}."
                       if done else f"✅ {who}: **está bien**, pero esos VODs ya los había devuelto otro coach: sin tirada.")
-        content = (getattr(msg, "content", "") or "") + "\n\n" + result
+        content = f"{base}\n\n{tally}\n{result}"
         try:
             await interaction.response.edit_message(content=content[:2000], view=None, allowed_mentions=NO_MENTIONS)
         except Exception:
