@@ -316,10 +316,18 @@ def get_balance(db_path: str, user_id: int) -> int:
 # Movimientos que cuentan como "depositados a la persona" en el Balance histórico.
 # NO cuentan: remove-money, apuestas (apostar / premio / devolución), que son movimientos internos.
 LIFETIME_DEPOSIT_TYPES = ("addmoney", "addmoney-role", "balance_set")
+# Única resta del histórico: el reajuste de un split editado (/split → Editar) le saca a cada uno lo pagado antes,
+# así el histórico queda con lo que realmente se le pagó. Se reconoce por la request_key (splits_db.undo_key).
+LIFETIME_UNDO_KEY = "split:%:undo:%"
+
+
+def _lifetime_sql(marks: str) -> str:
+    return (f"FROM eco_movements m LEFT JOIN eco_operations o ON o.op_id = m.op_id WHERE m.id > ? AND ("
+            f"(m.delta > 0 AND COALESCE(m.kind, 'addmoney') IN ({marks})) OR (m.delta < 0 AND o.request_key LIKE ?))")
 
 
 def get_lifetime_deposits(db_path: str, user_id: int) -> int:
-    """Balance histórico: suma de todo lo depositado a la persona. Solo suma, nunca resta.
+    """Balance histórico: suma de todo lo depositado a la persona. Solo resta el reajuste de un split editado.
 
     Se calcula desde el historial de movimientos (por eso incluye también lo cargado antes de existir el contador).
     Un ajuste de saldo (importación) suma únicamente si subió el saldo.
@@ -329,10 +337,9 @@ def get_lifetime_deposits(db_path: str, user_id: int) -> int:
     try:
         after_id = _lifetime_reset_id(conn)
         row = conn.execute(
-            f"SELECT COALESCE(SUM(delta), 0) AS total FROM eco_movements "
-            f"WHERE user_id = ? AND id > ? AND delta > 0 AND COALESCE(kind, 'addmoney') IN ({marks})",
-            (int(user_id), after_id, *LIFETIME_DEPOSIT_TYPES)).fetchone()
-        return int(row["total"])
+            f"SELECT COALESCE(SUM(m.delta), 0) AS total {_lifetime_sql(marks)} AND m.user_id = ?",
+            (after_id, *LIFETIME_DEPOSIT_TYPES, LIFETIME_UNDO_KEY, int(user_id))).fetchone()
+        return max(0, int(row["total"]))
     finally:
         conn.close()
 
@@ -386,9 +393,8 @@ def get_stats(db_path: str) -> EcoStats:
                       COALESCE(SUM(CASE WHEN balance < 0 THEN 1 END),0) hn
                FROM eco_accounts""").fetchone()
         after_id = _lifetime_reset_id(conn)
-        life = conn.execute(
-            f"SELECT COALESCE(SUM(delta),0) t FROM eco_movements WHERE id > ? AND delta > 0 "
-            f"AND COALESCE(kind, 'addmoney') IN ({marks})", (after_id, *LIFETIME_DEPOSIT_TYPES)).fetchone()["t"]
+        life = conn.execute(f"SELECT COALESCE(SUM(m.delta),0) t {_lifetime_sql(marks)}",
+                            (after_id, *LIFETIME_DEPOSIT_TYPES, LIFETIME_UNDO_KEY)).fetchone()["t"]
         return EcoStats(int(row["t"]), int(row["p"]), int(row["n"]), int(row["a"]), int(row["hp"]), int(row["hn"]), int(life))
     finally:
         conn.close()

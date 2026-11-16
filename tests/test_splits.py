@@ -221,6 +221,9 @@ class SplitMathTests(unittest.TestCase):
         s = sdb.get_split(self.db, sid)
         self.assertEqual((s.status, s.pay_round), ("closed", 2))
         self.assertEqual(sdb.get_payouts(self.db, sid, 2), {1: 1075, 3: 1175})
+        # histórico: el reajuste resta lo pagado antes (el retiro manual no resta)
+        self.assertEqual([eco.get_lifetime_deposits(self.db, u) for u in (1, 2, 3)], [1075, 0, 1175])
+        self.assertEqual(eco.get_stats(self.db).lifetime_total, 1075 + 1175)
         self.assertEqual(sdb.reopen(self.db, sid, 7), "reopened")                                 # y se puede volver a reajustar
 
     def test_reopen_legacy_closed_split_rebuilds_payouts(self):
