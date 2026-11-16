@@ -22,7 +22,18 @@ CONCEPTOS_PRECIO = ("ho", "terri", "permiso", "nivel3", "ponemos")     # semanal
 IDIOMAS = ("es", "pt", "en")
 CALIDADES = ("Q3", "Q4", "Q5", "Q6")
 BIOMAS = ("Thetford", "Lymhurst", "Martlock", "Bridgewatch", "Fort Sterling")
-TARIFAS_FIJAS = {"ponemos": "tarifa_poner", "nivel3": "tarifa_nivel3"}   # únicas para todos los mapas (rent_config)
+# Tarifas únicas para todos los mapas (rent_config), editables con /renta tarifas
+TARIFAS_FIJAS = {
+    "defensa": "tarifa_defensa",              # precio por fase de defensa del HO (fase 1 y/o 2, opcional)
+    "nivel3": "tarifa_nivel3",                # pago único de subir el HO a nivel 3
+    "recargo_alianza": "tarifa_n3_alianza",   # HO nivel 3: recargo SEMANAL si la guild tiene alianza
+    "recargo_sin": "tarifa_n3_sin",           # HO nivel 3: recargo SEMANAL si la guild no tiene alianza
+    "pack_q5": "tarifa_pack_q5",              # pack HO Q5: defensa de las 2 fases + 1 semana gratis
+    "pack_q6": "tarifa_pack_q6",              # pack HO Q6: ídem
+}
+PACK_CALIDADES = ("Q5", "Q6")
+GRATIS_DIAS_PACK = 7
+CONCEPTOS_FIJOS = ("nivel3", "ponemos", "defensa_ant", "defensa_resto", "pack_ant", "pack_resto")
 CATEGORY_LIMIT = 50                                                    # Discord: máx. 50 canales por categoría
 
 SCHEMA = """
@@ -143,7 +154,14 @@ class RentaError(ValueError):
     """Dato inválido que se le puede mostrar tal cual a quien lo ingresó."""
 
 
-_MIGRATIONS = {"rent_mapas": (("calidad", "TEXT"), ("bioma", "TEXT"))}
+_MIGRATIONS = {
+    "rent_mapas": (("calidad", "TEXT"), ("bioma", "TEXT")),
+    "rent_tickets": (("defensas", "INTEGER NOT NULL DEFAULT 0"), ("pack", "INTEGER NOT NULL DEFAULT 0")),
+    "rent_rentas": (("defensa_total", "INTEGER NOT NULL DEFAULT 0"), ("pack_total", "INTEGER NOT NULL DEFAULT 0"),
+                    ("gratis_hasta", "TEXT"),           # pack: días gratis hasta esta fecha (exclusive)
+                    ("pago_ok", "INTEGER NOT NULL DEFAULT 0"),      # etapa: el Council confirmó el pago inicial
+                    ("colocado", "INTEGER NOT NULL DEFAULT 1")),    # etapa: HO colocado (la renta corre desde ahí); 0 = esperando
+}
 
 
 def init_schema(db_path: str) -> None:
@@ -505,6 +523,8 @@ class Ticket:
     message_id: Optional[int]
     guild_nombre: Optional[str] = None
     alianza_tag: Optional[str] = None
+    defensas: int = 0                 # 0, 1 o 2 fases de defensa
+    pack: bool = False                # pack Q5/Q6: defensa de las 2 fases + 1 semana gratis
 
 
 def _ticket(r) -> Optional[Ticket]:
@@ -512,7 +532,8 @@ def _ticket(r) -> Optional[Ticket]:
         return None
     return Ticket(int(r["id"]), int(r["channel_id"]), int(r["user_id"]), r["idioma"], r["tipo"], int(r["mapa_id"]),
                   bool(r["nivel3"]), bool(r["ponemos"]), r["titular_tipo"], r["titular_nombre"], r["status"],
-                  int(r["message_id"]) if r["message_id"] is not None else None, r["guild_nombre"], r["alianza_tag"])
+                  int(r["message_id"]) if r["message_id"] is not None else None, r["guild_nombre"], r["alianza_tag"],
+                  int(r["defensas"] or 0), bool(r["pack"]))
 
 
 TAG_MAX = 5
@@ -547,18 +568,23 @@ def validate_request(tipo: str, titular_tipo: str, titular_nombre: str) -> str:
 
 
 def create_ticket(db_path: str, channel_id: int, user_id: int, idioma: str, tipo: str, mapa_id: int, nivel3: bool, ponemos: bool,
-                  titular_tipo: str, titular_nombre: str, guild_nombre: Optional[str] = None, alianza_tag: Optional[str] = None) -> int:
+                  titular_tipo: str, titular_nombre: str, guild_nombre: Optional[str] = None, alianza_tag: Optional[str] = None,
+                  defensas: int = 0, pack: bool = False) -> int:
     nombre = validate_request(tipo, titular_tipo, titular_nombre)
     if tipo != "ho":
-        nivel3 = ponemos = False
+        nivel3 = ponemos = pack = False
+        defensas = 0
+    if pack:
+        defensas = 0                                   # el pack ya incluye la defensa de las 2 fases
+    defensas = max(0, min(2, int(defensas)))
     conn = connect(db_path)
     try:
         with write_tx(conn):
             cur = conn.execute(
                 "INSERT INTO rent_tickets(channel_id, user_id, idioma, tipo, mapa_id, nivel3, ponemos, titular_tipo, titular_nombre, "
-                "guild_nombre, alianza_tag, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "guild_nombre, alianza_tag, defensas, pack, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (channel_id, user_id, idioma, tipo, mapa_id, int(bool(nivel3)), int(bool(ponemos)), titular_tipo, nombre,
-                 guild_nombre, alianza_tag, utcnow_iso()))
+                 guild_nombre, alianza_tag, defensas, int(bool(pack)), utcnow_iso()))
             return int(cur.lastrowid)
     finally:
         conn.close()
@@ -733,13 +759,32 @@ class Renta:
     fecha_inicio: date
     activa: bool
     fecha_baja: Optional[date]
+    defensa_total: int = 0
+    pack_total: int = 0
+    gratis_hasta: Optional[date] = None
+    pago_ok: bool = False
+    colocado: bool = True
 
 
 def _renta(r) -> Optional[Renta]:
     if r is None:
         return None
     return Renta(int(r["id"]), int(r["canal_id"]), r["tipo"], int(r["mapa_id"]), r["titular_tipo"], r["titular_nombre"], int(r["precio"]),
-                 r["modalidad"], _d(r["fecha_inicio"]), bool(r["activa"]), _d(r["fecha_baja"]) if r["fecha_baja"] else None)
+                 r["modalidad"], _d(r["fecha_inicio"]), bool(r["activa"]), _d(r["fecha_baja"]) if r["fecha_baja"] else None,
+                 int(r["defensa_total"] or 0), int(r["pack_total"] or 0), _d(r["gratis_hasta"]) if r["gratis_hasta"] else None,
+                 bool(r["pago_ok"]), bool(r["colocado"]))
+
+
+def billable_days(r: Renta, start: date, end: date) -> int:
+    """Días cobrables entre start y end (inclusive): desde el inicio de la renta y fuera de los días gratis del pack."""
+    s = max(start, r.fecha_inicio, r.gratis_hasta or start)
+    return max(0, (end - s).days + 1)
+
+
+def half(total: int) -> tuple:
+    """(anticipo, resto): la mitad se paga por adelantado."""
+    ant = int(total) // 2
+    return ant, int(total) - ant
 
 
 @dataclass
@@ -766,8 +811,10 @@ def _insert_cargo(conn, renta_id: int, concepto: str, periodo: str, monto: int, 
 
 
 def create_renta(db_path: str, *, canal_id: int, ticket: Ticket, precio: int, modalidad: str, inicio: date, actor_id: int,
-                 nivel3_monto: int = 0, ponemos_monto: int = 0) -> int:
-    """Alta de la renta + cargos iniciales (prorrateo si es adelantado, cargos fijos). Devuelve el id de la renta."""
+                 nivel3_monto: int = 0, ponemos_monto: int = 0, defensa_monto: int = 0, pack_monto: int = 0) -> int:
+    """Alta de la renta + cargos iniciales (prorrateo si es adelantado, nivel 3, y el 50% por adelantado de defensa / pack).
+    HO: queda «esperando colocación»: la renta semanal (y el prorrateo, los días gratis del pack y el 50% restante) arranca con colocar().
+    Resto de tipos: corre desde `inicio`. Devuelve el id de la renta."""
     if modalidad not in MODALIDADES:
         raise RentaError("Modalidad inválida.")
     if precio <= 0:
@@ -775,19 +822,96 @@ def create_renta(db_path: str, *, canal_id: int, ticket: Ticket, precio: int, mo
     conn = connect(db_path)
     try:
         with write_tx(conn):
+            is_ho = ticket.tipo == "ho"
+            def_total = int(defensa_monto) if is_ho and ticket.defensas and not ticket.pack else 0
+            pack_total = int(pack_monto) if is_ho and ticket.pack else 0
             cur = conn.execute(
                 "INSERT INTO rent_rentas(canal_id, ticket_id, tipo, mapa_id, titular_tipo, titular_nombre, precio, modalidad, fecha_inicio, "
-                "created_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_by, created_at, defensa_total, pack_total, colocado) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (canal_id, ticket.id, ticket.tipo, ticket.mapa_id, ticket.titular_tipo, ticket.titular_nombre, int(precio), modalidad,
-                 inicio.isoformat(), actor_id, utcnow_iso()))
+                 inicio.isoformat(), actor_id, utcnow_iso(), def_total, pack_total, 0 if is_ho else 1))
             rid = int(cur.lastrowid)
-            if modalidad == "adelantado":
-                _insert_cargo(conn, rid, "prorrateo", inicio.isoformat(), prorate(precio, days_to_saturday(inicio)))
+            if not is_ho:
+                _start_rent(conn, rid, inicio)
+            if def_total:
+                _insert_cargo(conn, rid, "defensa_ant", inicio.isoformat(), half(def_total)[0])
+            if pack_total:
+                _insert_cargo(conn, rid, "pack_ant", inicio.isoformat(), half(pack_total)[0])
             if ticket.tipo == "ho" and ticket.nivel3:
                 _insert_cargo(conn, rid, "nivel3", inicio.isoformat(), nivel3_monto)
             if ticket.tipo == "ho" and ticket.ponemos:
                 _insert_cargo(conn, rid, "ponemos", inicio.isoformat(), ponemos_monto)
             return rid
+    finally:
+        conn.close()
+
+
+def _start_rent(conn, renta_id: int, inicio: date) -> List[int]:
+    """La renta empieza a correr: fecha de inicio, días gratis del pack, prorrateo (adelantado) y 50% restante. Devuelve ids de cargos."""
+    r = _renta(conn.execute("SELECT * FROM rent_rentas WHERE id = ?", (renta_id,)).fetchone())
+    gratis = (inicio + timedelta(days=GRATIS_DIAS_PACK)).isoformat() if r.pack_total else None
+    conn.execute("UPDATE rent_rentas SET fecha_inicio = ?, gratis_hasta = ?, colocado = 1 WHERE id = ?", (inicio.isoformat(), gratis, renta_id))
+    r = _renta(conn.execute("SELECT * FROM rent_rentas WHERE id = ?", (renta_id,)).fetchone())
+    ids = []
+
+    def add(concepto, monto):                  # mismo periodo que cargar_resto: nunca se carga dos veces
+        if _insert_cargo(conn, renta_id, concepto, inicio.isoformat(), monto):
+            ids.append(int(conn.execute("SELECT last_insert_rowid()").fetchone()[0]))
+    if r.modalidad == "adelantado":
+        end = inicio + timedelta(days=days_to_saturday(inicio) - 1)
+        add("prorrateo", prorate(r.precio, billable_days(r, inicio, end)))
+    if r.tipo == "ho":
+        if r.defensa_total:
+            add("defensa_resto", half(r.defensa_total)[1])
+        if r.pack_total:
+            add("pack_resto", half(r.pack_total)[1])
+    return ids
+
+
+def colocar(db_path: str, renta_id: int, hoy: date) -> Optional[List["Cargo"]]:
+    """Etapa «HO colocado»: la renta empieza a correr hoy y se carga el 50% restante de defensa / pack.
+    Devuelve los cargos creados, o None si ya estaba colocado / dado de baja."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT colocado, activa FROM rent_rentas WHERE id = ?", (renta_id,)).fetchone()
+            if r is None or int(r["colocado"]) or not int(r["activa"]):
+                return None
+            ids = _start_rent(conn, renta_id, hoy)
+            return [_cargo(x) for x in conn.execute(f"SELECT * FROM rent_cargos WHERE id IN ({','.join('?' * len(ids))})", ids)] if ids else []
+    finally:
+        conn.close()
+
+
+def confirmar_pago(db_path: str, renta_id: int, actor_id: int) -> Optional[int]:
+    """Etapa «Pago confirmado»: marca pagado lo pendiente de esta renta. Devuelve el total marcado, o None si ya estaba confirmado."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            cur = conn.execute("UPDATE rent_rentas SET pago_ok = 1 WHERE id = ? AND pago_ok = 0", (renta_id,))
+            if cur.rowcount != 1:
+                return None
+            total = int(conn.execute("SELECT COALESCE(SUM(monto), 0) FROM rent_cargos WHERE renta_id = ? AND pagado = 0",
+                                     (renta_id,)).fetchone()[0])
+            conn.execute("UPDATE rent_cargos SET pagado = 1, paid_at = ?, paid_by = ? WHERE renta_id = ? AND pagado = 0",
+                         (utcnow_iso(), actor_id, renta_id))
+            return total
+    finally:
+        conn.close()
+
+
+def renta_by_ticket(db_path: str, ticket_id: int) -> Optional[Renta]:
+    conn = connect(db_path)
+    try:
+        return _renta(conn.execute("SELECT * FROM rent_rentas WHERE ticket_id = ? ORDER BY id DESC LIMIT 1", (ticket_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def ticket_by_message(db_path: str, message_id: int) -> Optional[Ticket]:
+    conn = connect(db_path)
+    try:
+        return _ticket(conn.execute("SELECT * FROM rent_tickets WHERE message_id = ?", (message_id,)).fetchone())
     finally:
         conn.close()
 
@@ -847,6 +971,7 @@ def marcar_pagado_canal(db_path: str, canal_id: int, actor_id: int) -> int:
             if total:
                 conn.execute("UPDATE rent_cargos SET pagado = 1, paid_at = ?, paid_by = ? WHERE pagado = 0 AND renta_id IN "
                              "(SELECT id FROM rent_rentas WHERE canal_id = ? AND activa = 1)", (utcnow_iso(), actor_id, canal_id))
+                conn.execute("UPDATE rent_rentas SET pago_ok = 1 WHERE canal_id = ? AND activa = 1", (canal_id,))
             return total
     finally:
         conn.close()
@@ -861,9 +986,8 @@ def dar_baja(db_path: str, renta_id: int, hoy: date) -> Optional[Renta]:
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            if r.modalidad == "vencido":
-                start = max(r.fecha_inicio, week_start(hoy))
-                days = (hoy - start).days + 1
+            if r.modalidad == "vencido" and r.colocado:
+                days = billable_days(r, week_start(hoy), hoy)
                 _insert_cargo(conn, r.id, "baja", week_start(hoy).isoformat(), prorate(r.precio, days))
             conn.execute("UPDATE rent_rentas SET activa = 0, fecha_baja = ? WHERE id = ? AND activa = 1", (hoy.isoformat(), r.id))
     finally:
@@ -895,16 +1019,33 @@ def mark_job(db_path: str, key: str) -> bool:
 
 def weekly_charge_for(r: Renta, sunday: date) -> Optional[tuple]:
     """(concepto, periodo, monto) que le toca a la renta en el cobro del domingo `sunday`, o None."""
-    if r.fecha_inicio >= sunday:
-        return None                                   # empezó ese mismo domingo (o después): ya lo cubre el prorrateo / el próximo cobro
+    if not r.colocado or r.fecha_inicio >= sunday:
+        return None                                   # HO sin colocar, o empezó ese mismo domingo (o después): ya lo cubre el prorrateo / el próximo cobro
     if r.modalidad == "adelantado":
-        return ("semana", sunday.isoformat(), r.precio)
-    prev = sunday - timedelta(days=7)
-    start = max(r.fecha_inicio, prev)
-    days = (sunday - start).days
+        days = billable_days(r, sunday, sunday + timedelta(days=6))
+        periodo = sunday
+    else:
+        periodo = sunday - timedelta(days=7)
+        days = billable_days(r, periodo, sunday - timedelta(days=1))
     if days <= 0:
         return None
-    return ("semana", prev.isoformat(), prorate(r.precio, days))
+    return ("semana", periodo.isoformat(), prorate(r.precio, days))
+
+
+def cargar_resto(db_path: str, canal_id: int) -> List[Cargo]:
+    """Carga el 50% restante de defensa / pack de las rentas activas del canal (una sola vez). Devuelve los cargos creados."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            ids = []
+            for r in [_renta(x) for x in conn.execute("SELECT * FROM rent_rentas WHERE canal_id = ? AND activa = 1 AND colocado = 1",
+                                                       (canal_id,))]:
+                for total, concepto in ((r.defensa_total, "defensa_resto"), (r.pack_total, "pack_resto")):
+                    if total and _insert_cargo(conn, r.id, concepto, r.fecha_inicio.isoformat(), half(total)[1]):
+                        ids.append(int(conn.execute("SELECT last_insert_rowid()").fetchone()[0]))
+            return [_cargo(x) for x in conn.execute(f"SELECT * FROM rent_cargos WHERE id IN ({','.join('?' * len(ids))})", ids)] if ids else []
+    finally:
+        conn.close()
 
 
 def run_weekly(db_path: str, sunday: date) -> List[int]:

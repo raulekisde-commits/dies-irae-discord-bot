@@ -8,7 +8,7 @@ Cobro: domingos 00:00 UTC (cobro) y 23:00 UTC (recordatorio a impagos). Datos en
 """
 import asyncio
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import discord
@@ -39,7 +39,8 @@ T: Dict[str, Dict[str, str]] = {
         "m_rent": "Quiero rentar", "m_perm": "Permisos de crafteo",
         "f_map": "Mapa", "f_map_ph": "Escribí el nombre del mapa", "f_tipo": "¿Qué querés rentar?",
         "f_extras": "Extras (solo HO, opcional)", "f_for": "¿Para quién es?", "f_name": "Nombre de la guild, alianza o personaje",
-        "opt_nivel3": "Subir el HO a nivel 3", "opt_ponemos": "Que lo pongamos nosotros",
+        "opt_nivel3": "Subir el HO a nivel 3", "opt_def1": "Defensa del HO: fase 1", "opt_def2": "Defensa del HO: fase 2",
+        "opt_pack": "Pack: defensa 2 fases + 1 semana gratis (Q5/Q6)",
         "no_maps": "❌ Todavía no hay mapas disponibles.", "bad_map": "❌ Ese mapa no está en la lista.",
         "already": "ℹ️ Ya tenés un ticket abierto: {ch}", "opened": "✅ Ticket abierto: {ch}",
         "t_rent": "🏠 Solicitud de renta", "t_perm": "🛠️ Solicitud de permisos de crafteo",
@@ -55,13 +56,21 @@ T: Dict[str, Dict[str, str]] = {
         "n_week": "💰 Cobro semanal — {date}", "n_initial": "💰 Pago inicial", "n_prev": "Deuda anterior: **{amount}**",
         "n_total": "**Total a pagar: {amount}**", "n_rem": "⏰ Recordatorio: pago pendiente",
         "n_rem_desc": "Tenés **{amount}** sin pagar.", "n_paid": "✅ Pago registrado: **{amount}**. ¡Gracias!",
-        "c_prorrateo": "Días hasta el domingo", "c_semana": "Semana", "c_nivel3": "Subir a nivel 3", "c_ponemos": "Lo ponemos nosotros",
+        "c_prorrateo": "Días hasta el domingo", "c_semana": "Semana", "c_nivel3": "Subir a nivel 3", "c_ponemos": "Lo ponemos nosotros", "c_defensa_ant": "Defensa del HO (50% adelantado)",
+        "c_defensa_resto": "Defensa del HO (50% restante)", "c_pack_ant": "Pack HO (50% adelantado)", "c_pack_resto": "Pack HO (50% restante)",
+        "l_free": "Gratis hasta", "l_stage": "Estado", "st_approved": "Aprobado", "st_paid": "Pago confirmado",
+        "st_placed": "HO colocado", "st_waiting": "⏳ Esperando que se coloque el HO (la renta semanal todavía no corre)",
+        "placed_msg": "🏠 ¡Tu HO ya está colocado! La renta semanal corre desde hoy.", "l_def": "Defensa", "l_def_n": "{n} fase(s)", "l_pack": "Pack (defensa 2 fases + 1 semana gratis)",
+        "pack_only": "❌ El pack solo está disponible en mapas Q5 y Q6.", "n_rest": "💰 Saldo de defensa / pack (50% restante)",
         "c_baja": "Días usados (baja)", "week_of": "semana del {date}",
         "tipo_ho": "HO", "tipo_terri": "Territorio", "tipo_permiso": "Permisos de crafteo",
         "h_personaje": "Personaje", "h_guild": "Guild", "h_alianza": "Alianza",
         "f_gtag": "Tu guild y tag de alianza (opcional)", "f_gtag_ph": "Ej: [Timba] Smogg — o solo Smogg si no tenés alianza",
         "l_role": "Rol", "choose_tipo": "¿Qué querés rentar?",
-        "tar_title": "💲 Tarifas", "tar_poner": "Poner el HO", "tar_nivel3": "Subir el HO a nivel 3", "tar_fixed": "Pago único",
+        "tar_title": "💲 Tarifas", "tar_def": "Defensa de HO Fase 1 & 2 (Opcional)", "tar_def_val": "{amount} por fase",
+        "tar_nivel3": "Subir el HO a nivel 3", "tar_fixed": "Pago único", "tar_n3_extra": "Recargo semanal: +{a} con alianza · +{b} sin alianza",
+        "tar_packs": "Packs", "tar_pack_line": "HO en {q}: defensa de las 2 fases + 1 semana gratis: **{amount}**",
+        "tar_half": "⚠️ Defensas y packs: se paga la mitad por adelantado.",
         "tar_maps": "Mapas · calidad · bioma · precio semanal", "tar_ask": "a consultar", "tar_none": "Todavía no hay mapas cargados.",
     },
     "pt": {
@@ -73,7 +82,8 @@ T: Dict[str, Dict[str, str]] = {
         "m_rent": "Quero alugar", "m_perm": "Permissões de craft",
         "f_map": "Mapa", "f_map_ph": "Escreva o nome do mapa", "f_tipo": "O que você quer alugar?",
         "f_extras": "Extras (só HO, opcional)", "f_for": "Para quem é?", "f_name": "Nome da guild, aliança ou personagem",
-        "opt_nivel3": "Subir a HO para nível 3", "opt_ponemos": "Que nós a coloquemos",
+        "opt_nivel3": "Subir a HO para nível 3", "opt_def1": "Defesa da HO: fase 1", "opt_def2": "Defesa da HO: fase 2",
+        "opt_pack": "Pack: defesa 2 fases + 1 semana grátis (Q5/Q6)",
         "no_maps": "❌ Ainda não há mapas disponíveis.", "bad_map": "❌ Esse mapa não está na lista.",
         "already": "ℹ️ Você já tem um ticket aberto: {ch}", "opened": "✅ Ticket aberto: {ch}",
         "t_rent": "🏠 Pedido de aluguel", "t_perm": "🛠️ Pedido de permissões de craft",
@@ -89,13 +99,21 @@ T: Dict[str, Dict[str, str]] = {
         "n_week": "💰 Cobrança semanal — {date}", "n_initial": "💰 Pagamento inicial", "n_prev": "Dívida anterior: **{amount}**",
         "n_total": "**Total a pagar: {amount}**", "n_rem": "⏰ Lembrete: pagamento pendente",
         "n_rem_desc": "Você tem **{amount}** em aberto.", "n_paid": "✅ Pagamento registrado: **{amount}**. Obrigado!",
-        "c_prorrateo": "Dias até domingo", "c_semana": "Semana", "c_nivel3": "Subir para nível 3", "c_ponemos": "Nós colocamos",
+        "c_prorrateo": "Dias até domingo", "c_semana": "Semana", "c_nivel3": "Subir para nível 3", "c_ponemos": "Nós colocamos", "c_defensa_ant": "Defesa da HO (50% adiantado)",
+        "c_defensa_resto": "Defesa da HO (50% restante)", "c_pack_ant": "Pack HO (50% adiantado)", "c_pack_resto": "Pack HO (50% restante)",
+        "l_free": "Grátis até", "l_stage": "Situação", "st_approved": "Aprovado", "st_paid": "Pagamento confirmado",
+        "st_placed": "HO colocada", "st_waiting": "⏳ Aguardando a colocação da HO (o aluguel semanal ainda não corre)",
+        "placed_msg": "🏠 Sua HO já foi colocada! O aluguel semanal corre a partir de hoje.", "l_def": "Defesa", "l_def_n": "{n} fase(s)", "l_pack": "Pack (defesa 2 fases + 1 semana grátis)",
+        "pack_only": "❌ O pack só está disponível em mapas Q5 e Q6.", "n_rest": "💰 Saldo de defesa / pack (50% restante)",
         "c_baja": "Dias usados (cancelamento)", "week_of": "semana de {date}",
         "tipo_ho": "HO", "tipo_terri": "Território", "tipo_permiso": "Permissões de craft",
         "h_personaje": "Personagem", "h_guild": "Guild", "h_alianza": "Aliança",
         "f_gtag": "Sua guild e tag da aliança (opcional)", "f_gtag_ph": "Ex: [Timba] Smogg — ou só Smogg se não tiver aliança",
         "l_role": "Cargo", "choose_tipo": "O que você quer alugar?",
-        "tar_title": "💲 Tarifas", "tar_poner": "Colocar a HO", "tar_nivel3": "Subir a HO para nível 3", "tar_fixed": "Pagamento único",
+        "tar_title": "💲 Tarifas", "tar_def": "Defesa de HO Fase 1 & 2 (Opcional)", "tar_def_val": "{amount} por fase",
+        "tar_nivel3": "Subir a HO para nível 3", "tar_fixed": "Pagamento único", "tar_n3_extra": "Acréscimo semanal: +{a} com aliança · +{b} sem aliança",
+        "tar_packs": "Packs", "tar_pack_line": "HO em {q}: defesa das 2 fases + 1 semana grátis: **{amount}**",
+        "tar_half": "⚠️ Defesas e packs: paga-se metade adiantado.",
         "tar_maps": "Mapas · qualidade · bioma · preço semanal", "tar_ask": "a consultar", "tar_none": "Ainda não há mapas cadastrados.",
     },
     "en": {
@@ -107,7 +125,8 @@ T: Dict[str, Dict[str, str]] = {
         "m_rent": "I want to rent", "m_perm": "Crafting permissions",
         "f_map": "Map", "f_map_ph": "Type the map name", "f_tipo": "What do you want to rent?",
         "f_extras": "Extras (HO only, optional)", "f_for": "Who is it for?", "f_name": "Guild, alliance or character name",
-        "opt_nivel3": "Upgrade the HO to level 3", "opt_ponemos": "We place it for you",
+        "opt_nivel3": "Upgrade the HO to level 3", "opt_def1": "HO defense: phase 1", "opt_def2": "HO defense: phase 2",
+        "opt_pack": "Pack: 2-phase defense + 1 free week (Q5/Q6)",
         "no_maps": "❌ There are no maps available yet.", "bad_map": "❌ That map is not on the list.",
         "already": "ℹ️ You already have an open ticket: {ch}", "opened": "✅ Ticket opened: {ch}",
         "t_rent": "🏠 Rental request", "t_perm": "🛠️ Crafting permissions request",
@@ -123,13 +142,21 @@ T: Dict[str, Dict[str, str]] = {
         "n_week": "💰 Weekly charge — {date}", "n_initial": "💰 Initial payment", "n_prev": "Previous debt: **{amount}**",
         "n_total": "**Total due: {amount}**", "n_rem": "⏰ Reminder: payment pending",
         "n_rem_desc": "You have **{amount}** unpaid.", "n_paid": "✅ Payment recorded: **{amount}**. Thanks!",
-        "c_prorrateo": "Days until Sunday", "c_semana": "Week", "c_nivel3": "Level 3 upgrade", "c_ponemos": "We place it",
+        "c_prorrateo": "Days until Sunday", "c_semana": "Week", "c_nivel3": "Level 3 upgrade", "c_ponemos": "We place it", "c_defensa_ant": "HO defense (50% upfront)",
+        "c_defensa_resto": "HO defense (remaining 50%)", "c_pack_ant": "HO pack (50% upfront)", "c_pack_resto": "HO pack (remaining 50%)",
+        "l_free": "Free until", "l_stage": "Status", "st_approved": "Approved", "st_paid": "Payment confirmed",
+        "st_placed": "HO placed", "st_waiting": "⏳ Waiting for the HO to be placed (weekly rent not running yet)",
+        "placed_msg": "🏠 Your HO has been placed! The weekly rent runs from today.", "l_def": "Defense", "l_def_n": "{n} phase(s)", "l_pack": "Pack (2-phase defense + 1 free week)",
+        "pack_only": "❌ The pack is only available on Q5 and Q6 maps.", "n_rest": "💰 Defense / pack balance (remaining 50%)",
         "c_baja": "Days used (cancellation)", "week_of": "week of {date}",
         "tipo_ho": "HO", "tipo_terri": "Territory", "tipo_permiso": "Crafting permissions",
         "h_personaje": "Character", "h_guild": "Guild", "h_alianza": "Alliance",
         "f_gtag": "Your guild and alliance tag (optional)", "f_gtag_ph": "E.g. [Timba] Smogg — or just Smogg with no alliance",
         "l_role": "Role", "choose_tipo": "What do you want to rent?",
-        "tar_title": "💲 Prices", "tar_poner": "HO placement", "tar_nivel3": "HO level 3 upgrade", "tar_fixed": "One-time fee",
+        "tar_title": "💲 Prices", "tar_def": "HO Defense Phase 1 & 2 (Optional)", "tar_def_val": "{amount} per phase",
+        "tar_nivel3": "HO level 3 upgrade", "tar_fixed": "One-time fee", "tar_n3_extra": "Weekly surcharge: +{a} with alliance · +{b} without alliance",
+        "tar_packs": "Packs", "tar_pack_line": "HO on {q}: 2-phase defense + 1 free week: **{amount}**",
+        "tar_half": "⚠️ Defenses and packs: half is paid upfront.",
         "tar_maps": "Maps · quality · biome · weekly price", "tar_ask": "ask us", "tar_none": "No maps have been added yet.",
     },
 }
@@ -137,6 +164,7 @@ LANG_NAMES = {"es": "Español", "pt": "Português", "en": "English"}
 TIPO_ES = {"ho": "HO", "terri": "Territorio", "permiso": "Permisos de crafteo"}
 CONCEPTO_ES = {"ho": "HO (semanal)", "terri": "Territorio (semanal)", "permiso": "Permisos (semanal)", "nivel3": "Subir a nivel 3 (fijo)",
                "ponemos": "Lo ponemos nosotros (fijo)"}
+CONCEPTO_CHOICE_KEYS = ("ho", "terri", "permiso")            # el resto de las tarifas son únicas: /renta tarifas
 
 
 def t(lang: str, key: str, **kw) -> str:
@@ -234,6 +262,24 @@ class TicketView(discord.ui.View):
         await self.cog.on_reject(interaction)
 
 
+class StageView(discord.ui.View):
+    """Etapas del ticket de HO (solo el Council): pago confirmado y HO colocado, en cualquier orden."""
+
+    def __init__(self, cog: "RentasCog", paid_done: bool = False, placed_done: bool = False):
+        super().__init__(timeout=None)
+        self.cog = cog
+        for kind, label, emoji, done in (("pay", "Pago confirmado", "💰", paid_done), ("place", "HO colocado", "🏠", placed_done)):
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary if done else discord.ButtonStyle.success,
+                                  custom_id=f"rent:st:{kind}", disabled=done)
+            b.callback = self._cb(kind)
+            self.add_item(b)
+
+    def _cb(self, kind: str):
+        async def cb(interaction: discord.Interaction):
+            await self.cog.on_stage(interaction, kind)
+        return cb
+
+
 class PaidView(discord.ui.View):
     """Botón de los avisos de cobro. Marca pagado todo lo pendiente del canal. Solo el Council."""
 
@@ -267,9 +313,11 @@ class RequestModal(discord.ui.Modal):
             self.add_item(self.map_text)
         self.extras = None
         if kind == "rent" and self.tipo == "ho":
-            self.extras = _optional_select(options=[discord.SelectOption(label=t(lang, "opt_nivel3"), value="nivel3"),
-                                                    discord.SelectOption(label=t(lang, "opt_ponemos"), value="ponemos")],
-                                           min_values=0, max_values=2)
+            opts = [discord.SelectOption(label=t(lang, k)[:100], value=v) for k, v in
+                    (("opt_nivel3", "nivel3"), ("opt_def1", "def1"), ("opt_def2", "def2"))]
+            if any(m.calidad in rdb.PACK_CALIDADES for m in mapas):
+                opts.append(discord.SelectOption(label=t(lang, "opt_pack")[:100], value="pack"))
+            self.extras = _optional_select(options=opts, min_values=0, max_values=len(opts))
             self.add_item(_label(t(lang, "f_extras"), self.extras))
         holders = rdb.TITULARES_POR_TIPO[self.tipo]
         self.holder = discord.ui.Select(options=[discord.SelectOption(label=t(lang, f"h_{h}"), value=h) for h in holders])
@@ -293,34 +341,39 @@ class RequestModal(discord.ui.Modal):
 
 
 class ApproveModal(discord.ui.Modal):
-    def __init__(self, cog: "RentasCog", ticket: rdb.Ticket, precio: Optional[int], nivel3: Optional[int], ponemos: Optional[int]):
+    def __init__(self, cog: "RentasCog", ticket: rdb.Ticket, precio: Optional[int], nivel3: Optional[int], defensa: Optional[int],
+                 pack: Optional[int], precio_nota: str = ""):
         super().__init__(title="Aprobar renta")
         self.cog, self.ticket = cog, ticket
         self.modalidad = discord.ui.Select(options=[discord.SelectOption(label="Por adelantado", value="adelantado"),
                                                     discord.SelectOption(label="Semana vencida", value="vencido")])
         self.add_item(_label("Modalidad de pago", self.modalidad))
-        self.precio = discord.ui.TextInput(label="Precio semanal (silver, sugerido)", max_length=20, placeholder="Ej: 1.5M",
+        self.precio = discord.ui.TextInput(label=("Precio semanal (sugerido" + precio_nota + ")")[:45], max_length=20, placeholder="Ej: 100M",
                                            default=rdb.fmt_silver(precio) if precio else None)
         self.add_item(self.precio)
-        self.nivel3 = self.ponemos = None
+        self.nivel3 = self.defensa = self.pack = None
         if ticket.tipo == "ho" and ticket.nivel3:
-            self.nivel3 = discord.ui.TextInput(label="Cargo fijo: subir a nivel 3", max_length=20, placeholder="Ej: 5M",
+            self.nivel3 = discord.ui.TextInput(label="Pago único: subir a nivel 3", max_length=20, placeholder="Ej: 5M",
                                                default=rdb.fmt_silver(nivel3) if nivel3 else None)
             self.add_item(self.nivel3)
-        if ticket.tipo == "ho" and ticket.ponemos:
-            self.ponemos = discord.ui.TextInput(label="Cargo fijo: poner el HO (sugerido)", max_length=20, placeholder="Ej: 2M",
-                                                default=rdb.fmt_silver(ponemos) if ponemos else None)
-            self.add_item(self.ponemos)
+        if ticket.tipo == "ho" and ticket.pack:
+            self.pack = discord.ui.TextInput(label="Pack: total (se cobra 50% ahora)", max_length=20, placeholder="Ej: 120M",
+                                             default=rdb.fmt_silver(pack) if pack else None)
+            self.add_item(self.pack)
+        elif ticket.tipo == "ho" and ticket.defensas:
+            self.defensa = discord.ui.TextInput(label=f"Defensa {ticket.defensas} fase(s): total (50% ahora)"[:45], max_length=20,
+                                                placeholder="Ej: 80M", default=rdb.fmt_silver(defensa) if defensa else None)
+            self.add_item(self.defensa)
         default_role = rdb.guild_role_name(ticket.guild_nombre, ticket.alianza_tag) if ticket.guild_nombre else None
         self.rol = discord.ui.TextInput(label="Rol de guild (vacío = sin rol)", max_length=70, required=False,
                                         placeholder="Ej: [Timba] Smogg", default=default_role)
         self.add_item(self.rol)
 
     async def on_submit(self, interaction: discord.Interaction):
+        val = lambda x: str(x.value) if x is not None else None
         await self.cog.on_approve_submitted(
-            interaction, self.ticket.id, self.modalidad.values[0] if self.modalidad.values else "",
-            str(self.precio.value), str(self.nivel3.value) if self.nivel3 is not None else None,
-            str(self.ponemos.value) if self.ponemos is not None else None, str(self.rol.value or ""))
+            interaction, self.ticket.id, self.modalidad.values[0] if self.modalidad.values else "", str(self.precio.value),
+            val(self.nivel3), None, str(self.rol.value or ""), defensa_txt=val(self.defensa), pack_txt=val(self.pack))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -363,7 +416,7 @@ class InfoModal(discord.ui.Modal):
 # Cog
 # ============================================================
 IDIOMA_CHOICES = [app_commands.Choice(name=v, value=k) for k, v in LANG_NAMES.items()]
-CONCEPTO_CHOICES = [app_commands.Choice(name=v, value=k) for k, v in CONCEPTO_ES.items()]
+CONCEPTO_CHOICES = [app_commands.Choice(name=CONCEPTO_ES[k], value=k) for k in CONCEPTO_CHOICE_KEYS]
 CALIDAD_CHOICES = [app_commands.Choice(name=q, value=q) for q in rdb.CALIDADES]
 BIOMA_CHOICES = [app_commands.Choice(name=b, value=b) for b in rdb.BIOMAS]
 TITULAR_CHOICES = [app_commands.Choice(name=n, value=v) for n, v in (("Personaje", "personaje"), ("Guild", "guild"), ("Alianza", "alianza"))]
@@ -380,6 +433,7 @@ class RentasCog(commands.Cog):
             self.bot.add_view(PanelView(self, lang))
         self.bot.add_view(TicketView(self))
         self.bot.add_view(PaidView(self))
+        self.bot.add_view(StageView(self))
         if not self.scheduler.is_running():
             self.scheduler.start()
 
@@ -497,15 +551,21 @@ class RentasCog(commands.Cog):
             await _reply(interaction, t(lang, "error"))
 
     async def tarifas_embed(self, lang: str) -> discord.Embed:
-        """Panel de tarifas: pagos únicos (poner el HO, nivel 3) y lista de mapas con calidad, bioma y precio semanal por guild."""
-        emb = discord.Embed(title=t(lang, "tar_title"), color=GOLD)
-        for concepto, key in (("ponemos", "tar_poner"), ("nivel3", "tar_nivel3")):
-            v = await self.run(rdb.get_tarifa_fija, concepto)
-            emb.add_field(name=f"{t(lang, key)} ({t(lang, 'tar_fixed')})", value=rdb.fmt_silver(v) if v else t(lang, "tar_ask"), inline=True)
+        """Panel de tarifas: defensa, nivel 3 (pago único + recargo semanal), packs, y lista de mapas con precio semanal por guild."""
+        tf = {k: await self.run(rdb.get_tarifa_fija, k) for k in rdb.TARIFAS_FIJAS}
+        money = lambda v: rdb.fmt_silver(v) if v else t(lang, "tar_ask")
+        emb = discord.Embed(title=t(lang, "tar_title"), color=GOLD, description=t(lang, "tar_half"))
+        emb.add_field(name=t(lang, "tar_def"), value=t(lang, "tar_def_val", amount=money(tf["defensa"])), inline=False)
+        n3 = f"{money(tf['nivel3'])} ({t(lang, 'tar_fixed')})"
+        if tf["recargo_alianza"] or tf["recargo_sin"]:
+            n3 += "\n" + t(lang, "tar_n3_extra", a=money(tf["recargo_alianza"]), b=money(tf["recargo_sin"]))
+        emb.add_field(name=t(lang, "tar_nivel3"), value=n3, inline=False)
+        packs = [t(lang, "tar_pack_line", q=q, amount=money(tf[f"pack_{q.lower()}"])) for q in rdb.PACK_CALIDADES]
+        emb.add_field(name=t(lang, "tar_packs"), value="\n".join(packs), inline=False)
         lines = [f"• **{m.nombre}**" + (f" · {m.detalle}" if m.detalle else "") + f" — {rdb.fmt_silver(p) if p else t(lang, 'tar_ask')}"
                  for m, p in await self.run(rdb.lista_tarifas)]
         text = "\n".join(lines) or t(lang, "tar_none")
-        chunks = [text[i:i + 1024] for i in range(0, min(len(text), 4096), 1024)] if len(text) > 1024 else [text]
+        chunks = [text[i:i + 1024] for i in range(0, min(len(text), 3072), 1024)]
         for i, chunk in enumerate(chunks):
             emb.add_field(name=t(lang, "tar_maps") if i == 0 else "\u200b", value=chunk, inline=False)
         return emb
@@ -545,7 +605,11 @@ class RentasCog(commands.Cog):
         if tk.guild_nombre:
             emb.add_field(name=t(lang, "l_role"), value=rdb.guild_role_name(tk.guild_nombre, tk.alianza_tag), inline=False)
         if tk.tipo == "ho":
-            extras = [t(lang, "opt_nivel3")] * tk.nivel3 + [t(lang, "opt_ponemos")] * tk.ponemos
+            extras = [t(lang, "opt_nivel3")] * tk.nivel3
+            if tk.pack:
+                extras.append(t(lang, "l_pack"))
+            elif tk.defensas:
+                extras.append(f"{t(lang, 'l_def')}: {t(lang, 'l_def_n', n=tk.defensas)}")
             emb.add_field(name=t(lang, "l_extras"), value="\n".join(extras) or "—", inline=False)
         emb.set_footer(text=f"Ticket #{tk.id} · {LANG_NAMES[lang]}")
         return emb
@@ -569,6 +633,10 @@ class RentasCog(commands.Cog):
                 gname = nombre                                   # la guild que renta es la suya
             if gname is None:
                 tag = None
+            pack = "pack" in extras
+            defensas = sum(1 for x in ("def1", "def2") if x in extras)
+            if pack and mapa.calidad not in rdb.PACK_CALIDADES:
+                return await _reply(interaction, t(lang, "pack_only"))
             guild, user = interaction.guild, interaction.user
             ow = self._private_overwrites(guild)
             ow[user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
@@ -578,8 +646,8 @@ class RentasCog(commands.Cog):
             except (discord.Forbidden, discord.HTTPException) as exc:
                 print("rentas: no pude crear el ticket:", exc)
                 return await _reply(interaction, t(lang, "error"))
-            tid = await self.run(rdb.create_ticket, channel.id, user.id, lang, tipo, mapa.id, "nivel3" in extras, "ponemos" in extras,
-                                 holder, nombre, gname, tag)
+            tid = await self.run(rdb.create_ticket, channel.id, user.id, lang, tipo, mapa.id, "nivel3" in extras, False,
+                                 holder, nombre, gname, tag, defensas, pack)
         tk = await self.run(rdb.ticket_by_channel, channel.id)
         role = self.council_role
         msg = await channel.send(content=f"{role.mention if role else ''} {user.mention}".strip(), embed=self.ticket_embed(tk, mapa.nombre, user.mention),
@@ -604,18 +672,30 @@ class RentasCog(commands.Cog):
             tk = await self._ticket_here(interaction)
             if tk is None:
                 return
+            tf = lambda c: self.run(rdb.get_tarifa_fija, c)
             precio = await self.run(rdb.get_precio, tk.tipo, tk.mapa_id, tk.titular_tipo)
-            n3 = (await self.run(rdb.get_tarifa_fija, "nivel3") or await self.run(rdb.get_precio, "nivel3", tk.mapa_id, tk.titular_tipo)) \
-                if tk.nivel3 else None
-            pon = (await self.run(rdb.get_tarifa_fija, "ponemos") or await self.run(rdb.get_precio, "ponemos", tk.mapa_id, tk.titular_tipo)) \
-                if tk.ponemos else None
-            await interaction.response.send_modal(ApproveModal(self, tk, precio, n3, pon))
+            nota = ""
+            n3 = defensa = pack = None
+            if tk.tipo == "ho" and tk.nivel3:
+                n3 = await tf("nivel3") or await self.run(rdb.get_precio, "nivel3", tk.mapa_id, tk.titular_tipo)
+                recargo = await tf("recargo_alianza" if tk.alianza_tag else "recargo_sin")
+                if recargo:
+                    nota = f", incl. +{rdb.fmt_silver(recargo)} N3"
+                    precio = precio + recargo if precio else None
+            if tk.tipo == "ho" and tk.pack:
+                mapa = await self.run(rdb.get_mapa, tk.mapa_id)
+                pack = await tf("pack_q6" if mapa and mapa.calidad == "Q6" else "pack_q5")
+            elif tk.tipo == "ho" and tk.defensas:
+                unit = await tf("defensa")
+                defensa = unit * tk.defensas if unit else None
+            await interaction.response.send_modal(ApproveModal(self, tk, precio, n3, defensa, pack, nota))
         except Exception:
             traceback.print_exc()
             await _reply(interaction, "❌ No pude abrir el formulario.")
 
     async def on_approve_submitted(self, interaction: discord.Interaction, ticket_id: int, modalidad: str, precio_txt: str,
-                                   nivel3_txt: Optional[str], ponemos_txt: Optional[str], rol_txt: str = ""):
+                                   nivel3_txt: Optional[str], ponemos_txt: Optional[str], rol_txt: str = "", *,
+                                   defensa_txt: Optional[str] = None, pack_txt: Optional[str] = None):
         try:
             tag, gname = rdb.parse_guild_label(rol_txt)
             if tag and not gname:
@@ -623,6 +703,8 @@ class RentasCog(commands.Cog):
             precio = rdb.parse_silver(precio_txt)
             n3 = rdb.parse_silver(nivel3_txt) if nivel3_txt is not None else 0
             pon = rdb.parse_silver(ponemos_txt) if ponemos_txt is not None else 0
+            defensa = rdb.parse_silver(defensa_txt) if defensa_txt is not None else 0
+            pack = rdb.parse_silver(pack_txt) if pack_txt is not None else 0
             if precio <= 0 or modalidad not in rdb.MODALIDADES:
                 raise rdb.RentaError("Precio o modalidad inválidos.")
         except rdb.RentaError as exc:
@@ -640,10 +722,14 @@ class RentasCog(commands.Cog):
                 return await _reply(interaction, "❌ No pude preparar el canal del cliente (¿permisos del bot?). El ticket sigue abierto.")
             hoy = rdb.today_utc()
             rid = await self.run(rdb.create_renta, canal_id=canal.id, ticket=tk, precio=precio, modalidad=modalidad, inicio=hoy,
-                                 actor_id=interaction.user.id, nivel3_monto=n3, ponemos_monto=pon)
-        await self._close_ticket_message(interaction.channel, tk, f"✅ Aprobado por {interaction.user.display_name}")
+                                 actor_id=interaction.user.id, nivel3_monto=n3, ponemos_monto=pon, defensa_monto=defensa, pack_monto=pack)
         client_ch = interaction.guild.get_channel(canal.channel_id)
         lang = canal.idioma
+        renta = await self.run(rdb.get_renta, rid)
+        if tk.tipo == "ho":
+            await self.show_stages(interaction.channel if moved else client_ch, tk, renta, interaction.user.display_name, new=not moved)
+        else:
+            await self._close_ticket_message(interaction.channel, tk, f"✅ Aprobado por {interaction.user.display_name}")
         if moved:
             await client_ch.send(t(lang, "approved"), allowed_mentions=NO_MENTIONS)
         else:
@@ -655,7 +741,7 @@ class RentasCog(commands.Cog):
         await self.refresh_panel(canal.id)
         pend = [c for c in await self.run(rdb.cargos_renta, rid) if not c.pagado]
         if pend and client_ch is not None:
-            await self.send_notice(canal, t(lang, "n_initial"), pend)
+            await self.send_notice(canal, t(lang, "n_initial"), pend, with_button=tk.tipo != "ho")   # HO: lo confirma el botón de etapa
         role_note = ""
         if gname:
             role_note = await self.give_guild_role(interaction.guild, tk.user_id, gname, tag)
@@ -664,6 +750,84 @@ class RentasCog(commands.Cog):
         await self.log("tickets", f"✅ Ticket #{tk.id} aprobado por {interaction.user.mention} → <#{canal.channel_id}>")
         await self.log("rentas", f"➕ Renta #{rid}: {TIPO_ES[tk.tipo]} · {mapa.nombre if mapa else tk.mapa_id} · {tk.titular_tipo} "
                                  f"**{tk.titular_nombre}** · {rdb.fmt_silver(precio)}/semana · {modalidad} · alta por {interaction.user.mention}")
+
+    # ---------- etapas del HO ----------
+    def stage_text(self, lang: str, r: rdb.Renta) -> str:
+        mark = lambda ok: "✅" if ok else "⏳"
+        return (f"✅ {t(lang, 'st_approved')}\n{mark(r.pago_ok)} {t(lang, 'st_paid')}\n{mark(r.colocado)} {t(lang, 'st_placed')}")
+
+    async def stage_embed(self, tk: rdb.Ticket, r: rdb.Renta, approved_by: Optional[str] = None) -> discord.Embed:
+        mapa = await self.run(rdb.get_mapa, tk.mapa_id)
+        emb = self.ticket_embed(tk, mapa.nombre if mapa else "?", f"<@{tk.user_id}>")
+        emb.add_field(name=t(tk.idioma, "l_stage"), value=self.stage_text(tk.idioma, r), inline=False)
+        done = r.pago_ok and r.colocado
+        emb.set_footer(text=f"Ticket #{tk.id} · " + ("Finalizado" if done else (f"Aprobado por {approved_by}" if approved_by else "En curso")))
+        return emb
+
+    async def show_stages(self, channel, tk: rdb.Ticket, r: rdb.Renta, approved_by: str, new: bool = False):
+        """Muestra las etapas en el mensaje del ticket (o en uno nuevo en el canal del cliente si se sumó a un canal existente)."""
+        if channel is None:
+            return
+        try:
+            emb = await self.stage_embed(tk, r, approved_by)
+            view = StageView(self, r.pago_ok, r.colocado)
+            if not new and tk.message_id:
+                try:
+                    msg = await channel.fetch_message(tk.message_id)
+                    await msg.edit(embed=emb, view=view)
+                    return
+                except discord.NotFound:
+                    pass
+            msg = await channel.send(embed=emb, view=view, allowed_mentions=NO_MENTIONS)
+            await self.run(rdb.set_ticket_message, tk.id, msg.id)
+        except Exception:
+            traceback.print_exc()
+
+    async def on_stage(self, interaction: discord.Interaction, kind: str):
+        try:
+            if not await self._council(interaction):
+                return
+            tk = await self.run(rdb.ticket_by_message, interaction.message.id)
+            r = await self.run(rdb.renta_by_ticket, tk.id) if tk else None
+            if r is None or not r.activa:
+                return await _reply(interaction, "❌ No encuentro una renta activa para este ticket.")
+            canal = await self.run(rdb.get_canal, r.canal_id)
+            client_ch = interaction.guild.get_channel(canal.channel_id) if canal else None
+            note = ""
+            if kind == "pay":
+                total = await self.run(rdb.confirmar_pago, r.id, interaction.user.id)
+                if total is None:
+                    note = "ℹ️ El pago ya estaba confirmado."
+                elif client_ch is not None and total:
+                    await client_ch.send(t(canal.idioma, "n_paid", amount=rdb.fmt_silver(total)), allowed_mentions=NO_MENTIONS)
+                if total is not None:
+                    note = f"✅ Pago confirmado ({rdb.fmt_silver(total)})."
+                    await self.log("pagos", f"💰 {interaction.user.mention} confirmó el pago inicial de la renta #{r.id} "
+                                            f"({r.titular_nombre}): {rdb.fmt_silver(total)}")
+            else:
+                cargos = await self.run(rdb.colocar, r.id, rdb.today_utc())
+                if cargos is None:
+                    note = "ℹ️ El HO ya estaba marcado como colocado."
+                else:
+                    note = "✅ HO colocado: la renta semanal corre desde hoy."
+                if cargos is not None and client_ch is not None:
+                    await client_ch.send(t(canal.idioma, "placed_msg"), allowed_mentions=NO_MENTIONS)
+                    if cargos:
+                        await self.send_notice(canal, t(canal.idioma, "n_rest"), cargos)
+                        note += f" Cargado: {rdb.fmt_silver(sum(c.monto for c in cargos))}."
+                if cargos is not None:
+                    await self.log("rentas", f"🏠 {interaction.user.mention} marcó el HO colocado (renta #{r.id}, {r.titular_nombre}).")
+            r = await self.run(rdb.get_renta, r.id)
+            try:
+                await interaction.response.edit_message(embed=await self.stage_embed(tk, r), view=None if (r.pago_ok and r.colocado)
+                                                        else StageView(self, r.pago_ok, r.colocado))
+            except Exception:
+                traceback.print_exc()
+            await self.refresh_panel(r.canal_id)
+            await _reply(interaction, note)
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude actualizar la etapa.")
 
     async def _client_channel_for(self, guild: discord.Guild, tk: rdb.Ticket, ticket_channel):
         """(canal, moved). Si el titular ya tiene canal en ese mapa, se reutiliza (moved=False); si no, el ticket se convierte en el canal."""
@@ -741,10 +905,14 @@ class RentasCog(commands.Cog):
         for r in rentas[:20]:
             cargos = await self.run(rdb.cargos_renta, r.id)
             fixed = [f"{t(lang, 'c_' + c.concepto)}: {rdb.fmt_silver(c.monto)} ({t(lang, 'paid' if c.pagado else 'unpaid')})"
-                     for c in cargos if c.concepto in ("nivel3", "ponemos")]
+                     for c in cargos if c.concepto in rdb.CONCEPTOS_FIJOS]
             lines = [f"**{t(lang, 'l_price')}:** {rdb.fmt_silver(r.precio)}",
                      f"**{t(lang, 'l_mod')}:** {t(lang, 'mod_' + r.modalidad)}",
                      f"**{t(lang, 'l_start')}:** {ddmm(r.fecha_inicio)}"]
+            if not r.colocado:
+                lines[-1] = t(lang, "st_waiting")
+            if r.gratis_hasta:
+                lines.append(f"**{t(lang, 'l_free')}:** {ddmm(r.gratis_hasta - timedelta(days=1))}")
             if fixed:
                 lines.append(f"**{t(lang, 'l_fixed')}:** " + " · ".join(fixed))
             emb.add_field(name=f"{t(lang, 'tipo_' + r.tipo)} · {mapas.get(r.mapa_id, '?')}", value="\n".join(lines), inline=False)
@@ -777,7 +945,7 @@ class RentasCog(commands.Cog):
         except Exception:
             traceback.print_exc()
 
-    async def send_notice(self, canal: rdb.Canal, title: str, cargos: List[rdb.Cargo], reminder: bool = False):
+    async def send_notice(self, canal: rdb.Canal, title: str, cargos: List[rdb.Cargo], reminder: bool = False, with_button: bool = True):
         """Aviso de cobro en el canal del cliente, con el botón «Marcar pagado»."""
         g = self.guild
         ch = g.get_channel(canal.channel_id) if g is not None else None
@@ -807,7 +975,7 @@ class RentasCog(commands.Cog):
         emb = discord.Embed(title=title, description=desc, color=RED if reminder else GOLD)
         pings = " ".join(f"<@{u}>" for u in await self.run(rdb.miembros, canal.id))
         try:
-            await ch.send(content=pings or None, embed=emb, view=PaidView(self), allowed_mentions=PING)
+            await ch.send(content=pings or None, embed=emb, view=PaidView(self) if with_button else None, allowed_mentions=PING)
         except Exception:
             traceback.print_exc()
 
@@ -1006,25 +1174,50 @@ class RentasCog(commands.Cog):
                  for m, p in rows]
         await _reply(interaction, embed=discord.Embed(title="🗺️ Mapas", color=BLUE, description="\n".join(lines)[:4000] or "No hay mapas."))
 
-    @renta.command(name="tarifas", description="(Council) Tarifas únicas: poner el HO y subir a nivel 3 (sin datos = ver las actuales)")
-    @app_commands.describe(poner_ho="Precio único de poner el HO (ej: 2M)", nivel3="Precio único de subir el HO a nivel 3 (ej: 5M)")
-    async def tarifas(self, interaction: discord.Interaction, poner_ho: Optional[str] = None, nivel3: Optional[str] = None):
+    @renta.command(name="tarifas", description="(Council) Tarifas únicas: defensa, nivel 3, recargos y packs (sin datos = ver)")
+    @app_commands.describe(defensa="Defensa del HO, precio por fase (ej: 40M)", nivel3="Pago único de subir el HO a nivel 3",
+                           recargo_alianza="Nivel 3: recargo semanal si la guild tiene alianza (ej: 50M)",
+                           recargo_sin_alianza="Nivel 3: recargo semanal si la guild no tiene alianza (ej: 30M)",
+                           pack_q5="Pack HO Q5: defensa 2 fases + 1 semana gratis (ej: 120M)", pack_q6="Pack HO Q6 (ej: 140M)")
+    async def tarifas(self, interaction: discord.Interaction, defensa: Optional[str] = None, nivel3: Optional[str] = None,
+                      recargo_alianza: Optional[str] = None, recargo_sin_alianza: Optional[str] = None,
+                      pack_q5: Optional[str] = None, pack_q6: Optional[str] = None):
         if not await self._council(interaction):
             return
+        raw = {"defensa": defensa, "nivel3": nivel3, "recargo_alianza": recargo_alianza, "recargo_sin": recargo_sin_alianza,
+               "pack_q5": pack_q5, "pack_q6": pack_q6}
         try:
-            vals = {"ponemos": rdb.parse_silver(poner_ho) if poner_ho else None, "nivel3": rdb.parse_silver(nivel3) if nivel3 else None}
+            vals = {k: rdb.parse_silver(v) for k, v in raw.items() if v}
         except rdb.RentaError as exc:
             return await _reply(interaction, f"❌ {exc}")
-        for concepto, v in vals.items():
-            if v is not None:
-                await self.run(rdb.set_tarifa_fija, concepto, v)
-        cur = {c: await self.run(rdb.get_tarifa_fija, c) for c in vals}
-        txt = (f"Poner el HO: **{rdb.fmt_silver(cur['ponemos']) if cur['ponemos'] else 'sin cargar'}** · "
-               f"Subir a nivel 3: **{rdb.fmt_silver(cur['nivel3']) if cur['nivel3'] else 'sin cargar'}**")
-        changed = any(v is not None for v in vals.values())
-        await _reply(interaction, ("✅ Tarifas actualizadas. " if changed else "") + txt)
-        if changed:
-            await self.log("rentas", f"💲 {interaction.user.mention} actualizó las tarifas únicas: {txt}")
+        for k, v in vals.items():
+            await self.run(rdb.set_tarifa_fija, k, v)
+        cur = {k: await self.run(rdb.get_tarifa_fija, k) for k in raw}
+        m = lambda v: rdb.fmt_silver(v) if v else "sin cargar"
+        txt = (f"Defensa: **{m(cur['defensa'])}** por fase · Nivel 3: **{m(cur['nivel3'])}** (único), "
+               f"recargo semanal **+{m(cur['recargo_alianza'])}** con alianza / **+{m(cur['recargo_sin'])}** sin alianza · "
+               f"Pack Q5: **{m(cur['pack_q5'])}** · Pack Q6: **{m(cur['pack_q6'])}**")
+        await _reply(interaction, ("✅ Tarifas actualizadas.\n" if vals else "") + txt)
+        if vals:
+            await self.log("rentas", f"💲 {interaction.user.mention} actualizó las tarifas: {txt}")
+
+    @renta.command(name="cobrar-resto", description="(Council) Carga el 50% restante de defensa / pack de este canal")
+    async def cobrar_resto(self, interaction: discord.Interaction):
+        if not await self._council(interaction):
+            return
+        canal = await self.run(rdb.canal_by_channel, interaction.channel.id)
+        if canal is None:
+            return await _reply(interaction, "❌ Usalo dentro del canal de un cliente.")
+        cargos = await self.run(rdb.cargar_resto, canal.id)
+        if not cargos:
+            return await _reply(interaction, "ℹ️ No hay saldo de defensa / pack para cargar (o ya se cargó).")
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self.send_notice(canal, t(canal.idioma, "n_rest"), cargos)
+        await self.refresh_panel(canal.id)
+        total = sum(c.monto for c in cargos)
+        await _reply(interaction, f"✅ Saldo cargado: **{rdb.fmt_silver(total)}**.")
+        await self.log("pagos", f"🛡️ {interaction.user.mention} cargó el 50% restante de defensa / pack en <#{canal.channel_id}>: "
+                                f"{rdb.fmt_silver(total)}")
 
     mapa_quitar.autocomplete("nombre")(_map_autocomplete)
     mapa_editar.autocomplete("actual")(_map_autocomplete)
@@ -1041,8 +1234,6 @@ class RentasCog(commands.Cog):
                 raise rdb.RentaError(f"No existe el mapa «{mapa}».")
             if concepto.value in rdb.TIPOS and titular.value not in rdb.TITULARES_POR_TIPO[concepto.value]:
                 raise rdb.RentaError(f"{TIPO_ES[concepto.value]} no se renta a un {titular.value}.")
-            if concepto.value in ("nivel3", "ponemos") and titular.value == "personaje":
-                raise rdb.RentaError("Los cargos de HO no aplican a personajes.")
             value = rdb.parse_silver(monto)
             await self.run(rdb.set_precio, concepto.value, m.id, titular.value, value)
         except rdb.RentaError as exc:
