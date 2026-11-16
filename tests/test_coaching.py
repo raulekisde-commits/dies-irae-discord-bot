@@ -246,25 +246,23 @@ class CoachingDiscordTests(DiscordBase):
         self.assertIn("✅", m.reactions)
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [])
 
-    def test_devolucion_corta_espera_voto_del_staff(self):
+    def test_devolucion_corta_espera_voto_del_council(self):
         self.open_post(self.novato)
         th = self.vods(2)
         before = len(self.tasks_ch.sent)
-        m = self.reply_msg(self.coach, th, 4400, reply_to=4100, text="buen vod")       # corta: no completa, pregunta al Staff
+        m = self.reply_msg(self.coach, th, 4400, reply_to=4100, text="buen vod")       # corta: no completa, pregunta al Council
         run(self.cog.process_message(m))
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
         self.assertIn("⏳", m.reactions)
         rev = self.tasks_ch.sent[before]
-        self.assertIn(f"<@&{co.STAFF_ROLE_ID}>", rev.content)
-        i = self.inter(self.coach, message=rev)                                           # el coach no puede votar
-        run(self.cog.on_review_vote(i, bad=False))
-        self.assertIn("Solo el Staff", i.text)
+        self.assertIn(f"<@&{co.COUNCIL_ROLE_ID}>", rev.content)
+        self.assertNotIn(f"<@&{co.STAFF_ROLE_ID}>", rev.content)
+        for u in (self.coach, self.staff_member()):                                       # ni el coach ni el Staff pueden votar
+            i = self.inter(u, message=rev)
+            run(self.cog.on_review_vote(i, bad=False))
+            self.assertIn("Solo el Council", i.text)
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        i = self.vote_all(rev, bad=False, n=3)                                             # 3 votos: todavía no se define
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        self.assertIn("bien 3/4", i.response.edits[-1]["content"])
-        i = self.inter(self.council, message=rev)                                         # 4.º voto: está bien → completa a nombre del coach
-        run(self.cog.on_review_vote(i, bad=False))
+        self.vote(rev, bad=False)                                                         # un voto del Council: está bien → completa a nombre del coach
         t = edb.find_by_source(self.db, "coach:4100")
         self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")
@@ -272,29 +270,13 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.on_review_vote(i, bad=True))
         self.assertIn("ya fue votada", i.text)
 
-    def test_voto_se_puede_cambiar_y_cuenta_uno_por_persona(self):
-        self.open_post(self.novato)
-        th = self.vods(1)
-        before = len(self.tasks_ch.sent)
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4900, text="ok")))
-        rev = self.tasks_ch.sent[before]
-        a = self.staff(1)[0]
-        for _ in range(5):                                                                # la misma persona no suma 4
-            i = self.inter(a, message=rev)
-            run(self.cog.on_review_vote(i, bad=True))
-        self.assertIn("mal hecha 1/4", i.response.edits[-1]["content"])
-        i = self.inter(a, message=rev)
-        run(self.cog.on_review_vote(i, bad=False))                                        # cambia su voto
-        self.assertIn("mal hecha 0/4 · ✅ bien 1/4", i.response.edits[-1]["content"])
-        self.assertFalse(cdb.has_penalty(self.db, self.coach.id))
-
     def test_devolucion_corta_mal_hecha_queda_abierta(self):
         self.open_post(self.novato)
         th = self.vods(1)
         before = len(self.tasks_ch.sent)
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4500, text="ok")))
         rev = self.tasks_ch.sent[before]
-        self.vote_all(rev, bad=True)
+        self.vote(rev, bad=True)
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [4100])
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4501)))              # después responde bien: cobra
@@ -306,7 +288,7 @@ class CoachingDiscordTests(DiscordBase):
         for k, mid in enumerate((4700, 4701)):                                            # dos devoluciones cortas, las dos mal
             before = len(self.tasks_ch.sent)
             run(self.cog.process_message(self.reply_msg(self.coach, th, mid, reply_to=4100 + k, text="ok")))
-            self.vote_all(self.tasks_ch.sent[before], bad=True)
+            self.vote(self.tasks_ch.sent[before], bad=True)
         self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4702, reply_to=4100)))  # primera bien hecha: sin tirada
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").reward_spins, 0)
@@ -337,7 +319,7 @@ class CoachingDiscordTests(DiscordBase):
         self.assertEqual(run(self.cog.retro_x_review()), 0)                                     # solo una vez
         rev = self.tasks_ch.sent[before]
         self.assertIn("ya cobrada", rev.content)
-        self.vote_all(rev, bad=True)
+        self.vote(rev, bad=True)
         self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")            # no toca otros VODs
 
@@ -362,14 +344,12 @@ class CoachingDiscordTests(DiscordBase):
         emb = i.response.sent[0][1]["embed"]
         self.assertIn("Top coaches", emb.title)
 
-    def staff(self, n=4):
-        r = discord.Role(co.STAFF_ROLE_ID, "Staff", self.guild)
-        return [discord.Member(700000000000000100 + k, f"Staff{k}", roles=[r], guild=self.guild) for k in range(n)]
+    def staff_member(self):
+        return discord.Member(700000000000000100, "Staff", roles=[discord.Role(co.STAFF_ROLE_ID, "Staff", self.guild)], guild=self.guild)
 
-    def vote_all(self, msg, bad, n=4):
-        for u in self.staff(n):
-            i = self.inter(u, message=msg)
-            run(self.cog.on_review_vote(i, bad=bad))
+    def vote(self, msg, bad):
+        i = self.inter(self.council, message=msg)
+        run(self.cog.on_review_vote(i, bad=bad))
         return i
 
     def inter_done(self, user, msg):

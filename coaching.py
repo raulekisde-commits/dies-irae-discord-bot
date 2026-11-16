@@ -15,7 +15,7 @@ import coaching_db as cdb
 import ctautil as cu
 import encargos_db as edb
 from encargos import can_take, is_staff_or_council
-from guildshop import can_manage
+from guildshop import COUNCIL_ROLE_ID, can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
 OBSERVACION_ROLE_ID = int(os.getenv("OBSERVACION_ROLE_ID", "1559680220800360519"))
@@ -26,8 +26,8 @@ STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 COACHING_TASKS_CHANNEL_ID = int(os.getenv("COACHING_TASKS_CHANNEL_ID", "1566710577173102602"))     # canal donde salen las tareas de devolución
 ROLE_LABELS = [n for n in cu.PLAYED_ROLES.values() if n != "Bomb"]
-SHORT_REPLY_MIN = 100                                      # devoluciones con menos caracteres: las revisa el Staff antes de dar la tirada
-STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
+SHORT_REPLY_MIN = 100                                      # devoluciones con menos caracteres: las revisa el Council antes de dar la tirada
+COUNCIL_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=COUNCIL_ROLE_ID)], everyone=False)
 # Revisión única al subir el cambio: devoluciones ya cobradas desde esta hora (UTC) que tienen una «X» en el texto
 RETRO_FLAG = "retro_x_review_2026_11"
 RETRO_SINCE = datetime(2026, 11, 16, 1, 13, tzinfo=timezone.utc)
@@ -104,7 +104,7 @@ class CoachRoleView(discord.ui.View):
 
 
 class CoachReviewView(discord.ui.View):
-    """Votación persistente del Staff sobre una devolución corta: hasta que se vote, la tarea sigue abierta y no hay tirada."""
+    """Votación persistente del Council sobre una devolución corta: hasta que se vote, la tarea sigue abierta y no hay tirada."""
     def __init__(self, cog: "CoachingCog"):
         super().__init__(timeout=None)
         self.cog = cog
@@ -340,7 +340,7 @@ class CoachingCog(commands.Cog):
         return done
 
     async def ask_review(self, message: discord.Message, pending: List[int], text: str, kind: str = "live", channel=None):
-        """Devolución corta: se le pregunta al Staff si está mal hecha. La tarea queda abierta y sin tirada hasta el voto.
+        """Devolución corta: se le pregunta al Council si está mal hecha. La tarea queda abierta y sin tirada hasta el voto.
         kind='retro': devolución ya cobrada (revisión única); si está mal, solo se penaliza."""
         ch = channel or await self._channel(COACHING_TASKS_CHANNEL_ID)
         if ch is None:
@@ -349,15 +349,15 @@ class CoachingCog(commands.Cog):
         owner = f" de <@{post['user_id']}>" if post else ""
         quote = text[:300].replace("\n", "\n> ") or "(sin texto)"
         if kind == "retro":
-            body = (f"<@&{STAFF_ROLE_ID}> 🔎 Revisión de una devolución ya cobrada: <@{message.author.id}> respondió {len(pending)} VOD(s)"
+            body = (f"<@&{COUNCIL_ROLE_ID}> 🔎 Revisión de una devolución ya cobrada: <@{message.author.id}> respondió {len(pending)} VOD(s)"
                     f"{owner} y el mensaje tiene una X. **¿Está mal hecha la VOD review?**\n> {quote}\n{message.jump_url}\n"
-                    f"Se define con {cdb.REVIEW_VOTES_NEEDED} votos del Staff en una opción. Si está mal, queda penalizado: su próxima VOD review bien hecha no da tirada.")
+                    f"Lo define el Council. Si está mal, queda penalizado: su próxima VOD review bien hecha no da tirada.")
         else:
-            body = (f"<@&{STAFF_ROLE_ID}> ⚠️ <@{message.author.id}> respondió {len(pending)} VOD(s){owner} con una devolución muy corta "
+            body = (f"<@&{COUNCIL_ROLE_ID}> ⚠️ <@{message.author.id}> respondió {len(pending)} VOD(s){owner} con una devolución muy corta "
                     f"({len(text)} caracteres). **¿Está mal hecha la VOD review?**\n> {quote}\n{message.jump_url}\n"
-                    f"Se define con {cdb.REVIEW_VOTES_NEEDED} votos del Staff en una opción; hasta entonces no se da la tirada de Wujupón.")
+                    f"Hasta que el Council lo defina, no se da la tirada de Wujupón.")
         try:
-            sent = await ch.send(body, view=CoachReviewView(self), allowed_mentions=STAFF_PING)
+            sent = await ch.send(body, view=CoachReviewView(self), allowed_mentions=COUNCIL_PING)
             await self.run(cdb.add_review, review_msg_id=sent.id, reply_msg_id=message.id, thread_id=message.channel.id,
                            coach_id=message.author.id, vod_msgs=pending, kind=kind)
         except Exception as exc:
@@ -371,8 +371,8 @@ class CoachingCog(commands.Cog):
             pass
 
     async def on_review_vote(self, interaction: discord.Interaction, bad: bool):
-        if not is_staff_or_council(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff puede votar esta revisión.")
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council puede definir esta revisión.")
         msg = getattr(interaction, "message", None)
         row = await self.run(cdb.get_review, msg.id) if msg else None
         if row is None:
@@ -390,7 +390,7 @@ class CoachingCog(commands.Cog):
                 return await _say(interaction, f"✅ Voto registrado. {tally}")
         bad = status == "bad"
         coach_id = int(row["coach_id"])
-        coach, who = f"<@{coach_id}>", f"Staff ({n_bad if bad else n_ok} votos)"
+        coach, who = f"<@{coach_id}>", f"<@{interaction.user.id}> (Council)"
         if bad:
             await self.run(cdb.add_penalty, coach_id)                    # no acumulable
             lost = "ya cobró esa tirada, así que" if row.get("kind") == "retro" else "no cobra la tirada y el VOD sigue pendiente;"
@@ -402,7 +402,7 @@ class CoachingCog(commands.Cog):
             done = await self._complete(row["vod_msgs"], coach_id)
             result = (f"✅ {who}: **está bien**. Se dio la devolución de {done} VOD(s) a nombre de {coach}."
                       if done else f"✅ {who}: **está bien**, pero esos VODs ya los había devuelto otro coach: sin tirada.")
-        content = f"{base}\n\n{tally}\n{result}"
+        content = f"{base}\n\n{result}"
         try:
             await interaction.response.edit_message(content=content[:2000], view=None, allowed_mentions=NO_MENTIONS)
         except Exception:
@@ -417,8 +417,8 @@ class CoachingCog(commands.Cog):
             traceback.print_exc()
 
     async def retro_x_review(self) -> int:
-        """Una sola vez: devoluciones desde RETRO_SINCE con una «X» en el texto que ya cobraron su tirada → votación del Staff.
-        Si el Staff dice que está mal, el coach queda penalizado. Devuelve cuántas revisiones abrió."""
+        """Una sola vez: devoluciones desde RETRO_SINCE con una «X» en el texto que ya cobraron su tirada → votación del Council.
+        Si el Council dice que está mal, el coach queda penalizado. Devuelve cuántas revisiones abrió."""
         if not await self.run(cdb.take_flag, RETRO_FLAG):
             return 0
         enc = self.bot.get_cog("EncargosCog")
@@ -454,7 +454,7 @@ class CoachingCog(commands.Cog):
                     n += 1
             except Exception as exc:
                 print(f"coaching: revisión retro, no pude leer el post {thread_id}: {exc!r}")
-        print(f"coaching: revisión retro de devoluciones con X: {n} enviadas al Staff")
+        print(f"coaching: revisión retro de devoluciones con X: {n} enviadas al Council")
         return n
 
     async def on_role_pick(self, interaction: discord.Interaction, label: str):

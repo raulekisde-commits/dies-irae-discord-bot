@@ -264,11 +264,11 @@ def get_review(db_path: str, review_msg_id: int) -> Optional[dict]:
         conn.close()
 
 
-REVIEW_VOTES_NEEDED = 4
+REVIEW_VOTES_NEEDED = 1                                    # decide el primer voto del Council
 
 
 def vote_review(db_path: str, review_msg_id: int, user_id: int, bad: bool, needed: int = REVIEW_VOTES_NEEDED) -> Tuple[str, int, int]:
-    """Voto de un miembro del Staff (puede cambiarlo mientras siga abierta). Se decide cuando una opción llega a `needed`.
+    """Voto de un miembro del Council (puede cambiarlo mientras siga abierta). Se decide cuando una opción llega a `needed`.
     Devuelve (estado, votos 'mal', votos 'bien'): estado 'closed' si ya estaba decidida, 'pending', 'bad' u 'ok'."""
     conn = connect(db_path)
     try:
