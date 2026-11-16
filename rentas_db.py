@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS rent_tickets (
     ponemos        INTEGER NOT NULL DEFAULT 0,
     titular_tipo   TEXT NOT NULL,
     titular_nombre TEXT NOT NULL,
+    guild_nombre   TEXT,                        -- guild de Albion de quien pidió (para el rol «[TAG] Guild»)
+    alianza_tag    TEXT,
     status         TEXT NOT NULL DEFAULT 'open', -- open | approved | rejected
     message_id     INTEGER,
     created_at     TEXT NOT NULL,
@@ -111,6 +113,17 @@ CREATE TABLE IF NOT EXISTS rent_cargos (
     paid_at    TEXT,
     paid_by    INTEGER,
     UNIQUE (renta_id, concepto, periodo)
+);
+CREATE TABLE IF NOT EXISTS rent_guild_roles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_nombre TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    tag          TEXT,                          -- tag de la alianza (hasta 5), NULL = sin alianza
+    role_id      INTEGER NOT NULL,
+    color        INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rent_usuarios (
+    user_id       INTEGER PRIMARY KEY,
+    guild_role_id INTEGER NOT NULL              -- rent_guild_roles.id
 );
 CREATE TABLE IF NOT EXISTS rent_jobs (
     key     TEXT PRIMARY KEY,
@@ -424,6 +437,8 @@ class Ticket:
     titular_nombre: str
     status: str
     message_id: Optional[int]
+    guild_nombre: Optional[str] = None
+    alianza_tag: Optional[str] = None
 
 
 def _ticket(r) -> Optional[Ticket]:
@@ -431,7 +446,27 @@ def _ticket(r) -> Optional[Ticket]:
         return None
     return Ticket(int(r["id"]), int(r["channel_id"]), int(r["user_id"]), r["idioma"], r["tipo"], int(r["mapa_id"]),
                   bool(r["nivel3"]), bool(r["ponemos"]), r["titular_tipo"], r["titular_nombre"], r["status"],
-                  int(r["message_id"]) if r["message_id"] is not None else None)
+                  int(r["message_id"]) if r["message_id"] is not None else None, r["guild_nombre"], r["alianza_tag"])
+
+
+TAG_MAX = 5
+
+
+def parse_guild_label(text: str) -> tuple:
+    """'[Timba] Smogg' -> ('Timba', 'Smogg') · 'Smogg' -> (None, 'Smogg') · '[Timba]' -> ('Timba', None) · '' -> (None, None)."""
+    s = " ".join((text or "").split())
+    m = re.fullmatch(r"(?:\[([^\[\]]*)\])?\s*(.*)", s)
+    tag = (m.group(1) or "").strip() or None
+    guild = (m.group(2) or "").strip() or None
+    if tag is not None and len(tag) > TAG_MAX:
+        raise RentaError(f"El tag de alianza tiene que tener hasta {TAG_MAX} caracteres (ej: [Timba] Smogg).")
+    if guild is not None and ("[" in guild or "]" in guild or len(guild) > 60):
+        raise RentaError("Formato inválido. Ej: [Timba] Smogg, o solo Smogg si la guild no tiene alianza.")
+    return tag, guild
+
+
+def guild_role_name(guild: str, tag: Optional[str]) -> str:
+    return (f"[{tag}] {guild}" if tag else guild)[:100]
 
 
 def validate_request(tipo: str, titular_tipo: str, titular_nombre: str) -> str:
@@ -446,7 +481,7 @@ def validate_request(tipo: str, titular_tipo: str, titular_nombre: str) -> str:
 
 
 def create_ticket(db_path: str, channel_id: int, user_id: int, idioma: str, tipo: str, mapa_id: int, nivel3: bool, ponemos: bool,
-                  titular_tipo: str, titular_nombre: str) -> int:
+                  titular_tipo: str, titular_nombre: str, guild_nombre: Optional[str] = None, alianza_tag: Optional[str] = None) -> int:
     nombre = validate_request(tipo, titular_tipo, titular_nombre)
     if tipo != "ho":
         nivel3 = ponemos = False
@@ -454,9 +489,10 @@ def create_ticket(db_path: str, channel_id: int, user_id: int, idioma: str, tipo
     try:
         with write_tx(conn):
             cur = conn.execute(
-                "INSERT INTO rent_tickets(channel_id, user_id, idioma, tipo, mapa_id, nivel3, ponemos, titular_tipo, titular_nombre, created_at) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (channel_id, user_id, idioma, tipo, mapa_id, int(bool(nivel3)), int(bool(ponemos)), titular_tipo, nombre, utcnow_iso()))
+                "INSERT INTO rent_tickets(channel_id, user_id, idioma, tipo, mapa_id, nivel3, ponemos, titular_tipo, titular_nombre, "
+                "guild_nombre, alianza_tag, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (channel_id, user_id, idioma, tipo, mapa_id, int(bool(nivel3)), int(bool(ponemos)), titular_tipo, nombre,
+                 guild_nombre, alianza_tag, utcnow_iso()))
             return int(cur.lastrowid)
     finally:
         conn.close()
@@ -885,5 +921,118 @@ def mapa_names(db_path: str) -> Dict[int, str]:
     conn = connect(db_path)
     try:
         return {int(r["id"]): r["nombre"] for r in conn.execute("SELECT id, nombre FROM rent_mapas")}
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Roles de guild «[TAG] Guild»
+# ============================================================
+@dataclass
+class GuildRole:
+    id: int
+    guild_nombre: str
+    tag: Optional[str]
+    role_id: int
+    color: int
+
+    @property
+    def name(self) -> str:
+        return guild_role_name(self.guild_nombre, self.tag)
+
+
+def _grole(r) -> Optional[GuildRole]:
+    if r is None:
+        return None
+    return GuildRole(int(r["id"]), r["guild_nombre"], r["tag"], int(r["role_id"]), int(r["color"]))
+
+
+def get_guild_role(db_path: str, guild_nombre: str) -> Optional[GuildRole]:
+    conn = connect(db_path)
+    try:
+        return _grole(conn.execute("SELECT * FROM rent_guild_roles WHERE guild_nombre = ? COLLATE NOCASE",
+                                   ((guild_nombre or "").strip(),)).fetchone())
+    finally:
+        conn.close()
+
+
+def get_guild_role_by_id(db_path: str, grole_id: int) -> Optional[GuildRole]:
+    conn = connect(db_path)
+    try:
+        return _grole(conn.execute("SELECT * FROM rent_guild_roles WHERE id = ?", (grole_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def list_guild_roles(db_path: str) -> List[GuildRole]:
+    conn = connect(db_path)
+    try:
+        return [_grole(r) for r in conn.execute("SELECT * FROM rent_guild_roles ORDER BY guild_nombre COLLATE NOCASE")]
+    finally:
+        conn.close()
+
+
+def _hsv_to_int(h: float, s: float, v: float) -> int:
+    import colorsys
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, s, v)
+    return (int(r * 255) << 16) | (int(g * 255) << 8) | int(b * 255)
+
+
+def next_color(db_path: str) -> int:
+    """Color distinto para cada guild: tono por razón áurea (se reparten bien) y nunca uno ya usado."""
+    used = {g.color for g in list_guild_roles(db_path)}
+    i = len(used)
+    while True:
+        c = _hsv_to_int(0.11 + i * 0.618033988749895, 0.70 if (i // 10) % 2 == 0 else 0.50, 0.95)
+        if c not in used and c != 0:
+            return c
+        i += 1
+
+
+def save_guild_role(db_path: str, guild_nombre: str, tag: Optional[str], role_id: int, color: int) -> GuildRole:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT INTO rent_guild_roles(guild_nombre, tag, role_id, color) VALUES(?, ?, ?, ?) "
+                         "ON CONFLICT(guild_nombre) DO UPDATE SET tag = excluded.tag, role_id = excluded.role_id",
+                         (guild_nombre.strip(), tag, role_id, color))
+    finally:
+        conn.close()
+    return get_guild_role(db_path, guild_nombre)
+
+
+def set_guild_tag(db_path: str, guild_nombre: str, tag: Optional[str]) -> GuildRole:
+    if tag is not None and len(tag) > TAG_MAX:
+        raise RentaError(f"El tag de alianza tiene que tener hasta {TAG_MAX} caracteres.")
+    g = get_guild_role(db_path, guild_nombre)
+    if g is None:
+        raise RentaError(f"No hay rol para la guild «{guild_nombre}».")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE rent_guild_roles SET tag = ? WHERE id = ?", (tag or None, g.id))
+    finally:
+        conn.close()
+    return get_guild_role_by_id(db_path, g.id)
+
+
+def set_user_guild(db_path: str, user_id: int, grole_id: int) -> Optional[int]:
+    """Asigna la guild del usuario. Devuelve el id de la guild anterior (o None)."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT guild_role_id FROM rent_usuarios WHERE user_id = ?", (user_id,)).fetchone()
+            conn.execute("INSERT INTO rent_usuarios(user_id, guild_role_id) VALUES(?, ?) "
+                         "ON CONFLICT(user_id) DO UPDATE SET guild_role_id = excluded.guild_role_id", (user_id, grole_id))
+            return int(r["guild_role_id"]) if r else None
+    finally:
+        conn.close()
+
+
+def user_guild(db_path: str, user_id: int) -> Optional[GuildRole]:
+    conn = connect(db_path)
+    try:
+        return _grole(conn.execute("SELECT g.* FROM rent_usuarios u JOIN rent_guild_roles g ON g.id = u.guild_role_id WHERE u.user_id = ?",
+                                   (user_id,)).fetchone())
     finally:
         conn.close()

@@ -142,6 +142,36 @@ class Tickets(Base):
         self.assertIsNone(rdb.open_ticket_of(self.db, 10))
 
 
+class Roles(Base):
+    def test_etiqueta(self):
+        self.assertEqual(rdb.parse_guild_label(" [Timba]  Smogg "), ("Timba", "Smogg"))
+        self.assertEqual(rdb.parse_guild_label("Smogg"), (None, "Smogg"))
+        self.assertEqual(rdb.parse_guild_label(""), (None, None))
+        with self.assertRaises(rdb.RentaError):
+            rdb.parse_guild_label("[Timbaaa] Smogg")                            # más de 5
+        self.assertEqual(rdb.guild_role_name("Smogg", "Timba"), "[Timba] Smogg")
+        self.assertEqual(rdb.guild_role_name("Smogg", None), "Smogg")
+
+    def test_colores_distintos_y_cambio_de_guild(self):
+        colores = set()
+        for i in range(30):
+            c = rdb.next_color(self.db)
+            self.assertNotIn(c, colores)
+            colores.add(c)
+            rdb.save_guild_role(self.db, f"G{i}", None, 100 + i, c)
+        a, b = rdb.get_guild_role(self.db, "G1"), rdb.get_guild_role(self.db, "g2")
+        self.assertIsNone(rdb.set_user_guild(self.db, 10, a.id))
+        self.assertEqual(rdb.set_user_guild(self.db, 10, b.id), a.id)
+        self.assertEqual(rdb.user_guild(self.db, 10).guild_nombre, "G2")
+        self.assertEqual(rdb.set_guild_tag(self.db, "G2", "Timba").name, "[Timba] G2")     # alianza agregada después
+        self.assertEqual(rdb.set_guild_tag(self.db, "G2", None).name, "G2")                # y sacada
+
+    def test_ticket_guarda_guild(self):
+        rdb.create_ticket(self.db, 1, 10, "es", "permiso", self.mapa.id, False, False, "personaje", "Pepe", "Smogg", None)
+        tk = rdb.ticket_by_channel(self.db, 1)
+        self.assertEqual((tk.guild_nombre, tk.alianza_tag), ("Smogg", None))
+
+
 class Discord(Base):
     def test_textos_completos(self):
         for lang in rdb.IDIOMAS:
@@ -150,13 +180,17 @@ class Discord(Base):
     def test_formularios(self):
         cog = rentas.RentasCog(discord_stub.Bot(), self.db, 1, COUNCIL)
         mapas = rdb.list_mapas(self.db)
-        m = rentas.RequestModal(cog, "pt", "rent", mapas)
+        m = rentas.RequestModal(cog, "pt", "rent", mapas, "ho")
         self.assertIsNotNone(m.map_select)
-        self.assertLessEqual(len(m.children), 5)
+        self.assertEqual(len(m.children), 5)                                    # mapa, extras, para quién, nombre, guild/tag
+        self.assertEqual(len(rentas.RequestModal(cog, "es", "rent", mapas, "terri").children), 4)
         many = [rdb.Mapa(i, f"M{i}") for i in range(30)]
         self.assertIsNotNone(rentas.RequestModal(cog, "en", "perm", many).map_text)
-        tid = rdb.create_ticket(self.db, 1, 10, "es", "ho", self.mapa.id, True, True, "guild", "Smogg")
-        self.assertEqual(len(rentas.ApproveModal(cog, rdb.ticket_by_channel(self.db, 1), 1, 2, 3).children), 4)
+        rdb.create_ticket(self.db, 1, 10, "es", "ho", self.mapa.id, True, True, "guild", "Smogg", "Smogg", "Timba")
+        am = rentas.ApproveModal(cog, rdb.ticket_by_channel(self.db, 1), 1, 2, 3)
+        self.assertEqual(len(am.children), 5)                                   # Discord: máx. 5
+        self.assertEqual(am.rol.default, "[Timba] Smogg")
+        self.assertEqual(len(rentas.TipoChoiceView(cog, "es", 10).children), 2)
         self.assertEqual(len(rentas.PanelView(cog, "es").children), 3)
         self.assertEqual(rentas.slug("Los Pibes ¡Ñu!"), "los-pibes-ñu")
 

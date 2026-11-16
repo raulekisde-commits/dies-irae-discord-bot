@@ -59,6 +59,8 @@ T: Dict[str, Dict[str, str]] = {
         "c_baja": "Días usados (baja)", "week_of": "semana del {date}",
         "tipo_ho": "HO", "tipo_terri": "Territorio", "tipo_permiso": "Permisos de crafteo",
         "h_personaje": "Personaje", "h_guild": "Guild", "h_alianza": "Alianza",
+        "f_gtag": "Tu guild y tag de alianza (opcional)", "f_gtag_ph": "Ej: [Timba] Smogg — o solo Smogg si no tenés alianza",
+        "l_role": "Rol", "choose_tipo": "¿Qué querés rentar?",
     },
     "pt": {
         "panel_title": "🏰 Aluguéis no Albion",
@@ -89,6 +91,8 @@ T: Dict[str, Dict[str, str]] = {
         "c_baja": "Dias usados (cancelamento)", "week_of": "semana de {date}",
         "tipo_ho": "HO", "tipo_terri": "Território", "tipo_permiso": "Permissões de craft",
         "h_personaje": "Personagem", "h_guild": "Guild", "h_alianza": "Aliança",
+        "f_gtag": "Sua guild e tag da aliança (opcional)", "f_gtag_ph": "Ex: [Timba] Smogg — ou só Smogg se não tiver aliança",
+        "l_role": "Cargo", "choose_tipo": "O que você quer alugar?",
     },
     "en": {
         "panel_title": "🏰 Albion rentals",
@@ -119,6 +123,8 @@ T: Dict[str, Dict[str, str]] = {
         "c_baja": "Days used (cancellation)", "week_of": "week of {date}",
         "tipo_ho": "HO", "tipo_terri": "Territory", "tipo_permiso": "Crafting permissions",
         "h_personaje": "Character", "h_guild": "Guild", "h_alianza": "Alliance",
+        "f_gtag": "Your guild and alliance tag (optional)", "f_gtag_ph": "E.g. [Timba] Smogg — or just Smogg with no alliance",
+        "l_role": "Role", "choose_tipo": "What do you want to rent?",
     },
 }
 LANG_NAMES = {"es": "Español", "pt": "Português", "en": "English"}
@@ -187,6 +193,25 @@ class PanelView(discord.ui.View):
         return cb
 
 
+class TipoChoiceView(discord.ui.View):
+    """Mensaje efímero antes del formulario de renta: HO o territorio (así el formulario entra en 5 campos)."""
+
+    def __init__(self, cog: "RentasCog", lang: str, owner_id: int):
+        super().__init__(timeout=120.0)
+        self.cog, self.lang, self.owner_id = cog, lang, owner_id
+        for tipo, emoji in (("ho", "🏠"), ("terri", "🚩")):
+            b = discord.ui.Button(label=t(lang, f"tipo_{tipo}"), emoji=emoji, style=discord.ButtonStyle.primary)
+            b.callback = self._cb(tipo)
+            self.add_item(b)
+
+    def _cb(self, tipo: str):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.owner_id:
+                return
+            await self.cog.open_request_modal(interaction, self.lang, "rent", tipo)
+        return cb
+
+
 class TicketView(discord.ui.View):
     """Botones del ticket. Solo el Council (se revisa en cada pulsación)."""
 
@@ -221,9 +246,10 @@ class PaidView(discord.ui.View):
 class RequestModal(discord.ui.Modal):
     """Formulario del cliente. kind = rent (HO / territorio) | perm (permisos de crafteo)."""
 
-    def __init__(self, cog: "RentasCog", lang: str, kind: str, mapas: List[rdb.Mapa]):
-        super().__init__(title=t(lang, "m_rent" if kind == "rent" else "m_perm")[:45])
-        self.cog, self.lang, self.kind = cog, lang, kind
+    def __init__(self, cog: "RentasCog", lang: str, kind: str, mapas: List[rdb.Mapa], tipo: str = "permiso"):
+        title = t(lang, "m_rent" if kind == "rent" else "m_perm") + (f" — {t(lang, 'tipo_' + tipo)}" if kind == "rent" else "")
+        super().__init__(title=title[:45])
+        self.cog, self.lang, self.kind, self.tipo = cog, lang, kind, (tipo if kind == "rent" else "permiso")
         if len(mapas) <= SELECT_LIMIT:
             self.map_select = discord.ui.Select(options=[discord.SelectOption(label=m.nombre[:100], value=str(m.id)) for m in mapas])
             self.map_text = None
@@ -232,27 +258,24 @@ class RequestModal(discord.ui.Modal):
             self.map_select = None
             self.map_text = discord.ui.TextInput(label=t(lang, "f_map"), placeholder=t(lang, "f_map_ph"), max_length=90)
             self.add_item(self.map_text)
-        self.tipo = self.extras = None
-        if kind == "rent":
-            self.tipo = discord.ui.Select(options=[discord.SelectOption(label=t(lang, "tipo_ho"), value="ho"),
-                                                   discord.SelectOption(label=t(lang, "tipo_terri"), value="terri")])
-            self.add_item(_label(t(lang, "f_tipo"), self.tipo))
+        self.extras = None
+        if kind == "rent" and self.tipo == "ho":
             self.extras = _optional_select(options=[discord.SelectOption(label=t(lang, "opt_nivel3"), value="nivel3"),
                                                     discord.SelectOption(label=t(lang, "opt_ponemos"), value="ponemos")],
                                            min_values=0, max_values=2)
             self.add_item(_label(t(lang, "f_extras"), self.extras))
-            holders = ("guild", "alianza")
-        else:
-            holders = rdb.TITULARES_POR_TIPO["permiso"]
+        holders = rdb.TITULARES_POR_TIPO[self.tipo]
         self.holder = discord.ui.Select(options=[discord.SelectOption(label=t(lang, f"h_{h}"), value=h) for h in holders])
         self.add_item(_label(t(lang, "f_for"), self.holder))
         self.name = discord.ui.TextInput(label=t(lang, "f_name")[:45], max_length=60)
         self.add_item(self.name)
+        self.gtag = discord.ui.TextInput(label=t(lang, "f_gtag")[:45], placeholder=t(lang, "f_gtag_ph")[:100], max_length=70, required=False)
+        self.add_item(self.gtag)
 
     async def on_submit(self, interaction: discord.Interaction):
         map_value = self.map_select.values[0] if self.map_select is not None and self.map_select.values else None
         await self.cog.on_request_submitted(
-            interaction, self.lang, tipo=(self.tipo.values[0] if self.tipo is not None and self.tipo.values else "permiso"),
+            interaction, self.lang, tipo=self.tipo, guild_label=str(self.gtag.value or ""),
             map_id=int(map_value) if map_value else None, map_text=str(self.map_text.value) if self.map_text is not None else None,
             extras=list(self.extras.values) if self.extras is not None else [],
             holder=self.holder.values[0] if self.holder.values else "", name=str(self.name.value))
@@ -269,7 +292,7 @@ class ApproveModal(discord.ui.Modal):
         self.modalidad = discord.ui.Select(options=[discord.SelectOption(label="Por adelantado", value="adelantado"),
                                                     discord.SelectOption(label="Semana vencida", value="vencido")])
         self.add_item(_label("Modalidad de pago", self.modalidad))
-        self.precio = discord.ui.TextInput(label="Precio semanal (silver)", max_length=20, placeholder="Ej: 1.5M",
+        self.precio = discord.ui.TextInput(label="Precio semanal (silver, sugerido)", max_length=20, placeholder="Ej: 1.5M",
                                            default=rdb.fmt_silver(precio) if precio else None)
         self.add_item(self.precio)
         self.nivel3 = self.ponemos = None
@@ -278,15 +301,19 @@ class ApproveModal(discord.ui.Modal):
                                                default=rdb.fmt_silver(nivel3) if nivel3 else None)
             self.add_item(self.nivel3)
         if ticket.tipo == "ho" and ticket.ponemos:
-            self.ponemos = discord.ui.TextInput(label="Cargo fijo: lo ponemos nosotros", max_length=20, placeholder="Ej: 2M",
+            self.ponemos = discord.ui.TextInput(label="Cargo fijo: poner el HO (sugerido)", max_length=20, placeholder="Ej: 2M",
                                                 default=rdb.fmt_silver(ponemos) if ponemos else None)
             self.add_item(self.ponemos)
+        default_role = rdb.guild_role_name(ticket.guild_nombre, ticket.alianza_tag) if ticket.guild_nombre else None
+        self.rol = discord.ui.TextInput(label="Rol de guild (vacío = sin rol)", max_length=70, required=False,
+                                        placeholder="Ej: [Timba] Smogg", default=default_role)
+        self.add_item(self.rol)
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.on_approve_submitted(
             interaction, self.ticket.id, self.modalidad.values[0] if self.modalidad.values else "",
             str(self.precio.value), str(self.nivel3.value) if self.nivel3 is not None else None,
-            str(self.ponemos.value) if self.ponemos is not None else None)
+            str(self.ponemos.value) if self.ponemos is not None else None, str(self.rol.value or ""))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -442,10 +469,21 @@ class RentasCog(commands.Cog):
             existing = await self.run(rdb.open_ticket_of, interaction.user.id)
             if existing is not None:
                 return await _reply(interaction, t(lang, "already", ch=f"<#{existing.channel_id}>"))
+            if not await self.run(rdb.list_mapas):
+                return await _reply(interaction, t(lang, "no_maps"))
+            if kind == "rent":
+                return await _reply(interaction, t(lang, "choose_tipo"), view=TipoChoiceView(self, lang, interaction.user.id))
+            await self.open_request_modal(interaction, lang, kind, "permiso")
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, t(lang, "error"))
+
+    async def open_request_modal(self, interaction: discord.Interaction, lang: str, kind: str, tipo: str):
+        try:
             mapas = await self.run(rdb.list_mapas)
             if not mapas:
                 return await _reply(interaction, t(lang, "no_maps"))
-            await interaction.response.send_modal(RequestModal(self, lang, kind, mapas))
+            await interaction.response.send_modal(RequestModal(self, lang, kind, mapas, tipo))
         except Exception:
             traceback.print_exc()
             await _reply(interaction, t(lang, "error"))
@@ -458,6 +496,8 @@ class RentasCog(commands.Cog):
         emb.add_field(name=t(lang, "l_tipo"), value=t(lang, f"tipo_{tk.tipo}"), inline=True)
         emb.add_field(name=t(lang, "l_map"), value=mapa, inline=True)
         emb.add_field(name=t(lang, "l_holder"), value=f"{t(lang, 'h_' + tk.titular_tipo)}: **{tk.titular_nombre}**", inline=False)
+        if tk.guild_nombre:
+            emb.add_field(name=t(lang, "l_role"), value=rdb.guild_role_name(tk.guild_nombre, tk.alianza_tag), inline=False)
         if tk.tipo == "ho":
             extras = [t(lang, "opt_nivel3")] * tk.nivel3 + [t(lang, "opt_ponemos")] * tk.ponemos
             emb.add_field(name=t(lang, "l_extras"), value="\n".join(extras) or "—", inline=False)
@@ -465,7 +505,7 @@ class RentasCog(commands.Cog):
         return emb
 
     async def on_request_submitted(self, interaction: discord.Interaction, lang: str, *, tipo: str, map_id: Optional[int],
-                                   map_text: Optional[str], extras: List[str], holder: str, name: str):
+                                   map_text: Optional[str], extras: List[str], holder: str, name: str, guild_label: str = ""):
         await interaction.response.defer(ephemeral=True, thinking=True)
         async with self._lock:
             existing = await self.run(rdb.open_ticket_of, interaction.user.id)
@@ -476,8 +516,13 @@ class RentasCog(commands.Cog):
                 return await _reply(interaction, t(lang, "bad_map"))
             try:
                 nombre = rdb.validate_request(tipo, holder, name)
+                tag, gname = rdb.parse_guild_label(guild_label)
             except rdb.RentaError as exc:
                 return await _reply(interaction, f"❌ {exc}")
+            if gname is None and holder == "guild":
+                gname = nombre                                   # la guild que renta es la suya
+            if gname is None:
+                tag = None
             guild, user = interaction.guild, interaction.user
             ow = self._private_overwrites(guild)
             ow[user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
@@ -488,7 +533,7 @@ class RentasCog(commands.Cog):
                 print("rentas: no pude crear el ticket:", exc)
                 return await _reply(interaction, t(lang, "error"))
             tid = await self.run(rdb.create_ticket, channel.id, user.id, lang, tipo, mapa.id, "nivel3" in extras, "ponemos" in extras,
-                                 holder, nombre)
+                                 holder, nombre, gname, tag)
         tk = await self.run(rdb.ticket_by_channel, channel.id)
         role = self.council_role
         msg = await channel.send(content=f"{role.mention if role else ''} {user.mention}".strip(), embed=self.ticket_embed(tk, mapa.nombre, user.mention),
@@ -522,8 +567,11 @@ class RentasCog(commands.Cog):
             await _reply(interaction, "❌ No pude abrir el formulario.")
 
     async def on_approve_submitted(self, interaction: discord.Interaction, ticket_id: int, modalidad: str, precio_txt: str,
-                                   nivel3_txt: Optional[str], ponemos_txt: Optional[str]):
+                                   nivel3_txt: Optional[str], ponemos_txt: Optional[str], rol_txt: str = ""):
         try:
+            tag, gname = rdb.parse_guild_label(rol_txt)
+            if tag and not gname:
+                raise rdb.RentaError("Falta el nombre de la guild en el rol (ej: [Timba] Smogg).")
             precio = rdb.parse_silver(precio_txt)
             n3 = rdb.parse_silver(nivel3_txt) if nivel3_txt is not None else 0
             pon = rdb.parse_silver(ponemos_txt) if ponemos_txt is not None else 0
@@ -560,8 +608,11 @@ class RentasCog(commands.Cog):
         pend = [c for c in await self.run(rdb.cargos_renta, rid) if not c.pagado]
         if pend and client_ch is not None:
             await self.send_notice(canal, t(lang, "n_initial"), pend)
+        role_note = ""
+        if gname:
+            role_note = await self.give_guild_role(interaction.guild, tk.user_id, gname, tag)
         mapa = await self.run(rdb.get_mapa, tk.mapa_id)
-        await _reply(interaction, f"✅ Renta #{rid} aprobada en <#{canal.channel_id}>.")
+        await _reply(interaction, f"✅ Renta #{rid} aprobada en <#{canal.channel_id}>.{role_note}")
         await self.log("tickets", f"✅ Ticket #{tk.id} aprobado por {interaction.user.mention} → <#{canal.channel_id}>")
         await self.log("rentas", f"➕ Renta #{rid}: {TIPO_ES[tk.tipo]} · {mapa.nombre if mapa else tk.mapa_id} · {tk.titular_tipo} "
                                  f"**{tk.titular_nombre}** · {rdb.fmt_silver(precio)}/semana · {modalidad} · alta por {interaction.user.mention}")
@@ -830,18 +881,26 @@ class RentasCog(commands.Cog):
         current = await self.run(rdb.get_info, idioma.value)
         await interaction.response.send_modal(InfoModal(self, idioma.value, current))
 
-    @mapa_g.command(name="agregar", description="(Council) Agrega un mapa a la lista")
-    async def mapa_agregar(self, interaction: discord.Interaction, nombre: str):
+    @mapa_g.command(name="agregar", description="(Council) Agrega un mapa con su precio semanal de HO y el precio fijo de poner el HO")
+    @app_commands.describe(semanal="Precio semanal sugerido del HO (ej: 1.5M)", poner_ho="Precio fijo sugerido de poner el HO (ej: 2M)")
+    async def mapa_agregar(self, interaction: discord.Interaction, nombre: str, semanal: Optional[str] = None, poner_ho: Optional[str] = None):
         if not await self._council(interaction):
             return
         try:
+            sem = rdb.parse_silver(semanal) if semanal else None
+            pon = rdb.parse_silver(poner_ho) if poner_ho else None
             m = await self.run(rdb.add_mapa, nombre)
         except rdb.RentaError as exc:
             return await _reply(interaction, f"❌ {exc}")
+        for concepto, value in (("ho", sem), ("ponemos", pon)):
+            if value:
+                for holder in ("guild", "alianza"):
+                    await self.run(rdb.set_precio, concepto, m.id, holder, value)
+        precios = " · ".join(x for x in ((f"semanal {rdb.fmt_silver(sem)}" if sem else ""), (f"poner el HO {rdb.fmt_silver(pon)}" if pon else "")) if x)
         n = len(await self.run(rdb.list_mapas))
         warn = f"\n⚠️ Hay {n} mapas: el formulario pasa a pedir el mapa escrito (Discord admite 25 opciones)." if n > SELECT_LIMIT else ""
-        await _reply(interaction, f"✅ Mapa **{m.nombre}** agregado.{warn}")
-        await self.log("rentas", f"🗺️ {interaction.user.mention} agregó el mapa **{m.nombre}**.")
+        await _reply(interaction, f"✅ Mapa **{m.nombre}** agregado" + (f" ({precios})" if precios else "") + f".{warn}")
+        await self.log("rentas", f"🗺️ {interaction.user.mention} agregó el mapa **{m.nombre}**" + (f" ({precios})" if precios else "") + ".")
 
     @mapa_g.command(name="quitar", description="(Council) Quita un mapa (solo si no tiene rentas activas)")
     async def mapa_quitar(self, interaction: discord.Interaction, nombre: str):
@@ -935,7 +994,12 @@ class RentasCog(commands.Cog):
         except (discord.Forbidden, discord.HTTPException) as exc:
             return await _reply(interaction, f"❌ No pude darle acceso: {exc}")
         await self.run(rdb.add_miembro, canal.id, usuario.id)
-        await _reply(interaction, f"✅ {usuario.mention} ahora ve este canal.")
+        note = ""
+        first = (await self.run(rdb.miembros, canal.id))[0]
+        g = await self.run(rdb.user_guild, first) if first != usuario.id else None
+        if g is not None and await self.run(rdb.user_guild, usuario.id) is None:
+            note = await self.give_guild_role(interaction.guild, usuario.id, g.guild_nombre, g.tag)
+        await _reply(interaction, f"✅ {usuario.mention} ahora ve este canal.{note}")
         await self.log("rentas", f"👥 {interaction.user.mention} agregó a {usuario.mention} al canal <#{canal.channel_id}>.")
 
     async def _renta_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -973,6 +1037,86 @@ class RentasCog(commands.Cog):
                                  + (f" · deuda registrada: {rdb.fmt_silver(deuda)}" if deuda else ""))
 
     baja.autocomplete("renta")(_renta_autocomplete)
+
+    # ---------- roles de guild ----------
+    async def ensure_guild_role(self, guild: discord.Guild, gname: str, tag: Optional[str]):
+        """Rol «[TAG] Guild» sin permisos, separado en la lista de miembros y con un color propio. Se reutiliza si ya existe."""
+        g = await self.run(rdb.get_guild_role, gname)
+        role = guild.get_role(g.role_id) if g is not None else None
+        if role is not None:
+            if tag and tag != g.tag:
+                g = await self.run(rdb.set_guild_tag, g.guild_nombre, tag)
+            if role.name != g.name:
+                await role.edit(name=g.name)
+            return role
+        color = g.color if g is not None else await self.run(rdb.next_color)
+        name = rdb.guild_role_name(g.guild_nombre if g else gname, tag or (g.tag if g else None))
+        role = await guild.create_role(name=name, permissions=discord.Permissions.none(), colour=discord.Colour(color), hoist=True,
+                                       mentionable=False, reason="Rol de guild (rentas)")
+        await self.run(rdb.save_guild_role, g.guild_nombre if g else gname, tag or (g.tag if g else None), role.id, color)
+        await self.log("rentas", f"🎨 Rol creado: {role.mention}")
+        return role
+
+    async def give_guild_role(self, guild: discord.Guild, user_id: int, gname: str, tag: Optional[str]) -> str:
+        """Le da a la persona el rol de su guild (y le saca el de la guild anterior). Devuelve una nota para la respuesta."""
+        try:
+            role = await self.ensure_guild_role(guild, gname, tag)
+            g = await self.run(rdb.get_guild_role, gname)
+            prev_id = await self.run(rdb.set_user_guild, user_id, g.id)
+            member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+            if prev_id and prev_id != g.id:
+                prev = await self.run(rdb.get_guild_role_by_id, prev_id)
+                old = guild.get_role(prev.role_id) if prev else None
+                if old is not None and old in member.roles:
+                    await member.remove_roles(old, reason="Cambio de guild (rentas)")
+            if role not in member.roles:
+                await member.add_roles(role, reason="Rol de guild (rentas)")
+            return f" Rol {role.mention} asignado."
+        except Exception as exc:
+            traceback.print_exc()
+            return f" ⚠️ No pude asignar el rol de guild: {exc}"
+
+    async def _guild_autocomplete(self, interaction: discord.Interaction, current: str):
+        cur = (current or "").lower()
+        return [app_commands.Choice(name=g.name[:100], value=g.guild_nombre[:100]) for g in await self.run(rdb.list_guild_roles)
+                if cur in g.name.lower()][:25]
+
+    @renta.command(name="alianza", description="(Council) Pone, cambia o saca el tag de alianza de una guild (renombra su rol)")
+    @app_commands.describe(guild="Guild", tag="Tag de la alianza (hasta 5). Vacío = la guild queda sin alianza")
+    async def alianza(self, interaction: discord.Interaction, guild: str, tag: Optional[str] = None):
+        if not await self._council(interaction):
+            return
+        tag = (tag or "").strip().strip("[]").strip() or None
+        try:
+            g = await self.run(rdb.set_guild_tag, guild, tag)
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        role = interaction.guild.get_role(g.role_id)
+        try:
+            if role is not None:
+                await role.edit(name=g.name)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            return await _reply(interaction, f"❌ No pude renombrar el rol: {exc}")
+        await _reply(interaction, f"✅ Rol actualizado: **{g.name}**.")
+        await self.log("rentas", f"🎨 {interaction.user.mention} cambió la alianza de **{g.guild_nombre}** → **{g.name}**.")
+
+    @renta.command(name="cambiar-guild", description="(Council) Cambia la guild (y el rol) de un cliente")
+    @app_commands.describe(guild="Guild nueva con tag de alianza, ej: [Timba] Smogg — o solo Smogg")
+    async def cambiar_guild(self, interaction: discord.Interaction, usuario: discord.Member, guild: str):
+        if not await self._council(interaction):
+            return
+        try:
+            tag, gname = rdb.parse_guild_label(guild)
+            if not gname:
+                raise rdb.RentaError("Falta el nombre de la guild (ej: [Timba] Smogg).")
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        note = await self.give_guild_role(interaction.guild, usuario.id, gname, tag)
+        await _reply(interaction, f"✅ {usuario.mention} → **{rdb.guild_role_name(gname, tag)}**.{note}")
+        await self.log("rentas", f"🎨 {interaction.user.mention} cambió la guild de {usuario.mention} → **{rdb.guild_role_name(gname, tag)}**.")
+
+    alianza.autocomplete("guild")(_guild_autocomplete)
 
     @renta.command(name="resumen", description="(Council) Total cobrado, cobro de esta semana y del domingo pasado")
     async def resumen(self, interaction: discord.Interaction):
