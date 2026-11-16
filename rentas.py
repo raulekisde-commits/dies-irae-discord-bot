@@ -7,6 +7,7 @@ El Council aprueba o rechaza cada ticket. Al aprobar, el ticket pasa a ser el ca
 Cobro: domingos 00:00 UTC (cobro) y 23:00 UTC (recordatorio a impagos). Datos en rentas_db.
 """
 import asyncio
+import dataclasses
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -72,6 +73,8 @@ T: Dict[str, Dict[str, str]] = {
         "tar_packs": "Packs", "tar_pack_line": "HO en {q}: defensa de las 2 fases + 1 semana gratis: **{amount}**",
         "tar_half": "⚠️ Defensas y packs: se paga la mitad por adelantado.",
         "tar_maps": "Mapas · calidad · bioma · precio semanal", "tar_ask": "a consultar", "tar_none": "Todavía no hay mapas cargados.",
+        "opt_terri": "Sumar el territorio del mapa", "per_week": "/semana", "no_terri": "❌ Ese mapa no alquila territorio.",
+        "no_terri_maps": "❌ Por ahora no hay territorios para alquilar.", "l_terri_add": "Territorio del mapa",
         "acc_title": "🔑 Acceso a HO", "acc_price": "Precio semanal: **{no}** no renters · **{si}** renters",
         "acc_you": "Tu precio: **{p}** ({who})", "acc_renter": "sos renter", "acc_no_renter": "no sos renter",
         "acc_maps": "Mapas", "acc_none": "Por ahora no hay HO con acceso disponible.", "acc_ask": "Para pedirlo, consultá al Council.",
@@ -118,6 +121,8 @@ T: Dict[str, Dict[str, str]] = {
         "tar_packs": "Packs", "tar_pack_line": "HO em {q}: defesa das 2 fases + 1 semana grátis: **{amount}**",
         "tar_half": "⚠️ Defesas e packs: paga-se metade adiantado.",
         "tar_maps": "Mapas · qualidade · bioma · preço semanal", "tar_ask": "a consultar", "tar_none": "Ainda não há mapas cadastrados.",
+        "opt_terri": "Somar o território do mapa", "per_week": "/semana", "no_terri": "❌ Esse mapa não aluga território.",
+        "no_terri_maps": "❌ No momento não há territórios para alugar.", "l_terri_add": "Território do mapa",
         "acc_title": "🔑 Acesso à HO", "acc_price": "Preço semanal: **{no}** não locatários · **{si}** locatários",
         "acc_you": "Seu preço: **{p}** ({who})", "acc_renter": "você é locatário", "acc_no_renter": "você não é locatário",
         "acc_maps": "Mapas", "acc_none": "No momento não há HO com acesso disponível.", "acc_ask": "Para pedir, fale com o Council.",
@@ -164,6 +169,8 @@ T: Dict[str, Dict[str, str]] = {
         "tar_packs": "Packs", "tar_pack_line": "HO on {q}: 2-phase defense + 1 free week: **{amount}**",
         "tar_half": "⚠️ Defenses and packs: half is paid upfront.",
         "tar_maps": "Maps · quality · biome · weekly price", "tar_ask": "ask us", "tar_none": "No maps have been added yet.",
+        "opt_terri": "Add the map's territory", "per_week": "/week", "no_terri": "❌ That map's territory is not for rent.",
+        "no_terri_maps": "❌ There are no territories for rent right now.", "l_terri_add": "Map territory",
         "acc_title": "🔑 HO access", "acc_price": "Weekly price: **{no}** non-renters · **{si}** renters",
         "acc_you": "Your price: **{p}** ({who})", "acc_renter": "you are a renter", "acc_no_renter": "you are not a renter",
         "acc_maps": "Maps", "acc_none": "There is no HO with access available right now.", "acc_ask": "To request it, ask the Council.",
@@ -307,13 +314,20 @@ class PaidView(discord.ui.View):
 class RequestModal(discord.ui.Modal):
     """Formulario del cliente. kind = rent (HO / territorio) | perm (permisos de crafteo)."""
 
-    def __init__(self, cog: "RentasCog", lang: str, kind: str, mapas: List[rdb.Mapa], tipo: str = "permiso"):
+    def __init__(self, cog: "RentasCog", lang: str, kind: str, mapas: List[rdb.Mapa], tipo: str = "permiso", terri_ok: bool = False,
+                 precios: Optional[Dict[int, int]] = None, pack_precios: Optional[Dict[str, int]] = None):
         title = t(lang, "m_rent" if kind == "rent" else "m_perm") + (f" — {t(lang, 'tipo_' + tipo)}" if kind == "rent" else "")
         super().__init__(title=title[:45])
         self.cog, self.lang, self.kind, self.tipo = cog, lang, kind, (tipo if kind == "rent" else "permiso")
         if len(mapas) <= SELECT_LIMIT:
+            precios = precios or {}
+
+            def desc(m):                                              # «Q6 · Martlock · 60M/semana»
+                p = precios.get(m.id)
+                parts = [x for x in (m.detalle, f"{rdb.fmt_silver(p)}{t(lang, 'per_week')}" if p else None) if x]
+                return " · ".join(parts)[:100] or None
             self.map_select = discord.ui.Select(options=[discord.SelectOption(label=m.nombre[:100], value=str(m.id),
-                                                                              description=(m.detalle or None)) for m in mapas])
+                                                                              description=desc(m)) for m in mapas])
             self.map_text = None
             self.add_item(_label(t(lang, "f_map"), self.map_select))
         else:
@@ -325,7 +339,10 @@ class RequestModal(discord.ui.Modal):
             opts = [discord.SelectOption(label=t(lang, k)[:100], value=v) for k, v in
                     (("opt_nivel3", "nivel3"), ("opt_def1", "def1"), ("opt_def2", "def2"))]
             if any(m.calidad in rdb.PACK_CALIDADES for m in mapas):
-                opts.append(discord.SelectOption(label=t(lang, "opt_pack")[:100], value="pack"))
+                pp = " · ".join(f"{q}: {rdb.fmt_silver(v)}" for q, v in (pack_precios or {}).items() if v)
+                opts.append(discord.SelectOption(label=t(lang, "opt_pack")[:100], value="pack", description=pp[:100] or None))
+            if terri_ok:                                              # algún mapa alquila territorio (precio de terri > 0)
+                opts.append(discord.SelectOption(label=t(lang, "opt_terri")[:100], value="terri"))
             self.extras = _optional_select(options=opts, min_values=0, max_values=len(opts))
             self.add_item(_label(t(lang, "f_extras"), self.extras))
         holders = rdb.TITULARES_POR_TIPO[self.tipo]
@@ -596,9 +613,6 @@ class RentasCog(commands.Cog):
 
     async def on_request(self, interaction: discord.Interaction, lang: str, kind: str):
         try:
-            existing = await self.run(rdb.open_ticket_of, interaction.user.id)
-            if existing is not None:
-                return await _reply(interaction, t(lang, "already", ch=f"<#{existing.channel_id}>"))
             if not await self.run(rdb.list_mapas):
                 return await _reply(interaction, t(lang, "no_maps"))
             if kind == "rent":
@@ -613,7 +627,20 @@ class RentasCog(commands.Cog):
             mapas = await self.run(rdb.list_mapas)
             if not mapas:
                 return await _reply(interaction, t(lang, "no_maps"))
-            await interaction.response.send_modal(RequestModal(self, lang, kind, mapas, tipo))
+            con_terri = set(await self.run(rdb.mapas_con_terri))
+            if kind == "rent" and tipo == "terri":
+                mapas = [m for m in mapas if m.id in con_terri]          # terri 0 = ese territorio no se alquila
+                if not mapas:
+                    return await _reply(interaction, t(lang, "no_terri_maps"))
+            precios: Dict[int, int] = {}
+            pack_precios: Dict[str, int] = {}
+            if kind == "rent" and tipo == "ho":
+                precios = {m.id: p for m, p in await self.run(rdb.lista_tarifas) if p}
+                pack_precios = {q: await self.run(rdb.get_tarifa_fija, f"pack_{q.lower()}") for q in rdb.PACK_CALIDADES}
+            elif kind == "rent" and tipo == "terri":
+                precios = {m.id: await self.run(rdb.terri_precio, m.id) for m in mapas}
+            await interaction.response.send_modal(RequestModal(self, lang, kind, mapas, tipo, terri_ok=bool(con_terri),
+                                                               precios=precios, pack_precios=pack_precios))
         except Exception:
             traceback.print_exc()
             await _reply(interaction, t(lang, "error"))
@@ -634,6 +661,8 @@ class RentasCog(commands.Cog):
                 extras.append(t(lang, "l_pack"))
             elif tk.defensas:
                 extras.append(f"{t(lang, 'l_def')}: {t(lang, 'l_def_n', n=tk.defensas)}")
+            if tk.con_terri:
+                extras.append(t(lang, "l_terri_add"))
             emb.add_field(name=t(lang, "l_extras"), value="\n".join(extras) or "—", inline=False)
         emb.set_footer(text=f"Ticket #{tk.id} · {LANG_NAMES[lang]}")
         return emb
@@ -642,9 +671,6 @@ class RentasCog(commands.Cog):
                                    map_text: Optional[str], extras: List[str], holder: str, name: str, guild_label: str = ""):
         await interaction.response.defer(ephemeral=True, thinking=True)
         async with self._lock:
-            existing = await self.run(rdb.open_ticket_of, interaction.user.id)
-            if existing is not None:
-                return await _reply(interaction, t(lang, "already", ch=f"<#{existing.channel_id}>"))
             mapa = await self.run(rdb.get_mapa, map_id) if map_id else await self.run(rdb.find_mapa, map_text or "")
             if mapa is None or not any(m.id == mapa.id for m in await self.run(rdb.list_mapas)):
                 return await _reply(interaction, t(lang, "bad_map"))
@@ -661,6 +687,9 @@ class RentasCog(commands.Cog):
             defensas = sum(1 for x in ("def1", "def2") if x in extras)
             if pack and mapa.calidad not in rdb.PACK_CALIDADES:
                 return await _reply(interaction, t(lang, "pack_only"))
+            con_terri = tipo == "ho" and "terri" in extras
+            if (tipo == "terri" or con_terri) and await self.run(rdb.terri_precio, mapa.id, holder) <= 0:
+                return await _reply(interaction, t(lang, "no_terri"))
             guild, user = interaction.guild, interaction.user
             ow = self._private_overwrites(guild)
             ow[user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
@@ -671,7 +700,7 @@ class RentasCog(commands.Cog):
                 print("rentas: no pude crear el ticket:", exc)
                 return await _reply(interaction, t(lang, "error"))
             tid = await self.run(rdb.create_ticket, channel.id, user.id, lang, tipo, mapa.id, "nivel3" in extras, False,
-                                 holder, nombre, gname, tag, defensas, pack)
+                                 holder, nombre, gname, tag, defensas, pack, con_terri)
         tk = await self.run(rdb.ticket_by_channel, channel.id)
         role = self.council_role
         msg = await channel.send(content=f"{role.mention if role else ''} {user.mention}".strip(), embed=self.ticket_embed(tk, mapa.nombre, user.mention),
@@ -747,6 +776,13 @@ class RentasCog(commands.Cog):
             hoy = rdb.today_utc()
             rid = await self.run(rdb.create_renta, canal_id=canal.id, ticket=tk, precio=precio, modalidad=modalidad, inicio=hoy,
                                  actor_id=interaction.user.id, nivel3_monto=n3, ponemos_monto=pon, defensa_monto=defensa, pack_monto=pack)
+            terri_rid, terri_precio = None, 0
+            if tk.tipo == "ho" and tk.con_terri:                         # HO + territorio: segunda renta en el mismo canal
+                terri_precio = await self.run(rdb.terri_precio, tk.mapa_id, tk.titular_tipo)
+                if terri_precio > 0:
+                    terri_tk = dataclasses.replace(tk, tipo="terri", nivel3=False, ponemos=False, defensas=0, pack=False, con_terri=False)
+                    terri_rid = await self.run(rdb.create_renta, canal_id=canal.id, ticket=terri_tk, precio=terri_precio,
+                                               modalidad=modalidad, inicio=hoy, actor_id=interaction.user.id)
         client_ch = interaction.guild.get_channel(canal.channel_id)
         lang = canal.idioma
         renta = await self.run(rdb.get_renta, rid)
@@ -766,14 +802,23 @@ class RentasCog(commands.Cog):
         pend = [c for c in await self.run(rdb.cargos_renta, rid) if not c.pagado]
         if pend and client_ch is not None:
             await self.send_notice(canal, t(lang, "n_initial"), pend, with_button=tk.tipo != "ho")   # HO: lo confirma el botón de etapa
+        if terri_rid:
+            pend_t = [c for c in await self.run(rdb.cargos_renta, terri_rid) if not c.pagado]
+            if pend_t and client_ch is not None:
+                await self.send_notice(canal, t(lang, "n_initial"), pend_t)
         role_note = ""
         if gname:
             role_note = await self.give_guild_role(interaction.guild, tk.user_id, gname, tag)
         mapa = await self.run(rdb.get_mapa, tk.mapa_id)
-        await _reply(interaction, f"✅ Renta #{rid} aprobada en <#{canal.channel_id}>.{role_note}")
+        terri_note = (f" Territorio: renta #{terri_rid} ({rdb.fmt_silver(terri_precio)}/semana, corre desde hoy)." if terri_rid
+                      else " ⚠️ El territorio de este mapa ya no se alquila (precio 0): no se dio de alta." if tk.con_terri else "")
+        await _reply(interaction, f"✅ Renta #{rid} aprobada en <#{canal.channel_id}>.{terri_note}{role_note}")
         await self.log("tickets", f"✅ Ticket #{tk.id} aprobado por {interaction.user.mention} → <#{canal.channel_id}>")
         await self.log("rentas", f"➕ Renta #{rid}: {TIPO_ES[tk.tipo]} · {mapa.nombre if mapa else tk.mapa_id} · {tk.titular_tipo} "
                                  f"**{tk.titular_nombre}** · {rdb.fmt_silver(precio)}/semana · {modalidad} · alta por {interaction.user.mention}")
+        if terri_rid:
+            await self.log("rentas", f"➕ Renta #{terri_rid}: Territorio · {mapa.nombre if mapa else tk.mapa_id} · {tk.titular_tipo} "
+                                     f"**{tk.titular_nombre}** · {rdb.fmt_silver(terri_precio)}/semana · {modalidad} · junto al HO #{rid}")
 
     # ---------- etapas del HO ----------
     def stage_text(self, lang: str, r: rdb.Renta) -> str:
@@ -1122,21 +1167,31 @@ class RentasCog(commands.Cog):
         current = await self.run(rdb.get_info, idioma.value)
         await interaction.response.send_modal(InfoModal(self, idioma.value, current))
 
+    @staticmethod
+    def _terri_desc(ter: Optional[int]) -> str:
+        if ter is None:
+            return ""
+        return f" · terri {rdb.fmt_silver(ter)}/semana" if ter > 0 else " · el territorio no se alquila"
+
     @mapa_g.command(name="agregar", description="(Council) Agrega un mapa con calidad, bioma y precio semanal del HO por guild")
-    @app_commands.describe(calidad="Calidad del mapa", bioma="Bioma", semanal="Precio semanal del HO para guild (ej: 1.5M); el de alianza va manual")
+    @app_commands.describe(calidad="Calidad del mapa", bioma="Bioma", semanal="Precio semanal del HO para guild (ej: 1.5M); el de alianza va manual",
+                           terri="Precio semanal del territorio (ej: 2M); 0 = el territorio no se alquila")
     @app_commands.choices(calidad=CALIDAD_CHOICES, bioma=BIOMA_CHOICES)
     async def mapa_agregar(self, interaction: discord.Interaction, nombre: str, calidad: app_commands.Choice[str],
-                           bioma: app_commands.Choice[str], semanal: Optional[str] = None):
+                           bioma: app_commands.Choice[str], semanal: Optional[str] = None, terri: Optional[str] = None):
         if not await self._council(interaction):
             return
         try:
             sem = rdb.parse_silver(semanal) if semanal else None
+            ter = rdb.parse_silver(terri) if terri else None
             m = await self.run(rdb.add_mapa, nombre, calidad.value, bioma.value)
         except rdb.RentaError as exc:
             return await _reply(interaction, f"❌ {exc}")
         if sem:
             await self.run(rdb.set_precio, "ho", m.id, "guild", sem)
-        desc = f"{m.detalle}" + (f" · {rdb.fmt_silver(sem)}/semana" if sem else "")
+        if ter is not None:
+            await self.run(rdb.set_precio, "terri", m.id, "guild", ter)
+        desc = f"{m.detalle}" + (f" · {rdb.fmt_silver(sem)}/semana" if sem else "") + self._terri_desc(ter)
         n = len(await self.run(rdb.list_mapas))
         warn = f"\n⚠️ Hay {n} mapas: el formulario pasa a pedir el mapa escrito (Discord admite 25 opciones)." if n > SELECT_LIMIT else ""
         await _reply(interaction, f"✅ Mapa **{m.nombre}** agregado ({desc}).{warn}")
@@ -1154,11 +1209,12 @@ class RentasCog(commands.Cog):
         await self.log("rentas", f"🗺️ {interaction.user.mention} quitó el mapa **{m.nombre}**.")
 
     @mapa_g.command(name="editar", description="(Council) Cambia nombre, calidad, bioma o precio semanal por guild de un mapa")
-    @app_commands.describe(nuevo="Nombre nuevo (renombra también sus categorías)", semanal="Precio semanal del HO para guild (ej: 1.5M)")
+    @app_commands.describe(nuevo="Nombre nuevo (renombra también sus categorías)", semanal="Precio semanal del HO para guild (ej: 1.5M)",
+                           terri="Precio semanal del territorio (ej: 2M); 0 = el territorio no se alquila")
     @app_commands.choices(calidad=CALIDAD_CHOICES, bioma=BIOMA_CHOICES)
     async def mapa_editar(self, interaction: discord.Interaction, actual: str, nuevo: Optional[str] = None,
                           calidad: Optional[app_commands.Choice[str]] = None, bioma: Optional[app_commands.Choice[str]] = None,
-                          semanal: Optional[str] = None):
+                          semanal: Optional[str] = None, terri: Optional[str] = None):
         if not await self._council(interaction):
             return
         try:
@@ -1166,6 +1222,7 @@ class RentasCog(commands.Cog):
             if m is None:
                 raise rdb.RentaError(f"No existe el mapa «{actual}».")
             sem = rdb.parse_silver(semanal) if semanal else None
+            ter = rdb.parse_silver(terri) if terri else None
             if nuevo and nuevo.strip() != m.nombre:
                 m = await self.run(rdb.rename_mapa, m.nombre, nuevo)
             await self.run(rdb.set_mapa_detalle, m.id, calidad.value if calidad else None, bioma.value if bioma else None)
@@ -1174,6 +1231,8 @@ class RentasCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if sem:
             await self.run(rdb.set_precio, "ho", m.id, "guild", sem)
+        if ter is not None:
+            await self.run(rdb.set_precio, "terri", m.id, "guild", ter)
         m = await self.run(rdb.get_mapa, m.id)
         if m.nombre != actual.strip():
             for idx, cid in await self.run(rdb.categorias, m.id):
@@ -1186,7 +1245,7 @@ class RentasCog(commands.Cog):
             for canal in await self.run(rdb.active_canales):
                 if canal.mapa_id == m.id:
                     await self.refresh_panel(canal.id)
-        desc = m.detalle + (f" · {rdb.fmt_silver(sem)}/semana" if sem else "")
+        desc = m.detalle + (f" · {rdb.fmt_silver(sem)}/semana" if sem else "") + self._terri_desc(ter)
         await _reply(interaction, f"✅ Mapa **{m.nombre}** actualizado ({desc}).")
         await self.log("rentas", f"🗺️ {interaction.user.mention} editó el mapa **{actual}** → **{m.nombre}** ({desc}).")
 
@@ -1195,8 +1254,12 @@ class RentasCog(commands.Cog):
         if not await self._council(interaction):
             return
         rows = await self.run(rdb.lista_tarifas)
-        lines = [f"• **{m.nombre}**" + (f" · {m.detalle}" if m.detalle else "") + f" — {rdb.fmt_silver(p) + '/semana (guild)' if p else 'sin precio'}"
-                 for m, p in rows]
+        lines = []
+        for m, p in rows:
+            ter = await self.run(rdb.get_precio, "terri", m.id, "guild")
+            ter_txt = "sin precio" if ter is None else "no se alquila" if ter <= 0 else f"{rdb.fmt_silver(ter)}/semana"
+            lines.append(f"• **{m.nombre}**" + (f" · {m.detalle}" if m.detalle else "")
+                         + f" — HO: {rdb.fmt_silver(p) + '/semana (guild)' if p else 'sin precio'} · Terri: {ter_txt}")
         await _reply(interaction, embed=discord.Embed(title="🗺️ Mapas", color=BLUE, description="\n".join(lines)[:4000] or "No hay mapas."))
 
     async def _acceso_autocomplete(self, interaction: discord.Interaction, current: str):

@@ -289,6 +289,62 @@ class AccesoHO(Base):
         self.assertIn("Deadpine", str(emb.fields))
 
 
+class HOConTerri(Base):
+    def test_precio_de_terri_y_mapas_que_lo_alquilan(self):
+        otro = rdb.add_mapa(self.db, "Deadpine", "Q6", "Martlock")
+        self.assertEqual(rdb.terri_precio(self.db, self.mapa.id), 0)              # sin precio cargado: no se alquila
+        rdb.set_precio(self.db, "terri", self.mapa.id, "guild", 2_000_000)
+        rdb.set_precio(self.db, "terri", otro.id, "guild", 0)                     # 0 = ese territorio no se alquila
+        self.assertEqual(rdb.mapas_con_terri(self.db), [self.mapa.id])
+        self.assertEqual(rdb.terri_precio(self.db, self.mapa.id, "alianza"), 2_000_000)   # sin precio de alianza: usa el de guild
+        rdb.set_precio(self.db, "terri", self.mapa.id, "alianza", 3_000_000)
+        self.assertEqual(rdb.terri_precio(self.db, self.mapa.id, "alianza"), 3_000_000)
+
+    def test_ticket_ho_con_terri_y_dos_rentas(self):
+        import dataclasses
+        rdb.create_ticket(self.db, 77, 10, "es", "ho", self.mapa.id, False, False, "guild", "Smogg", con_terri=True)
+        rdb.create_ticket(self.db, 78, 10, "es", "terri", self.mapa.id, False, False, "guild", "Smogg", con_terri=True)
+        tk = rdb.ticket_by_channel(self.db, 77)
+        self.assertTrue(tk.con_terri)
+        self.assertFalse(rdb.ticket_by_channel(self.db, 78).con_terri)            # solo aplica al HO
+        canal = rdb.create_canal(self.db, 5077, self.mapa.id, "guild", "Smogg", "es")
+        ho = rdb.create_renta(self.db, canal_id=canal.id, ticket=tk, precio=7_000_000, modalidad="adelantado", inicio=WED, actor_id=COUNCIL)
+        terri_tk = dataclasses.replace(tk, tipo="terri", con_terri=False)
+        terri = rdb.create_renta(self.db, canal_id=canal.id, ticket=terri_tk, precio=2_000_000, modalidad="adelantado", inicio=WED,
+                                 actor_id=COUNCIL)
+        self.assertEqual(rdb.renta_by_ticket(self.db, tk.id).id, ho)             # las etapas del HO siguen apuntando al HO
+        self.assertEqual(sorted(r.tipo for r in rdb.rentas_canal(self.db, canal.id)), ["ho", "terri"])
+        self.assertTrue(rdb.get_renta(self.db, terri).colocado)                    # el territorio corre desde la aprobación
+        self.assertTrue(any(not c.pagado for c in rdb.cargos_renta(self.db, terri)))   # con su prorrateo (adelantado)
+
+    def test_opcion_en_el_formulario_de_ho(self):
+        cog = rentas.RentasCog(discord_stub.Bot(), self.db, 1, COUNCIL)
+        opts = lambda ok: [o.value for o in rentas.RequestModal(cog, "es", "rent", rdb.list_mapas(self.db), "ho", terri_ok=ok).extras.options]
+        self.assertNotIn("terri", opts(False))
+        self.assertEqual(opts(True)[-1], "terri")
+        self.assertEqual(len(rentas.RequestModal(cog, "es", "rent", rdb.list_mapas(self.db), "ho", terri_ok=True).children), 5)
+
+    def test_precios_en_el_formulario(self):
+        cog = rentas.RentasCog(discord_stub.Bot(), self.db, 1, COUNCIL)
+        rdb.set_mapa_detalle(self.db, self.mapa.id, "Q6", "Martlock")
+        m = rentas.RequestModal(cog, "es", "rent", rdb.list_mapas(self.db), "ho", precios={self.mapa.id: 60_000_000},
+                                pack_precios={"Q5": 120_000_000, "Q6": 140_000_000})
+        self.assertEqual(m.map_select.options[0].description, "Q6 · Martlock · 60M/semana")
+        pack = [o for o in m.extras.options if o.value == "pack"][0]
+        self.assertEqual(pack.description, "Q5: 120M · Q6: 140M")
+        m = rentas.RequestModal(cog, "en", "rent", rdb.list_mapas(self.db), "ho")                      # sin precio: solo calidad y bioma
+        self.assertEqual(m.map_select.options[0].description, "Q6 · Martlock")
+        self.assertIsNone([o for o in m.extras.options if o.value == "pack"][0].description)
+
+    def test_varios_tickets_abiertos(self):
+        rdb.create_ticket(self.db, 81, 10, "es", "ho", self.mapa.id, False, False, "guild", "Smogg")
+        rdb.create_ticket(self.db, 82, 10, "es", "permiso", self.mapa.id, False, False, "personaje", "Pepe")
+        self.assertEqual({rdb.ticket_by_channel(self.db, c).status for c in (81, 82)}, {"open"})
+        import inspect
+        src = inspect.getsource(rentas.RentasCog.on_request) + inspect.getsource(rentas.RentasCog.on_request_submitted)
+        self.assertNotIn("open_ticket_of", src)                                    # ya no se bloquea por tener un ticket abierto
+
+
 class Roles(Base):
     def test_etiqueta(self):
         self.assertEqual(rdb.parse_guild_label(" [Timba]  Smogg "), ("Timba", "Smogg"))
