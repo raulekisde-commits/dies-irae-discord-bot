@@ -106,6 +106,17 @@ class BombsTests(DiscordBase):
         self.assertNotIn(self.r_b1, self.outsider.roles)
         self.assertIn("Solo el Staff", self.call("sacar", self.outsider, "Norte", self.outsider))
 
+    def test_rol_comun_al_agregar_y_sacar(self):
+        self.call("crear", self.council, "Norte", self.r_b1, self.bob)
+        self.call("crear", self.council, "Sur", self.r_b2, self.alice)
+        self.call("agregar", self.stf, "Norte", self.outsider)
+        self.call("agregar", self.stf, "Sur", self.outsider)
+        self.assertIn(self.r_common, self.outsider.roles)                      # agregar da el rol común
+        self.assertNotIn("rol común", self.call("sacar", self.stf, "Norte", self.outsider))
+        self.assertIn(self.r_common, self.outsider.roles)                      # sigue en Sur: lo conserva
+        self.assertIn("rol común", self.call("sacar", self.stf, "Sur", self.outsider))
+        self.assertNotIn(self.r_common, self.outsider.roles)                   # ya no está en ninguna
+
     def test_eliminar(self):
         self.call("crear", self.council, "Norte", self.r_b1, self.bob)
         self.call("agregar", self.stf, "Norte", self.outsider)
