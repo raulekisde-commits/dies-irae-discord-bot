@@ -40,6 +40,9 @@ class FakeWuju:
 class FakeAttachment:
     content_type, filename = "image/png", "core.png"
 
+    async def read(self):
+        return b"\x89PNGfoto"
+
     async def to_file(self):
         return discord.File(b"png", filename=self.filename)
 
@@ -63,9 +66,7 @@ class CoresDiscord(DiscordBase):
     def report(self, user, rareza="azul", kind="core"):
         i = self.inter(user)
         run(self.cog.submit(i, kind, "si", rareza, FakeAttachment()))
-        msg = self.panelch.sent[-1]
-        msg.attachments = [FakeAttachment()]                       # la foto queda adjunta al panel
-        return i, msg
+        return i, self.panelch.sent[-1]
 
     def test_solo_miembros(self):
         i = self.inter(self.outsider)
@@ -86,7 +87,8 @@ class CoresDiscord(DiscordBase):
         run(self.cog.approve(a, msg))
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 3)
         self.assertIn(self.alice.mention, self.general.sent[-1].content)
-        self.assertEqual(self.general.sent[-1].file.filename, "core.png")    # el aviso lleva la foto
+        self.assertEqual(self.general.sent[-1].file.fp.getvalue(), b"\x89PNGfoto")    # el aviso lleva la foto (guardada en disco)
+        self.assertEqual(self.cog._photo_paths(odb.get_by_message(self.db, msg.id)["id"]), [])   # y después se borra
         self.assertIsNone(msg.view)
         self.assertEqual(odb.user_stats(self.db, self.alice.id)["core"]["morado"], 1)
         a2 = self.inter(self.council, message=msg)                      # no se aprueba dos veces
@@ -106,7 +108,7 @@ class CoresDiscord(DiscordBase):
         run(self.cog.reject(a, msg, "foto borrosa"))
         self.assertIn("rechazado", self.general.sent[-1].content)
         self.assertIn("foto borrosa", self.general.sent[-1].content)
-        self.assertEqual(self.general.sent[-1].file.filename, "core.png")
+        self.assertEqual(self.general.sent[-1].file.fp.getvalue(), b"\x89PNGfoto")
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 0)
         self.assertEqual(odb.user_stats(self.db, self.alice.id)["core"]["azul"], 0)
 
@@ -128,6 +130,13 @@ class CoresDiscord(DiscordBase):
         self.assertEqual(odb.user_stats(self.db, winner.id)["core"]["verde"], 1)
         self.assertEqual(odb.user_stats(self.db, loser.id)["core"]["verde"], 0)
         self.assertIn(self.bob.mention, self.general.sent[-1].content)
+        self.assertEqual(self.general.sent[-1].file.fp.getvalue(), b"\x89PNGfoto")
+
+    def test_foto_del_adjunto_si_no_esta_en_disco(self):
+        _i, msg = self.report(self.alice)
+        self.cog._drop_photo(odb.get_by_message(self.db, msg.id)["id"])         # reporte viejo: sin foto guardada
+        msg.attachments = [FakeAttachment()]
+        run(self.cog.approve(self.inter(self.council, message=msg), msg))
         self.assertEqual(self.general.sent[-1].file.filename, "core.png")
 
     def test_repartir_solo_miembros(self):

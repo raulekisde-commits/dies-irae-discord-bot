@@ -8,6 +8,8 @@
 - Todos los avisos van al canal general etiquetando a las personas.
 - /stats cuenta, por rareza, cuántos orbes le dieron tiradas a cada persona."""
 import asyncio
+import glob
+import io
 import os
 import traceback
 from typing import Dict, List, Optional
@@ -193,28 +195,70 @@ class CoresCog(commands.Cog):
                 return None
         return ch
 
-    @staticmethod
-    async def _photo(message):
-        """La foto que mandaron (adjunta al panel), lista para volver a subirla. None si no se puede."""
+    # ---------- foto ----------
+    def _photo_dir(self) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "orb_photos")
+
+    def _photo_paths(self, report_id: int) -> List[str]:
+        return glob.glob(os.path.join(self._photo_dir(), f"{int(report_id)}.*"))
+
+    def _save_photo(self, report_id: int, filename: str, data: bytes) -> None:
+        """Guarda la foto en disco al recibir el reporte: así el aviso del general no depende de los adjuntos de Discord."""
+        try:
+            os.makedirs(self._photo_dir(), exist_ok=True)
+            ext = os.path.splitext(filename or "")[1].lower()
+            ext = ext if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp") else ".png"
+            with open(os.path.join(self._photo_dir(), f"{int(report_id)}{ext}"), "wb") as f:
+                f.write(data)
+        except Exception:
+            traceback.print_exc()
+
+    def _drop_photo(self, report_id: int) -> None:
+        for path in self._photo_paths(report_id):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+    async def _photo(self, report_id: Optional[int], message=None):
+        """La foto del reporte lista para subir: del disco; si no está, del adjunto del panel; si no, de la imagen del embed."""
+        for path in self._photo_paths(report_id) if report_id else []:
+            try:
+                with open(path, "rb") as f:
+                    return discord.File(io.BytesIO(f.read()), filename=f"foto{os.path.splitext(path)[1]}")
+            except Exception:
+                traceback.print_exc()
         for att in getattr(message, "attachments", None) or []:
             try:
                 return await att.to_file()
             except Exception:
                 traceback.print_exc()
+        url = self._image_url(message) if message is not None else None
+        session = getattr(self.bot, "http_session", None)
+        if url and url.startswith("http") and session is not None:
+            try:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        return discord.File(io.BytesIO(await resp.read()), filename="foto.png")
+            except Exception:
+                traceback.print_exc()
+        print(f"/core: no pude conseguir la foto del reporte #{report_id} para el aviso.")
         return None
 
-    async def announce(self, text: str, message=None):
+    async def announce(self, text: str, message=None, report_id: Optional[int] = None):
         """Aviso en el canal general, etiquetando a las personas, con la foto del reporte si se puede."""
         ch = await self._channel(bs.get("general"))
         if ch is None:
             print("/core: no encuentro el canal general para avisar.")
             return False
         try:
-            file = await self._photo(message) if message is not None else None
+            file = await self._photo(report_id, message) if (message is not None or report_id) else None
             if file is not None:
                 await ch.send(text[:2000], file=file, allowed_mentions=USER_MENTIONS)
             else:
                 await ch.send(text[:2000], allowed_mentions=USER_MENTIONS)
+            if report_id:
+                self._drop_photo(report_id)
             return True
         except Exception:
             traceback.print_exc()
@@ -240,12 +284,18 @@ class CoresCog(commands.Cog):
                              share=repartir == "si")
         report = await self.run(odb.get, rid)
         try:
-            file = await foto.to_file()
+            try:
+                data = await foto.read()
+                self._save_photo(rid, foto.filename, data)
+                file = discord.File(io.BytesIO(data), filename=foto.filename)
+            except Exception:
+                file = await foto.to_file()
             emb = build_embed(report, image_url=f"attachment://{file.filename}")
             msg = await ch.send(embed=emb, file=file, view=self.view, allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
             await self.run(odb.delete, rid)
+            self._drop_photo(rid)
             return await _say(interaction, "❌ No pude publicar el reporte. Probá de nuevo en un rato.")
         await self.run(odb.set_message, rid, msg.channel.id if getattr(msg, "channel", None) else ch.id, msg.id)
         await _say(interaction, f"✅ Recibimos tu **{orb_name(report)}** (#{rid}). El Staff lo va a revisar y el resultado se avisa en "
@@ -342,7 +392,7 @@ class CoresCog(commands.Cog):
         if done is None:
             return
         await self.announce(f"✅ <@{done['user_id']}> tu **{orb_name(done)}** fue aprobado: ya se te dieron **{n}** tirada(s) de "
-                            f"Wujupón 🎰. ¡Gracias por aportar a la guild! 💚", message)
+                            f"Wujupón 🎰. ¡Gracias por aportar a la guild! 💚", message, done["id"])
         await _say(interaction, f"✅ Aprobado: {n} tirada(s) para <@{done['user_id']}>.")
 
     async def reject(self, interaction: discord.Interaction, message, reason: str):
@@ -355,7 +405,7 @@ class CoresCog(commands.Cog):
             return
         await self.announce(f"❌ <@{done['user_id']}> tu **{orb_name(done)}** fue rechazado."
                             + (f"\n📝 Motivo: {reason[:MAX_REASON]}" if reason else "")
-                            + "\nSi creés que es un error, hablá con el Staff.", message)
+                            + "\nSi creés que es un error, hablá con el Staff.", message, done["id"])
         await _say(interaction, "❌ Reporte rechazado.")
 
     async def edit_rarity(self, interaction: discord.Interaction, message, rarity: str):
@@ -382,7 +432,7 @@ class CoresCog(commands.Cog):
         done = await self._decide(interaction, message, "shared", awards)
         if done is None:
             return
-        await self.announce(share_text(done, awards, participants), message)
+        await self.announce(share_text(done, awards, participants), message, done["id"])
         await _say(interaction, f"🎲 Repartido entre {len(participants)} persona(s).")
 
 
