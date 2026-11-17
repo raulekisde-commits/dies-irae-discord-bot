@@ -39,6 +39,8 @@ USER_COOLDOWN = 10
 CORE_MEMBER_ROLE_ID = int(os.getenv("CORE_MEMBER_ROLE_ID", "1465833385804038427"))   # ex Legacy: se destaca en /stats
 COUNCIL_ROLE_ID = int(os.getenv("COUNCIL_ROLE_ID", "1257896977220501557"))
 # Rango que muestra la tarjeta de /stats: el de mayor prioridad que tenga la persona (Staff = Municipal).
+STATS_BLOCKED_CHANNEL_ID = int(os.getenv("STATS_BLOCKED_CHANNEL_ID", "1557135745523912875"))   # /stats no se usa acá…
+STATS_CHANNEL_HINT_ID = int(os.getenv("STATS_CHANNEL_HINT_ID", "1565174643642597467"))         # …se indica usar este
 STATS_COOLDOWN = float(os.getenv("STATS_COOLDOWN", "8"))   # segundos entre dos /stats de la misma persona
 RANK_PRIORITY = (("council", COUNCIL_ROLE_ID), ("municipal", STAFF_ROLE_ID), ("core", CORE_MEMBER_ROLE_ID), ("member", MIEMBRO_ROLE_ID))
 
@@ -930,6 +932,8 @@ class KillboardCog(commands.Cog):
     @app_commands.describe(usuario="Jugador (por defecto, vos)")
     @app_commands.guild_only()
     async def stats(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        if getattr(interaction, "channel_id", None) == STATS_BLOCKED_CHANNEL_ID:
+            return await _say(interaction, f"📊 /stats no se puede usar en este canal. Usalo en <#{STATS_CHANNEL_HINT_ID}>.")
         if not await self._allowed(interaction, "stats"):
             return
         if self._cooldown(interaction.user.id, "stats", STATS_COOLDOWN):
