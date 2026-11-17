@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS coaching_flags (
     key        TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coaching_track (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    title      TEXT NOT NULL,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coaching_track_members (
+    user_id    INTEGER PRIMARY KEY,
+    message_id INTEGER,
+    done_at    TEXT
+);
 """
 
 
@@ -364,5 +375,113 @@ def totals(db_path: str) -> Dict[int, int]:
     conn = connect(db_path)
     try:
         return {int(r["user_id"]): int(r["n"]) for r in conn.execute("SELECT user_id, COUNT(*) AS n FROM coaching_vods GROUP BY user_id")}
+    finally:
+        conn.close()
+
+
+# ---------- track: lista única de quiénes tienen que mandar el VOD de una CTA ----------
+def get_track(db_path: str) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM coaching_track WHERE id=1").fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def create_track(db_path: str, title: str, created_by: int, user_ids: List[int]) -> bool:
+    """Crea el track (solo puede haber uno). False si ya hay uno activo."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if conn.execute("INSERT OR IGNORE INTO coaching_track(id, title, created_by, created_at) VALUES (1,?,?,?)",
+                            (title, created_by, utcnow_iso())).rowcount != 1:
+                return False
+            conn.execute("DELETE FROM coaching_track_members")
+            conn.executemany("INSERT OR IGNORE INTO coaching_track_members(user_id) VALUES (?)", [(u,) for u in user_ids])
+            return True
+    finally:
+        conn.close()
+
+
+def close_track(db_path: str) -> bool:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("DELETE FROM coaching_track_members")
+            return conn.execute("DELETE FROM coaching_track WHERE id=1").rowcount == 1
+    finally:
+        conn.close()
+
+
+def track_add(db_path: str, user_ids: List[int]) -> int:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return sum(conn.execute("INSERT OR IGNORE INTO coaching_track_members(user_id) VALUES (?)", (u,)).rowcount for u in user_ids)
+    finally:
+        conn.close()
+
+
+def track_remove(db_path: str, user_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("DELETE FROM coaching_track_members WHERE user_id=?", (user_id,)).rowcount == 1
+    finally:
+        conn.close()
+
+
+def track_members(db_path: str) -> List[dict]:
+    conn = connect(db_path)
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM coaching_track_members ORDER BY done_at IS NOT NULL, done_at")]
+    finally:
+        conn.close()
+
+
+def track_mark(db_path: str, user_id: int, message_id: int, when: Optional[datetime] = None) -> bool:
+    """Marca que user_id mandó el VOD del track (solo si hay track, está en la lista, no lo había mandado y el VOD es posterior al track)."""
+    when_iso = (when or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            t = conn.execute("SELECT created_at FROM coaching_track WHERE id=1").fetchone()
+            if t is None or when_iso < t["created_at"]:
+                return False
+            return conn.execute("UPDATE coaching_track_members SET message_id=?, done_at=? WHERE user_id=? AND done_at IS NULL",
+                                (message_id, when_iso, user_id)).rowcount == 1
+    finally:
+        conn.close()
+
+
+def track_unmark_message(db_path: str, message_id: int) -> bool:
+    """Borraron el mensaje con el VOD del track: vuelve a quedar pendiente."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("UPDATE coaching_track_members SET message_id=NULL, done_at=NULL WHERE message_id=?",
+                                (message_id,)).rowcount > 0
+    finally:
+        conn.close()
+
+
+def cta_signups_by_thread(db_path: str, thread_id: int) -> Optional[Tuple[int, List[int]]]:
+    """(id de la CTA, anotados) de la CTA cuyo hilo es thread_id: inscriptos y, si ya cerró, el historial de posiciones (incluye tardíos).
+    None si ese hilo no es de una CTA."""
+    conn = connect(db_path)
+    try:
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "cta_runs" not in tables:
+            return None
+        r = conn.execute("SELECT id FROM cta_runs WHERE thread_id=? ORDER BY id DESC LIMIT 1", (thread_id,)).fetchone()
+        if r is None:
+            return None
+        cta_id, out = int(r["id"]), {}
+        for t in ("cta_signups", "cta_positions"):
+            if t in tables:
+                for x in conn.execute(f"SELECT user_id FROM {t} WHERE cta_id=?", (cta_id,)):
+                    out[int(x["user_id"])] = None
+        return cta_id, list(out)
     finally:
         conn.close()

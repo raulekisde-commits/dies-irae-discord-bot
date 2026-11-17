@@ -279,6 +279,11 @@ class CoachingCog(commands.Cog):
             await message.add_reaction("🎥")
         except Exception:
             pass
+        try:
+            if await self.run(cdb.track_mark, message.author.id, message.id, message.created_at):
+                await message.add_reaction("📌")                  # VOD de la CTA del track: queda marcado como enviado
+        except Exception as exc:
+            print(f"coaching: no pude marcar el track de {message.author.id}: {exc!r}")
         if fresh and not role:
             try:
                 await message.reply("🎭 ¿Con qué rol jugás en este VOD? Elegilo para que el coach lo sepa.", view=CoachRoleView(self),
@@ -487,6 +492,7 @@ class CoachingCog(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload):
         try:
+            await self.run(cdb.track_unmark_message, payload.message_id)
             if await self.run(cdb.remove_message, payload.message_id):
                 enc = self.bot.get_cog("EncargosCog")
                 if enc is not None:
@@ -507,7 +513,7 @@ class CoachingCog(commands.Cog):
             out.append(cur)
         return out
 
-    coaching_g = app_commands.Group(name="coaching", description="Coaching: reporte semanal, verificación de posts y tus VODs", guild_only=True)
+    coaching_g = app_commands.Group(name="coaching", description="Coaching: reporte semanal, verificación de posts, track de CTA y tus VODs", guild_only=True)
 
     @coaching_g.command(name="reporte", description="(Staff/Coaching) Quién cumplió los 3 VODs semanales y cuántos subió cada uno")
     @app_commands.describe(semana="Semana en curso o la anterior (lunes a domingo, hora UTC)")
@@ -603,6 +609,132 @@ class CoachingCog(commands.Cog):
             text = (f"📊 **Tus VODs esta semana:** {n} · total histórico: **{total}**\n"
                     f"No tenés mínimo semanal: subís cuando quieras una devolución.{link}")
         await _say(interaction, text)
+
+    # ---------- track: quiénes tienen que mandar el VOD de una CTA ----------
+    track_g = app_commands.Group(name="track", description="(Staff/Coaching) Lista de quiénes tienen que mandar el VOD de una CTA", parent=coaching_g)
+    MENTION_RE = re.compile(r"<@!?(\d+)>|<@&(\d+)>|\b(\d{17,20})\b")
+
+    def _parse_members(self, guild, text: str) -> List[int]:
+        """IDs de las menciones de usuarios (o IDs sueltos) y de los miembros de los roles mencionados. Sin bots ni repetidos."""
+        out: Dict[int, None] = {}
+        for u, r, raw in self.MENTION_RE.findall(text or ""):
+            if r:
+                role = guild.get_role(int(r)) if guild else None
+                for m in (role.members if role else []):
+                    if not m.bot:
+                        out[m.id] = None
+            else:
+                out[int(u or raw)] = None
+        return list(out)
+
+    async def _track_guard(self, interaction) -> bool:
+        if can_report(interaction.user):
+            return True
+        await _say(interaction, "🔒 Solo el Staff, el Council, Coaching y Opinólogo pueden manejar el track.")
+        return False
+
+    @track_g.command(name="crear", description="Crea la lista: quiénes tienen que mandar el VOD de la última CTA (solo una a la vez)")
+    @app_commands.describe(titulo="Nombre de la CTA (ej: CTA martes 22 UTC)", miembros="Menciones de las personas o de un rol (@a @b @Rol)")
+    async def track_crear(self, interaction: discord.Interaction, titulo: str, miembros: str):
+        if not await self._track_guard(interaction):
+            return
+        ids = self._parse_members(interaction.guild, miembros)
+        if not ids:
+            return await _say(interaction, "⚠️ No encontré a nadie en `miembros`: mencioná a las personas o a un rol.")
+        titulo = titulo.strip()[:100]
+        if not await self.run(cdb.create_track, titulo, interaction.user.id, ids):
+            t = await self.run(cdb.get_track)
+            return await _say(interaction, f"⚠️ Ya hay un track activo: **{t['title'] if t else '?'}**. Cerralo con `/coaching track cerrar` antes de crear otro.")
+        await _say(interaction, f"✅ Track **{titulo}** creado con **{len(ids)}** persona(s). Se marca solo cuando suben un VOD a su post.\n"
+                                "Mirá cómo va con `/coaching track ver`.")
+
+    @track_g.command(name="desde-cta", description="Usalo en el hilo de una CTA: arma el track con los anotados que tienen ese rol")
+    @app_commands.describe(rol="Solo entran los anotados de la CTA que tienen este rol", titulo="Nombre del track (por defecto, el del hilo)",
+                           modo="Crear un track nuevo o agregar a los del track activo")
+    @app_commands.choices(modo=[app_commands.Choice(name="Crear track", value="crear"), app_commands.Choice(name="Agregar al track activo", value="agregar")])
+    async def track_desde_cta(self, interaction: discord.Interaction, rol: discord.Role, titulo: Optional[str] = None,
+                              modo: Optional[app_commands.Choice[str]] = None):
+        if not await self._track_guard(interaction):
+            return
+        add = (getattr(modo, "value", modo) or "crear") == "agregar"
+        found = await self.run(cdb.cta_signups_by_thread, getattr(interaction.channel, "id", 0))
+        if found is None:
+            return await _say(interaction, "⚠️ Este comando se usa **dentro del hilo de una CTA**.")
+        _, signed = found
+        guild = interaction.guild
+        ids = [u for u in signed if (m := guild.get_member(u)) is not None and not m.bot and rol.id in _roles(m)]
+        if not ids:
+            return await _say(interaction, f"⚠️ Ninguno de los **{len(signed)}** anotados de esta CTA tiene el rol {rol.mention}.")
+        track = await self.run(cdb.get_track)
+        if add:
+            if not track:
+                return await _say(interaction, "⚠️ No hay ningún track activo. Usá el modo *Crear track*.")
+            n = await self.run(cdb.track_add, ids)
+            return await _say(interaction, f"✅ Track **{track['title']}**: agregué **{n}** con {rol.mention} (ya estaban: {len(ids) - n}).")
+        name = (titulo or getattr(interaction.channel, "name", "") or "CTA").strip()[:100]
+        if not await self.run(cdb.create_track, name, interaction.user.id, ids):
+            return await _say(interaction, f"⚠️ Ya hay un track activo: **{track['title'] if track else '?'}**. Cerralo con `/coaching track cerrar` "
+                                           "o usá el modo *Agregar al track activo*.")
+        await _say(interaction, f"✅ Track **{name}** creado con **{len(ids)}** anotado(s) con {rol.mention} (de {len(signed)} en la CTA).\n"
+                                "Se marca solo cuando suben un VOD a su post. Para sumar más gente: `/coaching track agregar`.")
+
+    @track_g.command(name="agregar", description="Agrega personas al track activo")
+    @app_commands.describe(miembros="Menciones de las personas o de un rol")
+    async def track_agregar(self, interaction: discord.Interaction, miembros: str):
+        if not await self._track_guard(interaction):
+            return
+        if not await self.run(cdb.get_track):
+            return await _say(interaction, "⚠️ No hay ningún track activo. Crealo con `/coaching track crear`.")
+        ids = self._parse_members(interaction.guild, miembros)
+        if not ids:
+            return await _say(interaction, "⚠️ No encontré a nadie: mencioná a las personas o a un rol.")
+        n = await self.run(cdb.track_add, ids)
+        await _say(interaction, f"✅ Agregados: **{n}** (ya estaban: {len(ids) - n}).")
+
+    @track_g.command(name="quitar", description="Saca a una persona del track activo")
+    async def track_quitar(self, interaction: discord.Interaction, usuario: discord.Member):
+        if not await self._track_guard(interaction):
+            return
+        ok = await self.run(cdb.track_remove, usuario.id)
+        await _say(interaction, f"✅ Saqué a {usuario.mention} del track." if ok else f"⚠️ {usuario.mention} no está en el track.")
+
+    @track_g.command(name="ver", description="Quién ya mandó el VOD de la CTA del track y quién falta")
+    async def track_ver(self, interaction: discord.Interaction):
+        if not await self._track_guard(interaction):
+            return
+        t = await self.run(cdb.get_track)
+        if not t:
+            return await _say(interaction, "ℹ️ No hay ningún track activo. Crealo con `/coaching track crear`.")
+        rows = await self.run(cdb.track_members)
+        done, pending = [], []
+        for r in rows:
+            uid = int(r["user_id"])
+            if r["done_at"]:
+                post = await self.run(cdb.get_post, uid)
+                link = (f" · [VOD](https://discord.com/channels/{interaction.guild.id}/{post['thread_id']}/{r['message_id']})"
+                        if post and r["message_id"] else "")
+                when = int(datetime.fromisoformat(r["done_at"]).timestamp())
+                done.append(f"<@{uid}> — <t:{when}:R>{link}")
+            else:
+                post = await self.run(cdb.get_post, uid)
+                pending.append(f"<@{uid}>" + ("" if post else " · sin post"))
+        since = int(datetime.fromisoformat(t["created_at"]).timestamp())
+        head = (f"📌 **Track: {t['title']}** (desde <t:{since}:f>, por <@{t['created_by']}>)\n"
+                f"Enviaron: **{len(done)}/{len(rows)}** · faltan: **{len(pending)}**")
+        embeds = []
+        for title, lines, color in (("⏳ Faltan", pending, discord.Color.red()), ("✅ Enviaron", done, discord.Color.green())):
+            for i, chunk in enumerate(self._chunks(lines) or ["*Nadie.*"]):
+                embeds.append(discord.Embed(title=title if i == 0 else f"{title} (cont.)", description=chunk, color=color))
+        await interaction.response.send_message(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    @track_g.command(name="cerrar", description="Cierra el track activo (para poder crear otro)")
+    async def track_cerrar(self, interaction: discord.Interaction):
+        if not await self._track_guard(interaction):
+            return
+        t = await self.run(cdb.get_track)
+        if not t or not await self.run(cdb.close_track):
+            return await _say(interaction, "ℹ️ No hay ningún track activo.")
+        await _say(interaction, f"✅ Track **{t['title']}** cerrado.")
 
 
 async def setup_coaching(bot: commands.Bot, db_path: str, guild_id: int) -> CoachingCog:
