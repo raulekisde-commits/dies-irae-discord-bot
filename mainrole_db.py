@@ -13,8 +13,8 @@ from typing import Dict, List, Optional, Tuple
 import ctautil as cu
 from dbutil import connect, utcnow_iso, write_tx
 
-# Roles que se pueden elegir como main: los de CTA, sin Bomb (igual que el paso de roles al aceptar un reclutamiento).
-MAIN_ROLES: Dict[int, str] = {rid: name for rid, name in cu.PLAYED_ROLES.items() if name != "Bomb"}
+# Roles que se pueden elegir como main: todos los de CTA (Bomb incluido).
+MAIN_ROLES: Dict[int, str] = dict(cu.PLAYED_ROLES)
 _BY_NAME = {name: rid for rid, name in MAIN_ROLES.items()}
 
 # Palabras (ya normalizadas: minúsculas, sin tildes) que identifican cada rol en lo que escribió el postulante.
@@ -29,6 +29,7 @@ ALIASES = {
     "Bloodletter": ("bloodletter", "blood letter", "bloodleter", "bl"),
     "Pierce": ("pierce", "piercer", "perforador"),
     "Battle Mount": ("battle mount", "battlemount", "bm", "montura"),
+    "Bomb": ("bomb", "bomba", "bomber", "bombas"),
 }
 
 # Fuentes que la reconstrucción desde los logs no pisa.

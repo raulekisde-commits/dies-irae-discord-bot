@@ -2110,8 +2110,8 @@ class RecruitRolesView(discord.ui.View):
         super().__init__(timeout=300)
         self.ticket_view = ticket_view
         self.origin = origin
-        self.main_id = default_role_id if default_role_id in RECRUIT_CTA_ROLES else None
-        mopts = [discord.SelectOption(label=name, value=str(rid), default=(rid == self.main_id)) for rid, name in RECRUIT_CTA_ROLES.items()]
+        self.main_id = default_role_id if default_role_id in _mrdb_recruit.MAIN_ROLES else None
+        mopts = [discord.SelectOption(label=name, value=str(rid), default=(rid == self.main_id)) for rid, name in _mrdb_recruit.MAIN_ROLES.items()]
         self.main_select = discord.ui.Select(placeholder="⚔ Rol MAIN (obligatorio)", min_values=1, max_values=1, options=mopts)
         self.main_select.callback = self.picked_main
         self.add_item(self.main_select)
@@ -2146,7 +2146,7 @@ class RecruitRolesView(discord.ui.View):
         if self.main_id is None:
             return await interaction.response.send_message("⚔ Elegí primero el **rol main** del postulante.", ephemeral=True)
         ids = [self.main_id] + [i for i in self.chosen if i != self.main_id]     # el main va primero y siempre se da
-        names = [RECRUIT_CTA_ROLES[i] for i in ids]
+        names = [RECRUIT_CTA_ROLES.get(i) or _mrdb_recruit.role_name(i) for i in ids]
         extra = ids[1:]
         extra.append(OBSERVACION_ROLE_ID)             # todo recluta entra con Observación
         primary = ids[0] if ids else MIEMBRO_ROLE_ID
@@ -7542,7 +7542,7 @@ HELP_SECTIONS = [
     ("📊 Estadísticas de la guild", [
         ("/casino winrate [usuario]", "Miembros", "Stats de casino de una persona (por defecto, la tuya): winrate en dados y coinflip, total apostado, ganado, perdido y si está en la lista negra. También `!winrate`."),
         ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, skippers, muertes en el primer engage, IP promedio/máxima/mínima, winrate, tareas del staff y coaches (quién da más devoluciones). Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
-        ("/stats [usuario]", "Miembros", "Panel público con foto de perfil, kills, muertes, % de muertes en el primer engage, roles más jugados e IP de un jugador (por defecto, vos)."),
+        ("/stats [usuario]", "Miembros", "Tarjeta pública PLAYER PERFORMANCE de un jugador (por defecto, vos): kills, muertes, peleas, KDA, primer engage, item power, roles más jugados, rol main y actividad en CTA."),
         ("/killboard cargar · conectados · borrar · probar", "Staff / Council (cargar y conectados también Caller y Opinólogo en el hilo de stats de una CTA, con los botones del panel)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),

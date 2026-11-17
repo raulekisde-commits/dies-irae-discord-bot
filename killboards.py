@@ -1,5 +1,6 @@
 """Killboards cargados por el staff (/killboard cargar|borrar|probar), tops (/top) y estadísticas de jugadores (/stats)."""
 import asyncio
+import io
 import os
 import re
 import time
@@ -19,6 +20,12 @@ import splits_db as sdb
 from dbutil import connect
 from guildshop import can_manage
 
+try:
+    import statscard                                   # tarjeta PNG de /stats (Pillow); si falla, /stats manda el embed de texto
+except Exception:
+    traceback.print_exc()
+    statscard = None
+
 NO_MENTIONS = discord.AllowedMentions.none()
 GUILD_NAME = os.getenv("ALBION_GUILD_NAME", "Smogg")
 REGION = os.getenv("ALBIONBB_REGION", "eu")
@@ -29,6 +36,7 @@ OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 MAX_BATTLES_PER_LOAD = 15
 USER_COOLDOWN = 10
+STATS_COOLDOWN = float(os.getenv("STATS_COOLDOWN", "8"))   # segundos entre dos /stats de la misma persona
 
 
 def voice_without_kb(present, signed, regs, kb_names):
@@ -835,11 +843,12 @@ class KillboardCog(commands.Cog):
         emb.set_footer(text="Solo cuentan los killboards cargados por el staff")
         return emb
 
-    def _cooldown(self, user_id: int) -> bool:
+    def _cooldown(self, user_id: int, bucket: Optional[str] = None, seconds: float = USER_COOLDOWN) -> bool:
+        key = user_id if bucket is None else (bucket, user_id)
         now = time.time()
-        if now - self._last_use.get(user_id, 0.0) < USER_COOLDOWN:
+        if now - self._last_use.get(key, 0.0) < seconds:
             return True
-        self._last_use[user_id] = now
+        self._last_use[key] = now
         return False
 
     async def _allowed(self, interaction, command: str) -> bool:
@@ -860,8 +869,8 @@ class KillboardCog(commands.Cog):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
         await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
 
-    async def _main_field(self, discord_id: int) -> Optional[str]:
-        """Rol main guardado y en qué % de sus CTA cerradas lo jugó (misma base que «Roles más jugados»)."""
+    async def _main_data(self, discord_id: int) -> Optional[dict]:
+        """{name, n, total}: rol main guardado y en cuántas de sus CTA cerradas lo jugó. None si no tiene."""
         try:
             import mainrole_db as mdb
             share = await self.run(mdb.main_share, discord_id)
@@ -871,16 +880,22 @@ class KillboardCog(commands.Cog):
         if share is None:
             return None
         rid, n_main, total = share
-        if not total:
-            return f"**{mdb.role_name(rid)}** · todavía sin CTA cerradas"
-        return f"**{mdb.role_name(rid)}** · lo jugó en **{100.0 * n_main / total:.0f}%** de sus CTA ({n_main} de {total})"
+        return {"name": mdb.role_name(rid), "n": n_main, "total": total}
 
-    async def _roles_field(self, guild, discord_id: int, names) -> Optional[str]:
-        """Top 3 de roles jugados con su %: cuenta todas las CTA cerradas en las que la persona estuvo anotada (haya killboard o no)."""
+    @staticmethod
+    def _main_text(main: Optional[dict]) -> str:
+        if main is None:
+            return "Sin cargar · lo elige el reclutador al aceptar o el staff con `/mainrole set`"
+        if not main["total"]:
+            return f"**{main['name']}** · todavía sin CTA cerradas"
+        return f"**{main['name']}** · lo jugó en **{100.0 * main['n'] / main['total']:.0f}%** de sus CTA ({main['n']} de {main['total']})"
+
+    async def _roles_top(self, guild, discord_id: int, names) -> list:
+        """Top 3 de roles jugados [(nombre, %, CTA)]: cuenta todas las CTA cerradas en las que la persona estuvo anotada (haya killboard o no)."""
         counts = await self.run(kb.role_counts, discord_id, names)
         total = sum(counts.values())
         if not total:
-            return None
+            return []
 
         def label(key) -> str:
             if isinstance(key, int):
@@ -888,12 +903,17 @@ class KillboardCog(commands.Cog):
                 return cu.PLAYED_ROLES.get(key) or (role.name if role is not None else f"Rol {key}")
             return str(key)
         top3 = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))[:3]
+        return [(label(key), 100.0 * n / total, n) for key, n in top3]
+
+    @staticmethod
+    def _roles_text(top: list) -> Optional[str]:
+        if not top:
+            return None
         medals = ["🥇", "🥈", "🥉"]
         lines = []
-        for i, (key, n) in enumerate(top3):
-            pct = 100.0 * n / total
+        for i, (name, pct, _n) in enumerate(top):
             bar = "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
-            lines.append(f"{medals[i]} **{label(key)}** · {pct:.0f}%\n`{bar}`")
+            lines.append(f"{medals[i]} **{name}** · {pct:.0f}%\n`{bar}`")
         return "\n".join(lines)
 
     # ---------- /stats ----------
@@ -903,6 +923,8 @@ class KillboardCog(commands.Cog):
     async def stats(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
         if not await self._allowed(interaction, "stats"):
             return
+        if self._cooldown(interaction.user.id, "stats", STATS_COOLDOWN):
+            return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usar /stats.")
         target = usuario or interaction.user
         regs = await self.run(rdb.get_registrations, target.id)
         if not regs:
@@ -915,8 +937,10 @@ class KillboardCog(commands.Cog):
         except Exception:
             pass
         skips = await self.run(kb.skip_count, names)
-        roles_field = await self._roles_field(interaction.guild, target.id, names)
-        main_field = await self._main_field(target.id)
+        roles_top = await self._roles_top(interaction.guild, target.id, names)
+        roles_field = self._roles_text(roles_top)
+        main_data = await self._main_data(target.id)
+        main_field = self._main_text(main_data)
         looted = await self.run(sdb.looted_total, target.id)
         looted_value = f"**{looted:,}**".replace(",", ".")
         if not s["attendance"]:
@@ -934,11 +958,7 @@ class KillboardCog(commands.Cog):
             emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="💀 Muertes", value=f"**{s['deaths']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="🛡️ Asistencia", value=f"**{s['attendance']:,}**".replace(",", ".") + " peleas", inline=True)
-            emb.add_field(name="🤝 Asistencias a kills", value=f"**{s['assists']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="🎯 KDA", value=f"**{s['kda']:.2f}**", inline=True)
-            emb.add_field(name="⚰️ Fame perdida", value=f"**{s['death_fame']:,}**".replace(",", "."), inline=True)
-            emb.add_field(name="🔥 Daño total", value=f"**{s['damage']:,.0f}**".replace(",", "."), inline=True)
-            emb.add_field(name="🔥 Daño por pelea", value=f"**{s['avg_damage']:,.0f}**".replace(",", "."), inline=True)
             emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
             emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
             if looted:
@@ -951,6 +971,7 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬇️ IP mínima", value=f"**{s['min_ip']:.0f}**", inline=True)
+        cta = None
         try:                                          # killboard, o anotado + más de 20 min en el canal de voz (guildcheck_db)
             import guildcheck_db as gdb
             chars = await self.run(gdb.chars_by_user)
@@ -958,12 +979,45 @@ class KillboardCog(commands.Cog):
             gid, uid = interaction.guild.id, target.id
             n_w, week = await asyncio.to_thread(lambda: gdb.cta_attendance(self.db_path, gid, ws, we, chars, user_id=uid))
             n_t, tot = await asyncio.to_thread(lambda: gdb.cta_attendance(self.db_path, gid, None, None, chars, user_id=uid))
+            cta = (tot.get(target.id, 0), week.get(target.id, 0), n_w)
             emb.add_field(name="🗓️ Asistencias a CTA",
                           value=f"Total: **{tot.get(target.id, 0)}** · Esta semana: **{week.get(target.id, 0)}** de {n_w}", inline=False)
         except Exception:
             traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
-        await interaction.response.send_message(embed=emb, allowed_mentions=NO_MENTIONS)
+        data = {"title": ", ".join(r.char_name for r in regs), "display": getattr(target, "display_name", ""),
+                "has_kb": bool(s["attendance"]), "kills": s["kills"], "deaths": s["deaths"], "attendance": s["attendance"],
+                "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
+                "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],
+                "skips": skips, "looted": looted, "roles": roles_top, "main": main_data,
+                "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0}
+        await self._send_stats(interaction, target, data, emb)
+
+    async def _send_stats(self, interaction: discord.Interaction, target, data: dict, fallback: discord.Embed):
+        """Manda la tarjeta PNG (caché / dibujo en hilo, ver statscard.py). Si no se puede dibujar, manda el embed de texto de siempre."""
+        async def send(**kw):
+            if interaction.response.is_done():
+                return await interaction.followup.send(allowed_mentions=NO_MENTIONS, **kw)
+            return await interaction.response.send_message(allowed_mentions=NO_MENTIONS, **kw)
+
+        if statscard is None:
+            return await send(embed=fallback)
+        try:
+            asset = target.display_avatar.replace(size=statscard.AVATAR_SIZE, format="png")
+            avatar_url, loader = str(asset.url), asset.read
+        except Exception:
+            avatar_url, loader = "", None
+        try:
+            png = statscard.cached(data, avatar_url)
+            if png is None:
+                await interaction.response.defer(thinking=True)      # dibujar puede esperar turno: no vence la interacción
+                png = await statscard.render_async(data, avatar_url, loader)
+            card_emb = discord.Embed(description=target.mention, color=discord.Color.gold())
+            card_emb.set_image(url="attachment://stats.png")
+            await send(embed=card_emb, file=discord.File(io.BytesIO(png), filename="stats.png"))
+        except Exception:
+            traceback.print_exc()
+            await send(embed=fallback)
 
 
 def _chunks(text: str, limit: int = 1800) -> List[str]:
