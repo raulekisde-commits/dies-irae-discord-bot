@@ -193,14 +193,28 @@ class CoresCog(commands.Cog):
                 return None
         return ch
 
-    async def announce(self, text: str):
-        """Aviso en el canal general, etiquetando a las personas."""
+    @staticmethod
+    async def _photo(message):
+        """La foto que mandaron (adjunta al panel), lista para volver a subirla. None si no se puede."""
+        for att in getattr(message, "attachments", None) or []:
+            try:
+                return await att.to_file()
+            except Exception:
+                traceback.print_exc()
+        return None
+
+    async def announce(self, text: str, message=None):
+        """Aviso en el canal general, etiquetando a las personas, con la foto del reporte si se puede."""
         ch = await self._channel(bs.get("general"))
         if ch is None:
             print("/core: no encuentro el canal general para avisar.")
             return False
         try:
-            await ch.send(text[:2000], allowed_mentions=USER_MENTIONS)
+            file = await self._photo(message) if message is not None else None
+            if file is not None:
+                await ch.send(text[:2000], file=file, allowed_mentions=USER_MENTIONS)
+            else:
+                await ch.send(text[:2000], allowed_mentions=USER_MENTIONS)
             return True
         except Exception:
             traceback.print_exc()
@@ -328,7 +342,7 @@ class CoresCog(commands.Cog):
         if done is None:
             return
         await self.announce(f"✅ <@{done['user_id']}> tu **{orb_name(done)}** fue aprobado: ya se te dieron **{n}** tirada(s) de "
-                            f"Wujupón 🎰. ¡Gracias por aportar a la guild! 💚")
+                            f"Wujupón 🎰. ¡Gracias por aportar a la guild! 💚", message)
         await _say(interaction, f"✅ Aprobado: {n} tirada(s) para <@{done['user_id']}>.")
 
     async def reject(self, interaction: discord.Interaction, message, reason: str):
@@ -341,7 +355,7 @@ class CoresCog(commands.Cog):
             return
         await self.announce(f"❌ <@{done['user_id']}> tu **{orb_name(done)}** fue rechazado."
                             + (f"\n📝 Motivo: {reason[:MAX_REASON]}" if reason else "")
-                            + "\nSi creés que es un error, hablá con el Staff.")
+                            + "\nSi creés que es un error, hablá con el Staff.", message)
         await _say(interaction, "❌ Reporte rechazado.")
 
     async def edit_rarity(self, interaction: discord.Interaction, message, rarity: str):
@@ -368,7 +382,7 @@ class CoresCog(commands.Cog):
         done = await self._decide(interaction, message, "shared", awards)
         if done is None:
             return
-        await self.announce(share_text(done, awards, participants))
+        await self.announce(share_text(done, awards, participants), message)
         await _say(interaction, f"🎲 Repartido entre {len(participants)} persona(s).")
 
 
