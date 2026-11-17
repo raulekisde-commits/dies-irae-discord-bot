@@ -12,8 +12,8 @@ from PIL import Image, ImageDraw, ImageFilter
 
 import statscard as sc
 from buildcard import DIM, GOLD, GREEN, MUTED, RED, TEXT
-from statscard import (CHARCOAL, GOLD_DIM, GOLD_DEEP, TRACK, W, _fit, _fmt, _gold_rule, _octagon, _overlay, _panel, _rgba,
-                       _seg_bar, _tracked, _vrule, pf)
+from statscard import (CHARCOAL, GOLD_DIM, GOLD_DEEP, RANKS, TRACK, W, _fit, _fmt, _gold_rule, _octagon, _overlay, _panel,
+                       _rank_badge, _rgba, _seg_bar, _tracked, _vrule, pf)
 
 NS = "|casino"                                    # espacio propio en la caché compartida con /stats
 EMOJI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "emojis")
@@ -105,9 +105,15 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     y = M
     _panel(img, (x0, y, x1, y + HH), radius=16, accent=True)
     img.alpha_composite(sc._header_smoke(int(x1 - x0), HH), (int(x0), int(y)))
-    d = ImageDraw.Draw(img)
     av_r = 62
     acx, acy = x0 + 32 + av_r, y + HH / 2
+    rank = data.get("rank") if data.get("rank") in RANKS else None   # mismo rango que /stats: halo detrás del marco + badge
+    halo_c = RANKS[rank][4] if rank else None
+    if halo_c is not None:
+        lay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(lay).polygon(_octagon(acx, acy, av_r + 22), fill=_rgba(halo_c, 70))
+        img.alpha_composite(lay.filter(ImageFilter.GaussianBlur(10)))
+    d = ImageDraw.Draw(img)
     d.polygon(_octagon(acx, acy, av_r + 9), fill=GOLD)
     d.polygon(_octagon(acx, acy, av_r + 5), fill=CHARCOAL)
     d.polygon(_octagon(acx, acy, av_r + 2), fill=GOLD_DIM)
@@ -123,12 +129,16 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     d.line((tx, y + 49, tx + 46, y + 49), fill=GOLD, width=2)
     name = data.get("name") or "—"
     d.text((tx - 2, y + 54), name, font=_fit(d, name, 48, x1 - tx - 330), fill=TEXT)
+    bx_ = tx
+    if rank:
+        bx_ += _rank_badge(img, tx, y + 117, rank) + 14
+        d = ImageDraw.Draw(img)
     if data.get("banned"):
         f = pf(15, "Bold")
         t = "LISTA NEGRA DEL CASINO"
         tw = d.textlength(t, font=f) + 28
-        d.rounded_rectangle((tx, y + 120, tx + tw, y + 150), radius=7, fill=(48, 16, 16), outline=RED, width=1)
-        d.text((tx + tw / 2, y + 135), t, font=f, fill=RED, anchor="mm")
+        d.rounded_rectangle((bx_, y + 120, bx_ + tw, y + 150), radius=7, fill=(48, 16, 16), outline=RED, width=1)
+        d.text((bx_ + tw / 2, y + 135), t, font=f, fill=RED, anchor="mm")
     # nivel de ludópata (escudo)
     sw_, sh_ = 250, 122
     sx0, sy0 = x1 - 30 - sw_, y + (HH - sh_) / 2 - 2
