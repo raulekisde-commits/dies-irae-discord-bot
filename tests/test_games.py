@@ -1002,6 +1002,15 @@ class GamesDiscordTests(unittest.TestCase):
 # ============================================================
 class EconomySlashTests(unittest.TestCase):
     def setUp(self):
+        # Estas pruebas revisan los datos de !bal en el embed de texto (el respaldo); la tarjeta PNG se prueba en test_walletcard.py.
+        from unittest import mock as _mock
+        import economy as _eco_mod
+
+        async def _no_bal_card(*_a, **_k):
+            return None
+        _pb = _mock.patch.object(_eco_mod.EconomyCog, "_bal_card", _no_bal_card)
+        _pb.start()
+        self.addCleanup(_pb.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "t.sqlite3")
         self.bot = discord.ext.commands.Bot()

@@ -467,17 +467,22 @@ class EconomyCog(commands.Cog):
     # ============================================================
     # Comandos de prefijo
     # ============================================================
-    async def bal_embed(self, target) -> discord.Embed:
-        """El mismo panel de `!bal` (se reutiliza en los tickets de cambio de moneda)."""
+    async def _bal_values(self, target):
+        """Las consultas de `!bal` (las mismas para el embed y para la tarjeta PNG)."""
         balance = await self._db(eco.get_balance, target.id)
         lifetime = await self._db(eco.get_lifetime_deposits, target.id)
+        embo = await self._db(embo_db.get_balance, target.id)
+        gamble = await self._db(stats_db.get_user_stats, target.id)
+        return balance, lifetime, embo, gamble
+
+    async def bal_embed(self, target, values=None) -> discord.Embed:
+        """El mismo panel de `!bal` (se reutiliza en los tickets de cambio de moneda)."""
+        balance, lifetime, embo, gamble = values or await self._bal_values(target)
         color = discord.Color.green() if balance > 0 else (discord.Color.red() if balance < 0 else discord.Color.light_grey())
         emb = discord.Embed(title=eco.CURRENCY_NAME, color=color)
         emb.description = f"{target.mention}\n\n**Balance actual**\n# {self.money(balance)}"
         emb.add_field(name="📈 Balance histórico", value=self.money(lifetime), inline=False)
-        embo = await self._db(embo_db.get_balance, target.id)
         emb.add_field(name=f"{self.embo_icon} Balance Energías Embotelladas", value=f"{eco.format_amount(embo)} embo", inline=False)
-        gamble = await self._db(stats_db.get_user_stats, target.id)
         emb.add_field(name="🎲 Total apostado", value=self.money(gamble.wagered), inline=True)
         # Mismos números que los paneles «Top ganado» / «Top perdido» de /panel apuestas (ganado − perdido): positivo o negativo.
         net = gamble.net
@@ -505,8 +510,44 @@ class EconomyCog(commands.Cog):
         else:
             target = ctx.author
 
-        emb = await self.bal_embed(target)
+        inter = getattr(ctx, "interaction", None)               # /bal: dibujar puede pasar los 3 s que da Discord
+        if inter is not None and not inter.response.is_done():
+            try:
+                await inter.response.defer(thinking=True)
+            except Exception:
+                pass
+        values = await self._bal_values(target)
+        png = await self._bal_card(target, values)
+        if png is not None:
+            return await ctx.send(content=f"<@{target.id}>", file=discord.File(io.BytesIO(png), filename="wuju.png"),
+                                  allowed_mentions=NO_MENTIONS)
+        emb = await self.bal_embed(target, values)
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)   # público, sin respuestas efímeras
+
+    async def _bal_card(self, target, values) -> Optional[bytes]:
+        """Tarjeta PNG de `!bal` (walletcard.py, caché y semáforo de statscard). None si no se puede: va el embed."""
+        try:
+            import walletcard
+            import statscard
+            from killboards import guild_rank
+        except Exception:
+            traceback.print_exc()
+            return None
+        balance, lifetime, embo, gamble = values
+        net = gamble.net                                       # mismos números que el embed (ganado/perdido = neto)
+        data = {"name": getattr(target, "display_name", str(target.id)), "currency": eco.CURRENCY_NAME, "rank": guild_rank(target),
+                "balance": balance, "lifetime": lifetime, "embo": embo, "wagered": gamble.wagered,
+                "won": net if net > 0 else 0, "lost": net if net < 0 else 0}
+        try:
+            asset = target.display_avatar.replace(size=statscard.AVATAR_SIZE, format="png")
+            avatar_url, loader = str(asset.url), asset.read
+        except Exception:
+            avatar_url, loader = "", None
+        try:
+            return await statscard.render_async(data, avatar_url, loader, renderer=walletcard.render, ns=walletcard.NS)
+        except Exception:
+            traceback.print_exc()
+            return None
 
     @commands.command(name="top")
     @guard
