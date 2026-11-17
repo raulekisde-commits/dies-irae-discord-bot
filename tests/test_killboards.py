@@ -15,6 +15,10 @@ from test_killboard_db import EVENTS  # noqa: E402
 class KBBase(DiscordBase):
     def setUp(self):
         super().setUp()
+        # Estas pruebas revisan los datos de /stats en el embed de texto (el respaldo); la tarjeta PNG se prueba en test_statscard.py.
+        old_card, old_cd = kc.statscard, kc.STATS_COOLDOWN
+        kc.statscard, kc.STATS_COOLDOWN = None, 0
+        self.addCleanup(lambda: setattr(kc, "statscard", old_card) or setattr(kc, "STATS_COOLDOWN", old_cd))
         g = self.guild
         self.r_staff = discord.Role(kc.STAFF_ROLE_ID, "Staff", g)
         self.r_caller = discord.Role(kc.CALLER_ROLE_ID, "Caller", g)
