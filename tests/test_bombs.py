@@ -91,14 +91,13 @@ class BombsTests(DiscordBase):
         self.assertIn("ya están cargados", self.call("cargar", self.rec, "Norte"))
         self.assertIn(self.r_common, self.outsider.roles)                    # cargar repone el rol común a los ya anotados
 
-    def test_caller_solo_agrega_en_su_bomb(self):
+    def test_caller_solo_saca_en_su_bomb(self):
         self.call("crear", self.council, "Norte", self.r_b1, self.bob)
         self.call("crear", self.council, "Sur", self.r_b2, self.alice)
-        self.assertIn("agregado", self.call("agregar", self.bob, "Norte", self.outsider))      # bob es caller de Norte
-        self.assertIn(self.r_b1, self.outsider.roles)
-        self.assertIn("tu bomb", self.call("agregar", self.bob, "Sur", self.outsider))
-        self.assertNotIn(self.r_b2, self.outsider.roles)
-        self.assertIn("Solo el Staff", self.call("cargar", self.bob, "Norte"))                  # el caller solo agrega
+        self.assertIn("Solo el Staff", self.call("agregar", self.bob, "Norte", self.outsider))  # el caller no agrega
+        self.assertNotIn(self.r_b1, self.outsider.roles)
+        self.call("agregar", self.stf, "Norte", self.outsider)
+        self.assertIn("Solo el Staff", self.call("cargar", self.bob, "Norte"))                  # ni carga
         self.call("agregar", self.stf, "Sur", self.outsider)
         self.assertIn("tu bomb", self.call("sacar", self.bob, "Sur", self.outsider))           # no saca de otra bomb
         self.assertIn(self.r_b2, self.outsider.roles)
