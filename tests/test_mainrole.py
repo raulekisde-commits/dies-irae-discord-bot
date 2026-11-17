@@ -35,7 +35,7 @@ class ParseTests(unittest.TestCase):
     def test_casos(self):
         casos = {"Healer Sagrado": "Healer", "Tanque, supp.": "Tank", "supp, tanque": "Supp", "DPS": "Dps", "daño": "Dps",
                  "Galatinas": "Galatinas", "battle mount / tank": "Battle Mount", "main heal": "Healer", "Clump maker": "Clump Maker",
-                 "juego de todo, pero main pierce": "Pierce", "Support": "Supp"}
+                 "juego de todo, pero main pierce": "Pierce", "Support": "Supp", "Bomba": "Bomb", "bomb, dps": "Bomb"}
         for txt, exp in casos.items():
             self.assertEqual(mdb.parse_main(txt), ID[exp], txt)
         for txt in ("", "—", "lo que necesiten", "healerr"):
@@ -158,6 +158,7 @@ class ReclutamientoFuente(unittest.TestCase):
         bloque = src[src.index("class RecruitRolesView"):src.index("class RecruitTicketView")]
         self.assertIn("min_values=1, max_values=1", bloque)
         self.assertIn("main_role_id=self.main_id", bloque)
+        self.assertIn("_mrdb_recruit.MAIN_ROLES.items()", bloque)        # Bomb se puede elegir como main
         self.assertIn('"reclutador"', src[src.index("async def accept_player"):src.index("class RecruitRolesView")])
         self.assertIn('setup_mainrole, self, DB_PATH', src)
 

@@ -2110,8 +2110,8 @@ class RecruitRolesView(discord.ui.View):
         super().__init__(timeout=300)
         self.ticket_view = ticket_view
         self.origin = origin
-        self.main_id = default_role_id if default_role_id in RECRUIT_CTA_ROLES else None
-        mopts = [discord.SelectOption(label=name, value=str(rid), default=(rid == self.main_id)) for rid, name in RECRUIT_CTA_ROLES.items()]
+        self.main_id = default_role_id if default_role_id in _mrdb_recruit.MAIN_ROLES else None
+        mopts = [discord.SelectOption(label=name, value=str(rid), default=(rid == self.main_id)) for rid, name in _mrdb_recruit.MAIN_ROLES.items()]
         self.main_select = discord.ui.Select(placeholder="⚔ Rol MAIN (obligatorio)", min_values=1, max_values=1, options=mopts)
         self.main_select.callback = self.picked_main
         self.add_item(self.main_select)
@@ -2146,7 +2146,7 @@ class RecruitRolesView(discord.ui.View):
         if self.main_id is None:
             return await interaction.response.send_message("⚔ Elegí primero el **rol main** del postulante.", ephemeral=True)
         ids = [self.main_id] + [i for i in self.chosen if i != self.main_id]     # el main va primero y siempre se da
-        names = [RECRUIT_CTA_ROLES[i] for i in ids]
+        names = [RECRUIT_CTA_ROLES.get(i) or _mrdb_recruit.role_name(i) for i in ids]
         extra = ids[1:]
         extra.append(OBSERVACION_ROLE_ID)             # todo recluta entra con Observación
         primary = ids[0] if ids else MIEMBRO_ROLE_ID

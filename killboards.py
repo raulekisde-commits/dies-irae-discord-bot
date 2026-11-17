@@ -869,7 +869,7 @@ class KillboardCog(commands.Cog):
             traceback.print_exc()
             return None
         if share is None:
-            return None
+            return "Sin cargar · lo elige el reclutador al aceptar o el staff con `/mainrole set`"
         rid, n_main, total = share
         if not total:
             return f"**{mdb.role_name(rid)}** · todavía sin CTA cerradas"
