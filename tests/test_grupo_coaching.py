@@ -9,7 +9,7 @@ class CoachingGroupTests(unittest.TestCase):
     def test_coaching_bajo_un_solo_comando(self):
         g = coaching.CoachingCog.coaching_g
         self.assertEqual(g.name, "coaching")
-        self.assertEqual(sorted(g.commands), ["mis-vods", "reporte", "verificar-posts"])
+        self.assertEqual(sorted(g.commands), ["mis-vods", "reporte", "track", "verificar-posts"])
 
 
 if __name__ == "__main__":

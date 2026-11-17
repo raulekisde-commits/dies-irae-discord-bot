@@ -397,6 +397,71 @@ class CoachingDiscordTests(DiscordBase):
         self.assertIn(otro, kw["allowed_mentions"].kw["users"])
         self.assertIsNotNone(co.cdb.get_post(self.db, otro.id))
 
+    def test_track_cta(self):
+        i = self.inter(self.alice)
+        run(self.cog.track_crear.callback(self.cog, i, "CTA martes", f"<@{self.novato.id}>"))
+        self.assertIn("Solo el Staff", i.text)
+        self.open_post(self.novato)
+        th = self.made[0]
+        run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/antes", 3000)))  # antes del track: no cuenta
+        i = self.inter(self.coach)
+        run(self.cog.track_crear.callback(self.cog, i, "CTA martes", f"<@{self.novato.id}> <@{self.alice.id}>"))
+        self.assertIn("**2** persona", i.text)
+        i = self.inter(self.coach)
+        run(self.cog.track_crear.callback(self.cog, i, "Otra", f"<@{self.alice.id}>"))
+        self.assertIn("Ya hay un track activo", i.text)                                       # solo uno a la vez
+        m = self.video_msg(self.novato, th, "healer https://youtu.be/cta1", 3001)
+        run(self.cog.process_message(m))
+        self.assertIn("📌", m.reactions)
+        i = self.inter(self.coach)
+        run(self.cog.track_ver.callback(self.cog, i))
+        sent = i.response.sent[-1]
+        body = "\n".join(e.description for e in sent[1]["embeds"])
+        self.assertIn("CTA martes", sent[0])
+        self.assertIn("1/2", sent[0])
+        self.assertIn(f"<@{self.novato.id}> — ", body)
+        self.assertIn(f"/{th.id}/3001", body)
+        self.assertIn(f"<@{self.alice.id}> · sin post", body)
+        run(self.cog.on_raw_message_delete(SimpleNamespace(message_id=3001)))               # borra el VOD: vuelve a faltar
+        self.assertIsNone(cdb.track_members(self.db)[0]["done_at"])
+        i = self.inter(self.coach)
+        run(self.cog.track_quitar.callback(self.cog, i, self.alice))
+        self.assertEqual([r["user_id"] for r in cdb.track_members(self.db)], [self.novato.id])
+        i = self.inter(self.coach)
+        run(self.cog.track_cerrar.callback(self.cog, i))
+        self.assertIn("cerrado", i.text)
+        self.assertIsNone(cdb.get_track(self.db))
+        i = self.inter(self.coach)
+        run(self.cog.track_crear.callback(self.cog, i, "Otra", f"<@{self.alice.id}>"))
+        self.assertIn("creado", i.text)
+
+    def test_track_desde_cta(self):
+        import sqlite3
+        c = sqlite3.connect(self.db)
+        c.executescript("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, thread_id INTEGER);"
+                        "CREATE TABLE IF NOT EXISTS cta_signups(cta_id INTEGER, user_id INTEGER, slot_key TEXT);"
+                        "CREATE TABLE IF NOT EXISTS cta_positions(cta_id INTEGER, user_id INTEGER);")
+        c.execute("INSERT INTO cta_runs(id, thread_id) VALUES (7, 5555)")
+        c.executemany("INSERT INTO cta_signups VALUES (7, ?, 'k')", [(self.novato.id,), (self.alice.id,)])
+        c.execute("INSERT INTO cta_positions VALUES (7, ?)", (self.coach.id,))
+        c.commit(); c.close()
+        cta_th = discord.Thread(5555, self.guild, "CTA 22 UTC")
+        otro = discord.Thread(5556, self.guild, "x")
+        i = self.inter(self.coach, channel=otro)
+        run(self.cog.track_desde_cta.callback(self.cog, i, self.r_obs, None, None))
+        self.assertIn("dentro del hilo de una CTA", i.text)
+        i = self.inter(self.coach, channel=cta_th)
+        run(self.cog.track_desde_cta.callback(self.cog, i, self.r_obs, None, None))
+        self.assertIn("CTA 22 UTC", i.text)
+        self.assertEqual([r["user_id"] for r in cdb.track_members(self.db)], [self.novato.id])   # solo el anotado con Observación
+        i = self.inter(self.coach, channel=cta_th)
+        run(self.cog.track_desde_cta.callback(self.cog, i, self.r_obs, None, None))
+        self.assertIn("Ya hay un track activo", i.text)
+        i = self.inter(self.coach, channel=cta_th)
+        run(self.cog.track_desde_cta.callback(self.cog, i, self.r_coach, None, "agregar"))       # el anotado tardío (posiciones)
+        self.assertIn("agregué **1**", i.text)
+        self.assertEqual({r["user_id"] for r in cdb.track_members(self.db)}, {self.novato.id, self.coach.id})
+
     def test_panel_command_is_council_only(self):
         i = self.inter(self.alice)
         run(self.cog.coaching_panel(i))
