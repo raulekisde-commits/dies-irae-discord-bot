@@ -1,6 +1,6 @@
 """Grupo /bomb: cada bomb tiene nombre, rol y caller.
 - Council (o admin/propietario): /bomb crear, /bomb editar, /bomb eliminar.
-- Staff, Reclutador y Council: /bomb agregar (también el caller, solo en su bomb), /bomb sacar (dan / quitan el rol y queda quién lo hizo) y /bomb cargar
+- Staff, Reclutador y Council: /bomb agregar y /bomb sacar (también el caller, solo en su bomb; dan / quitan el rol y queda quién lo hizo) y /bomb cargar
   (anota en la lista a quienes ya tienen el rol de la bomb pero no fueron agregados con el comando).
 - /bomb listar: lo anterior y además el caller de cualquier bomb.
 - Agregar o cargar también da el rol común de bomb (BOMB_COMMON_ROLE_ID) a todos los integrantes, sea cual sea su bomb."""
@@ -220,14 +220,17 @@ class BombsCog(commands.Cog):
             return await _say(interaction, f"ℹ️ {usuario.mention} ya estaba en **{name}** (se verificó que tenga el rol).{warn}")
         await _say(interaction, f"✅ {usuario.mention} agregado a **{name}** · rol {role.mention}.{warn}")
 
-    @bomb_g.command(name="sacar", description="(Staff/Reclutador) Saca a alguien de una bomb y le quita su rol")
+    @bomb_g.command(name="sacar", description="(Staff/Reclutador/Caller) Saca a alguien de una bomb y le quita su rol")
     @app_commands.describe(bomb="La bomb", usuario="Persona a sacar")
     async def sacar(self, interaction: discord.Interaction, bomb: str, usuario: discord.Member):
-        if not can_staff(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, los reclutadores y el Council pueden sacar gente de una bomb.")
+        staff = can_staff(interaction.user)
+        if not staff and not any(r["caller_id"] == interaction.user.id for r in await self.run(bdb.list_bombs, interaction.guild.id)):
+            return await _say(interaction, "🔒 Solo el Staff, los reclutadores, el Council y el caller de la bomb pueden sacar gente de una bomb.")
         b = await self._bomb(interaction, bomb)
         if b is None:
             return
+        if not staff and b["caller_id"] != interaction.user.id:            # el caller solo saca gente de SU bomb
+            return await _say(interaction, "🔒 Como caller solo podés sacar gente de tu bomb.")
         role = interaction.guild.get_role(b["role_id"])
         had_role = role is not None and role in usuario.roles
         row = await self.run(bdb.remove_member, b["id"], usuario.id)

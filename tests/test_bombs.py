@@ -99,7 +99,12 @@ class BombsTests(DiscordBase):
         self.assertIn("tu bomb", self.call("agregar", self.bob, "Sur", self.outsider))
         self.assertNotIn(self.r_b2, self.outsider.roles)
         self.assertIn("Solo el Staff", self.call("cargar", self.bob, "Norte"))                  # el caller solo agrega
-        self.assertIn("Solo el Staff", self.call("sacar", self.bob, "Norte", self.outsider))
+        self.call("agregar", self.stf, "Sur", self.outsider)
+        self.assertIn("tu bomb", self.call("sacar", self.bob, "Sur", self.outsider))           # no saca de otra bomb
+        self.assertIn(self.r_b2, self.outsider.roles)
+        self.assertIn("salió", self.call("sacar", self.bob, "Norte", self.outsider))           # sí de la suya
+        self.assertNotIn(self.r_b1, self.outsider.roles)
+        self.assertIn("Solo el Staff", self.call("sacar", self.outsider, "Norte", self.outsider))
 
     def test_eliminar(self):
         self.call("crear", self.council, "Norte", self.r_b1, self.bob)
