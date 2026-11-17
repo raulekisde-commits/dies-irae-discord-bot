@@ -78,6 +78,14 @@ def share_text(report: dict, awards: Dict[int, int], participants: List[int]) ->
     total = odb.RARITY_SPINS[report["rarity"]]
     n = len(participants)
     lines = [f"🎲 **Reparto del {orb_name(report)}** de <@{report['user_id']}>: **{total}** tirada(s) de Wujupón entre **{n}** persona(s)."]
+    kind = odb.KIND_LABEL[report["kind"]].lower()
+    mates = odb.mates_of(report)
+    if mates:
+        lines.append(f"👥 Las personas del reparto las eligió <@{report['user_id']}> al poner el {kind}: "
+                     + " ".join(f"<@{u}>" for u in mates))
+    added = [u for u in participants if u != int(report["user_id"]) and u not in mates]
+    if added:
+        lines.append("➕ Sumados por el Staff: " + " ".join(f"<@{u}>" for u in added))
     if n > total:
         lines.append("Había más personas que tiradas, así que se sortearon.")
     elif total % n:
@@ -323,6 +331,9 @@ class CoresCog(commands.Cog):
             return await _say(interaction, err)
         if mates and repartir != "si":
             return await _say(interaction, "❌ Pusiste compañeros pero elegiste **Repartir: No**. Elegí **Sí** para repartirlo con ellos.")
+        if repartir == "si" and not mates:
+            return await _say(interaction, "❌ Si elegís **Repartir: Sí**, tenés que poner con quiénes en **compañeros** "
+                                           "(mencioná a una o varias personas: `@persona @persona`).")
         ch = await self._channel(bs.get("cores"))
         if ch is None:
             return await _say(interaction, "❌ El canal del panel de cores no está configurado. Avisale al Staff (se configura con `/canal`).")
@@ -351,7 +362,7 @@ class CoresCog(commands.Cog):
 
     @app_commands.command(name="core", description="Reportar un core con foto para recibir tiradas de Wujupón")
     @app_commands.describe(repartir="¿Lo querés repartir?", rareza="Rareza del core", foto="Foto del core",
-                           companeros="Opcional: con quiénes repartirlo. Mencioná a uno o varios: @persona @persona")
+                           companeros="Obligatorio si repartís: mencioná a uno o varios (@persona @persona)")
     @app_commands.choices(repartir=SHARE_CHOICES, rareza=RARITY_CHOICES)
     @app_commands.rename(companeros="compañeros")
     @app_commands.guild_only()
@@ -361,7 +372,7 @@ class CoresCog(commands.Cog):
 
     @app_commands.command(name="vortex", description="Reportar un vortex con foto para recibir tiradas de Wujupón")
     @app_commands.describe(repartir="¿Lo querés repartir?", rareza="Rareza del vortex", foto="Foto del vortex",
-                           companeros="Opcional: con quiénes repartirlo. Mencioná a uno o varios: @persona @persona")
+                           companeros="Obligatorio si repartís: mencioná a uno o varios (@persona @persona)")
     @app_commands.choices(repartir=SHARE_CHOICES, rareza=RARITY_CHOICES)
     @app_commands.rename(companeros="compañeros")
     @app_commands.guild_only()

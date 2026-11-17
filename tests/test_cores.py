@@ -65,7 +65,7 @@ class CoresDiscord(DiscordBase):
 
     def report(self, user, rareza="azul", kind="core"):
         i = self.inter(user)
-        run(self.cog.submit(i, kind, "si", rareza, FakeAttachment()))
+        run(self.cog.submit(i, kind, "no", rareza, FakeAttachment()))
         return i, self.panelch.sent[-1]
 
     def test_solo_miembros(self):
@@ -130,6 +130,7 @@ class CoresDiscord(DiscordBase):
         self.assertEqual(odb.user_stats(self.db, winner.id)["core"]["verde"], 1)
         self.assertEqual(odb.user_stats(self.db, loser.id)["core"]["verde"], 0)
         self.assertIn(self.bob.mention, self.general.sent[-1].content)
+        self.assertIn("Sumados por el Staff", self.general.sent[-1].content)
         self.assertEqual(self.general.sent[-1].file.fp.getvalue(), b"\x89PNGfoto")
 
     def test_foto_del_adjunto_si_no_esta_en_disco(self):
@@ -153,8 +154,16 @@ class CoresDiscord(DiscordBase):
         self.assertEqual(odb.mates_of(odb.get_by_message(self.db, msg.id)), [self.bob.id])     # sin repetir a quien reporta
         self.assertTrue(any("Repartir con" in f[0] and self.bob.mention in f[1] for f in msg.embeds[0].fields))
         run(self.cog.share(self.inter(self.council, message=msg), msg, []))                   # botón «Repartir con los que puso»
+        self.assertIn(f"las eligió {self.alice.mention} al poner el core", self.general.sent[-1].content)
+        self.assertNotIn("Sumados por el Staff", self.general.sent[-1].content)
         self.assertEqual(wdb.get_spins(self.db, self.alice.id) + wdb.get_spins(self.db, self.bob.id), 5)
         self.assertGreaterEqual(min(wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), 2)
+
+    def test_repartir_si_obliga_a_poner_companeros(self):
+        i = self.inter(self.alice)
+        run(self.cog.submit(i, "vortex", "si", "verde", FakeAttachment()))
+        self.assertIn("tenés que poner con quiénes", i.text)
+        self.assertEqual(self.panelch.sent, [])
 
     def test_companeros_sin_menciones(self):
         i = self.inter(self.alice)
