@@ -96,6 +96,36 @@ class MainRoleTests(DiscordBase):
         self.assertEqual(mdb.main_share(self.db, 7), (ID["Healer"], 2, 4))
 
 
+class TopRolSecundario(MainRoleTests.__mro__[1]):
+    def setUp(self):
+        super().setUp()
+        self.cog = run(mr.setup_mainrole(self.bot, self.db, GUILD_ID))
+        conn = connect(self.db)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, status TEXT);
+            CREATE TABLE IF NOT EXISTS cta_positions(cta_id INTEGER, user_id INTEGER, slot_key TEXT, role_id INTEGER, role_name TEXT,
+                                                     late INTEGER DEFAULT 0, PRIMARY KEY (cta_id, user_id));
+        """)
+        conn.executemany("INSERT INTO cta_runs VALUES (?,?)", [(i, "closed") for i in range(1, 11)] + [(11, "open")])
+        pos = []
+        for i in range(1, 11):                                           # 1: Healer main, 2 de 10 healer, 8 tank
+            pos.append((i, 1, "a", ID["Healer"] if i <= 2 else ID["Tank"], None))
+            pos.append((i, 2, "a", ID["Dps"] if i <= 9 else ID["Supp"], None))   # 2: Dps main, 90 %
+        for i in range(1, 4):                                            # 3: solo 3 CTA → no entra
+            pos.append((i, 3, "a", ID["Tank"], None))
+        pos.append((11, 1, "a", ID["Tank"], None))                       # CTA abierta: no cuenta
+        conn.executemany("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id,role_name) VALUES (?,?,?,?,?)", pos)
+        conn.close()
+        for uid, r in ((1, "Healer"), (2, "Dps"), (3, "Healer")):
+            mdb.set_main(self.db, uid, ID[r], "manual")
+
+    def test_orden_y_minimo(self):
+        rows = mdb.secondary_top(self.db)
+        self.assertEqual([d["user_id"] for d in rows], [1, 2])
+        self.assertEqual((rows[0]["main"], rows[0]["total"], rows[0]["top_other_id"], rows[0]["top_other_n"]), (2, 10, ID["Tank"], 8))
+        self.assertAlmostEqual(rows[1]["pct"], 90.0)
+
+
 class ReclutamientoFuente(unittest.TestCase):
     """bot.py no se puede importar en las pruebas: se revisa el código fuente."""
     def test_aceptar_pide_y_guarda_main(self):

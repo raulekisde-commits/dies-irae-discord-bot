@@ -97,6 +97,40 @@ class MainRoleCog(commands.Cog):
             w.writerow([data["user_id"], str(m) if m else "", "si" if m else "no", estado, data["raw"], data["assigned"], url])
         return discord.File(io.BytesIO(buf.getvalue().encode("utf-8-sig")), filename="rol_main_revisar.csv")
 
+    # ---------- /top rolsec ----------
+    async def send_top(self, interaction: discord.Interaction):
+        """`/top rolsec`: los que menos juegan su rol main (miembros actuales con al menos MIN_CTAS_FOR_TOP CTA cerradas)."""
+        from paging import PagedView, chunk
+        guild = interaction.guild
+        rows = [d for d in await self.run(mdb.secondary_top) if guild is None or guild.get_member(d["user_id"]) is not None]
+
+        def label(key) -> str:
+            return mdb.role_name(key) if isinstance(key, int) else str(key)
+
+        def line(i, d) -> str:
+            other = f" · juega más **{label(d['top_other_id'])}** ({d['top_other_n']})" if d["top_other_id"] is not None and d["top_other_n"] > d["main"] else ""
+            return (f"`{i}.` <@{d['user_id']}> — **{d['pct']:.0f}%** de {label(d['role_id'])} "
+                    f"({d['main']} de {d['total']} CTA){other}")
+
+        pages = chunk(list(enumerate(rows, start=1)), 10)
+        embeds = []
+        for n, page in enumerate(pages, start=1):
+            emb = discord.Embed(title="⚔ Top rol secundario — los que menos juegan su main", color=discord.Color.orange(),
+                                description="\n".join(line(i, d) for i, d in page)
+                                or f"Nadie con rol main cargado y al menos {mdb.MIN_CTAS_FOR_TOP} CTA cerradas.")
+            emb.set_footer(text=f"CTA cerradas en las que estuvo anotado · mínimo {mdb.MIN_CTAS_FOR_TOP} CTA"
+                                + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else ""))
+            embeds.append(emb)
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
+
     # ---------- comandos ----------
     mr_g = app_commands.Group(name="mainrole", description="Rol main de los miembros", guild_only=True)
 
