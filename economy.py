@@ -699,7 +699,8 @@ class EconomyCog(commands.Cog):
                       app_commands.Choice(name="🛠️ Tareas del staff", value="tareas"),
                       app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach"),
                       app_commands.Choice(name="🍾 Embo: mayor deuda", value="embo"),
-                      app_commands.Choice(name="🃏 Wujupón: los que más ganaron", value="wujupon")])
+                      app_commands.Choice(name="🃏 Wujupón: los que más ganaron", value="wujupon"),
+                      app_commands.Choice(name="⚔ Rol secundario: los que menos juegan su main", value="rolsec")])
 
     @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
     @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
@@ -735,6 +736,11 @@ class EconomyCog(commands.Cog):
             return await self.send_top_embo_debt(interaction)
         if key == "wujupon":
             return await self.send_top_wujupon(interaction)
+        if key == "rolsec":
+            other = self.bot.get_cog("MainRoleCog")
+            if other is None:
+                return await self._ephemeral(interaction, "❌ El top de rol secundario no está disponible ahora.")
+            return await other.send_top(interaction)
         if key == "coach":
             other = self.bot.get_cog("EncargosCog")
             if other is None:
