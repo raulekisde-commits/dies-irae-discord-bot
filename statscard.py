@@ -620,7 +620,11 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     _tracked(d, rx0, fy2 + 10, "CTAs skipeadas", pf(12, "Bold"), MUTED, 2)
     d.text((rx0, fy2 + 26), _fmt(sk), font=pf(22, "Bold"), fill=RED if sk else GREEN)
     _tracked(d, rx0 + half_, fy2 + 10, "Total looteado", pf(12, "Bold"), MUTED, 2)
-    d.text((rx0 + half_, fy2 + 26), _fmt(data.get("looted") or 0), font=pf(22, "Bold"), fill=GOLD)
+    lv = _fmt(data.get("looted") or 0)
+    d.text((rx0 + half_, fy2 + 26), lv, font=pf(22, "Bold"), fill=GOLD)
+    if data.get("looted_ctas") is not None:
+        d.text((rx0 + half_ + d.textlength(lv, font=pf(22, "Bold")) + 10, fy2 + 41), f"en {data['looted_ctas']} CTA",
+               font=pf(15, "Medium"), fill=MUTED, anchor="ls")
 
     # ---- H. cores y vortex (orbes que le dieron tiradas) ----
     y += BH + G
