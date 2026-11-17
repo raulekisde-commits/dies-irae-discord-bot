@@ -31,6 +31,7 @@ MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 OBSERVACION_ROLE_ID = int(os.getenv("OBSERVACION_ROLE_ID", "1559680220800360519"))
 MAX_EXPORT_BYTES = 2_000_000
 LEAVE_CHECK_MINUTES = 30
+NEW_LINK_DAYS = 5                  # /miembros poca-asistencia: los vinculados hace 5 días o menos van aparte
 LEAVE_CONFIRM_PER_ROUND = 10       # consultas a la API por ronda para confirmar el gremio actual
 ROSTER_DROP_GUARD = 0.7            # si la lista de la guild baja de golpe más de un 30 %, esa ronda no se avisa nada
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -370,31 +371,44 @@ class GuildCheckCog(commands.Cog):
         ctas = await self.run(gdb.kb_cta_presence, guild.id, chars)
         if not ctas:
             return await interaction.followup.send("ℹ️ Todavía no hay CTA con killboard cargado: no hay nada que comparar.")
-        low, no_char = [], 0
+        esc = discord.utils.escape_markdown
+        low, new, no_char = [], [], 0
         for m in pool:
             if m.id not in chars:
                 no_char += 1
                 continue
-            since = regs.get(m.id) or ctas[0][0]             # ingreso = cuando lo reclutaron o vinculó su cuenta de Albion
+            since, char = regs.get(m.id, (None, None))
+            since = since or ctas[0][0]                       # ingreso = cuando lo reclutaron o vinculó su cuenta de Albion
+            if since > now - timedelta(days=NEW_LINK_DAYS):     # recién vinculados: van aparte, abajo
+                new.append((m, since, char, sum(1 for when, present in ctas if when >= since and m.id in present)))
+                continue
             res = gdb.attendance_since(ctas, m.id, since, now)
             if res and res[0] < res[1]:
-                low.append((m, since, *res))
-        low.sort(key=lambda x: (x[2] / x[3], x[2], x[0].display_name.casefold()))
+                low.append((m, since, char, *res))
+        low.sort(key=lambda x: (x[3] / x[4], x[3], x[0].display_name.casefold()))
+        new.sort(key=lambda x: x[1])
         absent = await self.run(gdb.ausencias_en, guild.id, ctas[0][0], now)
+
+        def who(m, char) -> str:
+            return f"<@{m.id}>" + (f" (**{esc(char)}**)" if char else "")
 
         def tag(m) -> str:
             a = absent.get(m.id)
             if not a:
                 return ""
-            txt = discord.utils.escape_markdown(str(a.get("texto") or ""))[:60]
+            txt = esc(str(a.get("texto") or ""))[:60]
             return f"\n   🟡 **Tiene /ausencia** hasta <t:{int(datetime.fromisoformat(a['hasta']).timestamp())}:D>" + (f": «{txt}»" if txt else "")
 
         lines = [f"⚔️ **Poca asistencia a CTA** · se piden **{gdb.CTA_WEEKLY_MIN} por semana**, contadas desde que lo reclutaron o vinculó su cuenta de Albion",
                  f"Solo cuentan las CTA con killboard cargado (desde <t:{_ts(ctas[0][0])}:D>, **{len(ctas)}** CTA). "
                  "Si entró hace poco, se le pide la parte proporcional.",
-                 f"**{len(low)}** de {len(pool) - no_char} miembros por debajo"
+                 f"**{len(low)}** de {len(pool) - no_char - len(new)} miembros por debajo"
                  + (f" · 🟡 {sum(1 for x in low if x[0].id in absent)} con /ausencia (revisar)" if any(x[0].id in absent for x in low) else "") + ":", ""]
-        lines += [f"• <@{m.id}> · **{a}/{need}** ({a * 100 // need}%) · vinculado <t:{_ts(since)}:R>{tag(m)}" for m, since, a, need, _n in low] or ["✅ Nadie está por debajo."]
+        lines += [f"• {who(m, char)} · **{a}/{need}** ({a * 100 // need}%) · vinculado <t:{_ts(since)}:R>{tag(m)}"
+                  for m, since, char, a, need, _n in low] or ["✅ Nadie está por debajo."]
+        if new:
+            lines += ["", f"**🆕 Vinculados hace {NEW_LINK_DAYS} días o menos ({len(new)})** · no se evalúan todavía"]
+            lines += [f"• {who(m, char)} · vinculado <t:{_ts(since)}:R> · {n} CTA{tag(m)}" for m, since, char, n in new]
         if no_char:
             lines.append(f"\nℹ️ {no_char} miembro(s) sin personaje registrado no se evalúan (ver `/miembros sin-vincular`).")
         for chunk in _chunks(lines):
