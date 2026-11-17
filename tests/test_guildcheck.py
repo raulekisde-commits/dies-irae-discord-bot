@@ -122,11 +122,12 @@ class GuildCheckTests(DiscordBase):
         self.assertIn("🔒", i.text)
         i = self.inter(self.staff)
         run(self.cog.do_asistencias(i, "actual"))
-        self.assertIn(f"<@{self.alice.id}> · **1/1**", i.text)
-        self.assertIn(f"<@{self.bob.id}> · **0/1** ⚠️", i.text)
+        self.assertIn(f"<@{self.alice.id}> · **1/5** ⚠️", i.text)           # el mínimo es 5 aunque haya habido 1 CTA
+        self.assertIn(f"<@{self.bob.id}> · **0/5** ⚠️", i.text)
+        self.assertIn("Debajo de 5", i.text)
         i = self.inter(self.staff)
         run(self.cog.do_asistencias(i, "actual", self.alice))
-        self.assertIn("Esta semana: **1** de 1", i.text)
+        self.assertIn("Esta semana: **1/5** (1 CTA hechas)", i.text)
         self.assertIn("Total: **1**", i.text)
 
     def test_kick_lista_por_motivo_y_ausencia(self):

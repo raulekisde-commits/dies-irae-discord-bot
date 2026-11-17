@@ -329,7 +329,7 @@ class GuildCheckCog(commands.Cog):
             n_p, p = await self.run(gdb.cta_attendance, guild.id, ps, pe, chars, user_id=persona.id)
             n_t, t = await self.run(gdb.cta_attendance, guild.id, None, None, chars, user_id=persona.id)
             return await _say(interaction, f"🛡️ **Asistencias a CTA de {persona.mention}**\n"
-                                           f"• Esta semana: **{w.get(persona.id, 0)}** de {n_w}\n"
+                                           f"• Esta semana: **{w.get(persona.id, 0)}/{gdb.CTA_WEEKLY_MIN}** ({n_w} CTA hechas)\n"
                                            f"• Semana anterior: **{p.get(persona.id, 0)}** de {n_p}\n"
                                            f"• Total: **{t.get(persona.id, 0)}**\n{rule}")
         current = semana == "actual"
@@ -337,7 +337,7 @@ class GuildCheckCog(commands.Cog):
         n, att = await self.run(gdb.cta_attendance, guild.id, start, end, chars)
         role = guild.get_role(MIEMBRO_ROLE_ID)
         pool = [m for m in (role.members if role else []) if not getattr(m, "bot", False)]
-        need = min(gdb.CTA_WEEKLY_MIN, n)
+        need = gdb.CTA_WEEKLY_MIN                     # mínimo semanal fijo, aunque se hayan hecho menos CTA
         rows = sorted(pool, key=lambda m: (-att.get(m.id, 0), m.display_name.casefold()))
         label = f"<t:{_ts(start)}:D> → <t:{_ts(end - timedelta(seconds=1))}:D>"
         lines = [f"🛡️ **Asistencias a CTA** · semana {'en curso' if current else 'anterior'} ({label}) · **{n}** CTA", rule]
@@ -346,7 +346,7 @@ class GuildCheckCog(commands.Cog):
         else:
             under = sum(1 for m in pool if att.get(m.id, 0) < need)
             lines.append(f"Debajo de {need}: **{under}** de {len(pool)} miembros (marcados con ⚠️).")
-            lines += [f"• <@{m.id}> · **{att.get(m.id, 0)}/{n}**" + (" ⚠️" if att.get(m.id, 0) < need else "") for m in rows]
+            lines += [f"• <@{m.id}> · **{att.get(m.id, 0)}/{need}**" + (" ⚠️" if att.get(m.id, 0) < need else "") for m in rows]
         others = [u for u in att if u not in {m.id for m in pool}]
         if others:
             lines.append(f"\nℹ️ {len(others)} persona(s) sin rol Miembro también asistieron: " + ", ".join(f"<@{u}>" for u in others)[:600])
