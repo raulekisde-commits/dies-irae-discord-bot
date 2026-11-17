@@ -44,6 +44,9 @@ class StatsCardTests(unittest.TestCase):
         png = self.real_render(dict(DATA, has_kb=False, roles=[], main=None, cta_total=None))
         self.assertTrue(png.startswith(b"\x89PNG"))
 
+    def test_usa_la_fuente_del_repo(self):
+        self.assertTrue(sc.pf(20, "Bold").path.endswith(os.path.join("assets", "fonts", "Poppins-Bold.ttf")))
+
     def test_cache_y_un_solo_dibujo_por_tarjeta(self):
         async def go():
             return await asyncio.gather(*[sc.render_async(DATA) for _ in range(5)])
