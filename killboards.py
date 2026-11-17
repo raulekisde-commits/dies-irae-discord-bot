@@ -988,9 +988,9 @@ class KillboardCog(commands.Cog):
             gid, uid = interaction.guild.id, target.id
             n_w, week = await asyncio.to_thread(lambda: gdb.cta_attendance(self.db_path, gid, ws, we, chars, user_id=uid))
             n_t, tot = await asyncio.to_thread(lambda: gdb.cta_attendance(self.db_path, gid, None, None, chars, user_id=uid))
-            cta = (tot.get(target.id, 0), week.get(target.id, 0), n_w)
+            cta = (tot.get(target.id, 0), week.get(target.id, 0), gdb.CTA_WEEKLY_MIN)   # semana: sobre el mínimo semanal
             emb.add_field(name="🗓️ Asistencias a CTA",
-                          value=f"Total: **{tot.get(target.id, 0)}** · Esta semana: **{week.get(target.id, 0)}** de {n_w}", inline=False)
+                          value=f"Total: **{tot.get(target.id, 0)}** · Esta semana: **{week.get(target.id, 0)}/{gdb.CTA_WEEKLY_MIN}**", inline=False)
         except Exception:
             traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")

@@ -89,7 +89,7 @@ class Conectados(KBBase):
         f = [x for x in emb.fields if "Asistencias a CTA" in str(x)]
         self.assertTrue(f)
         self.assertIn("Total: **1**", str(f[0]))
-        self.assertIn("Esta semana: **1** de 1", str(f[0]))
+        self.assertIn("Esta semana: **1/5**", str(f[0]))
 
     def test_bad_file(self):
         self.assertIn("No pude leer", run(self.cog.process_online(5, b"hola", self.stf.id)))
