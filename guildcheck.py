@@ -381,11 +381,21 @@ class GuildCheckCog(commands.Cog):
             if res and res[0] < res[1]:
                 low.append((m, since, *res))
         low.sort(key=lambda x: (x[2] / x[3], x[2], x[0].display_name.casefold()))
+        absent = await self.run(gdb.ausencias_en, guild.id, ctas[0][0], now)
+
+        def tag(m) -> str:
+            a = absent.get(m.id)
+            if not a:
+                return ""
+            txt = discord.utils.escape_markdown(str(a.get("texto") or ""))[:60]
+            return f"\n   🟡 **Tiene /ausencia** hasta <t:{int(datetime.fromisoformat(a['hasta']).timestamp())}:D>" + (f": «{txt}»" if txt else "")
+
         lines = [f"⚔️ **Poca asistencia a CTA** · se piden **{gdb.CTA_WEEKLY_MIN} por semana**, contadas desde que entró a la guild",
                  f"Solo cuentan las CTA con killboard cargado (desde <t:{_ts(ctas[0][0])}:D>, **{len(ctas)}** CTA). "
                  "Si entró hace poco, se le pide la parte proporcional.",
-                 f"**{len(low)}** de {len(pool) - no_char} miembros por debajo:", ""]
-        lines += [f"• <@{m.id}> · **{a}/{need}** ({a * 100 // need}%) · entró <t:{_ts(since)}:R>" for m, since, a, need, _n in low] or ["✅ Nadie está por debajo."]
+                 f"**{len(low)}** de {len(pool) - no_char} miembros por debajo"
+                 + (f" · 🟡 {sum(1 for x in low if x[0].id in absent)} con /ausencia (revisar)" if any(x[0].id in absent for x in low) else "") + ":", ""]
+        lines += [f"• <@{m.id}> · **{a}/{need}** ({a * 100 // need}%) · entró <t:{_ts(since)}:R>{tag(m)}" for m, since, a, need, _n in low] or ["✅ Nadie está por debajo."]
         if no_char:
             lines.append(f"\nℹ️ {no_char} miembro(s) sin personaje registrado no se evalúan (ver `/miembros sin-vincular`).")
         for chunk in _chunks(lines):
