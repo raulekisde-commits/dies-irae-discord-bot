@@ -28,6 +28,13 @@ NO_MENTIONS = discord.AllowedMentions.none()
 DICE_FACES = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
 MAX_LISTED = 40
 GOLD, GREEN, GREY = 0xF1C40F, 0x2ECC71, 0x95A5A6
+# Rango de la tarjeta de /stats (killboards.guild_rank) → texto y color del embed de winrate (colores de statscard.RANKS).
+WINRATE_RANKS = {
+    "council":   ("👑 **COUNCIL**", 0xFFCC40),
+    "municipal": ("🛡️ **MUNICIPAL**", 0xE2C684),
+    "core":      ("🐺 **CORE MEMBER**", 0xCED2DC),
+    "member":    ("👤 **MEMBER**", 0xB2B6C0),
+}
 
 
 def guard(func):
@@ -298,8 +305,15 @@ class GamesCog(commands.Cog):
         coin = await self.run(stats_db.get_winrate, "coinflip", target.id)
         st = await self.run(stats_db.get_user_stats, target.id)
         banned = await self.run(cdb.is_banned, ctx.guild.id, target.id)
-        emb = discord.Embed(title=f"📊 Stats de {getattr(target, 'display_name', target.id)}", color=GREEN)
-        emb.description = f"<@{target.id}>" + ("\n🚫 **En la lista negra del casino**" if banned else "")
+        try:                                                    # mismo rango que la tarjeta de /stats (Council > Municipal > Core > Member)
+            from killboards import guild_rank
+            rank = guild_rank(target)
+        except Exception:
+            rank = None
+        rank_label, rank_color = WINRATE_RANKS.get(rank, (None, GREEN))
+        emb = discord.Embed(title=f"📊 Stats de {getattr(target, 'display_name', target.id)}", color=rank_color)
+        emb.description = (f"<@{target.id}>" + (f"\n{rank_label}" if rank_label else "")
+                           + ("\n🚫 **En la lista negra del casino**" if banned else ""))
         for icon, name, w in (("🎲", "Dados", dice), ("🪙", "Coinflip", coin)):
             emb.add_field(name=f"{icon} Winrate {name}", value=f"**{w.percent}**\n{w.wins} ganadas de {w.played} partidas", inline=True)
         emb.add_field(name="🎰 Total apostado", value=f"**{self.money(st.wagered)}**\nen {st.games} apuestas", inline=False)
