@@ -39,6 +39,8 @@ class StatsCardTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(sc, "render", self.real_render))
 
     def test_dibujo_real_es_png(self):
+        for rank in ("council", "municipal", "core", "member", None):
+            self.assertTrue(self.real_render(dict(DATA, rank=rank)).startswith(b"\x89PNG"))
         png = self.real_render(DATA)
         self.assertTrue(png.startswith(b"\x89PNG"))
         png = self.real_render(dict(DATA, has_kb=False, roles=[], main=None, cta_total=None))
@@ -109,6 +111,31 @@ class StatsCommandTests(KBBase):
         i2 = self.inter(self.mem)
         run(self.cog.stats.callback(self.cog, i2, None))
         self.assertIn("Esperá", i2.text)
+
+    def test_rango_por_prioridad(self):
+        import discord
+        R = lambda rid: discord.Role(rid, "r", self.guild)
+        mk = lambda *ids: discord.Member(1, "x", roles=[R(i) for i in ids], guild=self.guild)
+        self.assertEqual(kc.guild_rank(mk(kc.MIEMBRO_ROLE_ID, kc.CORE_MEMBER_ROLE_ID, kc.STAFF_ROLE_ID, kc.COUNCIL_ROLE_ID)), "council")
+        self.assertEqual(kc.guild_rank(mk(kc.MIEMBRO_ROLE_ID, kc.CORE_MEMBER_ROLE_ID, kc.STAFF_ROLE_ID)), "municipal")
+        self.assertEqual(kc.guild_rank(mk(kc.MIEMBRO_ROLE_ID, kc.CORE_MEMBER_ROLE_ID)), "core")
+        self.assertEqual(kc.guild_rank(mk(kc.MIEMBRO_ROLE_ID)), "member")
+        self.assertIsNone(kc.guild_rank(mk()))
+
+    def test_core_member_se_marca_en_la_tarjeta(self):
+        import discord
+        self.mem.roles.append(discord.Role(kc.CORE_MEMBER_ROLE_ID, "Core Member", self.guild))
+        seen, old = {}, sc.render_async
+
+        async def spy(data, *a, **k):
+            seen.update(data)
+            return await old(data, *a, **k)
+        sc.render_async = spy
+        try:
+            run(self.cog.stats.callback(self.cog, self.inter(self.mem), None))
+        finally:
+            sc.render_async = old
+        self.assertEqual(seen["rank"], "core")
 
     def test_si_falla_el_dibujo_manda_el_embed(self):
         old = sc.render_async

@@ -279,6 +279,66 @@ def _header_smoke(w: int, h: int) -> Image.Image:
     return _hs_cache[key]
 
 
+# Rango en la guild (el de mayor prioridad): texto, colores de la placa (arriba, medio, abajo), color del halo e ícono.
+RANKS = {
+    "council":   ("COUNCIL",     ((255, 232, 150), (232, 182, 58), (142, 100, 24)), GOLD, "crown"),
+    "municipal": ("MUNICIPAL",   ((170, 236, 190), (66, 176, 108), (22, 92, 54)), GREEN, "shield"),
+    "core":      ("CORE MEMBER", ((246, 200, 148), (200, 128, 62), (112, 62, 24)), (214, 140, 66), "wolf"),
+    "member":    ("MEMBER",      ((228, 230, 236), (160, 164, 176), (88, 92, 104)), None, "person"),
+}
+
+
+def _rank_icon(d, kind, cx, cy, s, c):
+    """Ícono chico dibujado (las fuentes no traen emojis)."""
+    if kind == "crown":
+        d.polygon([(cx - s, cy + s * 0.6), (cx - s, cy - s * 0.5), (cx - s * 0.5, cy), (cx, cy - s * 0.8),
+                   (cx + s * 0.5, cy), (cx + s, cy - s * 0.5), (cx + s, cy + s * 0.6)], fill=c)
+    elif kind == "shield":
+        d.polygon([(cx - s * 0.85, cy - s * 0.8), (cx + s * 0.85, cy - s * 0.8), (cx + s * 0.85, cy + s * 0.1),
+                   (cx, cy + s * 0.9), (cx - s * 0.85, cy + s * 0.1)], fill=c)
+    elif kind == "wolf":
+        d.polygon([(cx - s * 0.9, cy - s * 0.9), (cx - s * 0.35, cy - s * 0.35), (cx + s * 0.35, cy - s * 0.35),
+                   (cx + s * 0.9, cy - s * 0.9), (cx + s * 0.75, cy + s * 0.1), (cx, cy + s * 0.9), (cx - s * 0.75, cy + s * 0.1)], fill=c)
+    else:  # person
+        d.ellipse((cx - s * 0.38, cy - s * 0.9, cx + s * 0.38, cy - s * 0.14), fill=c)
+        d.pieslice((cx - s * 0.8, cy - s * 0.05, cx + s * 0.8, cy + s * 1.5), 180, 360, fill=c)
+
+
+def _rank_badge(img, x, y, rank: str):
+    """Placa metálica con el rango (degradado vertical, brillo, ícono y halo según el rango)."""
+    text, (top, mid, bot), halo, icon = RANKS[rank]
+    f = pf(14, "Bold")
+    d = ImageDraw.Draw(img)
+    tw = sum(d.textlength(ch, font=f) + 2.2 for ch in text) - 2.2
+    w, h = int(tw + 66), 30
+    plate = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    grad = Image.new("RGBA", (1, h))
+    for i in range(h):
+        t = i / (h - 1)
+        c = [int(top[k] + (mid[k] - top[k]) * t * 2) if t < 0.5 else int(mid[k] + (bot[k] - mid[k]) * (t - 0.5) * 2) for k in range(3)]
+        grad.putpixel((0, i), (*c, 255))
+    grad = grad.resize((w, h))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=6, fill=255)
+    plate.paste(grad, (0, 0), mask)
+    pd = ImageDraw.Draw(plate)
+    hi = tuple(min(255, v + 30) for v in top)
+    pd.rounded_rectangle((0, 0, w - 1, h - 1), radius=6, outline=(*hi, 200), width=1)
+    pd.line((6, 2, w - 7, 2), fill=(255, 255, 255, 120), width=1)
+    ink = tuple(int(v * 0.16) for v in bot) + (255,)
+    _rank_icon(pd, icon, 18, h / 2, 8, ink)
+    pd.polygon([(w - 17, h / 2 - 5), (w - 12, h / 2), (w - 17, h / 2 + 5), (w - 22, h / 2)], fill=ink)
+    xx = 34
+    for ch in text:
+        pd.text((xx, h / 2 + 1), ch, font=f, fill=ink, anchor="lm")
+        xx += pd.textlength(ch, font=f) + 2.2
+    if halo is not None:
+        glow = Image.new("RGBA", (w + 24, h + 24), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).rounded_rectangle((12, 12, w + 11, h + 11), radius=8, fill=_rgba(halo, 90))
+        img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(7)), (int(x) - 12, int(y) - 12))
+    img.alpha_composite(plate, (int(x), int(y)))
+
+
 def engage_rating(pct: float) -> tuple:
     if pct <= ENGAGE_GOOD_PCT:
         return "BUENO", GREEN
@@ -369,6 +429,15 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
 
     av_r = 66
     acx, acy = inner_x0 + 34 + av_r, y + HH / 2
+    rank = data.get("rank") if data.get("rank") in RANKS else None
+    halo_c = RANKS[rank][2] if rank else None
+    if halo_c is not None:                             # Council / Municipal / Core Member: halo detrás del marco
+        def halo(dd):
+            dd.polygon(_octagon(acx, acy, av_r + 22), fill=_rgba(halo_c, 70))
+        lay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        halo(ImageDraw.Draw(lay))
+        img.alpha_composite(lay.filter(ImageFilter.GaussianBlur(10)))
+        d = ImageDraw.Draw(img)
     d.polygon(_octagon(acx, acy, av_r + 9), fill=GOLD)
     d.polygon(_octagon(acx, acy, av_r + 5), fill=CHARCOAL)
     d.polygon(_octagon(acx, acy, av_r + 2), fill=GOLD_DIM)
@@ -385,7 +454,11 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     d.line((tx, y + 56, tx + 46, y + 56), fill=GOLD, width=2)
     name = data.get("title") or "—"
     d.text((tx - 2, y + 62), name, font=_fit(d, name, 50, inner_x1 - tx - 250), fill=TEXT)
-    d.text((tx, y + 124), data.get("display") or "", font=pf(19, "Regular"), fill=MUTED)
+    disp = data.get("display") or ""
+    d.text((tx, y + 124), disp, font=pf(19, "Regular"), fill=MUTED)
+    if rank:
+        _rank_badge(img, tx + (d.textlength(disp, font=pf(19, "Regular")) + 16 if disp else 0), y + 121, rank)
+        d = ImageDraw.Draw(img)
 
     # escudo del rol main
     sw_, sh_ = 168, 118
