@@ -353,6 +353,44 @@ class GuildCheckCog(commands.Cog):
         for chunk in _chunks(lines):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    # ---------- poca asistencia desde que entró (público) ----------
+    async def do_poca_asistencia(self, interaction):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer()                       # público: se publica en el canal
+        guild = interaction.guild
+        role = guild.get_role(MIEMBRO_ROLE_ID)
+        if role is None:
+            return await interaction.followup.send("❌ No encuentro el rol Miembro en el servidor.")
+        now = datetime.now(timezone.utc)
+        guests = await asyncio.to_thread(self._guest_ids, guild.id)
+        pool = [m for m in role.members if not getattr(m, "bot", False) and not _is_admin(m) and not can_admin_registro(m) and m.id not in guests]
+        chars = await self.run(gdb.chars_by_user)
+        regs = await self.run(gdb.registered_at_by_user)
+        ctas = await self.run(gdb.kb_cta_presence, guild.id, chars)
+        if not ctas:
+            return await interaction.followup.send("ℹ️ Todavía no hay CTA con killboard cargado: no hay nada que comparar.")
+        low, no_char = [], 0
+        for m in pool:
+            if m.id not in chars:
+                no_char += 1
+                continue
+            dates = [d for d in (getattr(m, "joined_at", None), regs.get(m.id)) if d is not None]
+            since = max(dates) if dates else ctas[0][0]       # lo último entre entrar al Discord y registrar el personaje
+            res = gdb.attendance_since(ctas, m.id, since, now)
+            if res and res[0] < res[1]:
+                low.append((m, since, *res))
+        low.sort(key=lambda x: (x[2] / x[3], x[2], x[0].display_name.casefold()))
+        lines = [f"⚔️ **Poca asistencia a CTA** · se piden **{gdb.CTA_WEEKLY_MIN} por semana**, contadas desde que entró a la guild",
+                 f"Solo cuentan las CTA con killboard cargado (desde <t:{_ts(ctas[0][0])}:D>, **{len(ctas)}** CTA). "
+                 "Si entró hace poco, se le pide la parte proporcional.",
+                 f"**{len(low)}** de {len(pool) - no_char} miembros por debajo:", ""]
+        lines += [f"• <@{m.id}> · **{a}/{need}** ({a * 100 // need}%) · entró <t:{_ts(since)}:R>" for m, since, a, need, _n in low] or ["✅ Nadie está por debajo."]
+        if no_char:
+            lines.append(f"\nℹ️ {no_char} miembro(s) sin personaje registrado no se evalúan (ver `/miembros sin-vincular`).")
+        for chunk in _chunks(lines):
+            await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+
     # ---------- canal de avisos ----------
     async def do_canal_avisos(self, interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         if interaction.guild is None or not can_manage(interaction.user):
@@ -557,6 +595,10 @@ class GuildCheckCog(commands.Cog):
     async def asistencias_cmd(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None,
                               persona: Optional[discord.Member] = None):
         await self.do_asistencias(interaction, getattr(semana, "value", semana) or "actual", persona)
+
+    @miembros_g.command(name="poca-asistencia", description="(Staff) Lista pública: menos de 5 CTA por semana desde que entraron (killboards)")
+    async def poca_asistencia_cmd(self, interaction: discord.Interaction):
+        await self.do_poca_asistencia(interaction)
 
     @miembros_g.command(name="fuera-guild", description="(Staff) Registrados cuyo personaje ya no está en la guild, con opción de expulsarlos")
     async def fuera_guild_cmd(self, interaction: discord.Interaction):

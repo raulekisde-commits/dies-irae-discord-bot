@@ -253,6 +253,59 @@ def cta_attendance(db_path: str, guild_id: int, start: Optional[datetime], end: 
         conn.close()
 
 
+# ---------- poca asistencia desde que entró (solo killboards cargados) ----------
+def kb_cta_presence(db_path: str, guild_id: int, chars: Dict[int, Set[str]]) -> List[Tuple[datetime, Set[int]]]:
+    """[(cierre de la CTA, {usuarios en su killboard})] de las CTA normales cerradas que tienen al menos un killboard cargado,
+    ordenadas por fecha. Solo cuenta el killboard (personaje registrado o alter), no la voz."""
+    owner = owner_of_names(chars)
+    conn = connect(db_path)
+    try:
+        if not (_has_table(conn, "cta_runs") and _has_table(conn, "kb_battles") and _has_table(conn, "kb_players")):
+            return []
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cta_runs)")}
+        sql = ("SELECT r.id, r.closes_at FROM cta_runs r WHERE r.guild_id=? AND r.status='closed'"
+               + (" AND r.kind='cta'" if "kind" in cols else "")
+               + " AND EXISTS (SELECT 1 FROM kb_battles b WHERE b.cta_id=r.id) ORDER BY r.closes_at")
+        out: List[Tuple[datetime, Set[int]]] = []
+        for r in conn.execute(sql, (guild_id,)).fetchall():
+            present: Set[int] = set()
+            for p in conn.execute("SELECT p.name_norm FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id WHERE b.cta_id=?", (r["id"],)):
+                uid = owner.get(norm(p["name_norm"]))
+                if uid is not None:
+                    present.add(uid)
+            out.append((_dt(r["closes_at"]), present))
+        return out
+    finally:
+        conn.close()
+
+
+def registered_at_by_user(db_path: str) -> Dict[int, datetime]:
+    """{discord_id: fecha en que registró su personaje principal} (albion_links)."""
+    conn = connect(db_path)
+    try:
+        if not _has_table(conn, "albion_links"):
+            return {}
+        return {int(r["discord_id"]): _dt(r["registered_at"]) for r in conn.execute("SELECT discord_id, registered_at FROM albion_links")}
+    finally:
+        conn.close()
+
+
+def attendance_since(ctas: List[Tuple[datetime, Set[int]]], user_id: int, since: datetime, now: datetime,
+                     weekly: int = CTA_WEEKLY_MIN) -> Optional[Tuple[int, int, int]]:
+    """(asistencias, pedidas, CTA con killboard) desde `since` (o desde el primer killboard cargado, si es posterior).
+    Pedidas = `weekly` por semana, proporcional a los días, y nunca más que las CTA con killboard del período.
+    None = todavía no hay nada que evaluar (sin CTA con killboard o menos de un día)."""
+    if not ctas:
+        return None
+    start = max(since, ctas[0][0])
+    after = [present for when, present in ctas if when >= start]
+    days = (now - start).total_seconds() / 86400
+    need = min(int(weekly * days / 7), len(after))
+    if not after or need <= 0:
+        return None
+    return sum(1 for present in after if user_id in present), need, len(after)
+
+
 # ---------- ausencias (/ausencia) ----------
 def ausencias_en(db_path: str, guild_id: int, start: datetime, end: datetime, now: Optional[datetime] = None) -> Dict[int, dict]:
     """{usuario: ausencia} vigente ahora o que se cruza con la semana evaluada (la que termina más tarde)."""
