@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace as NS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
@@ -159,6 +160,23 @@ class StatsCommandTests(KBBase):
         finally:
             sc.render_async = old
         self.assertEqual(seen["rank"], "core")
+
+    def test_grupo_stats_jugador_y_casino(self):
+        g = kc.KillboardCog.stats_g
+        self.assertEqual(g.name, "stats")
+        self.assertEqual(sorted(g.commands), ["casino", "jugador"])
+        calls = []
+
+        async def winrate_slash(interaction, usuario):
+            calls.append(usuario)
+        self.bot.cogs["GamesCog"] = NS(winrate_slash=winrate_slash)
+        run(self.cog.stats_casino.callback(self.cog, self.inter(self.mem), self.mem))
+        self.assertEqual(calls, [self.mem])
+        import discord
+        i = self.inter(self.mem, channel=discord.TextChannel(kc.STATS_BLOCKED_CHANNEL_ID, self.guild, "general"))
+        run(self.cog.stats_casino.callback(self.cog, i, None))
+        self.assertEqual(len(calls), 1)                               # canal bloqueado también para /stats casino
+        self.assertIn(f"<#{kc.STATS_CHANNEL_HINT_ID}>", i.text)
 
     def test_canal_bloqueado_avisa_y_no_manda_stats(self):
         import discord
