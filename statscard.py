@@ -25,7 +25,7 @@ AVATAR_SIZE = 256
 # Muertes en el primer engage: hasta GOOD_PCT % es bueno, hasta WARN_PCT % regular, más es riesgo alto.
 ENGAGE_GOOD_PCT, ENGAGE_WARN_PCT = 10.0, 20.0
 
-W, M = 1200, 26
+W, M = 1200, 40
 TRACK = (34, 35, 41)
 GOLD_DIM = (150, 120, 40)
 GOLD_DEEP = (92, 70, 22)
@@ -84,6 +84,69 @@ def _fit(d, text, size, max_w, weight="Bold"):
     return pf(size, weight)
 
 
+def _noise(w: int, h: int, seed: int, octaves=(40, 90, 200)) -> Image.Image:
+    """Ruido fractal en escala de grises (humo) armado solo con Pillow; determinístico por `seed`."""
+    import random
+    rng = random.Random(seed)
+    out = Image.new("L", (w, h), 0)
+    total = 0.0
+    for i, cell in enumerate(octaves):
+        sw, sh = max(2, w // cell), max(2, h // cell)
+        small = Image.frombytes("L", (sw, sh), bytes(rng.randrange(256) for _ in range(sw * sh)))
+        layer = small.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(cell / 2.5))
+        weight = 1.0 / (i + 1)
+        out = Image.blend(out, layer, weight / (total + weight))
+        total += weight
+    return out
+
+
+def _edge_mask(w: int, h: int, inset: float = 0.16, blur: float = 70, power: float = 1.0) -> Image.Image:
+    """Máscara que vale 255 en bordes y esquinas y 0 en el centro (el humo no tapa la información)."""
+    m = Image.new("L", (w, h), 255)
+    ix, iy = int(w * inset), int(h * inset * 0.8)
+    ImageDraw.Draw(m).rounded_rectangle((ix, iy, w - ix, h - iy), radius=int(min(w, h) * 0.2), fill=0)
+    m = m.filter(ImageFilter.GaussianBlur(blur))
+    return m if power == 1.0 else Image.eval(m, lambda v: int(255 * (v / 255) ** power))
+
+
+def _smoke_layer(w: int, h: int, seed: int, color, alpha: float, mask: Optional[Image.Image] = None, contrast: float = 2.6) -> Image.Image:
+    """Capa RGBA de humo: ruido fractal «crestado» (volutas finas y bolsones suaves) por la máscara."""
+    n = _noise(w, h, seed)
+    ridge = Image.eval(n, lambda v: int(255 * max(0.0, 1 - abs(v - 128) / 128 * contrast / 2) ** 2.2))
+    soft = Image.eval(n, lambda v: int(max(0, min(255, (v - 128) * 1.6 + 110))))
+    n = Image.blend(soft, ridge, 0.55).filter(ImageFilter.GaussianBlur(2))
+    if mask is not None:
+        n = Image.composite(n, Image.new("L", (w, h), 0), mask)
+    a = Image.eval(n, lambda v: int(v * alpha))
+    layer = Image.new("RGBA", (w, h), (color[0], color[1], color[2], 255))
+    layer.putalpha(a)
+    return layer
+
+
+def _particles(w: int, h: int, seed: int, mask: Image.Image, count: int = 90) -> Image.Image:
+    """Partículas doradas flotando, sobre todo en bordes y esquinas (cayendo donde la máscara es fuerte)."""
+    import random
+    rng = random.Random(seed)
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d, g = ImageDraw.Draw(layer), ImageDraw.Draw(glow)
+    placed = tries = 0
+    while placed < count and tries < count * 40:
+        tries += 1
+        x, y = rng.randrange(w), rng.randrange(h)
+        if rng.randrange(255) > mask.getpixel((x, y)):
+            continue
+        r = rng.choice((0.8, 1.0, 1.2, 1.5, 2.0, 2.6))
+        a = rng.randrange(70, 210)
+        d.ellipse((x - r, y - r, x + r, y + r), fill=_rgba(GOLD, a))
+        if r >= 1.5:
+            g.ellipse((x - r * 4, y - r * 4, x + r * 4, y + r * 4), fill=_rgba(GOLD, a // 4))
+        placed += 1
+    glow = glow.filter(ImageFilter.GaussianBlur(5))
+    glow.alpha_composite(layer)
+    return glow
+
+
 def _background(h: int) -> Image.Image:
     """Fondo carbón con degradado, viñeta y trama diagonal sutil (se arma una vez por alto y se reutiliza)."""
     if h not in _bg_cache:
@@ -101,9 +164,20 @@ def _background(h: int) -> Image.Image:
         vig = Image.new("L", (W // 4, h // 4), 0)
         ImageDraw.Draw(vig).ellipse((-W // 10, -h // 10, W // 4 + W // 10, h // 4 + h // 10), fill=255)
         vig = vig.filter(ImageFilter.GaussianBlur(28)).resize((W, h))
+        # humo Smogg: volutas gris oscuro en bordes y esquinas, niebla que sube desde abajo y bolsones negros
+        edges = _edge_mask(W, h, inset=0.10, blur=90, power=0.8)
+        bg.alpha_composite(_smoke_layer(W, h, 11, (112, 112, 124), 0.62, edges))
+        bg.alpha_composite(_smoke_layer(W, h, 23, (0, 0, 0), 0.55, edges, contrast=2.0))
+        fog = Image.new("L", (1, h))
+        for y in range(h):
+            t = max(0.0, (y - h * 0.62) / (h * 0.38))
+            fog.putpixel((0, y), int(255 * t ** 1.6))
+        fog = Image.composite(_noise(W, h, 37), Image.new("L", (W, h), 0), fog.resize((W, h)))
+        bg.alpha_composite(_smoke_layer(W, h, 41, (120, 120, 132), 0.40, fog))
         dark = Image.new("RGBA", (W, h), (0, 0, 0, 150))
-        dark.putalpha(Image.eval(vig, lambda v: int((255 - v) * 0.55)))
+        dark.putalpha(Image.eval(vig, lambda v: int((255 - v) * 0.30)))
         bg.alpha_composite(dark)
+        bg.alpha_composite(_particles(W, h, 7, _edge_mask(W, h, inset=0.06, blur=40)))
         _bg_cache[h] = bg
     return _bg_cache[h].copy()
 
@@ -119,7 +193,7 @@ def _panel(img, box, radius=14, accent=False):
     img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(8)), (rx0, ry0))
 
     def f(d):
-        d.rounded_rectangle(box, radius=radius, fill=(24, 24, 29, 228),
+        d.rounded_rectangle(box, radius=radius, fill=(22, 22, 27, 214),
                             outline=_rgba(GOLD, 120) if accent else (255, 255, 255, 22), width=1)
         d.line((x0 + radius, y0 + 1, x1 - radius, y0 + 1), fill=(255, 255, 255, 14), width=1)   # brillo superior
     _overlay(img, f)
@@ -184,6 +258,27 @@ def _avatar_img(raw: Optional[bytes], size: int) -> Optional[Image.Image]:
 _circle_avatar = _avatar_img          # nombre anterior
 
 
+_hs_cache: dict = {}
+
+
+def _header_smoke(w: int, h: int) -> Image.Image:
+    """Humo que envuelve al jugador en el encabezado: sale de detrás del avatar y se disipa hacia la derecha (cacheado)."""
+    key = (w, h)
+    if key not in _hs_cache:
+        m = Image.new("L", (w, h), 0)
+        md = ImageDraw.Draw(m)
+        md.ellipse((-w * 0.10, -h * 0.9, w * 0.42, h * 1.9), fill=255)          # detrás del avatar
+        md.rectangle((0, int(h * 0.78), w, h), fill=150)                          # base de niebla
+        m = m.filter(ImageFilter.GaussianBlur(38))
+        rad = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(rad).rounded_rectangle((1, 1, w - 2, h - 2), radius=15, fill=255)
+        m = Image.composite(m, Image.new("L", (w, h), 0), rad)
+        layer = _smoke_layer(w, h, 53, (150, 140, 118), 0.42, m, contrast=2.4)
+        layer.alpha_composite(_particles(w, h, 59, Image.eval(m, lambda v: v // 2), count=22))
+        _hs_cache[key] = layer
+    return _hs_cache[key]
+
+
 def engage_rating(pct: float) -> tuple:
     if pct <= ENGAGE_GOOD_PCT:
         return "BUENO", GREEN
@@ -234,8 +329,8 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     """PNG de la tarjeta. `data` sale de KillboardCog.stats (solo datos ya calculados, nada se calcula acá)."""
     has_kb = bool(data.get("has_kb"))
     main = data.get("main")
-    HH, CH, MH, BH, G = 176, 150, 236, 262, 16
-    H = M + HH + G + CH + G + MH + G + BH + 58
+    HH, CH, MH, BH, G = 176, 150, 236, 262, 20
+    H = M + HH + G + CH + G + MH + G + BH + 70
     img = _background(H)
     inner_x0, inner_x1 = M, W - M
 
@@ -263,6 +358,8 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     col.putalpha(Image.composite(col.getchannel("A"), Image.new("L", col.size, 0), mask))
     band.paste(col, (inner_x0 + 1, y + 1))
     img.alpha_composite(band)
+
+    img.alpha_composite(_header_smoke(int(hb[2] - hb[0]), HH), (int(hb[0]), int(hb[1])))
 
     def watermark(d):
         f = pf(118, "Bold")
