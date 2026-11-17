@@ -46,7 +46,7 @@ DEFAULT_WEAPONS = [
     ('2H_DUALCROSSBOW_HELL', 'Boltcasters', 'Lanzasaetas', 'dps'),
     ('2H_DUALHAMMER_HELL', 'Forge Hammers', 'Martillos de forja', 'dps'),
     ('2H_DUALMACE_AVALON', 'Oathkeepers', 'Juradores', 'supp'),
-    ('2H_DUALSCIMITAR_UNDEAD', 'Galatine Pair', 'Dos galatinas', 'galatinas'),
+    ('2H_DUALSCIMITAR_UNDEAD', 'Galatine Pair', 'Dos galatinas', 'dps'),
     ('2H_DUALSICKLE_UNDEAD', 'Deathgivers', 'Concedemuertes', 'dps'),
     ('2H_DUALSWORD', 'Dual Swords', 'Dos espadas', 'dps'),
     ('2H_ENIGMATICORB_MORGANA', 'Malevolent Locus', 'Locus malévolo', 'supp'),
