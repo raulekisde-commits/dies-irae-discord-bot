@@ -101,7 +101,8 @@ class StatsCommandTests(KBBase):
         kw = i.response.sent[-1][1]
         self.assertEqual(kw["file"].filename, "stats.png")
         self.assertTrue(kw["file"].fp.getvalue().startswith(b"\x89PNG"))
-        self.assertEqual(kw["embed"].image, "attachment://stats.png")
+        self.assertNotIn("embed", kw)                             # adjunto suelto: se ve más grande
+        self.assertEqual(i.response.sent[-1][0], self.mem.mention)
         i2 = self.inter(self.mem)
         run(self.cog.stats.callback(self.cog, i2, None))
         self.assertIn("Esperá", i2.text)

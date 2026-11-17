@@ -1012,9 +1012,8 @@ class KillboardCog(commands.Cog):
             if png is None:
                 await interaction.response.defer(thinking=True)      # dibujar puede esperar turno: no vence la interacción
                 png = await statscard.render_async(data, avatar_url, loader)
-            card_emb = discord.Embed(description=target.mention, color=discord.Color.gold())
-            card_emb.set_image(url="attachment://stats.png")
-            await send(embed=card_emb, file=discord.File(io.BytesIO(png), filename="stats.png"))
+            # adjunto suelto (sin embed): Discord lo muestra bastante más grande que la imagen de un embed
+            await send(content=target.mention, file=discord.File(io.BytesIO(png), filename="stats.png"))
         except Exception:
             traceback.print_exc()
             await send(embed=fallback)
