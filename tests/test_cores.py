@@ -139,6 +139,28 @@ class CoresDiscord(DiscordBase):
         run(self.cog.approve(self.inter(self.council, message=msg), msg))
         self.assertEqual(self.general.sent[-1].file.filename, "core.png")
 
+    def test_companeros_en_el_comando(self):
+        i = self.inter(self.alice)
+        run(self.cog.submit(i, "core", "si", "dorado", FakeAttachment(), f"{self.bob.mention} {self.council.mention}"))
+        self.assertIn("Solo se puede repartir entre miembros", i.text)                 # el consejero no es miembro
+        self.assertEqual(self.panelch.sent, [])
+        i = self.inter(self.alice)
+        run(self.cog.submit(i, "core", "no", "dorado", FakeAttachment(), self.bob.mention))
+        self.assertIn("Repartir: No", i.text)
+        i = self.inter(self.alice)
+        run(self.cog.submit(i, "core", "si", "dorado", FakeAttachment(), f"{self.bob.mention} {self.alice.mention}"))
+        msg = self.panelch.sent[-1]
+        self.assertEqual(odb.mates_of(odb.get_by_message(self.db, msg.id)), [self.bob.id])     # sin repetir a quien reporta
+        self.assertTrue(any("Repartir con" in f[0] and self.bob.mention in f[1] for f in msg.embeds[0].fields))
+        run(self.cog.share(self.inter(self.council, message=msg), msg, []))                   # botón «Repartir con los que puso»
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id) + wdb.get_spins(self.db, self.bob.id), 5)
+        self.assertGreaterEqual(min(wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), 2)
+
+    def test_companeros_sin_menciones(self):
+        i = self.inter(self.alice)
+        run(self.cog.submit(i, "core", "si", "verde", FakeAttachment(), "Bob"))
+        self.assertIn("mencioná", i.text)
+
     def test_repartir_solo_miembros(self):
         _i, msg = self.report(self.alice, "dorado")
         a = self.inter(self.council, message=msg)

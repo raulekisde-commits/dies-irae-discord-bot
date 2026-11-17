@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS orb_reports (
     created_at  TEXT NOT NULL,
     decided_by  INTEGER,
     decided_at  TEXT,
-    reason      TEXT
+    reason      TEXT,
+    mates       TEXT                           -- con quiénes lo quiere repartir (ids separados por coma)
 );
 CREATE TABLE IF NOT EXISTS orb_awards (
     report_id INTEGER NOT NULL,
@@ -44,6 +45,9 @@ def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orb_reports)")}
+        if "mates" not in cols:                                   # base creada antes de esta columna
+            conn.execute("ALTER TABLE orb_reports ADD COLUMN mates TEXT")
     finally:
         conn.close()
 
@@ -52,14 +56,21 @@ def _row(r) -> Optional[dict]:
     return dict(r) if r is not None else None
 
 
-def create(db_path: str, *, guild_id: int, kind: str, user_id: int, rarity: str, share: bool) -> int:
+def mates_of(report: dict) -> List[int]:
+    """Con quiénes pidió repartirlo quien lo reportó (sin repetir)."""
+    return [int(x) for x in dict.fromkeys((report.get("mates") or "").split(",")) if x.strip().isdigit()]
+
+
+def create(db_path: str, *, guild_id: int, kind: str, user_id: int, rarity: str, share: bool,
+           mates: Iterable[int] = ()) -> int:
     if kind not in KINDS or rarity not in RARITIES:
         raise ValueError("tipo o rareza inválidos")
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            cur = conn.execute("INSERT INTO orb_reports(guild_id, kind, user_id, rarity, share, created_at) VALUES (?,?,?,?,?,?)",
-                               (guild_id, kind, user_id, rarity, 1 if share else 0, utcnow_iso()))
+            ids = [int(u) for u in dict.fromkeys(mates) if int(u) != int(user_id)]
+            cur = conn.execute("INSERT INTO orb_reports(guild_id, kind, user_id, rarity, share, created_at, mates) VALUES (?,?,?,?,?,?,?)",
+                               (guild_id, kind, user_id, rarity, 1 if share else 0, utcnow_iso(), ",".join(map(str, ids)) or None))
             return int(cur.lastrowid)
     finally:
         conn.close()
