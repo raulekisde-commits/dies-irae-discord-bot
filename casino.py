@@ -189,11 +189,6 @@ class CasinoCog(commands.Cog):
     async def _ac_apuestas_resolver(self, interaction: discord.Interaction, current: str):
         return await self._ac_apuestas_opcion(interaction, current)
 
-    @casino_g.command(name="winrate", description="Winrate, total apostado, ganado/perdido y lista negra de una persona (por defecto, vos)")
-    @app_commands.describe(usuario="Persona a consultar")
-    async def casino_winrate(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
-        await self._delegate(interaction, "GamesCog", "winrate_slash", "juegos", usuario)
-
     @casino_g.command(name="ver-historial", description="Últimas partidas de una persona, o el cara a cara entre dos (fecha, apuesta y si ganó o perdió)")
     @app_commands.describe(usuario="Persona a consultar (por defecto, vos)", rival="Otra persona: muestra solo las partidas entre ellos dos y quién va ganando",
                            periodo="Todo el historial, o solo hoy (desde las 00:00 UTC, últimas 10 con el % ganado del día)")

@@ -690,7 +690,8 @@ class GamesDiscordTests(unittest.TestCase):
         ctx3.message.mentions = [self.gamer]
         run(self.cog.winrate.callback(self.cog, ctx3, objetivo=self.gamer.mention))
         self.assertIn("lista negra", ctx3.out[0][1].description)
-        self.assertEqual(cs.CasinoCog.casino_winrate.name, "winrate")
+        import killboards as kc_
+        self.assertEqual(kc_.KillboardCog.stats_casino.name, "casino")       # ahora es /stats casino
 
     def test_winrate_muestra_nivel_y_racha_y_hay_top_de_rachas(self):
         for n in range(3):

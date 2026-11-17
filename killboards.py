@@ -1,4 +1,4 @@
-"""Killboards cargados por el staff (/killboard cargar|borrar|probar), tops (/top) y estadísticas de jugadores (/stats)."""
+"""Killboards cargados por el staff (/killboard cargar|borrar|probar), tops (/top) y estadísticas (/stats jugador · /stats casino)."""
 import asyncio
 import io
 import os
@@ -928,17 +928,36 @@ class KillboardCog(commands.Cog):
             lines.append(f"{medals[i]} **{name}** · {pct:.0f}%\n`{bar}`")
         return "\n".join(lines)
 
-    # ---------- /stats ----------
-    @app_commands.command(name="stats", description="Estadísticas de un jugador (si no indicás a nadie, las tuyas)")
-    @app_commands.describe(usuario="Jugador (por defecto, vos)")
-    @app_commands.guild_only()
-    async def stats(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+    # ---------- /stats jugador · /stats casino ----------
+    stats_g = app_commands.Group(name="stats", description="Estadísticas: de jugador (CTA y killboards) o del casino", guild_only=True)
+
+    @staticmethod
+    async def _stats_blocked(interaction) -> bool:
+        """/stats no se usa en STATS_BLOCKED_CHANNEL_ID: se avisa (solo a esa persona) qué canal usar."""
         if getattr(interaction, "channel_id", None) == STATS_BLOCKED_CHANNEL_ID:
-            return await _say(interaction, f"📊 /stats no se puede usar en este canal. Usalo en <#{STATS_CHANNEL_HINT_ID}>.")
+            await _say(interaction, f"📊 /stats no se puede usar en este canal. Usalo en <#{STATS_CHANNEL_HINT_ID}>.")
+            return True
+        return False
+
+    @stats_g.command(name="casino", description="Stats del casino: winrate, total apostado, nivel de ludópata, ganado/perdido (por defecto, vos)")
+    @app_commands.describe(usuario="Persona a consultar")
+    async def stats_casino(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        if await self._stats_blocked(interaction):
+            return
+        games = self.bot.get_cog("GamesCog")
+        if games is None:
+            return await _say(interaction, "❌ El módulo de juegos no está cargado.")
+        await games.winrate_slash(interaction, usuario)
+
+    @stats_g.command(name="jugador", description="Estadísticas de un jugador (si no indicás a nadie, las tuyas)")
+    @app_commands.describe(usuario="Jugador (por defecto, vos)")
+    async def stats(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        if await self._stats_blocked(interaction):
+            return
         if not await self._allowed(interaction, "stats"):
             return
         if self._cooldown(interaction.user.id, "stats", STATS_COOLDOWN):
-            return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usar /stats.")
+            return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usar /stats jugador.")
         target = usuario or interaction.user
         regs = await self.run(rdb.get_registrations, target.id)
         if not regs:

@@ -7578,9 +7578,9 @@ HELP_SECTIONS = [
         ("`@persona 21` · `@persona -21`", "Staff", "Anota o saca a otra persona de una posición."),
     ]),
     ("📊 Estadísticas de la guild", [
-        ("/casino winrate [usuario]", "Miembros", "Stats de casino de una persona (por defecto, la tuya): winrate en dados y coinflip, total apostado, ganado, perdido y si está en la lista negra. También `!winrate`."),
+        ("/stats casino [usuario]", "Miembros", "Tarjeta de stats de casino de una persona (por defecto, la tuya): winrate en dados y coinflip, total apostado, nivel de ludópata, ganado, perdido y si está en la lista negra. También `!winrate`."),
         ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, skippers, muertes en el primer engage, IP promedio/máxima/mínima, winrate, tareas del staff y coaches (quién da más devoluciones). Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
-        ("/stats [usuario]", "Miembros", "Tarjeta pública PLAYER PERFORMANCE de un jugador (por defecto, vos): kills, muertes, peleas, KDA, primer engage, item power, roles más jugados, rol main y actividad en CTA."),
+        ("/stats jugador [usuario]", "Miembros", "Tarjeta pública PLAYER PERFORMANCE de un jugador (por defecto, vos): kills, muertes, peleas, KDA, primer engage, item power, roles más jugados, rol main y actividad en CTA."),
         ("/killboard cargar · conectados · borrar · probar", "Staff / Council (cargar y conectados también Caller y Opinólogo en el hilo de stats de una CTA, con los botones del panel)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),

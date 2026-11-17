@@ -56,7 +56,7 @@ INFO_TEXTS = {
                "• **Apuestas** (`/casino apuestas apostar`, `/casino apuestas todo`): se apuesta a una de las opciones de una apuesta abierta; el pozo se reparte entre quienes acertaron.\n"
                "• **Ruleta**: una sola para todo el servidor.\n\n"
                "**Tus estadísticas**\n"
-               "• `/casino winrate [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
+               "• `/stats casino [usuario]` — winrate en dados y coinflip, total apostado, ganado, perdido y si estás en la lista negra.\n"
                "• `/top winrate` y `/casino total` — rankings. En los paneles de apuestas ves Top apostado, Top ganado y Top perdido.\n\n"
                "**Reglas**\n"
                "• Las apuestas se descuentan al instante y no hay devolución si perdés.\n"
@@ -113,7 +113,7 @@ INFO_STAFF = {
                "• `/casino ban usuario` (Council) — bloquea a alguien del casino; repetirlo con la misma persona lo saca de la lista.\n"
                "• `/eco perms-canal` y `/eco perms-comando` — en qué canales y para qué roles funciona cada juego.\n"
                "• `/casino apuestas crear enunciado opciones` — crea una apuesta (panel público + hilo); las opciones van separadas por coma. La resolvés desde el panel.\n"
-               "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/casino winrate`.\n"
+               "• `/panel apuestas` (Admin / rol autorizado) — publica Top apostado, Top ganado, Top perdido y la lista negra. Los datos son los mismos que ve cualquiera con `/stats casino`.\n"
                "• `/canal dados canal` — canal donde se publican los paneles de `!dados`."),
     "economia": ("• `/eco addmoney` y `/eco remove-money` — cargan o retiran monedas a una persona o a un rol (con motivo, queda en el historial).\n"
                  "• `/eco embo add|remove|set usuario cantidad [motivo]` — balance de embo (Admin o rol con `/eco perms-comando comando:embo`). Puede quedar en negativo (igual que los Wuju Coins).\n"
@@ -154,7 +154,7 @@ INFO_TEXTS.update({
             "**Loot**\n"
             "• Tenés que **depositar todo lo looteado** de la CTA en la **tab que elija el caller**. Después se vende y se reparte: mirá `/info splits`.\n\n"
             "**Después de la CTA**\n"
-            "• El Staff carga los killboards y te cuenta para `/stats` (`/info stats`).\n"
+            "• El Staff carga los killboards y te cuenta para `/stats jugador` (`/info stats`).\n"
             "• Para pedir feedback de tus VODs: `/info zvz-vods`."),
     "reclutamiento": ("🧾 Cómo unirte a la guild",
                       "• Buscá el panel de reclutamiento y tocá el botón para postularte.\n"
@@ -174,14 +174,14 @@ INFO_TEXTS.update({
                "• **60 minutos antes** de que salga, el bot avisa en <#1462184630835740732>.\n\n"
                "Eliminar un timer lo hace el Staff."),
     "stats": ("📊 Estadísticas",
-              "**`/stats [usuario]`** (sin nombre, ves las tuyas). Necesitás tener tu personaje de Albion registrado. Muestra:\n"
+              "**`/stats jugador [usuario]`** (sin nombre, ves las tuyas). Necesitás tener tu personaje de Albion registrado. Muestra:\n"
               "• ⚔️ Kills, 💀 muertes y 🛡️ asistencia (peleas en las que apareciste).\n"
               "• 💥 Muertes en el primer engage (porcentaje y cantidad).\n"
               "• 🚫 CTAs skipeadas: estabas conectado en la CTA y no apareciste en el killboard ni anotado.\n"
               "• 🎭 Tus roles más jugados.\n"
               "• 📈 IP promedio, máxima y mínima.\n"
               "Solo cuentan los killboards que cargó el staff.\n\n"
-              "**`/casino winrate [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
+              "**`/stats casino [usuario]`** — estadísticas del casino: winrate en dados y coinflip, total apostado, ganado, perdido, resultado neto y si estás en la lista negra.\n\n"
               "**Rankings**\n"
               "• `/top` — Wuju Coins, kills, muertes, asistencia, skippers, IP, winrate, tareas del staff y coaches.\n"
               "• `/coaching mis-vods` — tus VODs de la semana (`/info zvz-vods`)."),
@@ -281,7 +281,7 @@ INFO_STAFF.update({
               "• `/killboard borrar batalla` (Staff / Council) — saca un killboard para que deje de contar.\n"
               "• `/killboard probar batalla` (Staff / Council) — muestra qué datos trae AlbionBB sin guardar nada.\n"
               "• Los jugadores sin personaje registrado no suman: usá `/miembros sin-vincular`.\n"
-              "• Las stats del casino (`/casino winrate`) salen del historial de apuestas y no dependen de killboards."),
+              "• Las stats del casino (`/stats casino`) salen del historial de apuestas y no dependen de killboards."),
     "registro": ("• `/admin_registro usuario` — ver los personajes vinculados a un miembro.\n"
                  "• `/admin_desvincular usuario` — quitar un personaje vinculado. También sirve si dos personas reclaman el mismo.\n"
                  "• `/admin_vincular` (excepcional) — vincula a mano sin que la persona acepte.\n"

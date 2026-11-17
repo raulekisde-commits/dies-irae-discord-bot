@@ -16,7 +16,7 @@ class CasinoGroupTests(DiscordBase):
     def test_un_solo_comando_raiz(self):
         g = cs.CasinoCog.casino_g
         self.assertEqual(g.name, "casino")
-        self.assertEqual(sorted(g.commands), sorted(["abrir", "cerrar", "limite", "ban", "dados", "coinflip", "1v1", "winrate", "total",
+        self.assertEqual(sorted(g.commands), sorted(["abrir", "cerrar", "limite", "ban", "dados", "coinflip", "1v1", "total",
                                                      "ruleta", "ruleta-editar", "ruleta-stats", "apuestas", "verificar", "semilla", "ver-historial"]))
 
     def test_apuestas_viven_en_casino_apuestas(self):
@@ -73,14 +73,13 @@ class CasinoGroupTests(DiscordBase):
         go(self.cog.casino_dados, "100")
         go(self.cog.casino_coinflip, "100", None)
         go(self.cog.casino_1v1, self.bob, "50")
-        go(self.cog.casino_winrate, None)
         go(self.cog.casino_total)
         go(self.cog.casino_ruleta)
         go(self.cog.casino_ruleta_stats)
         go(self.cog.casino_ruleta_editar, "1m")
-        self.assertEqual([c[0] for c in self.calls], ["dados", "coinflip", "1v1", "winrate", "total", "ruleta", "stats", "editar"])
+        self.assertEqual([c[0] for c in self.calls], ["dados", "coinflip", "1v1", "total", "ruleta", "stats", "editar"])
         self.assertEqual(self.calls[2][1:], (self.bob, "50"))
-        self.assertEqual(self.calls[7][1], "1m")
+        self.assertEqual(self.calls[6][1], "1m")
 
     def test_modulo_no_cargado_avisa(self):
         self.bot.cogs.pop("GamesCog", None)

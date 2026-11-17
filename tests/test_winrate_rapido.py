@@ -1,4 +1,4 @@
-"""El winrate no debe tardar: la consulta de stats usa la clave primaria y el /casino winrate avisa a Discord antes de calcular."""
+"""El winrate no debe tardar: la consulta de stats usa la clave primaria y el /stats casino avisa a Discord antes de calcular."""
 import os
 import sqlite3
 import sys
