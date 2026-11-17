@@ -251,6 +251,13 @@ except Exception:
     async def setup_expulsar(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar expulsar.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from cores import setup_cores
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_cores(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar cores.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from diagnostico import setup_diagnostico
 except Exception:
     import traceback as _tb
@@ -678,6 +685,7 @@ class MyBot(commands.Bot):
             await _safe_setup("guildcheck", setup_guildcheck, self, DB_PATH, GUILD_ID)
             await _safe_setup("diagnostico", setup_diagnostico, self, DB_PATH, GUILD_ID)
             await _safe_setup("expulsar", setup_expulsar, self, GUILD_ID)
+            await _safe_setup("cores", setup_cores, self, DB_PATH, GUILD_ID)
             await _safe_setup("nodesync", self._setup_nodesync)
             await _safe_setup("rentas", setup_rentas, self, DB_PATH, RENT_GUILD_ID, RENT_COUNCIL_ROLE_ID)
             self.loop.create_task(_report_startup_errors(self))

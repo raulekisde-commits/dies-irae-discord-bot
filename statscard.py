@@ -30,6 +30,7 @@ TRACK = (34, 35, 41)
 GOLD_DIM = (150, 120, 40)
 GOLD_DEEP = (92, 70, 22)
 CHARCOAL = (19, 19, 23)
+ORB_RARITIES = (("Verde", (76, 175, 80)), ("Azul", (66, 133, 244)), ("Morado", (156, 39, 176)), ("Dorado", (230, 180, 40)))
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 _pfonts: dict = {}
 _cache: "OrderedDict[str, tuple]" = OrderedDict()   # clave -> (vence, png)
@@ -383,7 +384,8 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     has_kb = bool(data.get("has_kb"))
     main = data.get("main")
     HH, CH, MH, BH, G = 176, 150, 236, 262, 20
-    H = M + HH + G + CH + G + MH + G + BH + 70
+    OH = 132                                                        # franja de cores y vortex
+    H = M + HH + G + CH + G + MH + G + BH + G + OH + 70
     img = _background(H)
     inner_x0, inner_x1 = M, W - M
 
@@ -620,8 +622,25 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     _tracked(d, rx0 + half_, fy2 + 10, "Total looteado", pf(12, "Bold"), MUTED, 2)
     d.text((rx0 + half_, fy2 + 26), _fmt(data.get("looted") or 0), font=pf(22, "Bold"), fill=GOLD)
 
+    # ---- H. cores y vortex (orbes que le dieron tiradas) ----
+    y += BH + G
+    _panel(img, (inner_x0, y, inner_x1, y + OH), radius=14)
+    _vrule(img, mid, y + 18, y + OH - 18)
+    d = ImageDraw.Draw(img)
+    orbs = data.get("orbs") or {}
+    for (kname, label), x0, x1 in ((("core", "Cores"), lx0, lx1), (("vortex", "Vortex"), rx0, rx1)):
+        _tracked(d, x0, y + 22, label, pf(15, "Bold"), GOLD, 3)
+        vals = (list(orbs.get(kname) or []) + [0, 0, 0, 0])[:4]
+        cw_ = (x1 - x0) / 4
+        for i, (rname, rcol) in enumerate(ORB_RARITIES):
+            cx = x0 + i * cw_
+            d.ellipse((cx, y + 62, cx + 14, y + 76), fill=rcol)
+            _tracked(d, cx + 22, y + 62, rname, pf(13, "Bold"), MUTED, 2)
+            v = int(vals[i] or 0)
+            d.text((cx, y + 84), _fmt(v), font=pf(30, "Bold"), fill=TEXT if v else DIM)
+
     # ---- pie ----
-    y += BH + 16
+    y += OH + 16
     _gold_rule(img, inner_x0 + 200, inner_x1 - 200, y + 4)
     d = ImageDraw.Draw(img)
     d.text((W / 2, y + 24), "SMOGG  ·  DATOS DE LOS KILLBOARDS CARGADOS POR EL STAFF", font=pf(12, "Medium"), fill=DIM, anchor="mm")

@@ -17,6 +17,7 @@ import cta_autowarn as aw
 import killboard_db as kb
 import registration_db as rdb
 import splits_db as sdb
+import cores_db as odb
 from dbutil import connect
 from guildshop import can_manage
 
@@ -952,6 +953,9 @@ class KillboardCog(commands.Cog):
         main_field = self._main_text(main_data)
         looted = await self.run(sdb.looted_total, target.id)
         looted_value = f"**{looted:,}**".replace(",", ".")
+        orbs = await self.run(odb.user_stats, target.id)                 # /core y /vortex que le dieron tiradas
+        orbs_value = "\n".join(f"**{odb.KIND_LABEL[k]}** · " + " · ".join(f"{odb.RARITY_LABEL[r]} ({orbs[k][r]})" for r in odb.RARITIES)
+                                for k in odb.KINDS)
         if not s["attendance"]:
             emb.description = f"{target.mention}\n\nTodavía no aparece en ningún killboard cargado."
             if skips:
@@ -980,6 +984,7 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬇️ IP mínima", value=f"**{s['min_ip']:.0f}**", inline=True)
+        emb.add_field(name="🔮 Cores y vortex", value=orbs_value, inline=False)
         cta = None
         try:                                          # killboard, o anotado + más de 20 min en el canal de voz (guildcheck_db)
             import guildcheck_db as gdb
@@ -1000,6 +1005,7 @@ class KillboardCog(commands.Cog):
                 "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
                 "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],
                 "skips": skips, "looted": looted, "roles": roles_top, "main": main_data,
+                "orbs": {k: [orbs[k][r] for r in odb.RARITIES] for k in odb.KINDS},
                 "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0}
         await self._send_stats(interaction, target, data, emb)
 
