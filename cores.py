@@ -11,6 +11,7 @@ import asyncio
 import glob
 import io
 import os
+import re
 import traceback
 from typing import Dict, List, Optional
 
@@ -35,6 +36,8 @@ STATUS_COLOR = {"approved": discord.Color.green(), "shared": discord.Color.gold(
 RARITY_COLOR = {"verde": discord.Color.green(), "azul": discord.Color.blue(), "morado": discord.Color.purple(),
                 "dorado": discord.Color.gold()}
 MAX_REASON = 300
+MAX_MATES = 24                                     # con quien lo reportó, 25 (lo mismo que deja elegir el botón Repartir)
+MENTION_RE = re.compile(r"<@!?(\d+)>")
 
 SHARE_CHOICES = [app_commands.Choice(name="Sí", value="si"), app_commands.Choice(name="No", value="no")]
 RARITY_CHOICES = [app_commands.Choice(name=odb.RARITY_LABEL[r], value=r) for r in odb.RARITIES]
@@ -56,6 +59,9 @@ def build_embed(report: dict, image_url: Optional[str] = None, awards: Optional[
     emb.add_field(name="Reportado por", value=f"<@{report['user_id']}>", inline=True)
     emb.add_field(name="Rareza", value=odb.RARITY_LABEL[report["rarity"]], inline=True)
     emb.add_field(name="¿Lo quiere repartir?", value="Sí" if report["share"] else "No", inline=True)
+    mates = odb.mates_of(report)
+    if mates:
+        emb.add_field(name=f"Repartir con ({len(mates)})", value=" ".join(f"<@{u}>" for u in mates)[:1000], inline=False)
     emb.add_field(name="Tiradas", value=f"🎰 {odb.RARITY_SPINS[report['rarity']]}", inline=True)
     emb.add_field(name="Estado", value=STATUS_TEXT.get(st, st) + (f" por <@{actor_id}>" if actor_id else ""), inline=True)
     if awards:
@@ -72,6 +78,14 @@ def share_text(report: dict, awards: Dict[int, int], participants: List[int]) ->
     total = odb.RARITY_SPINS[report["rarity"]]
     n = len(participants)
     lines = [f"🎲 **Reparto del {orb_name(report)}** de <@{report['user_id']}>: **{total}** tirada(s) de Wujupón entre **{n}** persona(s)."]
+    kind = odb.KIND_LABEL[report["kind"]].lower()
+    mates = odb.mates_of(report)
+    if mates:
+        lines.append(f"👥 Las personas del reparto las eligió <@{report['user_id']}> al poner el {kind}: "
+                     + " ".join(f"<@{u}>" for u in mates))
+    added = [u for u in participants if u != int(report["user_id"]) and u not in mates]
+    if added:
+        lines.append("➕ Sumados por el Staff: " + " ".join(f"<@{u}>" for u in added))
     if n > total:
         lines.append("Había más personas que tiradas, así que se sortearon.")
     elif total % n:
@@ -128,16 +142,24 @@ class EditView(discord.ui.View):
 class ShareView(discord.ui.View):
     """Elegir con quiénes se reparte (miembros). Quien lo reportó entra siempre."""
 
-    def __init__(self, cog: "CoresCog", message):
+    def __init__(self, cog: "CoresCog", message, n_mates: int = 0):
         super().__init__(timeout=300)
         self.cog, self.message = cog, message
-        sel = discord.ui.UserSelect(placeholder="Elegí con quiénes se reparte", min_values=1, max_values=25)
+        sel = discord.ui.UserSelect(placeholder="Sumar más miembros al reparto" if n_mates else "Elegí con quiénes se reparte",
+                                    min_values=1, max_values=25)
         sel.callback = self.on_pick
         self.sel = sel
         self.add_item(sel)
+        if n_mates:
+            btn = discord.ui.Button(label=f"Repartir con los que puso ({n_mates})", emoji="🎲", style=discord.ButtonStyle.primary)
+            btn.callback = self.on_mates
+            self.add_item(btn)
 
     async def on_pick(self, interaction: discord.Interaction):
         await self.cog.share(interaction, self.message, list(self.sel.values))
+
+    async def on_mates(self, interaction: discord.Interaction):
+        await self.cog.share(interaction, self.message, [])
 
 
 class OrbPanelView(discord.ui.View):
@@ -170,9 +192,12 @@ class OrbPanelView(discord.ui.View):
         report = await self.cog.pending_or_say(interaction, interaction.message)
         if report is None:
             return
+        mates = odb.mates_of(report)
+        extra = (f" También entran los que puso al reportarlo: {' '.join(f'<@{u}>' for u in mates)}. "
+                 "Tocá el botón para repartir solo entre ellos, o elegí más miembros para sumarlos." if mates else "")
         await _say(interaction, f"🎲 Elegí con qué miembros se reparten las **{odb.RARITY_SPINS[report['rarity']]}** tirada(s) del "
-                                f"**{orb_name(report)}**. <@{report['user_id']}> (quien lo reportó) entra siempre.",
-                   view=ShareView(self.cog, interaction.message))
+                                f"**{orb_name(report)}**. <@{report['user_id']}> (quien lo reportó) entra siempre.{extra}",
+                   view=ShareView(self.cog, interaction.message, len(mates)))
 
 
 class CoresCog(commands.Cog):
@@ -265,7 +290,32 @@ class CoresCog(commands.Cog):
             return False
 
     # ---------- comandos ----------
-    async def submit(self, interaction: discord.Interaction, kind: str, repartir: str, rareza: str, foto):
+    async def _parse_mates(self, guild, author, text: Optional[str]):
+        """Personas mencionadas en «compañeros». Devuelve (miembros, error)."""
+        if not text or not text.strip():
+            return [], None
+        ids = list(dict.fromkeys(int(x) for x in MENTION_RE.findall(text)))
+        if not ids:
+            return [], "❌ En **compañeros** mencioná a las personas con @ (por ejemplo: `@Ana @Beto`)."
+        ids = [u for u in ids if u != author.id]
+        if len(ids) > MAX_MATES:
+            return [], f"❌ Podés poner hasta {MAX_MATES} compañeros."
+        out, bad = [], []
+        for uid in ids:
+            m = guild.get_member(uid)
+            if m is None:
+                try:
+                    m = await guild.fetch_member(uid)
+                except Exception:
+                    m = None
+            (out if is_member(m) else bad).append(m if m is not None else uid)
+        if bad:
+            return [], ("❌ Solo se puede repartir entre miembros. No tienen el rol de miembro: "
+                        + " ".join(getattr(b, "mention", f"<@{b}>") for b in bad))
+        return out, None
+
+    async def submit(self, interaction: discord.Interaction, kind: str, repartir: str, rareza: str, foto,
+                     companeros: Optional[str] = None):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return await _say(interaction, "❌ Solo disponible en el servidor.")
         if not is_member(interaction.user):
@@ -276,12 +326,20 @@ class CoresCog(commands.Cog):
         fname = (getattr(foto, "filename", "") or "").lower()
         if not (ctype.startswith("image/") or fname.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))):
             return await _say(interaction, "❌ La foto tiene que ser una imagen (png, jpg, gif o webp).")
+        mates, err = await self._parse_mates(interaction.guild, interaction.user, companeros)
+        if err:
+            return await _say(interaction, err)
+        if mates and repartir != "si":
+            return await _say(interaction, "❌ Pusiste compañeros pero elegiste **Repartir: No**. Elegí **Sí** para repartirlo con ellos.")
+        if repartir == "si" and not mates:
+            return await _say(interaction, "❌ Si elegís **Repartir: Sí**, tenés que poner con quiénes en **compañeros** "
+                                           "(mencioná a una o varias personas: `@persona @persona`).")
         ch = await self._channel(bs.get("cores"))
         if ch is None:
             return await _say(interaction, "❌ El canal del panel de cores no está configurado. Avisale al Staff (se configura con `/canal`).")
         await interaction.response.defer(ephemeral=True)
         rid = await self.run(odb.create, guild_id=interaction.guild.id, kind=kind, user_id=interaction.user.id, rarity=rareza,
-                             share=repartir == "si")
+                             share=repartir == "si", mates=[m.id for m in mates])
         report = await self.run(odb.get, rid)
         try:
             try:
@@ -298,24 +356,29 @@ class CoresCog(commands.Cog):
             self._drop_photo(rid)
             return await _say(interaction, "❌ No pude publicar el reporte. Probá de nuevo en un rato.")
         await self.run(odb.set_message, rid, msg.channel.id if getattr(msg, "channel", None) else ch.id, msg.id)
-        await _say(interaction, f"✅ Recibimos tu **{orb_name(report)}** (#{rid}). El Staff lo va a revisar y el resultado se avisa en "
+        con = f" para repartir con {len(mates)} compañero(s)" if mates else ""
+        await _say(interaction, f"✅ Recibimos tu **{orb_name(report)}** (#{rid}){con}. El Staff lo va a revisar y el resultado se avisa en "
                                 f"<#{bs.get('general')}>.")
 
     @app_commands.command(name="core", description="Reportar un core con foto para recibir tiradas de Wujupón")
-    @app_commands.describe(repartir="¿Lo querés repartir?", rareza="Rareza del core", foto="Foto del core")
+    @app_commands.describe(repartir="¿Lo querés repartir?", rareza="Rareza del core", foto="Foto del core",
+                           companeros="Obligatorio si repartís: mencioná a uno o varios (@persona @persona)")
     @app_commands.choices(repartir=SHARE_CHOICES, rareza=RARITY_CHOICES)
+    @app_commands.rename(companeros="compañeros")
     @app_commands.guild_only()
     async def core_cmd(self, interaction: discord.Interaction, repartir: app_commands.Choice[str], rareza: app_commands.Choice[str],
-                       foto: discord.Attachment):
-        await self.submit(interaction, "core", repartir.value, rareza.value, foto)
+                       foto: discord.Attachment, companeros: Optional[str] = None):
+        await self.submit(interaction, "core", repartir.value, rareza.value, foto, companeros)
 
     @app_commands.command(name="vortex", description="Reportar un vortex con foto para recibir tiradas de Wujupón")
-    @app_commands.describe(repartir="¿Lo querés repartir?", rareza="Rareza del vortex", foto="Foto del vortex")
+    @app_commands.describe(repartir="¿Lo querés repartir?", rareza="Rareza del vortex", foto="Foto del vortex",
+                           companeros="Obligatorio si repartís: mencioná a uno o varios (@persona @persona)")
     @app_commands.choices(repartir=SHARE_CHOICES, rareza=RARITY_CHOICES)
+    @app_commands.rename(companeros="compañeros")
     @app_commands.guild_only()
     async def vortex_cmd(self, interaction: discord.Interaction, repartir: app_commands.Choice[str], rareza: app_commands.Choice[str],
-                         foto: discord.Attachment):
-        await self.submit(interaction, "vortex", repartir.value, rareza.value, foto)
+                         foto: discord.Attachment, companeros: Optional[str] = None):
+        await self.submit(interaction, "vortex", repartir.value, rareza.value, foto, companeros)
 
     # ---------- panel ----------
     async def pending_or_say(self, interaction: discord.Interaction, message) -> Optional[dict]:
@@ -426,7 +489,7 @@ class CoresCog(commands.Cog):
         if bad:
             return await _say(interaction, "❌ Solo se puede repartir entre miembros. No tienen el rol de miembro: "
                                            + " ".join(getattr(u, "mention", str(u)) for u in bad))
-        participants = list(dict.fromkeys([int(report["user_id"])] + [int(u.id) for u in picked]))
+        participants = list(dict.fromkeys([int(report["user_id"])] + odb.mates_of(report) + [int(u.id) for u in picked]))
         await interaction.response.defer(ephemeral=True)
         awards = odb.allocate(odb.RARITY_SPINS[report["rarity"]], participants)
         done = await self._decide(interaction, message, "shared", awards)
