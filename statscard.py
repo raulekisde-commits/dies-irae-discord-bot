@@ -279,6 +279,39 @@ def _header_smoke(w: int, h: int) -> Image.Image:
     return _hs_cache[key]
 
 
+def _core_badge(img, x, y):
+    """Placa metálica dorada «CORE MEMBER» (degradado vertical, brillo y rombos)."""
+    f = pf(14, "Bold")
+    text = "CORE MEMBER"
+    d = ImageDraw.Draw(img)
+    tw = sum(d.textlength(ch, font=f) + 2.2 for ch in text) - 2.2
+    w, h = int(tw + 64), 30
+    plate = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    grad = Image.new("RGBA", (1, h))
+    top, mid, bot = (255, 226, 140), (226, 176, 56), (140, 100, 26)
+    for i in range(h):
+        t = i / (h - 1)
+        c = [int(top[k] + (mid[k] - top[k]) * t * 2) if t < 0.5 else int(mid[k] + (bot[k] - mid[k]) * (t - 0.5) * 2) for k in range(3)]
+        grad.putpixel((0, i), (*c, 255))
+    grad = grad.resize((w, h))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=6, fill=255)
+    plate.paste(grad, (0, 0), mask)
+    pd = ImageDraw.Draw(plate)
+    pd.rounded_rectangle((0, 0, w - 1, h - 1), radius=6, outline=(255, 240, 190, 200), width=1)
+    pd.line((6, 2, w - 7, 2), fill=(255, 250, 220, 160), width=1)
+    for cx in (16, w - 17):
+        pd.polygon([(cx, h / 2 - 5), (cx + 5, h / 2), (cx, h / 2 + 5), (cx - 5, h / 2)], fill=(40, 30, 8, 255))
+    xx = 32
+    for ch in text:
+        pd.text((xx, h / 2 + 1), ch, font=f, fill=(34, 26, 6, 255), anchor="lm")
+        xx += pd.textlength(ch, font=f) + 2.2
+    glow = Image.new("RGBA", (w + 24, h + 24), (0, 0, 0, 0))
+    ImageDraw.Draw(glow).rounded_rectangle((12, 12, w + 11, h + 11), radius=8, fill=_rgba(GOLD, 90))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(7)), (int(x) - 12, int(y) - 12))
+    img.alpha_composite(plate, (int(x), int(y)))
+
+
 def engage_rating(pct: float) -> tuple:
     if pct <= ENGAGE_GOOD_PCT:
         return "BUENO", GREEN
@@ -369,6 +402,14 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
 
     av_r = 66
     acx, acy = inner_x0 + 34 + av_r, y + HH / 2
+    core = bool(data.get("core"))
+    if core:                                           # Core Member: halo dorado detrás del marco
+        def halo(dd):
+            dd.polygon(_octagon(acx, acy, av_r + 22), fill=_rgba(GOLD, 70))
+        lay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        halo(ImageDraw.Draw(lay))
+        img.alpha_composite(lay.filter(ImageFilter.GaussianBlur(10)))
+        d = ImageDraw.Draw(img)
     d.polygon(_octagon(acx, acy, av_r + 9), fill=GOLD)
     d.polygon(_octagon(acx, acy, av_r + 5), fill=CHARCOAL)
     d.polygon(_octagon(acx, acy, av_r + 2), fill=GOLD_DIM)
@@ -385,7 +426,11 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     d.line((tx, y + 56, tx + 46, y + 56), fill=GOLD, width=2)
     name = data.get("title") or "—"
     d.text((tx - 2, y + 62), name, font=_fit(d, name, 50, inner_x1 - tx - 250), fill=TEXT)
-    d.text((tx, y + 124), data.get("display") or "", font=pf(19, "Regular"), fill=MUTED)
+    disp = data.get("display") or ""
+    d.text((tx, y + 124), disp, font=pf(19, "Regular"), fill=MUTED)
+    if core:
+        _core_badge(img, tx + (d.textlength(disp, font=pf(19, "Regular")) + 16 if disp else 0), y + 121)
+        d = ImageDraw.Draw(img)
 
     # escudo del rol main
     sw_, sh_ = 168, 118

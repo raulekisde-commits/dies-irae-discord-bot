@@ -36,6 +36,7 @@ OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 MAX_BATTLES_PER_LOAD = 15
 USER_COOLDOWN = 10
+CORE_MEMBER_ROLE_ID = int(os.getenv("CORE_MEMBER_ROLE_ID", "1465833385804038427"))   # ex Legacy: se destaca en /stats
 STATS_COOLDOWN = float(os.getenv("STATS_COOLDOWN", "8"))   # segundos entre dos /stats de la misma persona
 
 
@@ -986,6 +987,7 @@ class KillboardCog(commands.Cog):
             traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         data = {"title": ", ".join(r.char_name for r in regs), "display": getattr(target, "display_name", ""),
+                "core": any(getattr(r, "id", None) == CORE_MEMBER_ROLE_ID for r in getattr(target, "roles", [])),
                 "has_kb": bool(s["attendance"]), "kills": s["kills"], "deaths": s["deaths"], "attendance": s["attendance"],
                 "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
                 "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],

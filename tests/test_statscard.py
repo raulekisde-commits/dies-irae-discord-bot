@@ -39,6 +39,7 @@ class StatsCardTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(sc, "render", self.real_render))
 
     def test_dibujo_real_es_png(self):
+        self.assertTrue(self.real_render(dict(DATA, core=True)).startswith(b"\x89PNG"))
         png = self.real_render(DATA)
         self.assertTrue(png.startswith(b"\x89PNG"))
         png = self.real_render(dict(DATA, has_kb=False, roles=[], main=None, cta_total=None))
@@ -109,6 +110,21 @@ class StatsCommandTests(KBBase):
         i2 = self.inter(self.mem)
         run(self.cog.stats.callback(self.cog, i2, None))
         self.assertIn("Esperá", i2.text)
+
+    def test_core_member_se_marca_en_la_tarjeta(self):
+        import discord
+        self.mem.roles.append(discord.Role(kc.CORE_MEMBER_ROLE_ID, "Core Member", self.guild))
+        seen, old = {}, sc.render_async
+
+        async def spy(data, *a, **k):
+            seen.update(data)
+            return await old(data, *a, **k)
+        sc.render_async = spy
+        try:
+            run(self.cog.stats.callback(self.cog, self.inter(self.mem), None))
+        finally:
+            sc.render_async = old
+        self.assertTrue(seen["core"])
 
     def test_si_falla_el_dibujo_manda_el_embed(self):
         old = sc.render_async
