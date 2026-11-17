@@ -12,12 +12,14 @@ from discord import app_commands
 from discord.ext import commands
 
 import botsettings as bs
+import ctautil as cu
 import mainrole_db as mdb
 from guildshop import can_manage
 
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ID", "1257896905099444354"))
 NO_MENTIONS = discord.AllowedMentions.none()
+BOMB_ROLE_ID = int(os.getenv("BOMB_ROLE_ID", str(cu.BOMB_ROLE_ID)))   # quien tiene este rol no entra al /top rolsec
 
 ACCEPTED_TITLE = "POSTULACIÓN ACEPTADA"
 APPLICANT_FIELD = "👤 Postulante"
@@ -102,10 +104,18 @@ class MainRoleCog(commands.Cog):
         """`/top rolsec`: los que menos juegan su rol main (miembros actuales con al menos MIN_CTAS_FOR_TOP CTA cerradas)."""
         from paging import PagedView, chunk
         guild = interaction.guild
-        rows = [d for d in await self.run(mdb.secondary_top) if guild is None or guild.get_member(d["user_id"]) is not None]
+        rows = []
+        for d in await self.run(mdb.secondary_top):
+            m = guild.get_member(d["user_id"]) if guild is not None else None
+            if guild is not None and (m is None or any(getattr(r, "id", None) == BOMB_ROLE_ID for r in m.roles)):
+                continue                                   # se fue del servidor, o tiene el rol Bomb
+            rows.append(d)
 
         def label(key) -> str:
-            return mdb.role_name(key) if isinstance(key, int) else str(key)
+            if not isinstance(key, int):
+                return str(key)
+            role = guild.get_role(key) if guild is not None else None
+            return mdb.MAIN_ROLES.get(key) or cu.PLAYED_ROLES.get(key) or (role.name if role is not None else f"Rol {key}")
 
         def line(i, d) -> str:
             other = f" · juega más **{label(d['top_other_id'])}** ({d['top_other_n']})" if d["top_other_id"] is not None and d["top_other_n"] > d["main"] else ""

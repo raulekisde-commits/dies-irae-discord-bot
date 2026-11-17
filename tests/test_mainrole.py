@@ -126,6 +126,31 @@ class TopRolSecundario(MainRoleTests.__mro__[1]):
         self.assertAlmostEqual(rows[1]["pct"], 90.0)
 
 
+    def test_send_top_sin_bomb_y_con_nombres(self):
+        import discord
+        bomb = discord.Role(mr.BOMB_ROLE_ID, "Bomb", self.guild)
+        self.guild.roles.append(bomb)
+        conn = connect(self.db)                              # 4: Healer main que juega Bomb en CTA (sin tener el rol hoy)
+        conn.executemany("INSERT INTO cta_positions(cta_id,user_id,slot_key,role_id,role_name) VALUES (?,?,?,?,?)",
+                         [(i, 4, "bomb", mr.BOMB_ROLE_ID, "Bomb") for i in range(1, 7)])
+        conn.close()
+        mdb.set_main(self.db, 4, ID["Healer"], "manual")
+        for uid, roles in ((1, []), (2, [bomb]), (4, [])):
+            self.guild.members.append(discord.Member(uid, f"u{uid}", roles=roles, guild=self.guild))
+        sent = {}
+
+        async def send_message(embed=None, **kw):
+            sent["embed"] = embed
+        inter = NS(guild=self.guild, user=NS(id=1), response=NS(send_message=send_message))
+        run(self.cog.send_top(inter))
+        desc = sent["embed"].description
+        self.assertIn("<@1>", desc)
+        self.assertNotIn("<@2>", desc)                       # tiene el rol Bomb
+        self.assertIn("juega más **Tank**", desc)
+        self.assertIn("juega más **Bomb**", desc)
+        self.assertNotIn("Rol ", desc)
+
+
 class ReclutamientoFuente(unittest.TestCase):
     """bot.py no se puede importar en las pruebas: se revisa el código fuente."""
     def test_aceptar_pide_y_guarda_main(self):
