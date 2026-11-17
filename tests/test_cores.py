@@ -63,7 +63,9 @@ class CoresDiscord(DiscordBase):
     def report(self, user, rareza="azul", kind="core"):
         i = self.inter(user)
         run(self.cog.submit(i, kind, "si", rareza, FakeAttachment()))
-        return i, self.panelch.sent[-1]
+        msg = self.panelch.sent[-1]
+        msg.attachments = [FakeAttachment()]                       # la foto queda adjunta al panel
+        return i, msg
 
     def test_solo_miembros(self):
         i = self.inter(self.outsider)
@@ -84,6 +86,7 @@ class CoresDiscord(DiscordBase):
         run(self.cog.approve(a, msg))
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 3)
         self.assertIn(self.alice.mention, self.general.sent[-1].content)
+        self.assertEqual(self.general.sent[-1].file.filename, "core.png")    # el aviso lleva la foto
         self.assertIsNone(msg.view)
         self.assertEqual(odb.user_stats(self.db, self.alice.id)["core"]["morado"], 1)
         a2 = self.inter(self.council, message=msg)                      # no se aprueba dos veces
@@ -103,6 +106,7 @@ class CoresDiscord(DiscordBase):
         run(self.cog.reject(a, msg, "foto borrosa"))
         self.assertIn("rechazado", self.general.sent[-1].content)
         self.assertIn("foto borrosa", self.general.sent[-1].content)
+        self.assertEqual(self.general.sent[-1].file.filename, "core.png")
         self.assertEqual(wdb.get_spins(self.db, self.alice.id), 0)
         self.assertEqual(odb.user_stats(self.db, self.alice.id)["core"]["azul"], 0)
 
@@ -124,6 +128,7 @@ class CoresDiscord(DiscordBase):
         self.assertEqual(odb.user_stats(self.db, winner.id)["core"]["verde"], 1)
         self.assertEqual(odb.user_stats(self.db, loser.id)["core"]["verde"], 0)
         self.assertIn(self.bob.mention, self.general.sent[-1].content)
+        self.assertEqual(self.general.sent[-1].file.filename, "core.png")
 
     def test_repartir_solo_miembros(self):
         _i, msg = self.report(self.alice, "dorado")
