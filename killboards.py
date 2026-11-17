@@ -956,7 +956,8 @@ class KillboardCog(commands.Cog):
         main_data = await self._main_data(target.id)
         main_field = self._main_text(main_data)
         looted = await self.run(sdb.looted_total, target.id)
-        looted_value = f"**{looted:,}**".replace(",", ".")
+        looted_n = await self.run(sdb.looted_ctas, target.id)
+        looted_value = f"**{looted:,}**".replace(",", ".") + f" en **{looted_n}** CTA"
         orbs = await self.run(odb.user_stats, target.id)                 # /core y /vortex que le dieron tiradas
         orbs_value = "\n".join(f"**{odb.KIND_LABEL[k]}** · " + " · ".join(f"{odb.RARITY_LABEL[r]} ({orbs[k][r]})" for r in odb.RARITIES)
                                 for k in odb.KINDS)
@@ -1008,7 +1009,7 @@ class KillboardCog(commands.Cog):
                 "has_kb": bool(s["attendance"]), "kills": s["kills"], "deaths": s["deaths"], "attendance": s["attendance"],
                 "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
                 "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],
-                "skips": skips, "looted": looted, "roles": roles_top, "main": main_data,
+                "skips": skips, "looted": looted, "looted_ctas": looted_n, "roles": roles_top, "main": main_data,
                 "orbs": {k: [orbs[k][r] for r in odb.RARITIES] for k in odb.KINDS},
                 "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0}
         await self._send_stats(interaction, target, data, emb)

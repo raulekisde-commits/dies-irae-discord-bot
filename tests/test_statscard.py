@@ -92,6 +92,29 @@ class StatsCardTests(unittest.TestCase):
         self.assertEqual(run(go()), 5)                            # el loop siguió atendiendo mientras se dibujaba
 
 
+class LootedCtasTests(unittest.TestCase):
+    def test_cuenta_ctas_como_looter(self):
+        import tempfile
+        import splits_db as sdb
+        from dbutil import connect
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = os.path.join(tmp.name, "t.sqlite3")
+        self.assertEqual(sdb.looted_ctas(db, 7), 0)                     # sin tablas
+        sdb.init_schema(db)
+        c = connect(db)
+        c.execute("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, kind TEXT)")
+        c.executemany("INSERT INTO cta_runs VALUES (?,?)", [(1, "cta"), (2, "cta"), (3, "content")])
+        rows = [(1, 1, "closed"), (2, 1, "closed"), (3, 2, "closed"), (4, 3, "closed"), (5, None, "closed"), (6, 2, "open")]
+        for sid, cta, st in rows:                                       # 2 splits de la CTA 1 cuentan como una
+            c.execute("INSERT INTO splits(id, guild_id, title, creator_id, status, created_at, source_cta_id) VALUES (?,?,?,?,?,?,?)",
+                      (sid, 1, "s", 1, st, "2026-01-01", cta))
+            c.execute("INSERT INTO split_looters(split_id, user_id, looted, pos) VALUES (?,?,?,?)", (sid, 7, 100, 0))
+        c.close()
+        self.assertEqual(sdb.looted_ctas(db, 7), 3)                     # CTA 1, CTA 2 y el split suelto (sin content ni abiertos)
+        self.assertEqual(sdb.looted_total(db, 7), 400)
+
+
 class StatsCommandTests(KBBase):
     def setUp(self):
         super().setUp()

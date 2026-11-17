@@ -620,6 +620,24 @@ def looted_total(db_path: str, user_id: int) -> int:
         conn.close()
 
 
+def looted_ctas(db_path: str, user_id: int) -> int:
+    """En cuántas CTA fue looter (mismos splits que `looted_total`: cerrados y sin /content). Un split sin CTA cuenta como una."""
+    conn = connect(db_path)
+    try:
+        q = ("SELECT COUNT(DISTINCT COALESCE('c' || s.source_cta_id, 's' || s.id)) FROM split_looters l JOIN splits s ON s.id=l.split_id "
+             "WHERE l.user_id=? AND s.status='closed'")
+        try:
+            r = conn.execute(q + " AND (s.source_cta_id IS NULL OR s.source_cta_id NOT IN (SELECT id FROM cta_runs WHERE kind='content'))",
+                             (user_id,)).fetchone()
+        except sqlite3.OperationalError:           # sin tabla cta_runs
+            r = conn.execute(q, (user_id,)).fetchone()
+        return int(r[0] or 0)
+    except sqlite3.OperationalError:               # tablas de splits todavía no creadas
+        return 0
+    finally:
+        conn.close()
+
+
 def remove_looters(db_path: str, split_id: int, user_ids: Iterable[int]) -> int:
     """Quita el apartado de looter (la persona sigue en la lista general)."""
     n = 0
