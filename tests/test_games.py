@@ -451,6 +451,14 @@ class FakeCtx:
 
 class GamesDiscordTests(unittest.TestCase):
     def setUp(self):
+        # Estas pruebas revisan los datos de /winrate en el embed de texto (el respaldo); la tarjeta PNG se prueba en test_casinocard.py.
+        from unittest import mock as _mock
+
+        async def _no_card(*_a, **_k):
+            return None
+        _p = _mock.patch.object(gm.GamesCog, "_casino_card", _no_card)
+        _p.start()
+        self.addCleanup(_p.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "t.sqlite3")
         self.bot = discord.ext.commands.Bot()

@@ -6,6 +6,7 @@ y los mensajes de resultado.
 """
 import asyncio
 import functools
+import io
 import time
 import traceback
 from datetime import datetime
@@ -319,7 +320,35 @@ class GamesCog(commands.Cog):
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
             pass
+        data = {"name": getattr(target, "display_name", str(target.id)), "banned": bool(banned),
+                "dice": {"played": dice.played, "wins": dice.wins}, "coin": {"played": coin.played, "wins": coin.wins},
+                "wagered": st.wagered, "games": st.games, "net": st.net, "streak": streak.current, "best": streak.best,
+                "level": level.name if level else None, "level_min": level.min_wagered if level else 0,
+                "next": {"name": nxt.name, "min": nxt.min_wagered, "missing": nxt.min_wagered - st.wagered} if nxt else None}
+        png = await self._casino_card(target, data)
+        if png is not None:
+            return await ctx.send(content=f"<@{target.id}>", file=discord.File(io.BytesIO(png), filename="casino.png"),
+                                  allowed_mentions=NO_MENTIONS)
         await ctx.send(embed=emb, allowed_mentions=NO_MENTIONS)
+
+    async def _casino_card(self, target, data: dict) -> Optional[bytes]:
+        """Tarjeta PNG de las stats del casino (casinocard.py, caché y semáforo de statscard). None si no se puede: va el embed."""
+        try:
+            import casinocard
+            import statscard
+        except Exception:
+            traceback.print_exc()
+            return None
+        try:
+            asset = target.display_avatar.replace(size=statscard.AVATAR_SIZE, format="png")
+            avatar_url, loader = str(asset.url), asset.read
+        except Exception:
+            avatar_url, loader = "", None
+        try:
+            return await statscard.render_async(data, avatar_url, loader, renderer=casinocard.render, ns=casinocard.NS)
+        except Exception:
+            traceback.print_exc()
+            return None
 
     async def winrate_slash(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
         try:                                                     # Discord exige responder en <3 s: las stats pueden tardar más

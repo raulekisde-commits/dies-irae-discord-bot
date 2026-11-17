@@ -678,16 +678,18 @@ def _cache_put(store: OrderedDict, key: str, value, ttl: int = None):
         store.popitem(last=False)
 
 
-def cached(data: dict, avatar_url: str = "") -> Optional[bytes]:
-    return _cache_get(_cache, card_key(data, avatar_url))
+def cached(data: dict, avatar_url: str = "", ns: str = "") -> Optional[bytes]:
+    return _cache_get(_cache, card_key(data, avatar_url + ns))
 
 
 async def render_async(data: dict, avatar_url: str = "",
-                       avatar_loader: Optional[Callable[[], Awaitable[bytes]]] = None) -> bytes:
+                       avatar_loader: Optional[Callable[[], Awaitable[bytes]]] = None,
+                       renderer: Optional[Callable] = None, ns: str = "") -> bytes:
     """PNG de la tarjeta: de la caché si está vigente; si no, se dibuja en un hilo (de a MAX_PARALELO a la vez).
-    Si varios piden la misma tarjeta mientras se dibuja, esperan ese mismo dibujo."""
+    Si varios piden la misma tarjeta mientras se dibuja, esperan ese mismo dibujo.
+    `renderer`/`ns`: otra tarjeta (p. ej. la del casino) que comparte caché, semáforo y avatares."""
     global _sem
-    key = card_key(data, avatar_url)
+    key = card_key(data, avatar_url + ns)
     hit = _cache_get(_cache, key)
     if hit is not None:
         return hit
@@ -707,7 +709,7 @@ async def render_async(data: dict, avatar_url: str = "",
                 except Exception:
                     av = None
             async with _sem:
-                png = await asyncio.to_thread(render, data, av)
+                png = await asyncio.to_thread(renderer or render, data, av)
             _cache_put(_cache, key, png)
             return png
 

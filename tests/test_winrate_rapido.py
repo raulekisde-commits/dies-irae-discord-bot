@@ -27,6 +27,14 @@ class FixedRng:
 class WinrateRapidoTests(DiscordBase):
     def setUp(self):
         super().setUp()
+        # Estas pruebas revisan los datos de /winrate en el embed de texto (el respaldo); la tarjeta PNG se prueba en test_casinocard.py.
+        from unittest import mock as _mock
+
+        async def _no_card(*_a, **_k):
+            return None
+        _p = _mock.patch.object(gm.GamesCog, "_casino_card", _no_card)
+        _p.start()
+        self.addCleanup(_p.stop)
         gdb.init_schema(self.db)
         ddb.init_schema(self.db)
         stats_db.init_schema(self.db)
