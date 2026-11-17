@@ -617,13 +617,17 @@ def _row_position(slot) -> Tuple[Optional[str], Optional[int], Optional[str]]:
     return slot_key(slot), required_role(slot.get("role_ids")), slot.get("role_name")
 
 
+def _is_content_row(run) -> bool:
+    return "kind" in run.keys() and run["kind"] == "content"
+
+
 def snapshot_positions(db_path: str, cta_id: int) -> int:
     """Al terminar la inscripción: guarda en qué posición (y con qué rol de juego) quedó cada persona. Se hace una sola vez."""
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            run = conn.execute("SELECT snapshot_json FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
-            if run is None:
+            run = conn.execute("SELECT * FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None or _is_content_row(run):                # /content no suma a /stats
                 return 0
             slots = {slot_key(s): s for s in json.loads(run["snapshot_json"])["slots"]}
             n = 0
@@ -641,8 +645,8 @@ def add_late_position(db_path: str, cta_id: int, user_id: int, slot_no: Optional
     conn = connect(db_path)
     try:
         with write_tx(conn):
-            run = conn.execute("SELECT snapshot_json, final_state FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
-            if run is None or run["final_state"] is not None:
+            run = conn.execute("SELECT * FROM cta_runs WHERE id=?", (cta_id,)).fetchone()
+            if run is None or run["final_state"] is not None or _is_content_row(run):     # /content no suma a /stats
                 return False
             slot = None
             if slot_no is not None:

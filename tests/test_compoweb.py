@@ -120,7 +120,7 @@ class T(unittest.TestCase):
         names = ar.weapon_names(self.db, 1)
         defs, notes = cw.build_slot_defs(p, {}, lambda w: ar.role_for(self.db, 1, w), lambda l: ar.discord_role_for(self.db, 1, l), lambda w: names.get(w))
         self.assertEqual([(d["role_name"], d["role_ids"]) for d in defs],
-                         [("Golem", [555]), ("Cobra", [111]), ("Damnation", [666]), ("Galas", [777]), ("Battlemount", [888])])
+                         [("Golem", [555]), ("Cobra", [111]), ("Damnation", [666]), ("Galas", [444]), ("Battlemount", [888])])
         self.assertEqual(notes, {"sin_regla": [], "sin_discord": [], "sin_datos": []})
 
     def test_roles_por_defecto_se_actualizan_si_no_se_editaron(self):

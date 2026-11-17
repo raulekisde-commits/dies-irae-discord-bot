@@ -606,8 +606,13 @@ def looted_total(db_path: str, user_id: int) -> int:
     """Total looteado por la persona como looter, sumando los splits cerrados (solo estadística para /stats)."""
     conn = connect(db_path)
     try:
-        r = conn.execute("SELECT COALESCE(SUM(l.looted), 0) FROM split_looters l JOIN splits s ON s.id=l.split_id "
-                         "WHERE l.user_id=? AND s.status='closed'", (user_id,)).fetchone()
+        try:                                       # los splits de un /content no suman a /stats
+            r = conn.execute("SELECT COALESCE(SUM(l.looted), 0) FROM split_looters l JOIN splits s ON s.id=l.split_id "
+                             "WHERE l.user_id=? AND s.status='closed' AND (s.source_cta_id IS NULL OR s.source_cta_id NOT IN "
+                             "(SELECT id FROM cta_runs WHERE kind='content'))", (user_id,)).fetchone()
+        except sqlite3.OperationalError:           # sin tabla cta_runs
+            r = conn.execute("SELECT COALESCE(SUM(l.looted), 0) FROM split_looters l JOIN splits s ON s.id=l.split_id "
+                             "WHERE l.user_id=? AND s.status='closed'", (user_id,)).fetchone()
         return int(r[0] or 0)
     except sqlite3.OperationalError:               # tablas de splits todavía no creadas
         return 0

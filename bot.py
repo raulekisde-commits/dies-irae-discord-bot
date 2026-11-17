@@ -3847,8 +3847,13 @@ def cta_legacy_error(member, slot: dict, snapshot: dict, run: dict, now: Optiona
             f"Se abre para todos <t:{int(end.timestamp())}:R>. Mientras tanto podés anotarte en las otras parties.")
 
 
+def cta_word(run: Optional[dict]) -> str:
+    """Cómo se nombra al evento: un /content es un «Contenido», no una CTA."""
+    return "Contenido" if run and run.get("kind") == "content" else "CTA"
+
+
 def cta_run_title(run: dict) -> str:
-    return (run.get("title") or f"CTA {run['composition_name']} #{run['id']}")
+    return (run.get("title") or f"{cta_word(run)} {run['composition_name']} #{run['id']}")
 
 
 def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild, run_id: Optional[int] = None) -> Optional[str]:
@@ -4101,7 +4106,7 @@ def cta_slot_restricted(slot: dict) -> bool:
     return cu.required_role(slot.get("role_ids")) is not None
 
 
-def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = False, color=None) -> list:
+def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = False, color=None, locks: bool = True) -> list:
     """Genera una lista de 'specs' (título + descripción) por party, con numeración global.
 
     Si `assigned` es un dict slot_key -> user_id se muestra quién ocupa cada posición."""
@@ -4114,7 +4119,7 @@ def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = F
         first, last = items[0][0], items[-1][0]
         lines = []
         for n, s in items:
-            mark = " 🔒" if cta_slot_restricted(s) else ""
+            mark = " 🔒" if locks and cta_slot_restricted(s) else ""          # /content: sin 🔒 (no pide roles)
             extra = ""
             if show_roles:
                 rid = cu.required_role(s.get("role_ids"))
@@ -4185,16 +4190,17 @@ def cta_board_specs(run: dict) -> list:
     occupied = sum(1 for s in snapshot["slots"] if cta_slot_key(s) in assigned)
     if is_open:
         closes = _cta_parse_dt(run["closes_at"])
-        thread_ref = f"<#{run['thread_id']}>" if run.get("thread_id") else "el hilo de esta CTA"
+        thread_ref = f"<#{run['thread_id']}>" if run.get("thread_id") else ("el hilo de este contenido" if run.get("kind") == "content" else "el hilo de esta CTA")
         status = (f"🟢 **Inscripciones abiertas** · cierran <t:{int(closes.timestamp())}:R>\n"
                   f"Para anotarte, escribí el número de tu posición en {thread_ref}.")
     elif run.get("final_state") == "finished":
-        status = "🏁 **CTA finalizada** · esta es la composición final"
+        status = f"🏁 **{cta_word(run)} finalizado** · esta es la composición final" if run.get("kind") == "content" else "🏁 **CTA finalizada** · esta es la composición final"
     else:
-        status = "🔒 **Inscripciones cerradas** · esta es la composición final · el masseo sigue hasta que Council o Caller cierren la CTA"
+        status = ("🔒 **Inscripciones cerradas** · esta es la composición final" if run.get("kind") == "content" else
+                  "🔒 **Inscripciones cerradas** · esta es la composición final · el masseo sigue hasta que Council o Caller cierren la CTA")
     builds_line = f"\n🔗 [Builds]({snapshot['builds_url']})" if snapshot.get("builds_url") else ""
     legacy_line = ""
-    legacy_end = cta_legacy_window_end(run, snapshot) if is_open else None
+    legacy_end = cta_legacy_window_end(run, snapshot) if is_open and run.get("kind") != "content" else None
     if legacy_end is not None and datetime.now(timezone.utc) < legacy_end:
         legacy_line = (f"\n⏳ **Party 1 solo para <@&{CTA_LEGACY_ROLE_ID}>** hasta las <t:{int(legacy_end.timestamp())}:t> "
                        f"(<t:{int(legacy_end.timestamp())}:R>)")
@@ -4204,7 +4210,7 @@ def cta_board_specs(run: dict) -> list:
     count_line = f"👥 **Anotados: {occupied}/{total}**" if not extras else f"👥 **Anotados: {occupied + len(bombs) + len(cls)}** · posiciones {occupied}/{total}{extras}"
     header = {"title": f"⚔️ SMOGG · {cta_run_title(run)} · {run['composition_name']}",
               "description": f"{status}\n{count_line}{builds_line}{legacy_line}", "color": color}
-    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color)
+    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color, locks=run.get("kind") != "content")
     if bombs:                                         # aparte, solo para mostrar: cuentan como anotados pero no ocupan posición
         specs += cta_bomb_group_specs(int(run["guild_id"]), bombs, cu.bomb_choices(DB_PATH, int(run["id"])))
     if cls:                                           # Combat Looters: también aparte, van al split como looters
@@ -4214,7 +4220,7 @@ def cta_board_specs(run: dict) -> list:
         specs.append({"title": f"🪙 COMBAT LOOTER · {len(cls)}", "description": chunk_text, "color": discord.Color.gold()})
     footer_count = (f"{occupied + len(bombs) + len(cls)}" + (f" (💣 {len(bombs)})" if bombs else "") + (f" (🪙 {len(cls)})" if cls else "")
                     if (bombs or cls) else f"{occupied}/{total}")
-    specs[-1] = dict(specs[-1], footer=f"Anotados: {footer_count} · CTA #{run['id']}")
+    specs[-1] = dict(specs[-1], footer=f"Anotados: {footer_count} · {cta_word(run)} #{run['id']}")
     return specs
 
 
@@ -4256,6 +4262,17 @@ def cta_panel_groups(run: dict) -> list:
 
 def cta_instructions_text(run: dict, total: int) -> str:
     closes = _cta_parse_dt(run["closes_at"])
+    if run.get("kind") == "content":                      # /content: solo anotarse, sin roles pedidos
+        return (
+            f"📋 **Inscripción a {cta_run_title(run)} ({run['composition_name']}, #{run['id']})**\n"
+            f"• Escribí **el número** de la posición que querés. Ejemplo: `21`.\n"
+            f"• Hay posiciones del **1 al {total}** y los números siguen entre parties.\n"
+            f"• Cualquiera puede anotarse en cualquier posición.\n"
+            f"• Para cambiar de posición, escribí otro número libre.\n"
+            f"• Para anotar a alguien: etiquetalo y escribí el número (`@persona 21`), o `@persona -21` para sacarlo.\n"
+            f"• Para salir, escribí `-` y tu número (ejemplo: `-21`) o `salir`.\n"
+            f"• Las inscripciones cierran <t:{int(closes.timestamp())}:R>."
+        )
     return (
         f"📋 **Inscripción a {cta_run_title(run)} ({run['composition_name']}, #{run['id']})**\n"
         f"• Escribí **el número** de la posición que querés. Ejemplo: `21`.\n"
@@ -4426,7 +4443,8 @@ async def cta_close_run(run_id: int, reason="timeout"):
     thread = await cta_get_thread(run)
     if thread is not None:
         try:
-            await thread.send("🔒 Las inscripciones de esta CTA están cerradas. La composición final quedó en el panel principal.",
+            await thread.send(("🔒 Las inscripciones de este contenido están cerradas." if run.get("kind") == "content" else
+                               "🔒 Las inscripciones de esta CTA están cerradas.") + " La composición final quedó en el panel principal.",
                               allowed_mentions=CTA_NO_PINGS)
         except Exception:
             pass
@@ -4763,7 +4781,7 @@ async def cta_create_track_split(run_id: int):
     db_execute("UPDATE cta_runs SET split_state=?  WHERE id=?", (int(split.id), run_id))
     cta_audit(int(run["guild_id"]), int(run["created_by"]), "cta_split_created", run_id, f"split={split.id}; anotados={len(user_ids)}")
     link = getattr(msg, "jump_url", None) if msg is not None else None
-    await say(f"📊 Generé el split de esta CTA con **{len(user_ids)}** anotado(s)" + (f": {link}" if link else ".") +
+    await say(f"📊 Generé el split de {'este contenido' if is_content else 'esta CTA'} con **{len(user_ids)}** anotado(s)" + (f": {link}" if link else ".") +
               " No se creó ningún rol. Si te anotás ahora, el organizador decide si te suma al split.")
 
 
@@ -5146,12 +5164,17 @@ async def cta_ask_final(interaction: discord.Interaction, run_id: Optional[int],
     if run.get("final_state") is not None or run["status"] == "cancelled":
         return await interaction.response.send_message("Esta CTA ya fue cerrada o cancelada.", ephemeral=True)
     title = cta_run_title(run)
-    if state == "finished":
+    if state == "finished" and run.get("kind") == "content":
+        text = f"¿Cerrar **{title}**? Ya no se aceptan más anotados."
+    elif state == "finished":
         text = (f"¿Cerrar **{title}**? Se crea el panel y el hilo de stats y ya no se aceptan más anotados."
                 + (" Además termina la inscripción ahora." if run["status"] == "open" else ""))
     else:
-        text = (f"¿Cancelar **{title}**? Se borra la CTA, queda un registro de «CTA cancelada» en el canal de splits "
-                "y el split (si existe) queda cancelado, sin poder pagarse.")
+        w = cta_word(run)
+        text = ((f"¿Cancelar **{title}**? Se borra el contenido, queda un registro de «Contenido cancelado» en el canal de splits "
+                 if w == "Contenido" else
+                 f"¿Cancelar **{title}**? Se borra la CTA, queda un registro de «CTA cancelada» en el canal de splits ")
+                + "y el split (si existe) queda cancelado, sin poder pagarse.")
     await interaction.response.send_message(text, view=CTAFinalConfirmView(int(run_id), state, interaction.user.id), ephemeral=True)
 
 
@@ -5201,7 +5224,7 @@ async def cta_finish_run(run_id: int, actor_id: int):
         print(f"CTA #{run_id}: no pude refrescar el tablero final: {exc!r}")
     await cta_refresh_panel(bot, run_id)
     # ya no se crean las tareas «Repartir el split» ni «Revisar el combat log» (ni en /cta ni en /content)
-    return f"🏁 **{cta_run_title(run)}** cerrada. {stats_note}", True
+    return f"🏁 **{cta_run_title(run)}** {'cerrado' if is_content else 'cerrada'}. {stats_note}".rstrip(), True
 
 
 def _stats_thread_mention(run_id: int) -> str:
@@ -5322,7 +5345,8 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
                     await cog.sync_split(split.id)
                     th = await cog._get_channel(split.thread_id)
                     if th is not None:
-                        await th.send(f"🚫 **La CTA {title} fue cancelada** por <@{actor_id}>. Este split no se puede pagar.", allowed_mentions=CTA_NO_PINGS)
+                        await th.send((f"🚫 **El contenido {title} fue cancelado**" if run.get("kind") == "content" else f"🚫 **La CTA {title} fue cancelada**")
+                                      + f" por <@{actor_id}>. Este split no se puede pagar.", allowed_mentions=CTA_NO_PINGS)
                     split_note = "Split cancelado."
                 elif r in ("closed", "closing"):
                     split_note = "⚠️ El split ya estaba pagado o pagándose: no se pudo cancelar."
@@ -5333,8 +5357,9 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
     mentions = " ".join(f"<@{u}>" for u in signups)
     if len(mentions) > 1500:
         mentions = mentions[:1500].rsplit(" ", 1)[0] + " …"
-    record = (f"🛑 **CTA cancelada** · {title} ({run['composition_name']})\n"
-              f"Cancelada por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>\n"
+    is_content = run.get("kind") == "content"
+    record = (f"🛑 **{'Contenido cancelado' if is_content else 'CTA cancelada'}** · {title} ({run['composition_name']})\n"
+              f"{'Cancelado' if is_content else 'Cancelada'} por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>\n"
               f"Anotados: **{len(signups)}**" + (f"\n{mentions}" if mentions else "") + (f"\n{split_note}" if split_note else ""))
     rec_ch = None
     if cog is not None:
@@ -5345,6 +5370,8 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
         except Exception as exc:
             print(f"CTA #{run_id}: no pude dejar el registro de cancelación: {exc!r}")
     deleted = await cta_delete_message(run)
+    if is_content:
+        return f"🛑 **{title}** cancelado. " + (split_note + " " if split_note else "") + ("Se borró el contenido." if deleted else "⚠️ No pude borrar el mensaje del contenido.")
     return f"🛑 **{title}** cancelada. " + (split_note + " " if split_note else "") + ("Se borró la CTA." if deleted else "⚠️ No pude borrar el mensaje de la CTA.")
 
 
@@ -5878,8 +5905,9 @@ class CTAPanelView(discord.ui.View):
             mine.callback = self.mybuild_callback
             self.add_item(mine)
         if run_id is not None and not final:
-            fin = discord.ui.Button(label="CTA terminado", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
-            ab = discord.ui.Button(label="Cancelar CTA", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
+            word = "Contenido" if cta_is_content(int(run_id)) else "CTA"
+            fin = discord.ui.Button(label=f"{word} terminado", emoji="🏁", style=discord.ButtonStyle.success, custom_id=f"cta:finish:{run_id}")
+            ab = discord.ui.Button(label=f"Cancelar {word}", emoji="🛑", style=discord.ButtonStyle.danger, custom_id=f"cta:abort:{run_id}")
             fin.callback, ab.callback = self.finish_callback, self.abort_callback
             if not closed:                                       # solo mientras la inscripción sigue abierta
                 addt = discord.ui.Button(label="Agregar tiempo", emoji="⏱️", style=discord.ButtonStyle.secondary, custom_id=f"cta:addtime:{run_id}")
@@ -7047,6 +7075,8 @@ async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_over
     close_at = now + timedelta(minutes=minutes)
     existing = [r["title"] for r in db_fetchall("SELECT title FROM cta_runs WHERE guild_id=? AND title IS NOT NULL AND status<>'error'", (guild.id,))]
     base = " ".join(title_override.split())[:80] if title_override and title_override.strip() else cu.base_title(close_at)
+    if kind == "content" and base.startswith("CTA "):            # /content: «Contenido dd/mm HH UTC»
+        base = "Contenido " + base[4:]
     title = cu.unique_title(base, existing)
     snapshot = cta_snapshot_from_comp(comp)
     snapshot["lock_p34"], snapshot["dps_last"] = bool(lock_p34), bool(dps_last)
@@ -7173,7 +7203,7 @@ def is_content_manager(member) -> bool:
         is_council_or_admin(member) or any(r.id == CONTENT_CREATOR_ROLE_ID for r in member.roles))
 
 
-@bot.tree.command(name="content", description="Publicar una CTA de content en este canal (composición de content, split-ava, sin Bomb ni combatlog)", guild=GUILD_OBJ)
+@bot.tree.command(name="content", description="Publicar un contenido en este canal (composición de content, split-ava, sin Bomb ni combatlog)", guild=GUILD_OBJ)
 @app_commands.describe(nombre="Nombre de la composición",
                        tiempo=f"Duración de las inscripciones: HH:MM o minutos (mínimo {CTA_MIN_MINUTES}, por defecto {CTA_DEFAULT_MINUTES} minutos)")
 async def content_command(interaction: discord.Interaction, nombre: str, tiempo: Optional[str] = None):
