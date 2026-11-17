@@ -934,11 +934,7 @@ class KillboardCog(commands.Cog):
             emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="💀 Muertes", value=f"**{s['deaths']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="🛡️ Asistencia", value=f"**{s['attendance']:,}**".replace(",", ".") + " peleas", inline=True)
-            emb.add_field(name="🤝 Asistencias a kills", value=f"**{s['assists']:,}**".replace(",", "."), inline=True)
             emb.add_field(name="🎯 KDA", value=f"**{s['kda']:.2f}**", inline=True)
-            emb.add_field(name="⚰️ Fame perdida", value=f"**{s['death_fame']:,}**".replace(",", "."), inline=True)
-            emb.add_field(name="🔥 Daño total", value=f"**{s['damage']:,.0f}**".replace(",", "."), inline=True)
-            emb.add_field(name="🔥 Daño por pelea", value=f"**{s['avg_damage']:,.0f}**".replace(",", "."), inline=True)
             emb.add_field(name="💥 Muertes en el primer engage", value=f"**{s['first5_pct']:.0f}%** · {s['first5']} de {s['attendance']} peleas", inline=False)
             emb.add_field(name="🚫 CTAs skipeadas", value=f"**{skips}**", inline=True)
             if looted:
