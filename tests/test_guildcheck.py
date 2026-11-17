@@ -36,6 +36,13 @@ class ParseTests(unittest.TestCase):
             self.assertEqual(rows[0][1:], (NOW, True))                                 # Online = hora del archivo
             self.assertEqual(rows[2][1], datetime(2026, 10, 21, 22, 57, 57, tzinfo=timezone.utc))
 
+    def test_attendance_since(self):
+        ctas = [(NOW - timedelta(days=d), {1} if d % 2 else set()) for d in range(28, 0, -1)]
+        self.assertEqual(gdb.attendance_since(ctas, 1, NOW - timedelta(days=60), NOW), (14, 20, 28))   # desde el 1er killboard
+        self.assertEqual(gdb.attendance_since(ctas, 1, NOW - timedelta(days=7), NOW), (4, 5, 7))       # entró hace 1 semana
+        self.assertIsNone(gdb.attendance_since(ctas, 1, NOW - timedelta(hours=10), NOW))              # recién entró
+        self.assertIsNone(gdb.attendance_since([], 1, NOW - timedelta(days=7), NOW))
+
     def test_week_bounds(self):
         s, e = gdb.week_bounds(-1, NOW)                      # domingo 15/11 → semana anterior lun 2/11 a lun 9/11
         self.assertEqual((s.day, e.day, s.weekday()), (2, 9, 0))
@@ -240,7 +247,7 @@ class GuildCheckTests(DiscordBase):
 
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 
