@@ -137,6 +137,16 @@ class StatsCommandTests(KBBase):
             sc.render_async = old
         self.assertEqual(seen["rank"], "core")
 
+    def test_canal_bloqueado_avisa_y_no_manda_stats(self):
+        import discord
+        ch = discord.TextChannel(kc.STATS_BLOCKED_CHANNEL_ID, self.guild, "general")
+        i = self.inter(self.mem, channel=ch)
+        run(self.cog.stats.callback(self.cog, i, None))
+        content, kw = i.response.sent[-1]
+        self.assertTrue(kw.get("ephemeral"))
+        self.assertIn(f"<#{kc.STATS_CHANNEL_HINT_ID}>", content)
+        self.assertNotIn("file", kw)
+
     def test_si_falla_el_dibujo_manda_el_embed(self):
         old = sc.render_async
 
