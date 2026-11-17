@@ -37,7 +37,15 @@ MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 MAX_BATTLES_PER_LOAD = 15
 USER_COOLDOWN = 10
 CORE_MEMBER_ROLE_ID = int(os.getenv("CORE_MEMBER_ROLE_ID", "1465833385804038427"))   # ex Legacy: se destaca en /stats
+COUNCIL_ROLE_ID = int(os.getenv("COUNCIL_ROLE_ID", "1257896977220501557"))
+# Rango que muestra la tarjeta de /stats: el de mayor prioridad que tenga la persona (Staff = Municipal).
 STATS_COOLDOWN = float(os.getenv("STATS_COOLDOWN", "8"))   # segundos entre dos /stats de la misma persona
+RANK_PRIORITY = (("council", COUNCIL_ROLE_ID), ("municipal", STAFF_ROLE_ID), ("core", CORE_MEMBER_ROLE_ID), ("member", MIEMBRO_ROLE_ID))
+
+
+def guild_rank(member) -> Optional[str]:
+    ids = {getattr(r, "id", None) for r in getattr(member, "roles", [])}
+    return next((rank for rank, rid in RANK_PRIORITY if rid in ids), None)
 
 
 def voice_without_kb(present, signed, regs, kb_names):
@@ -987,7 +995,7 @@ class KillboardCog(commands.Cog):
             traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         data = {"title": ", ".join(r.char_name for r in regs), "display": getattr(target, "display_name", ""),
-                "core": any(getattr(r, "id", None) == CORE_MEMBER_ROLE_ID for r in getattr(target, "roles", [])),
+                "rank": guild_rank(target),
                 "has_kb": bool(s["attendance"]), "kills": s["kills"], "deaths": s["deaths"], "attendance": s["attendance"],
                 "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
                 "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],
