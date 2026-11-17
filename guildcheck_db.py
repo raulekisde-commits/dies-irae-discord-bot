@@ -279,13 +279,14 @@ def kb_cta_presence(db_path: str, guild_id: int, chars: Dict[int, Set[str]]) -> 
         conn.close()
 
 
-def registered_at_by_user(db_path: str) -> Dict[int, datetime]:
-    """{discord_id: fecha en que registró su personaje principal} (albion_links)."""
+def registered_at_by_user(db_path: str) -> Dict[int, Tuple[datetime, str]]:
+    """{discord_id: (fecha en que lo reclutaron o vinculó su personaje principal, nombre del personaje)} (albion_links)."""
     conn = connect(db_path)
     try:
         if not _has_table(conn, "albion_links"):
             return {}
-        return {int(r["discord_id"]): _dt(r["registered_at"]) for r in conn.execute("SELECT discord_id, registered_at FROM albion_links")}
+        return {int(r["discord_id"]): (_dt(r["registered_at"]), r["char_name"])
+                for r in conn.execute("SELECT discord_id, registered_at, char_name FROM albion_links")}
     finally:
         conn.close()
 
