@@ -727,6 +727,41 @@ class CoachingCog(commands.Cog):
                 embeds.append(discord.Embed(title=title if i == 0 else f"{title} (cont.)", description=chunk, color=color))
         await interaction.response.send_message(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    @track_g.command(name="avisar", description="Pingea en su post a los del track que todavía no mandaron el VOD")
+    async def track_avisar(self, interaction: discord.Interaction):
+        if not await self._track_guard(interaction):
+            return
+        t = await self.run(cdb.get_track)
+        if not t:
+            return await _say(interaction, "ℹ️ No hay ningún track activo.")
+        pending = [int(r["user_id"]) for r in await self.run(cdb.track_members) if not r["done_at"]]
+        if not pending:
+            return await _say(interaction, "🎉 Ya mandaron todos el VOD.")
+        await interaction.response.defer(ephemeral=True)
+        sent, no_post, failed = 0, [], []
+        for uid in pending:
+            post = await self.run(cdb.get_post, uid)
+            th = await self._channel(post["thread_id"]) if post else None
+            if th is None:
+                no_post.append(f"<@{uid}>")
+                continue
+            try:
+                if getattr(th, "archived", False):
+                    await th.edit(archived=False)
+                await th.send(f"<@{uid}> 📌 Mandá acá el video de las peleas de **{t['title']}** para el coaching.",
+                              allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=uid)], roles=False, everyone=False))
+                sent += 1
+            except Exception as exc:
+                print(f"coaching: no pude avisar del track a {uid}: {exc!r}")
+                failed.append(f"<@{uid}>")
+            await asyncio.sleep(self.CREATE_DELAY)
+        out = f"📣 Track **{t['title']}**: avisé a **{sent}** en su post."
+        if no_post:
+            out += "\n⚠️ Sin post (no los pude avisar): " + ", ".join(no_post)
+        if failed:
+            out += "\n❌ Falló el aviso a: " + ", ".join(failed)
+        await interaction.followup.send(out[:1900], ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     @track_g.command(name="cerrar", description="Cierra el track activo (para poder crear otro)")
     async def track_cerrar(self, interaction: discord.Interaction):
         if not await self._track_guard(interaction):
