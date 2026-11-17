@@ -8,7 +8,7 @@
 import re
 import sqlite3
 import unicodedata
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import ctautil as cu
 from dbutil import connect, utcnow_iso, write_tx
@@ -127,3 +127,45 @@ def main_share(db_path: str, user_id: int) -> Optional[Tuple[int, int, int]]:
     finally:
         conn.close()
     return rid, int(row["main"] or 0), int(row["total"] or 0)
+
+
+MIN_CTAS_FOR_TOP = 5   # para entrar al top de rol secundario (evita que 0 de 1 = 0 %)
+
+
+def secondary_top(db_path: str, min_ctas: int = MIN_CTAS_FOR_TOP) -> List[dict]:
+    """Quienes MENOS juegan su rol main (en CTA cerradas), de menor a mayor %.
+    [{user_id, role_id, main, total, pct, top_other_id, top_other_n}]; top_other = el rol que más jugaron aparte del main."""
+    conn = connect(db_path)
+    try:
+        mains = {int(r["user_id"]): int(r["role_id"]) for r in conn.execute("SELECT user_id, role_id FROM member_main_role")}
+        rows = conn.execute("""SELECT pos.user_id AS user_id, pos.role_id AS role_id, pos.role_name AS role_name, COUNT(*) AS n
+                               FROM cta_positions pos
+                               WHERE pos.cta_id IN (SELECT id FROM cta_runs WHERE status='closed')
+                               GROUP BY pos.user_id, pos.role_id, CASE WHEN pos.role_id IS NULL THEN LOWER(TRIM(pos.role_name)) END""").fetchall()
+    except sqlite3.OperationalError:            # todavía no hay tablas de CTA
+        return []
+    finally:
+        conn.close()
+    names = {name.lower(): rid for rid, name in MAIN_ROLES.items()}
+    per_user: Dict[int, Dict[object, int]] = {}
+    for r in rows:
+        uid = int(r["user_id"])
+        if uid not in mains:
+            continue
+        key = int(r["role_id"]) if r["role_id"] is not None else names.get((r["role_name"] or "").strip().lower(), (r["role_name"] or "").strip() or None)
+        if key is None:
+            continue
+        d = per_user.setdefault(uid, {})
+        d[key] = d.get(key, 0) + int(r["n"])
+    out = []
+    for uid, counts in per_user.items():
+        total = sum(counts.values())
+        if total < min_ctas:
+            continue
+        rid = mains[uid]
+        n_main = counts.get(rid, 0)
+        others = sorted(((k, n) for k, n in counts.items() if k != rid), key=lambda kv: (-kv[1], str(kv[0])))
+        out.append({"user_id": uid, "role_id": rid, "main": n_main, "total": total, "pct": 100.0 * n_main / total,
+                    "top_other_id": others[0][0] if others else None, "top_other_n": others[0][1] if others else 0})
+    out.sort(key=lambda d: (d["pct"], -d["total"], d["user_id"]))
+    return out
