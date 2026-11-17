@@ -462,6 +462,32 @@ class CoachingDiscordTests(DiscordBase):
         self.assertIn("agregué **1**", i.text)
         self.assertEqual({r["user_id"] for r in cdb.track_members(self.db)}, {self.novato.id, self.coach.id})
 
+    def test_track_avisar(self):
+        self.cog.CREATE_DELAY = 0
+        self.open_post(self.novato)
+        self.open_post(self.alice)
+        th_n, th_a = self.made
+        sent = {th_n.id: [], th_a.id: []}
+        for th in (th_n, th_a):
+            async def send(content=None, _id=th.id, **kw):
+                sent[_id].append((content, kw))
+            th.send = send
+        i = self.inter(self.coach)
+        run(self.cog.track_crear.callback(self.cog, i, "CTA martes", f"<@{self.novato.id}> <@{self.alice.id}> <@{self.coach.id}>"))
+        run(self.cog.process_message(self.video_msg(self.alice, th_a, "healer https://youtu.be/ya", 3101)))   # alice ya lo mandó
+        i = self.inter(self.alice)
+        run(self.cog.track_avisar.callback(self.cog, i))
+        self.assertIn("Solo el Staff", i.text)
+        i = self.inter(self.coach)
+        run(self.cog.track_avisar.callback(self.cog, i))
+        self.assertEqual(len(sent[th_n.id]), 1)
+        self.assertEqual(sent[th_a.id], [])
+        txt, kw = sent[th_n.id][0]
+        self.assertTrue(txt.startswith(f"<@{self.novato.id}>"))
+        self.assertIn("CTA martes", txt)
+        self.assertIn("avisé a **1**", i.text)
+        self.assertIn(f"Sin post (no los pude avisar): <@{self.coach.id}>", i.text)
+
     def test_panel_command_is_council_only(self):
         i = self.inter(self.alice)
         run(self.cog.coaching_panel(i))
