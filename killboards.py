@@ -860,6 +860,21 @@ class KillboardCog(commands.Cog):
             return await _say(interaction, "⏳ Esperá unos segundos antes de volver a usarlo.")
         await interaction.response.send_message(embed=await self.top_embed(key), allowed_mentions=NO_MENTIONS)
 
+    async def _main_field(self, discord_id: int) -> Optional[str]:
+        """Rol main guardado y en qué % de sus CTA cerradas lo jugó (misma base que «Roles más jugados»)."""
+        try:
+            import mainrole_db as mdb
+            share = await self.run(mdb.main_share, discord_id)
+        except Exception:
+            traceback.print_exc()
+            return None
+        if share is None:
+            return None
+        rid, n_main, total = share
+        if not total:
+            return f"**{mdb.role_name(rid)}** · todavía sin CTA cerradas"
+        return f"**{mdb.role_name(rid)}** · lo jugó en **{100.0 * n_main / total:.0f}%** de sus CTA ({n_main} de {total})"
+
     async def _roles_field(self, guild, discord_id: int, names) -> Optional[str]:
         """Top 3 de roles jugados con su %: cuenta todas las CTA cerradas en las que la persona estuvo anotada (haya killboard o no)."""
         counts = await self.run(kb.role_counts, discord_id, names)
@@ -901,6 +916,7 @@ class KillboardCog(commands.Cog):
             pass
         skips = await self.run(kb.skip_count, names)
         roles_field = await self._roles_field(interaction.guild, target.id, names)
+        main_field = await self._main_field(target.id)
         looted = await self.run(sdb.looted_total, target.id)
         looted_value = f"**{looted:,}**".replace(",", ".")
         if not s["attendance"]:
@@ -911,6 +927,8 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="💰 Total looteado", value=looted_value, inline=True)
             if roles_field:
                 emb.add_field(name="🎭 Roles más jugados", value=roles_field, inline=False)
+            if main_field:
+                emb.add_field(name="⚔ Rol main", value=main_field, inline=False)
         else:
             emb.description = target.mention
             emb.add_field(name="⚔️ Kills", value=f"**{s['kills']:,}**".replace(",", "."), inline=True)
@@ -927,6 +945,8 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="💰 Total looteado", value=looted_value, inline=True)
             if roles_field:
                 emb.add_field(name="🎭 Roles más jugados", value=roles_field, inline=False)
+            if main_field:
+                emb.add_field(name="⚔ Rol main", value=main_field, inline=False)
             if s["avg_ip"]:
                 emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
