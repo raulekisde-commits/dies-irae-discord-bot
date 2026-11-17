@@ -181,6 +181,13 @@ except Exception:
     async def setup_exmiembros(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar exmiembros.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from mainrole import setup_mainrole
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_mainrole(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar mainrole.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from bombs import setup_bombs
 except Exception:
     import traceback as _tb
@@ -649,6 +656,7 @@ class MyBot(commands.Bot):
             await _safe_setup("alters", setup_alters, self, DB_PATH, GUILD_ID)
             await _safe_setup("blacklist", setup_blacklist, self, DB_PATH, GUILD_ID)
             await _safe_setup("exmiembros", setup_exmiembros, self, DB_PATH, GUILD_ID)
+            await _safe_setup("mainrole", setup_mainrole, self, DB_PATH, GUILD_ID)
             await _safe_setup("bombs", setup_bombs, self, DB_PATH, GUILD_ID)
             await _safe_setup("rolesmgmt", setup_rolesmgmt, self, DB_PATH, GUILD_ID)
             await _safe_setup("miembros", setup_miembros, self, DB_PATH, GUILD_ID)
@@ -1815,7 +1823,7 @@ class RecruitView(discord.ui.View):
                 member = None
         return member
 
-    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str, extra_role_ids=()):
+    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str, extra_role_ids=(), main_role_id: Optional[int] = None):
         member = await self._get_applicant(interaction)
         if member is None:
             return await respond_ephemeral(interaction, "❌ No encontré al postulante (se fue del servidor o su ID no es válido).")
@@ -1863,6 +1871,15 @@ class RecruitView(discord.ui.View):
 
         spin_text = await recruit_accept_spin(interaction, member)
 
+        main_fields = []
+        if main_role_id:
+            raw_main = next((v for n, v, _i in recruit_data_fields(getattr(interaction, "message", None)) if n == RECRUIT_MAIN_FIELD), None)
+            try:
+                await asyncio.to_thread(_mrdb_recruit.set_main, DB_PATH, member.id, main_role_id, "reclutador", raw_main, interaction.user.id)
+            except Exception:
+                traceback.print_exc()
+            main_fields = [("⚔ Rol main confirmado", _mrdb_recruit.role_name(main_role_id), True)]
+
         # LOG
         try:
             log_channel = interaction.guild.get_channel(bs.get("log")) or await interaction.guild.fetch_channel(bs.get("log"))
@@ -1873,7 +1890,7 @@ class RecruitView(discord.ui.View):
             embed = recruit_record_embed(
                 "✅ POSTULACIÓN ACEPTADA" + (" (falta confirmar ingreso a la guild)" if roles_pending else ""),
                 discord.Color.green(), member, interaction.user, getattr(interaction, "message", None),
-                extra=[("🎭 Rol asignado", role_name, False)] + ([("🎰 Wujupón", spin_text, False)] if spin_text else []))
+                extra=main_fields + [("🎭 Rol asignado", role_name, False)] + ([("🎰 Wujupón", spin_text, False)] if spin_text else []))
 
             # Imagen: la guardás por uid
             img_data = ticket_images.get(member.id)
@@ -2079,24 +2096,7 @@ def recruit_nick_from_message(message) -> str:
 
 
 RECRUIT_MAIN_FIELD = "⚔ Rol main"
-# Palabras del "rol main" → rol de Discord que se agrega junto con Miembro al aceptar (si no coincide, solo Miembro).
-RECRUIT_MAIN_ROLES = [
-    (("battle mount", "battlemount", "bm"), "BATTLE_MOUNT_ROLE_ID", "Battle Mount"),
-    (("tank", "tanque"), "TANK_ROLE_ID", "Tank"),
-    (("healer", "heal", "curador"), "HEALER_ROLE_ID", "Healer"),
-    (("support", "supp", "soporte"), "SUPP_ROLE_ID", "Support"),
-    (("dps", "damage"), "DPS_ROLE_ID", "DPS"),
-]
-
-
-def recruit_role_for_main(main_text: str) -> tuple:
-    """(role_id, nombre) según lo que escribió como rol main; Miembro si no se reconoce."""
-    words = set(re.findall(r"[a-záéíóúñ]+", (main_text or "").lower()))
-    low = (main_text or "").lower()
-    for keys, const, name in RECRUIT_MAIN_ROLES:
-        if any((k in low) if " " in k else (k in words) for k in keys):
-            return globals()[const], name
-    return MIEMBRO_ROLE_ID, "Miembro"
+import mainrole_db as _mrdb_recruit
 
 
 import ctautil as _cu_recruit
@@ -2106,12 +2106,17 @@ OBSERVACION_ROLE_ID = int(os.getenv("OBSERVACION_ROLE_ID", "1559680220800360519"
 
 class RecruitRolesView(discord.ui.View):
     """Paso al aceptar (efímero, solo para el reclutador): roles de CTA que se le dan (Observación se da siempre)."""
-    def __init__(self, ticket_view, origin: discord.Interaction, default_role_id: int):
+    def __init__(self, ticket_view, origin: discord.Interaction, default_role_id: Optional[int]):
         super().__init__(timeout=300)
         self.ticket_view = ticket_view
         self.origin = origin
+        self.main_id = default_role_id if default_role_id in RECRUIT_CTA_ROLES else None
+        mopts = [discord.SelectOption(label=name, value=str(rid), default=(rid == self.main_id)) for rid, name in RECRUIT_CTA_ROLES.items()]
+        self.main_select = discord.ui.Select(placeholder="⚔ Rol MAIN (obligatorio)", min_values=1, max_values=1, options=mopts)
+        self.main_select.callback = self.picked_main
+        self.add_item(self.main_select)
         opts = [discord.SelectOption(label=name, value=str(rid), default=(rid == default_role_id)) for rid, name in RECRUIT_CTA_ROLES.items()]
-        self.select = discord.ui.Select(placeholder="Roles de CTA a dar", min_values=0, max_values=len(opts), options=opts)
+        self.select = discord.ui.Select(placeholder="Roles de CTA a dar (el main se da siempre)", min_values=0, max_values=len(opts), options=opts)
         self.select.callback = self.picked
         self.add_item(self.select)
         self.chosen = [default_role_id] if default_role_id in RECRUIT_CTA_ROLES else []
@@ -2125,6 +2130,12 @@ class RecruitRolesView(discord.ui.View):
             return False
         return True
 
+    async def picked_main(self, interaction: discord.Interaction):
+        self.main_id = int(self.main_select.values[0])
+        for o in self.main_select.options:
+            o.default = o.value == self.main_select.values[0]
+        await interaction.response.edit_message(view=self)
+
     async def picked(self, interaction: discord.Interaction):
         self.chosen = [int(v) for v in self.select.values]
         for o in self.select.options:
@@ -2132,7 +2143,9 @@ class RecruitRolesView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
     async def confirm(self, interaction: discord.Interaction):
-        ids = list(self.chosen)
+        if self.main_id is None:
+            return await interaction.response.send_message("⚔ Elegí primero el **rol main** del postulante.", ephemeral=True)
+        ids = [self.main_id] + [i for i in self.chosen if i != self.main_id]     # el main va primero y siempre se da
         names = [RECRUIT_CTA_ROLES[i] for i in ids]
         extra = ids[1:]
         extra.append(OBSERVACION_ROLE_ID)             # todo recluta entra con Observación
@@ -2143,7 +2156,7 @@ class RecruitRolesView(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(content=f"⏳ Aceptando con: **{label}**…", view=self)
         # accept_player responde con followups sobre la interacción del botón original
-        await self.ticket_view.accept_player(self.origin, primary, label, extra)
+        await self.ticket_view.accept_player(self.origin, primary, label, extra, main_role_id=self.main_id)
 
 
 class RecruitTicketView(discord.ui.View):
@@ -2164,9 +2177,8 @@ class RecruitTicketView(discord.ui.View):
             for f in emb.fields:
                 if f.name == RECRUIT_MAIN_FIELD:
                     main = f.value
-        role_id, _name = recruit_role_for_main(main)
-        view = RecruitRolesView(self, interaction, role_id)
-        await interaction.response.send_message("🎭 **¿Qué roles de CTA le vas a dar?** Elegí uno o más y confirmá.\n"
+        view = RecruitRolesView(self, interaction, _mrdb_recruit.parse_main(main))
+        await interaction.response.send_message(f"⚔ **Rol main** (escribió: *{discord.utils.escape_markdown(main or '—')}*) y 🎭 **roles de CTA** que le vas a dar.\n"
                                                 "👁️ El rol **Observación** se le da siempre.", view=view, ephemeral=True)
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
@@ -7562,6 +7574,8 @@ HELP_SECTIONS = [
         ("/warning usuario razon", "Staff / Council", "Le pone un warning a alguien (queda guardado quién lo puso y cuándo). La respuesta la ve solo quien lo ejecuta."),
         ("/blacklist agregar motivo [personaje] [usuario] · sacar · listar", "Staff / Council (sacar: solo Council · listar: también Miembros)", "Blacklist de personajes de Albion y cuentas de Discord con motivo. Si alguien en la lista abre un ticket de reclutamiento, el ticket se abre igual pero muestra el aviso con el motivo para todos."),
         ("/exmiembros listar · ver [personaje] [usuario]", "Staff / Council / Reclutador", "Gente que estuvo en la guild de Albion y se fue (historial reconstruido + cada salida nueva, detectada sola). Si un ex-miembro abre ticket de reclutamiento, el ticket se marca como «quiere volver a entrar» y se le pregunta por qué se fue y por qué vuelve."),
+        ("/mainrole sync", "Council", "Carga el rol main de cada miembro leyendo los logs de «POSTULACIÓN ACEPTADA» (vale el más reciente; no pisa lo que eligió un reclutador o se cargó a mano). Devuelve un CSV con los que no se pudieron resolver."),
+        ("/mainrole set [usuario] [rol]", "Staff / Council / Reclutador", "Cambia a mano el rol main de un miembro. Al aceptar un reclutamiento el reclutador lo elige siempre; /stats muestra en qué % de sus CTA lo jugó."),
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (respuesta privada)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/canal entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
