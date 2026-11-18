@@ -240,11 +240,34 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4202, reply_to=4101)))      # coach responde a UN vod
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["open", "done", "open"])
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").done_by, self.coach.id)
+        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").reward_spins for k in range(3)], [0, 1, 0])  # 1 sola
         m = self.reply_msg(self.council, th, 4203)                                              # respuesta general: cierra las que quedan
         run(self.cog.process_message(m))
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["done", "done", "done"])
         self.assertIn("✅", m.reactions)
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [])
+
+    def paid(self, mids):
+        """Tiradas que cobraron esas tareas (Wujupón no está cargado en estos tests: se mira reward_spins de las cerradas)."""
+        ts = [edb.find_by_source(self.db, f"coach:{m}") for m in mids]
+        return sum(t.reward_spins for t in ts if t.status == "done")
+
+    def test_varios_vods_sin_respuesta_dan_una_sola_tirada(self):
+        self.open_post(self.novato)
+        th = self.vods(5)                                                                       # 5 VODs seguidos sin respuesta
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4250)))
+        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(5)], ["done"] * 5)
+        self.assertEqual(self.paid(range(4100, 4105)), 1)
+        run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/otro", 4260)))
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4261)))                    # VOD nuevo con respuesta: +1
+        self.assertEqual(self.paid([4260]), 1)
+
+    def test_respuesta_a_un_vod_deja_sin_tirada_a_los_otros_pendientes(self):
+        self.open_post(self.novato)
+        th = self.vods(2)                                                                       # hoy uno, mañana otro
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4270, reply_to=4101)))
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4271, reply_to=4100)))
+        self.assertEqual(self.paid([4100, 4101]), 1)
 
     def test_devolucion_corta_espera_voto_del_staff(self):
         self.open_post(self.novato)
@@ -293,8 +316,12 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4702, reply_to=4100)))  # primera bien hecha: sin tirada
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").reward_spins, 0)
         self.assertFalse(cdb.has_penalty(self.db, self.coach.id))
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4703, reply_to=4101)))  # la siguiente ya cobra (no acumulable)
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4703, reply_to=4101)))  # misma tanda: la penalización se llevó la tirada
         t = edb.find_by_source(self.db, "coach:4101")
+        self.assertEqual((t.status, t.reward_spins), ("done", 0))
+        run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/nuevo", 4710)))
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4711, reply_to=4710)))  # VOD nuevo: ya cobra
+        t = edb.find_by_source(self.db, "coach:4710")
         self.assertEqual((t.status, t.reward_spins), ("done", 1))
 
     def test_revision_retro_de_devoluciones_con_x(self):

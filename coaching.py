@@ -314,23 +314,28 @@ class CoachingCog(commands.Cog):
                 pass
 
     async def _complete(self, pending: List[int], user_id: int) -> int:
-        """Completa las tareas de esos VODs a nombre de user_id (con su tirada). Devuelve cuántas cerró.
-        Si está penalizado, la primera que cierra no da tirada y se le levanta la penalización."""
+        """Completa las tareas de esos VODs a nombre de user_id. Devuelve cuántas cerró.
+        No se acumulan: los VODs que el jugador subió sin respuesta dan **una sola** tirada en total. Cuando una devolución
+        cobra, las demás tareas pendientes del post quedan sin tirada (siguen abiertas para responderlas).
+        Si está penalizado, esa única tirada no se da y se le levanta la penalización."""
         enc = self.bot.get_cog("EncargosCog")
         if enc is None:
             return 0
         penalized = await self.run(cdb.has_penalty, user_id)
+        paid = False                                          # ya se usó la tirada de esta tanda (cobrada o perdida por la penalización)
         done = 0
         for mid in pending:
             try:
                 t = await enc.run(edb.find_by_source, f"coach:{mid}")
-                no_spin = penalized and t is not None and t.status not in ("done", "cancelled") and t.reward_spins > 0
+                no_spin = (paid or penalized) and t is not None and t.status not in ("done", "cancelled") and t.reward_spins > 0
                 if no_spin:
                     await enc.run(edb.set_reward_spins, t.id, 0)
                 if await enc.complete_by_source(f"coach:{mid}", user_id):
                     done += 1
                     await self.run(cdb.mark_done, mid)
-                    if no_spin:
+                    if t is not None and t.reward_spins > 0:
+                        paid = True
+                    if no_spin and penalized:
                         penalized = False
                         await self.run(cdb.clear_penalty, user_id)
                 else:
@@ -341,7 +346,22 @@ class CoachingCog(commands.Cog):
                         await self.run(cdb.mark_done, mid)
             except Exception as exc:
                 print(f"coaching: no pude completar la tarea del VOD {mid}: {exc!r}")
+        if paid and pending:
+            await self._unpay_pending(enc, pending[0])
         return done
+
+    async def _unpay_pending(self, enc, mid: int):
+        """La tanda ya cobró: las tareas que siguen pendientes en ese post pasan a 0 tiradas (los VODs nuevos sí cobran)."""
+        try:
+            row = await self.run(cdb.get_msg, mid)
+            if row is None:
+                return
+            for other in await self.run(cdb.pending_msgs, int(row["thread_id"])):
+                t = await enc.run(edb.find_by_source, f"coach:{other}")
+                if t is not None and t.status not in ("done", "cancelled") and t.reward_spins > 0:
+                    await enc.run(edb.set_reward_spins, t.id, 0)
+        except Exception as exc:
+            print(f"coaching: no pude sacar la tirada de las pendientes del VOD {mid}: {exc!r}")
 
     async def ask_review(self, message: discord.Message, pending: List[int], text: str, kind: str = "live", channel=None):
         """Devolución corta: se le pregunta al Staff si está mal hecha. La tarea queda abierta y sin tirada hasta el voto.
