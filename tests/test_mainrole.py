@@ -151,6 +151,58 @@ class TopRolSecundario(MainRoleTests.__mro__[1]):
         self.assertNotIn("Rol ", desc)
 
 
+class ListasMainTests(unittest.TestCase):
+    """/mainrole sin y /mainrole lista: sobre los miembros actuales (rol Miembro), sin bots."""
+    def setUp(self):
+        import tempfile
+        self.db = os.path.join(tempfile.mkdtemp(), "t.db")
+        self.cog = mr.MainRoleCog(None, self.db, GUILD_ID)
+        mk = lambda uid, bot=False: NS(id=uid, bot=bot, mention=f"<@{uid}>", display_name=f"u{uid}")
+        self.members = [mk(1), mk(2), mk(3), mk(4), mk(99, bot=True)]
+        miembro = NS(id=mr.MIEMBRO_ROLE_ID, members=self.members)
+        self.guild = NS(get_role=lambda rid: miembro if rid == mr.MIEMBRO_ROLE_ID else None)
+        for uid, r in ((1, "Healer"), (2, "Dps"), (3, "Healer"), (50, "Healer")):     # 50 ya no es miembro
+            mdb.set_main(self.db, uid, ID[r], "manual")
+        self.sent = {}
+
+        async def send_message(embed=None, **kw):
+            self.sent["embed"] = embed
+        self.inter = NS(guild=self.guild, user=NS(id=1, roles=[NS(id=mr.STAFF_ROLE_ID)]),
+                        response=NS(send_message=send_message, is_done=lambda: False))
+
+    def test_sin(self):
+        run(self.cog.mr_sin.callback(self.cog, self.inter))
+        emb = self.sent["embed"]
+        self.assertIn("(1 de 4)", emb.title)
+        self.assertIn("<@4>", emb.description)
+        self.assertNotIn("<@99>", emb.description)
+
+    def test_lista_por_rol(self):
+        from discord import app_commands
+        run(self.cog.mr_lista.callback(self.cog, self.inter, app_commands.Choice(name="Healer", value=str(ID["Healer"]))))
+        emb = self.sent["embed"]
+        self.assertIn("Healer: 2", emb.title)
+        self.assertIn("<@1>", emb.description)
+        self.assertIn("<@3>", emb.description)
+        self.assertNotIn("<@50>", emb.description)
+
+    def test_lista_resumen(self):
+        run(self.cog.mr_lista.callback(self.cog, self.inter, None))
+        desc = self.sent["embed"].description
+        self.assertIn("**Healer** — 2", desc)
+        self.assertIn("**Dps** — 1", desc)
+        self.assertIn("Sin rol main — 1", desc)
+
+    def test_sin_permiso(self):
+        said = {}
+
+        async def send_message(text=None, **kw):
+            said["text"] = text
+        inter = NS(guild=self.guild, user=NS(id=7, roles=[]), response=NS(send_message=send_message, is_done=lambda: False))
+        run(self.cog.mr_sin.callback(self.cog, inter))
+        self.assertIn("🔒", said["text"])
+
+
 class ReclutamientoFuente(unittest.TestCase):
     """bot.py no se puede importar en las pruebas: se revisa el código fuente."""
     def test_aceptar_pide_y_guarda_main(self):

@@ -18,6 +18,7 @@ from guildshop import can_manage
 
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ID", "1257896905099444354"))
+MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))     # miembros de la guild (los que deberían tener main)
 NO_MENTIONS = discord.AllowedMentions.none()
 BOMB_ROLE_ID = int(os.getenv("BOMB_ROLE_ID", str(cu.BOMB_ROLE_ID)))   # quien tiene este rol no entra al /top rolsec
 
@@ -141,6 +142,31 @@ class MainRoleCog(commands.Cog):
         else:
             await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
 
+    def guild_members(self, guild) -> list:
+        """Miembros actuales de la guild (rol Miembro), sin bots."""
+        role = guild.get_role(MIEMBRO_ROLE_ID) if guild is not None else None
+        members = role.members if role is not None else []
+        return sorted((m for m in members if not m.bot), key=lambda m: m.display_name.casefold())
+
+    async def send_list(self, interaction: discord.Interaction, title: str, lines: list, empty: str, footer: str):
+        """Lista paginada (efímera) de a 20 líneas."""
+        from paging import PagedView, chunk
+        pages = chunk(lines, 20)
+        embeds = []
+        for n, page in enumerate(pages, start=1):
+            emb = discord.Embed(title=title, color=discord.Color.blurple(), description="\n".join(page) or empty)
+            emb.set_footer(text=footer + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else ""))
+            embeds.append(emb)
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     # ---------- comandos ----------
     mr_g = app_commands.Group(name="mainrole", description="Rol main de los miembros", guild_only=True)
 
@@ -177,6 +203,42 @@ class MainRoleCog(commands.Cog):
             return await _say(interaction, "🔒 Solo el Staff, el Council y los reclutadores pueden cambiar el rol main.")
         await self.run(mdb.set_main, usuario.id, int(rol.value), "manual", None, interaction.user.id, None)
         await _say(interaction, f"✅ Rol main de {usuario.mention}: **{rol.name}**.")
+
+
+    @mr_g.command(name="sin", description="(Staff/Council/Reclutador) Miembros de la guild que no tienen rol main cargado")
+    async def mr_sin(self, interaction: discord.Interaction):
+        if not can_edit(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council y los reclutadores pueden ver esto.")
+        mains = await self.run(mdb.all_mains)
+        members = self.guild_members(interaction.guild)
+        sin = [m for m in members if m.id not in mains]
+        lines = [f"`{i}.` {m.mention} — {discord.utils.escape_markdown(m.display_name)}" for i, m in enumerate(sin, start=1)]
+        await self.send_list(interaction, f"❔ Sin rol main ({len(sin)} de {len(members)})", lines,
+                             "✅ Todos los miembros tienen rol main cargado.", "Cargalo con /mainrole set")
+
+    @mr_g.command(name="lista", description="(Staff/Council/Reclutador) Cuántos miembros tienen cada rol main, o quiénes tienen uno")
+    @app_commands.describe(rol="Rol main (vacío: cantidad por cada rol)")
+    @app_commands.choices(rol=ROLE_CHOICES)
+    async def mr_lista(self, interaction: discord.Interaction, rol: Optional[app_commands.Choice[str]] = None):
+        if not can_edit(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council y los reclutadores pueden ver esto.")
+        mains = await self.run(mdb.all_mains)
+        members = self.guild_members(interaction.guild)
+        if rol is None:
+            counts = {}
+            for m in members:
+                if m.id in mains:
+                    counts[mains[m.id]] = counts.get(mains[m.id], 0) + 1
+            con = sum(counts.values())
+            lines = [f"**{mdb.role_name(rid)}** — {n}" for rid, n in sorted(counts.items(), key=lambda kv: (-kv[1], mdb.role_name(kv[0])))]
+            lines.append(f"\n❔ Sin rol main — {len(members) - con} (ver `/mainrole sin`)")
+            return await self.send_list(interaction, f"⚔ Rol main de los miembros ({len(members)})", lines, "—",
+                                        "Miembros actuales de la guild")
+        rid = int(rol.value)
+        con = [m for m in members if mains.get(m.id) == rid]
+        lines = [f"`{i}.` {m.mention} — {discord.utils.escape_markdown(m.display_name)}" for i, m in enumerate(con, start=1)]
+        await self.send_list(interaction, f"⚔ Main {rol.name}: {len(con)} miembro(s)", lines,
+                             f"Nadie tiene {rol.name} como rol main.", f"Miembros actuales de la guild · {len(members)} en total")
 
 
 async def setup_mainrole(bot, db_path: str, guild_id: int) -> MainRoleCog:
