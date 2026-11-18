@@ -55,7 +55,8 @@ def card_embed(p: wdb.Prize, card_id: int, weight: int, total: int, *, title: st
                show_desc: bool = True) -> discord.Embed:
     """show_desc=False: la descripción no se muestra (solo se ve desde 🎒 Mi inventario)."""
     emb = discord.Embed(title=title, color=p.color)
-    emb.description = f"# {p.name}\n**{p.rarity_label}** · probabilidad **{wdb.chance_text(weight, total)}**"
+    emb.description = f"# {p.name}\n**{p.rarity_label}** · " + (f"probabilidad **{wdb.chance_text(weight, total)}**"
+                                                               if weight > 0 else "ya no sale en el Wujupón")
     if p.description and show_desc:
         emb.description += f"\n\n{p.description}"
     elif p.description:
@@ -88,7 +89,7 @@ def prizes_embeds(prizes: List[wdb.Prize], price: int) -> List[discord.Embed]:
     total = sum(p.weight for p in prizes if p.enabled) or 1
     out = []
     for rarity in wdb.RARITY_ORDER:
-        group = [p for p in prizes if p.rarity == rarity and p.enabled]
+        group = [p for p in prizes if p.rarity == rarity and p.enabled and p.weight > 0]   # peso 0: ya no sale
         if not group:
             continue
         name, emoji, color = wdb.RARITIES[rarity]
