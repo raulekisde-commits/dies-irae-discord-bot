@@ -5444,6 +5444,91 @@ CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
 CTA_VOICE_RE = re.compile(r"^!voice\s*$", re.I)
 CTA_LOCK_RE = re.compile(r"^!(un)?lock\b\s*(.*)$", re.I | re.S)
 CTA_FREE_RE = re.compile(r"^!(no)?libre\b\s*(.*)$", re.I | re.S)
+CTA_FLEX_RE = re.compile(r"^!flex\b\s*(.*)$", re.I | re.S)
+
+
+def cta_slot_played_role(slot: dict) -> Optional[int]:
+    """Rol de juego (de los que se eligen como main) de una posición de la CTA."""
+    return _mrdb_recruit.slot_role(cu.required_role(slot.get("role_ids")), slot.get("role_name"))
+
+
+async def cta_flex_notice(message: discord.Message, run: dict, member: discord.Member, slot: dict):
+    """Si alguien se anota en una posición que no es de su rol main, avisa en el hilo que está jugando Flex."""
+    if run.get("kind") == "content":
+        return
+    played = cta_slot_played_role(slot)
+    if played is None:
+        return
+    try:
+        main = await asyncio.to_thread(_mrdb_recruit.get_main, DB_PATH, member.id)
+    except Exception:
+        return
+    if not main or int(main["role_id"]) == played:
+        return
+    text = (f"🔄 {member.mention} está jugando **Flex**: se anotó de **{_mrdb_recruit.role_name(played)}** "
+            f"y su main es **{_mrdb_recruit.role_name(main['role_id'])}**.")
+    try:
+        await message.reply(text, mention_author=False, allowed_mentions=CTA_NO_PINGS)
+    except discord.HTTPException:
+        pass
+
+
+async def cta_flex_list(message: discord.Message, run: dict, arg: str):
+    """«!flex @Rol» (o el nombre; varios separados por coma) en el hilo: anotados en posiciones de ese rol que no es su main.
+    «!flex» solo: todos los anotados fuera de su main, agrupados por el rol que juegan."""
+    wanted = [r.id for r in message.role_mentions if r.id in _mrdb_recruit.MAIN_ROLES]
+    bad = [r for r in message.role_mentions if r.id not in _mrdb_recruit.MAIN_ROLES]
+    for name in [p.strip().lstrip("@").strip() for p in re.sub(r"<@&\d+>", "", arg or "").split(",") if p.strip().lstrip("@").strip()]:
+        hit = next((rid for rid, n in _mrdb_recruit.MAIN_ROLES.items() if n.casefold() == name.casefold()), None)
+        hit = hit if hit is not None else _mrdb_recruit.parse_main(name)
+        if hit is None:
+            return await cta_reply_short(message, f"No encuentro el rol **{discord.utils.escape_markdown(name)}**. Usá `!flex @Rol` (ej: `!flex @Dps`).", 12)
+        wanted.append(hit)
+    if bad and not wanted:
+        return await cta_reply_short(message, ", ".join(r.mention for r in bad) + " no es un rol de juego. Usá `!flex @Rol` (ej: `!flex @Dps`).", 12)
+    wanted = list(dict.fromkeys(wanted))
+    snapshot = json.loads(run["snapshot_json"])
+    by_key = {cta_slot_key(s): (n, s) for n, s in cta_number_slots(snapshot["slots"])}
+    signups = cta_get_signups(int(run["id"]))
+    mains = await asyncio.to_thread(_mrdb_recruit.get_mains, DB_PATH, [s["user_id"] for s in signups])
+    flex: dict = {}
+    no_main = 0
+    for su in signups:
+        hit = by_key.get(su["slot_key"])
+        if hit is None:
+            continue
+        number, slot = hit
+        played = cta_slot_played_role(slot)
+        if played is None or (wanted and played not in wanted):
+            continue
+        main = mains.get(int(su["user_id"]))
+        if main is None:
+            no_main += 1
+        elif main != played:
+            flex.setdefault(played, []).append((number, int(su["user_id"]), main))
+    scope = ", ".join(f"**{_mrdb_recruit.role_name(r)}**" for r in wanted) if wanted else "ningún rol"
+    if not flex:
+        lines = [f"🔄 Nadie anotado de {scope} está jugando Flex." if wanted else "🔄 Nadie anotado está jugando Flex (todos en su main)."]
+    else:
+        total = sum(len(v) for v in flex.values())
+        lines = [f"🔄 **Jugando Flex** ({total})" + (f" · {scope}" if wanted else "") + ":"]
+        for played in sorted(flex, key=lambda r: _mrdb_recruit.role_name(r)):
+            lines.append(f"\n**{_mrdb_recruit.role_name(played)}** ({len(flex[played])})")
+            for number, uid, main in sorted(flex[played]):
+                lines.append(f"• `{number}` <@{uid}> — main {_mrdb_recruit.role_name(main)}")
+    if no_main:
+        lines.append(f"\n_{no_main} anotado(s) sin rol main cargado (no se cuentan)._")
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > 1900:
+            await message.channel.send(chunk, allowed_mentions=CTA_NO_PINGS)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        try:
+            await message.reply(chunk, mention_author=False, allowed_mentions=CTA_NO_PINGS)
+        except discord.HTTPException:
+            await message.channel.send(chunk, allowed_mentions=CTA_NO_PINGS)
 
 
 async def cta_extend_close(run: dict, member, arg: Optional[str]):
@@ -5654,6 +5739,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if free_cmd:
         await cta_role_lock_command(message, run, bool(free_cmd.group(1)), free_cmd.group(2), free=True)
         return True
+    flex_cmd = CTA_FLEX_RE.match((message.content or "").strip())
+    if flex_cmd:
+        await cta_flex_list(message, run, flex_cmd.group(1))
+        return True
     add_time = CTA_ADD_TIME_RE.match((message.content or "").strip())
     if add_time:
         await cta_add_time(message, run, add_time.group(1))
@@ -5821,10 +5910,12 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         cta_audit(int(run["guild_id"]), member.id, "move_signup", run_id, f"{extra}->{cta_slot_key(slot)}")
         cta_request_board_refresh(run_id)
         await cta_reply_short(message, f"Pasaste de la posición {old_no} a la {number} · {role_label}.", 10)
+        await cta_flex_notice(message, run, member, slot)
     else:
         cta_audit(int(run["guild_id"]), member.id, "signup", run_id, cta_slot_key(slot))
         cta_request_board_refresh(run_id)
         await cta_ack_ok(message, f"Quedaste anotado en la posición {number} · {role_label}.")
+        await cta_flex_notice(message, run, member, slot)
     return True
 
 
@@ -5864,6 +5955,7 @@ async def cta_handle_staff_command(message, run: dict, snapshot: dict, mentions:
             cta_request_board_refresh(run_id)
             verb = "Pasé a" if code == "moved" else "Anoté a"
             await cta_ack_ok(message, f"{verb} {target.mention} en la posición {number} · {label}.")
+            await cta_flex_notice(message, run, target, slot)
         return True
 
     # action == "leave"
