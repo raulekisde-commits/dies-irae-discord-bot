@@ -86,6 +86,34 @@ class Resp:
         self.edited.append((content, kw))
 
 
+class MiembroKickTests(unittest.TestCase):
+    def setUp(self):
+        self.guild = world()
+        self.staff = member(10, 30, roles=(rg.STAFF_ROLE_ID,))
+        self.council = member(11, 35, roles=(gs.COUNCIL_ROLE_ID,))
+        self.admin = member(12, 40, admin=True)
+
+    def test_staff_council_y_admin_expulsan_a_un_miembro_comun(self):
+        for actor in (self.staff, self.council, self.admin):
+            self.assertIsNone(ex.check_member_kick(actor, member(20, 5), self.guild))
+
+    def test_ningun_rol_protegido_se_puede_expulsar_ni_siendo_admin(self):
+        for name, rid in ex.PROTECTED_ROLES:
+            msg = ex.check_member_kick(self.admin, member(20, 5, roles=(rid,)), self.guild)
+            self.assertIsNotNone(msg, name)
+            self.assertIn(name, msg)
+
+    def test_un_miembro_comun_no_puede_usarlo(self):
+        msg = ex.check_member_kick(member(21, 5), member(20, 4, roles=(ex.PROTECTED_ROLES[2][1],)), self.guild)
+        self.assertIn("Solo el Staff", msg)                          # no revela qué roles están protegidos
+
+    def test_cubre_los_roles_pedidos(self):
+        import killboards as kbm
+        ids = {rid for _n, rid in ex.PROTECTED_ROLES}
+        for rid in (rg.STAFF_ROLE_ID, kbm.OPINOLOGO_ROLE_ID, kbm.CORE_MEMBER_ROLE_ID, kbm.COUNCIL_ROLE_ID, 1257896905099444354):
+            self.assertIn(rid, ids)
+
+
 class FlowTests(unittest.TestCase):
     def setUp(self):
         self.audits, self.kicked = [], []
@@ -127,6 +155,13 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.kicked, [])
         self.assertIn("igual o más alto", i.response.edited[0][0])
 
+    def test_miembro_kick_revalida_roles_protegidos_al_confirmar(self):
+        self.target.roles = [role(ex.PROTECTED_ROLES[3][1], 4)]       # mientras tanto lo hicieron Reclutador
+        i = self.inter()
+        asyncio.run(self.cog.confirmed(i, 10, 20, "", ex.check_member_kick))
+        self.assertEqual(self.kicked, [])
+        self.assertIn("Reclutador", i.response.edited[0][0])
+
     def test_si_ya_no_esta_no_hace_nada(self):
         i = self.inter()
         asyncio.run(self.cog.confirmed(i, 10, 77, ""))
@@ -142,6 +177,7 @@ class RegistroTests(unittest.TestCase):
         self.added = []
         asyncio.run(run())
         self.assertIn("expulsar", rg.EXEMPT_COMMANDS)
+        self.assertIn("miembro kick", rg.EXEMPT_COMMANDS)
         self.assertEqual(len(self.added), 1)
 
     async def _add(self, cog, **kw):
