@@ -1796,8 +1796,9 @@ class RecruitView(discord.ui.View):
             return False
 
         recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
-        if recruiter_role is None or recruiter_role not in interaction.user.roles:
-            await respond_ephemeral(interaction, "❌ Solo reclutadores pueden usar estos botones.")
+        is_recruiter = recruiter_role is not None and recruiter_role in interaction.user.roles
+        if not is_recruiter and not is_council_or_admin(interaction.user):
+            await respond_ephemeral(interaction, "❌ Solo reclutadores y Council pueden usar estos botones.")
             return False
 
         # Validar que el canal sea un ticket válido
@@ -1831,7 +1832,8 @@ class RecruitView(discord.ui.View):
                 member = None
         return member
 
-    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str, extra_role_ids=(), main_role_id: Optional[int] = None):
+    async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str, extra_role_ids=(), main_role_id: Optional[int] = None,
+                            nick_override: Optional[str] = None):
         member = await self._get_applicant(interaction)
         if member is None:
             return await respond_ephemeral(interaction, "❌ No encontré al postulante (se fue del servidor o su ID no es válido).")
@@ -1845,7 +1847,8 @@ class RecruitView(discord.ui.View):
             return await respond_ephemeral(interaction, "❌ Los roles del bot no están bien configurados. Avisale a un administrador.")
 
         # Si el ticket trae el nick de Albion: se REGISTRA al postulante y los roles se dan recién cuando figure dentro de la guild.
-        nick = recruit_nick_from_message(getattr(interaction, "message", None))
+        original_nick = recruit_nick_from_message(getattr(interaction, "message", None))
+        nick = nick_override or original_nick
         reg_cog = interaction.client.get_cog("RegistrationCog") if nick else None
         roles_pending = False
         if nick and reg_cog is not None:
@@ -1887,6 +1890,9 @@ class RecruitView(discord.ui.View):
             except Exception:
                 traceback.print_exc()
             main_fields = [("⚔ Rol main confirmado", _mrdb_recruit.role_name(main_role_id), True)]
+        if nick_override and nick_override != original_nick:
+            main_fields.append(("✏️ Nick corregido", f"{discord.utils.escape_markdown(original_nick or '—')} → "
+                                                     f"**{discord.utils.escape_markdown(nick_override)}**", True))
 
         # LOG
         try:
@@ -2128,9 +2134,28 @@ class RecruitRolesView(discord.ui.View):
         self.select.callback = self.picked
         self.add_item(self.select)
         self.chosen = [default_role_id] if default_role_id in RECRUIT_CTA_ROLES else []
+        self.raw_main = ""
+        self.original_nick = recruit_nick_from_message(getattr(origin, "message", None))
+        self.nick = self.original_nick
         ok = discord.ui.Button(label="Confirmar y aceptar", emoji="✅", style=discord.ButtonStyle.success)
         ok.callback = self.confirm
         self.add_item(ok)
+        if self.original_nick:                       # tickets viejos sin nick: siguen el flujo de siempre
+            edit = discord.ui.Button(label="Editar nick", emoji="✏️", style=discord.ButtonStyle.secondary)
+            edit.callback = self.edit_nick
+            self.add_item(edit)
+
+    def render(self) -> str:
+        text = (f"⚔ **Rol main** (escribió: *{discord.utils.escape_markdown(self.raw_main or '—')}*) y 🎭 **roles de CTA** que le vas a dar.\n"
+                "👁️ El rol **Observación** se le da siempre.")
+        if self.nick:
+            changed = " *(corregido)*" if self.nick != self.original_nick else ""
+            text += (f"\n🎮 **Nick en Albion:** `{self.nick}`{changed} — ¿está bien escrito? "
+                     "Si no, tocá **✏️ Editar nick** antes de aceptar.")
+        return text
+
+    async def edit_nick(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(RecruitNickModal(self))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.origin.user.id:
@@ -2163,8 +2188,44 @@ class RecruitRolesView(discord.ui.View):
             child.disabled = True
         self.stop()
         await interaction.response.edit_message(content=f"⏳ Aceptando con: **{label}**…", view=self)
+        nick_override = None
+        if self.nick and self.nick != self.original_nick:
+            nick_override = self.nick
+            await recruit_set_ticket_nick(getattr(self.origin, "message", None), self.nick)
         # accept_player responde con followups sobre la interacción del botón original
-        await self.ticket_view.accept_player(self.origin, primary, label, extra, main_role_id=self.main_id)
+        await self.ticket_view.accept_player(self.origin, primary, label, extra, main_role_id=self.main_id, nick_override=nick_override)
+
+
+async def recruit_set_ticket_nick(message, nick: str) -> None:
+    """Corrige el nick de Albion en el embed de datos del ticket (queda bien en el ticket y en el log)."""
+    if message is None:
+        return
+    for emb in (getattr(message, "embeds", None) or []):
+        for i, f in enumerate(emb.fields):
+            if f.name == RECRUIT_NICK_FIELD:
+                emb.set_field_at(i, name=f.name, value=nick[:1000], inline=f.inline)
+                try:
+                    await message.edit(embeds=message.embeds)
+                except discord.HTTPException:
+                    pass
+                return
+
+
+class RecruitNickModal(discord.ui.Modal, title="Corregir nick en Albion"):
+    """Lo abre el reclutador al aceptar, si el nick que escribió el postulante está mal."""
+    def __init__(self, roles_view: "RecruitRolesView"):
+        super().__init__(timeout=300)
+        self.roles_view = roles_view
+        self.nick = discord.ui.TextInput(label="Nick en Albion", default=roles_view.nick[:40], placeholder="Nombre exacto en el juego",
+                                         required=True, max_length=40)
+        self.add_item(self.nick)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        value = (self.nick.value or "").strip()
+        if not value:
+            return await interaction.response.send_message("❌ El nick no puede quedar vacío.", ephemeral=True)
+        self.roles_view.nick = value
+        await interaction.response.edit_message(content=self.roles_view.render(), view=self.roles_view)
 
 
 class RecruitTicketView(discord.ui.View):
@@ -2186,8 +2247,8 @@ class RecruitTicketView(discord.ui.View):
                 if f.name == RECRUIT_MAIN_FIELD:
                     main = f.value
         view = RecruitRolesView(self, interaction, _mrdb_recruit.parse_main(main))
-        await interaction.response.send_message(f"⚔ **Rol main** (escribió: *{discord.utils.escape_markdown(main or '—')}*) y 🎭 **roles de CTA** que le vas a dar.\n"
-                                                "👁️ El rol **Observación** se le da siempre.", view=view, ephemeral=True)
+        view.raw_main = main
+        await interaction.response.send_message(view.render(), view=view, ephemeral=True)
 
     @discord.ui.button(label="❌ Rechazar", style=discord.ButtonStyle.secondary, custom_id="recruit2_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2689,6 +2750,9 @@ async def create_recruit_ticket(interaction: discord.Interaction, answers: dict,
         user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True),
         recruiter_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
     }
+    council_role = guild.get_role(COUNCIL_ROLE_ID)
+    if council_role is not None:
+        overwrites[council_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
     if bot_member:
         overwrites[bot_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
 
