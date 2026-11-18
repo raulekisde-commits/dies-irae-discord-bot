@@ -124,6 +124,17 @@ def get_mains(db_path: str, user_ids) -> Dict[int, int]:
         conn.close()
 
 
+def all_mains(db_path: str) -> Dict[int, int]:
+    """{user_id: role_id main} de todos los que tienen main guardado."""
+    conn = connect(db_path)
+    try:
+        return {int(r["user_id"]): int(r["role_id"]) for r in conn.execute("SELECT user_id, role_id FROM member_main_role")}
+    except sqlite3.OperationalError:            # todavía no existe la tabla
+        return {}
+    finally:
+        conn.close()
+
+
 def slot_role(role_id, role_name_text: Optional[str]) -> Optional[int]:
     """Rol de juego (de MAIN_ROLES) de una posición de CTA: el rol pedido si es de juego; si no, por el nombre de la posición."""
     try:

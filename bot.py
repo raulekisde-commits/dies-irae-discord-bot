@@ -7770,6 +7770,8 @@ HELP_SECTIONS = [
         ("/exmiembros listar · ver [personaje] [usuario]", "Staff / Council / Reclutador", "Gente que estuvo en la guild de Albion y se fue (historial reconstruido + cada salida nueva, detectada sola). Si un ex-miembro abre ticket de reclutamiento, el ticket se marca como «quiere volver a entrar» y se le pregunta por qué se fue y por qué vuelve."),
         ("/mainrole sync", "Council", "Carga el rol main de cada miembro leyendo los logs de «POSTULACIÓN ACEPTADA» (vale el más reciente; no pisa lo que eligió un reclutador o se cargó a mano). Devuelve un CSV con los que no se pudieron resolver."),
         ("/mainrole set [usuario] [rol]", "Staff / Council / Reclutador", "Cambia a mano el rol main de un miembro. Al aceptar un reclutamiento el reclutador lo elige siempre; /stats muestra en qué % de sus CTA lo jugó."),
+        ("/mainrole sin", "Staff / Council / Reclutador", "Lista los miembros de la guild que no tienen rol main cargado."),
+        ("/mainrole lista [rol]", "Staff / Council / Reclutador", "Cuántos miembros tienen cada rol main; con un rol (ej: Healer, Dps), quiénes lo tienen como main."),
         ("/warnings usuario", "Staff / Council", "Lista los warnings de una persona con fecha, quién lo puso y motivo (respuesta privada)."),
         ("/warning-top", "Staff / Council", "Top de quién tiene más warnings (lo ve solo quien lo ejecuta)."),
         ("/canal entradas [canal] [desactivar]", "Council / Admin", "Define el canal donde el bot menciona a quien entra al servidor («@persona entró al servidor»), sin bienvenida."),
