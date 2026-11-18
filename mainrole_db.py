@@ -109,6 +109,33 @@ def get_main(db_path: str, user_id: int) -> Optional[dict]:
         conn.close()
 
 
+def get_mains(db_path: str, user_ids) -> Dict[int, int]:
+    """{user_id: role_id main} de los que tienen main guardado."""
+    ids = [int(u) for u in user_ids]
+    if not ids:
+        return {}
+    conn = connect(db_path)
+    try:
+        q = f"SELECT user_id, role_id FROM member_main_role WHERE user_id IN ({','.join('?' * len(ids))})"
+        return {int(r["user_id"]): int(r["role_id"]) for r in conn.execute(q, ids)}
+    except sqlite3.OperationalError:            # todavía no existe la tabla
+        return {}
+    finally:
+        conn.close()
+
+
+def slot_role(role_id, role_name_text: Optional[str]) -> Optional[int]:
+    """Rol de juego (de MAIN_ROLES) de una posición de CTA: el rol pedido si es de juego; si no, por el nombre de la posición."""
+    try:
+        if role_id is not None and int(role_id) in MAIN_ROLES:
+            return int(role_id)
+    except (TypeError, ValueError):
+        pass
+    name = (role_name_text or "").strip().casefold()
+    hit = next((rid for rid, n in MAIN_ROLES.items() if n.casefold() == name), None)
+    return hit if hit is not None else parse_main(role_name_text or "")
+
+
 def main_share(db_path: str, user_id: int) -> Optional[Tuple[int, int, int]]:
     """(role_id main, CTA cerradas jugando el main, CTA cerradas anotado). None si no tiene rol main guardado."""
     m = get_main(db_path, user_id)
