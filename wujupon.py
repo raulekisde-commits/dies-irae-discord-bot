@@ -21,6 +21,7 @@ from guildshop import COUNCIL_ROLE_ID, can_manage
 NO_MENTIONS = discord.AllowedMentions.none()
 GOLD = 0xF1C40F
 SPIN_FRAMES = ("🎰 Girando el Wujupón…", "🎰 ✨ ✨ ✨")
+MULTI_SPINS = 10                                     # tiradas de la multi (botón «Tirar x10»)
 PHOTO_SECONDS = 60             # la foto de un premio se borra pasado este tiempo
 SPIN_CLEANUP_SECONDS = 60      # los mensajes privados de cada tirada se borran solos pasado este tiempo
 
@@ -178,6 +179,10 @@ class PanelView(discord.ui.View):
     async def spin(self, interaction, button):
         await self.cog.do_spin(interaction)
 
+    @discord.ui.button(label="Tirar x10", style=discord.ButtonStyle.success, custom_id="wjp:spin10", emoji="🎰")
+    async def spin10(self, interaction, button):
+        await self.cog.do_multi_spin(interaction)
+
     @discord.ui.button(label="Comprar tiradas", style=discord.ButtonStyle.primary, custom_id="wjp:buy", emoji="🛒")
     async def buy(self, interaction, button):
         await self.cog.open_buy(interaction)
@@ -241,12 +246,18 @@ class SpinAgainView(OwnerView):
         if spins <= 0:
             self.spin_again.label = "Comprar tiradas"
             self.spin_again.emoji = "🛒"
+        if spins < MULTI_SPINS:
+            self.remove_item(self.spin_multi)
 
     @discord.ui.button(label="Tirar otra", style=discord.ButtonStyle.success, emoji="🎰")
     async def spin_again(self, interaction, button):
         if button.label == "Comprar tiradas":
             return await self.cog.open_buy(interaction)
         await self.cog.do_spin(interaction)
+
+    @discord.ui.button(label="Tirar x10", style=discord.ButtonStyle.success, emoji="🎰")
+    async def spin_multi(self, interaction, button):
+        await self.cog.do_multi_spin(interaction)
 
     @discord.ui.button(label="Mi inventario", style=discord.ButtonStyle.secondary, emoji="🎒")
     async def inv(self, interaction, button):
@@ -450,6 +461,7 @@ class WujuponCog(commands.Cog):
             f"Cada tirada cuesta **{money(price)}**."
             + (f" Límite: **{limit}** tirada(s) compradas por día (UTC)." if limit else "") + "\n\n"
             "🎰 **Tirar Wujupón** — usa una tirada y te da una carta al azar.\n"
+            f"🎰 **Tirar x10** — multi: usa {MULTI_SPINS} tiradas de una y te muestra todas las cartas.\n"
             "🛒 **Comprar tiradas** — compralas con tu balance.\n"
             "🎒 **Mi inventario** — mirá tus cartas y canjealas.\n"
             "📜 **Ver premios** — rarezas, probabilidades y cómo se entregan.\n"
@@ -589,6 +601,14 @@ class WujuponCog(commands.Cog):
         if not animated:
             extra = await _say(interaction, embed=final, view=view)
         self._cleanup_later(interaction, extra)
+        await self._after_pull(interaction, user, res)
+        try:
+            await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
+        except Exception:
+            traceback.print_exc()
+
+    async def _after_pull(self, interaction: discord.Interaction, user, res: wdb.PullResult):
+        """Efectos de una carta recién sacada: anuncio de Wuju/embo, encargo al Council o carta mala automática."""
         if res.gained:                                   # Wuju Coins / embo: se anuncia cuánto salió en el canal de efectos
             efx = self.bot.get_cog("EfectosCog")
             if efx is not None:
@@ -602,8 +622,56 @@ class WujuponCog(commands.Cog):
                 if msg:
                     extra = await _say(interaction, msg)
                     self._cleanup_later(interaction, extra)
+
+    async def do_multi_spin(self, interaction: discord.Interaction, count: int = None):
+        """Multi: usa `count` tiradas seguidas (gratis del día primero) y muestra todas las cartas en un solo mensaje."""
+        count = count or MULTI_SPINS
+        if await self._paused(interaction):
+            return
+        user = interaction.user
+        role_ids = [r.id for r in getattr(user, "roles", [])]
+        results: List[wdb.PullResult] = []
+        async with self._lock(user.id):
+            have = await self.run(wdb.get_spins, user.id) + await self.run(wdb.free_spins_left, user.id, role_ids)
+            if have < count:
+                price = await self.run(wdb.get_price)
+                msg = await _say(interaction, f"🎟️ Para la multi necesitás **{count}** tiradas y tenés **{have}**. "
+                                              f"Cada una cuesta **{money(price)}**.", view=SpinAgainView(self, user.id, 0))
+                return self._cleanup_later(interaction, msg)
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+            except Exception:
+                pass
+            for i in range(count):
+                res = await self.run(wdb.pull, user.id, f"pull:{interaction.id}:{i}", None, role_ids)
+                if res.status != "ok":
+                    break
+                results.append(res)
+            free_left = await self.run(wdb.free_spins_left, user.id, role_ids)
+        if not results:
+            msg = await _say(interaction, "❌ No hay premios habilitados en este momento.")
+            return self._cleanup_later(interaction, msg)
+        best = min(results, key=lambda r: wdb.RARITY_ORDER.index(r.prize.rarity))
+        emb = discord.Embed(title=f"🎰 Multi x{len(results)}", color=best.prize.color)
+        lines = []
+        for r in sorted(results, key=lambda r: -wdb.RARITY_ORDER.index(r.prize.rarity)):
+            tag = (" — ☠️ se aplicó" if r.prize.forced and r.prize.effect else " — ☠️ al Council" if r.prize.forced
+                   else f" — ✨ {r.gained}" if r.gained else "")
+            lines.append(f"{r.prize.rarity_label} · **{r.prize.name}** (#{r.card_id}){tag}")
+        emb.description = "\n".join(lines)[:4000]
+        left = results[-1].spins_left
+        emb.add_field(name="🎟️ Tiradas restantes", value=str(left) + (f" (+{free_left} gratis hoy)" if free_left else ""))
+        emb.set_footer(text="Las cartas buenas ya están en 🎒 Mi inventario."
+                            + (f" · este mensaje se borra en {self.cleanup_delay} s." if self.cleanup_delay else ""))
+        msg = await _say(interaction, embed=emb, view=SpinAgainView(self, user.id, left + free_left))
+        self._cleanup_later(interaction, msg)
+        for r in results:
+            try:
+                await self._after_pull(interaction, user, r)
+            except Exception:
+                traceback.print_exc()
         try:
-            await self.announce_pending()        # si falla, el loop de 60 s lo reintenta
+            await self.announce_pending()
         except Exception:
             traceback.print_exc()
 

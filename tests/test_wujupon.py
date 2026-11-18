@@ -689,6 +689,26 @@ class WujuponDiscordTests(DiscordBase):
         self.assertIn(self.alice.mention, desc)
         self.assertIn("probabilidad", desc)
 
+    def test_multi_x10(self):
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=12, request_key="t:multi", reason="t")
+        i = self.inter(self.alice)
+        run(self.cog.do_multi_spin(i))
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 2)
+        emb = i.response.sent[-1][1]["embed"]
+        self.assertIn("Multi x10", emb.title)
+        self.assertEqual(len(emb.description.splitlines()), 10)
+        self.assertEqual(len(self.feedch.sent), 10)
+
+    def test_multi_sin_tiradas_suficientes(self):
+        wdb.gift_spins(self.db, actor_id=1, user_id=self.alice.id, count=9, request_key="t:multi9", reason="t")
+        i = self.inter(self.alice)
+        run(self.cog.do_multi_spin(i))
+        self.assertIn("necesitás **10**", i.text)
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 9)
+
+    def test_panel_tiene_boton_multi(self):
+        self.assertIn("wjp:spin10", [c.custom_id for c in wj.PanelView(self.cog).children])
+
     def _spy_delete(self, i):
         i.deleted = 0
 
