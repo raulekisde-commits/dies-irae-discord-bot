@@ -143,11 +143,11 @@ CATALOG = [
      "Reclamás una casa del HO.", 0),
     ("lootsplit_remove", "Sacar del lootsplit", "epic", 500, "Staff", None, 0, 0, "", 1,
      "Sacás a un jugador del lootsplit de la última CTA." + SHIELD_NOTE, 0),
-    ("flex_cta", "Anotación libre en CTA", "epic", 1000, "Bot", None, 0, 0, "", 0,
+    ("flex_cta", "Anotación libre en CTA", "epic", 0, "Bot", None, 0, 0, "", 0,
      "En el próximo /cta te podés anotar en el rol que quieras.", 0),
-    ("party_switch", "Staff a tu elección en la CTA", "epic", 700, "Bot", None, 0, 0, "", 1,
+    ("party_switch", "Staff a tu elección en la CTA", "epic", 950, "Bot", None, 0, 0, "", 1,
      "En una CTA activa, elegís a alguien del Staff y el slot libre donde tiene que jugar." + SHIELD_NOTE, 0),
-    ("party1_slot", "Slot libre en Party 1", "epic", 700, "Bot", None, 0, 0, "", 0,
+    ("party1_slot", "Slot libre en Party 1", "epic", 950, "Bot", None, 0, 0, "", 0,
      "Te anotás en Party 1 en cualquier rol libre, sin la espera de 5 min de Legacy.", 0),
     ("weapon_63", "Arma 6.3 del Guild Shop (2M)", "epic", 300, "Staff", None, 0, 2_000_000, "silver", 0,
      "Un arma 6.3 del Guild Shop de hasta 2M.", 0),
@@ -162,7 +162,7 @@ CATALOG = [
      + SHIELD_NOTE, 0),
     ("split_no_join", "Split sin participar", "epic", 500, "Staff", None, 0, 0, "", 0,
      "Cobrás el split de una CTA del día sin haber ido.", 0),
-    ("coinflip_15m", "Coinflip hasta 15M", "epic", 650, "Bot", None, 0, 0, "", 0,
+    ("coinflip_15m", "Coinflip hasta 15M", "epic", 900, "Bot", None, 0, 0, "", 0,
      "Un coinflip del casino con apuesta máxima de 15M. Rigen todas las reglas del coinflip.", 0),
     ("morgana_chest", "Cofre de Morgana en el HO", "epic", 400, "Staff", None, 0, 0, "", 0,
      "Ponés un cofre de Morgana en el HO, sobre un spot que no sea de la guild.", 0),
@@ -172,7 +172,7 @@ CATALOG = [
      "Muteás a un jugador en el voice por 2 horas. Si ya estaba muteado, se suma." + SHIELD_NOTE, 0),
     ("casino_block_24h", "Bloqueo de casino 24 h", "epic", 700, "Bot", None, 0, 0, "", 1,
      "Bloqueás a un jugador del casino por 24 horas. Si ya estaba bloqueado, se suma." + SHIELD_NOTE, 0),
-    ("shield_12h", "🛡️ Escudo 12 h", "epic", 800, "Bot", None, 0, 0, "", 0,
+    ("shield_12h", "🛡️ Escudo 12 h", "epic", 1050, "Bot", None, 0, 0, "", 0,
      "Durante 12 h nadie te puede usar cartas y no te afectan las cartas malas. No se acumula.", 0),
     ("clean_all", "🧹 Limpieza total", "epic", 600, "Bot", None, 0, 0, "", 0,
      "Te saca mutes de chat y voice, el congelamiento de balance y el de Wujupón. Si no tenés nada, no se gasta.", 0),
@@ -294,7 +294,7 @@ def parse_effect(handler: Optional[str]) -> Optional[Tuple[str, Optional[float]]
     return parts[1], (float(parts[2]) if len(parts) > 2 else None)
 
 
-CATALOG_VERSION = 16
+CATALOG_VERSION = 17
 # Cartas que cambió cada versión: al actualizar, solo esas vuelven a tomar lo del código (aunque el Council las haya editado).
 # Versión 2 = catálogo completo nuevo (se resetean todas).
 CATALOG_CHANGES = {
@@ -330,6 +330,7 @@ CATALOG_CHANGES = {
          "party1_slot", "party_switch", "shield_12h", "freeze_2h", "ava_replace", "plot_tax0",
          "casino_block_24h", "clean_all", "coinflip_15m", "custom_bomb", "craft_alter_7d", "purge_shield",
          "deny_cta"),   # costo esperado por tirada ≈ 200.000
+    17: ("flex_cta", "party_switch", "party1_slot", "coinflip_15m", "shield_12h"),   # flex_cta ya no sale (las cartas se pueden usar)
 }
 
 SCHEMA = """

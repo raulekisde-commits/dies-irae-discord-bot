@@ -71,6 +71,16 @@ class CatalogTests(unittest.TestCase):
         self.assertAlmostEqual(silver + exp["val"], 198_950.04, places=3)  # margen ≈ 60 % con la tirada a 500.000 (v16)
         self.assertLess(silver + exp["val"], wdb.DEFAULT_PRICE * 0.8)
 
+    def test_flex_cta_ya_no_sale(self):
+        flex = next(c for c in wdb.CATALOG if c[0] == "flex_cta")
+        self.assertEqual(flex[3], 0)
+        prizes = [wdb.Prize(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], bool(c[9]), True, c[10], False, bool(c[11]))
+                  for c in wdb.CATALOG]
+        rng = random.Random(3)
+        self.assertFalse(any(wdb.draw(prizes, rng)[0].key == "flex_cta" for _ in range(3000)))
+        text = "".join(e.description for e in wj.prizes_embeds(prizes, wdb.DEFAULT_PRICE))
+        self.assertNotIn("Anotación libre en CTA", text)
+
     def test_texto_de_chance(self):
         self.assertEqual(wdb.chance_text(75), "0,075 %")
         self.assertEqual(wdb.chance_text(11000), "11 %")
@@ -440,13 +450,13 @@ class CatalogoV2Tests(DbBase):
         conn.close()
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
-        p = wdb.get_prize(self.db, "flex_cta")
-        self.assertEqual((p.name, p.weight), ("Anotación libre en CTA", 1000))
+        p = wdb.get_prize(self.db, "party_switch")
+        self.assertEqual((p.name, p.weight), ("Staff a tu elección en la CTA", 950))
         # una edición posterior del Council se mantiene en los reinicios siguientes
-        wdb.edit_prize(self.db, "flex_cta", actor_id=1, name="Flex", description="Mía")
+        wdb.edit_prize(self.db, "party_switch", actor_id=1, name="Flex", description="Mía")
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
-        p = wdb.get_prize(self.db, "flex_cta")
+        p = wdb.get_prize(self.db, "party_switch")
         self.assertEqual((p.name, p.description), ("Flex", "Mía"))
 
     def test_migracion_v3_solo_toca_las_cartas_que_cambiaron(self):
@@ -895,10 +905,10 @@ class WujuponDiscordTests(DiscordBase):
         self.assertEqual(wdb.get_daily_limit(self.db), 0)
         leg = discord.app_commands.Choice(name="Legendaria", value="legendary")
         i = self.inter(self.council)
-        run(self.cog.odds_card.callback(self.cog, i, "flex_cta", "10", leg))
+        run(self.cog.odds_card.callback(self.cog, i, "party_switch", "10", leg))
         self.assertIn("Legendaria", i.text)
-        self.assertIn("109 %", i.text)                               # avisa que ya no suma 100 %
-        p = wdb.get_prize(self.db, "flex_cta")
+        self.assertIn("109,05 %", i.text)                            # avisa que ya no suma 100 %
+        p = wdb.get_prize(self.db, "party_switch")
         self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
 
     def test_limpiar_cartas_solo_admin_y_con_confirmacion(self):
