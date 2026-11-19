@@ -109,13 +109,27 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(r["players"]["ana"].dropped, 0)
         self.assertEqual(r["players"]["ana"].missing_units, 2)
 
-    def test_filtro_una_comida(self):
-        ev = loot(L("00:33:00", "Ana", "T7_MEAL_OMELETTE_AVALON@2", "Avalonian Pork Omelette"),
-                  L("00:33:01", "Bob", "T7_MEAL_OMELETTE_AVALON@2", "Avalonian Pork Omelette", 2))
-        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Trash")))
-        self.assertTrue(r["players"]["ana"].filtered)
-        self.assertFalse(r["players"]["bob"].filtered)
-        self.assertIn("Faltantes", ca.report_text(r, "CTA"))
+    def test_trash_no_cuenta(self):
+        ev = loot(L("00:33:00", "Ana", "T5_TRASH", "Trash", 3), L("00:33:01", "Ana", "T8_TRASH", "Trash"))
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        self.assertNotIn("ana", r["players"])
+
+    def test_tolerancias_gigantify_y_comidas(self):
+        ev = loot(L("00:33:00", "Ana", "T7_POTION_REVIVE", "Major Gigantify Potion", 25),
+                  L("00:33:01", "Ana", "T7_MEAL_OMELETTE_AVALON@2", "Avalonian Pork Omelette", 2),
+                  L("00:33:02", "Ana", "T8_MEAL_STEW@2", "Beef Stew", 1),                      # 3 comidas: toleradas
+                  L("00:33:03", "Bob", "T7_POTION_REVIVE@1", "Major Gigantify Potion", 20),
+                  L("00:33:04", "Bob", "T7_POTION_REVIVE", "Major Gigantify Potion", 6),       # 26: cuenta
+                  L("00:33:05", "Bob", "T8_MEAL_STEW@2", "Beef Stew", 4),                      # 4 comidas: cuentan
+                  L("00:33:06", "Cam", "T7_POTION_REVIVE", "Major Gigantify Potion", 30))
+        r = ca.audit([ev], chest(C("00:55:00", "Cam", "Major Gigantify Potion", 0, 10)))     # Cam deja 20 sin depositar
+        ana, bob, cam = r["players"]["ana"], r["players"]["bob"], r["players"]["cam"]
+        self.assertEqual(ana.missing, [])
+        self.assertTrue(ana.filtered)
+        self.assertEqual(len(ana.tolerated), 3)
+        self.assertEqual(sorted((m["item"], m["qty"]) for m in bob.missing), [("Beef Stew", 4), ("Major Gigantify Potion", 26)])
+        self.assertEqual((cam.missing, [m["qty"] for m in cam.tolerated]), ([], [20]))
+        self.assertIn("tolerado", ca.report_text(r, "CTA"))
 
 
 class PersistTests(unittest.TestCase):
