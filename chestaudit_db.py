@@ -2,7 +2,8 @@
 y dice qué quedó sin depositar. También guarda lo looteado / dropeado por jugador para /stats jugador.
 
 Reglas (ver claude/diseno-auditoria-chest-cta.md):
-- Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). La Trash no cuenta.
+- Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). No cuentan: Trash, mementos de kill
+  (FURNITUREITEM_KILLTROPHY) y bolsos que no sean 8.1 a 8.4.
 - Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3.
 - Ítem = nombre + encantamiento (la calidad no viene en el loot logger). Las pociones se comparan solo por nombre.
 - Los archivos de distintos loggers se combinan sin duplicar (mismo evento visto por dos personas, ±2 s).
@@ -421,6 +422,22 @@ def is_trash(item_id: str) -> bool:
     return "_TRASH" in str(item_id or "").upper()
 
 
+def is_bag(item_id: str) -> bool:
+    """Bolsos (T4_BAG, T6_BAG@1, T7_BAG_INSIGHT…)."""
+    base = str(item_id or "").upper().split("@", 1)[0]
+    return "_BAG" in base and base[:1] == "T"
+
+
+def ignored(item_id: str) -> bool:
+    """Ítems que no cuentan para nada: Trash, mementos de kill (FURNITUREITEM_KILLTROPHY) y bolsos que no sean 8.1 a 8.4."""
+    iid = str(item_id or "").upper()
+    if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid:
+        return True
+    if is_bag(iid):
+        return not (iid.split("_", 1)[0] == "T8" and enchant_of(iid) in (1, 2, 3, 4))
+    return False
+
+
 def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
     """(faltantes que cuentan, tolerados). Gigantify ≤ 25 y comidas ≤ 3 (sumadas) se toleran."""
     gig = [m for m in items if norm(m["item"]) == GIGANTIFY]
@@ -434,7 +451,7 @@ def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
 
 
 def audit(loot_files: List[List[LootEvent]], chest: List[ChestEntry]) -> dict:
-    events = [e for e in merge_logs(loot_files) if not is_trash(e.item_id)]     # la Trash no cuenta para nada
+    events = [e for e in merge_logs(loot_files) if not ignored(e.item_id)]      # Trash, mementos y bolsos no T8.1-8.4
     deposits, start, last = valid_deposits(chest)
     players, losses = compute(events, deposits)
     for pr in players.values():

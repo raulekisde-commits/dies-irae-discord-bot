@@ -112,8 +112,8 @@ class AuditTests(unittest.TestCase):
 
     def test_si_sigue_looteando_no_murio(self):
         ev = loot(L("00:35:00", "Ana", "T8_HEAD_LEATHER_SET3", "Elder's Assassin Hood"),
-                  L("00:35:30", "Eve", "T5_BAG@2", "Expert's Bag", src="Ana", src_guild="Smogg", by_guild="Ignum"),
-                  L("00:35:40", "Ana", "T5_BAG", "Expert's Bag"))
+                  L("00:35:30", "Eve", "T6_MOUNT_DIREWOLF", "Direwolf", src="Ana", src_guild="Smogg", by_guild="Ignum"),
+                  L("00:35:40", "Ana", "T8_2H_LONGBOW@1", "Elder's Longbow"))
         r = ca.audit([ev], chest(C("00:55:00", "Otro", "Trash")))
         self.assertEqual(r["players"]["ana"].dropped, 0)
         self.assertEqual(r["players"]["ana"].missing_units, 2)
@@ -122,6 +122,20 @@ class AuditTests(unittest.TestCase):
         ev = loot(L("00:33:00", "Ana", "T5_TRASH", "Trash", 3), L("00:33:01", "Ana", "T8_TRASH", "Trash"))
         r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
         self.assertNotIn("ana", r["players"])
+
+    def test_mementos_y_bolsos(self):
+        ev = loot(L("00:33:00", "Ana", "UNIQUE_FURNITUREITEM_KILLTROPHY_OPENWORLD_SMALL", "Combat Memento"),
+                  L("00:33:01", "Ana", "T6_BAG@1", "Master's Bag"),
+                  L("00:33:02", "Ana", "T8_BAG", "Elder's Bag"),
+                  L("00:33:03", "Ana", "T7_BAG_INSIGHT@2", "Grandmaster's Satchel of Insight"),
+                  L("00:33:04", "Ana", "T8_BAG@2", "Elder's Bag"),                          # este sí
+                  L("00:33:05", "Ana", "T8_BAG_INSIGHT@4", "Elder's Satchel of Insight"))     # y este
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        ana = r["players"]["ana"]
+        self.assertEqual(ana.looted, 2)
+        self.assertEqual(sorted((m["item"], m["enchant"]) for m in ana.missing),
+                         [("Elder's Bag", 2), ("Elder's Satchel of Insight", 4)])
+        self.assertFalse(ca.ignored("T8_MOUNT_ARMORED_HORSE"))
 
     def test_tolerancias_gigantify_y_comidas(self):
         ev = loot(L("00:33:00", "Ana", "T7_POTION_REVIVE", "Major Gigantify Potion", 25),
