@@ -4692,6 +4692,53 @@ class CombatlogPanelView(discord.ui.View):
             return await interaction.response.send_message("❌ Esta versión del bot no permite subir archivos con formulario.", ephemeral=True)
         await interaction.response.send_modal(CombatlogUploadModal(int(rows[0]["id"])))
 
+    @discord.ui.button(label="Subir chestlog", style=discord.ButtonStyle.secondary, custom_id="combatlog:chestlog", emoji="📦")
+    async def chestlog(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff_or_council(interaction.user):
+            return await interaction.response.send_message("🔒 Solo el Staff o el Council pueden subir el chestlog.", ephemeral=True)
+        rows = db_fetchall("SELECT id FROM cta_runs WHERE combatlog_message_id=?", (interaction.message.id,)) if interaction.message else []
+        if not rows:
+            return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
+        if not (hasattr(discord.ui, "FileUpload") and hasattr(discord.ui, "Label")):
+            return await interaction.response.send_message("❌ Esta versión del bot no permite subir archivos con formulario.", ephemeral=True)
+        await interaction.response.send_modal(ChestlogUploadModal(int(rows[0]["id"])))
+
+
+class ChestlogUploadModal(discord.ui.Modal):
+    """Formulario del log del chest (Staff/Council): lo reenvía al mismo hilo privado que los combatlogs."""
+    def __init__(self, cta_id: int):
+        super().__init__(title="Subir chestlog", timeout=600)
+        self.cta_id = cta_id
+        self.upload = discord.ui.FileUpload(min_values=1, max_values=5, required=True)
+        self.add_item(discord.ui.Label(text="Log del chest", description="Solo lo ve la administración", component=self.upload))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await cta_chestlog_upload(interaction, self.cta_id, list(getattr(self.upload, "values", None) or []))
+
+
+async def cta_chestlog_upload(interaction: discord.Interaction, cta_id: int, files) -> None:
+    """Reenvía el chestlog al hilo privado de la CTA. Sin tarea, sin tirada y sin aviso en el hilo público."""
+    if not is_staff_or_council(interaction.user):
+        return await interaction.response.send_message("🔒 Solo el Staff o el Council pueden subir el chestlog.", ephemeral=True)
+    if not files:
+        return await interaction.response.send_message("❌ No llegó ningún archivo.", ephemeral=True)
+    run = cta_run_get(cta_id)
+    if not run:
+        return await interaction.response.send_message("No encontré esta CTA.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    th = await cta_combatlog_private_thread(dict(run))
+    if th is None:
+        return await interaction.followup.send("❌ No pude guardar el archivo (no encuentro el canal privado).", ephemeral=True)
+    try:
+        out = [await a.to_file() for a in files]
+        user = interaction.user
+        await th.send(f"📦 Chestlog · {user.mention} (**{discord.utils.escape_markdown(user.display_name)}**) · CTA #{cta_id} · "
+                      f"<t:{int(time.time())}:f>", files=out, allowed_mentions=CTA_NO_PINGS)
+    except Exception as exc:
+        print(f"CTA #{cta_id}: no pude reenviar el chestlog: {exc!r}")
+        return await interaction.followup.send("❌ No pude guardar el archivo. Probá de nuevo.", ephemeral=True)
+    await interaction.followup.send(f"✅ Chestlog guardado en {th.mention}.", ephemeral=True)
+
 
 async def cta_combatlog_upload(interaction: discord.Interaction, cta_id: int, files) -> None:
     """Envío del formulario: reenvía los archivos al hilo privado, avisa en el hilo público, cierra la tarea y da la tirada."""
