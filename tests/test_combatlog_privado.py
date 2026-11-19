@@ -53,3 +53,15 @@ class CombatlogPrivadoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_boton_solucionado_persistente(self):
+        src = open(os.path.join(HERE, "..", "chestaudit.py"), encoding="utf-8").read()
+        self.assertIn('custom_id="chestaudit:solved"', src)
+        self.assertIn("self.bot.add_view(SolvedView(self))", src)
+        i = src.index("    async def solve(")
+        body = src[i:src.index("\n\n\n", i)] if "\n\n\n" in src[i:] else src[i:]
+        self.assertIn("is_staff_or_council(interaction.user)", body)
+        self.assertIn("th.delete()", body)
+        self.assertIn("interaction.message.delete()", body)
+        self.assertIn("WarnView(", body)
+

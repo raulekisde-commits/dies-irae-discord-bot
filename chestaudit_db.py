@@ -58,6 +58,28 @@ CREATE TABLE IF NOT EXISTS chest_audit_players (
     FOREIGN KEY (audit_id) REFERENCES chest_audits(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_chest_audit_players_name ON chest_audit_players(name_norm);
+CREATE TABLE IF NOT EXISTS chest_audit_posts (      -- mensaje general del canal de tags (se borra cuando se soluciona todo)
+    audit_id   INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    deleted_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chest_audit_tags (       -- un mensaje (con hilo y botón Solucionado) por persona tagueada
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_id    INTEGER NOT NULL,
+    guild_id    INTEGER NOT NULL,
+    channel_id  INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    thread_id   INTEGER,
+    name_norm   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    discord_id  INTEGER,
+    title       TEXT,
+    missing     INTEGER NOT NULL DEFAULT 0,
+    resolved_by INTEGER,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chest_audit_tags_msg ON chest_audit_tags(message_id);
 CREATE TABLE IF NOT EXISTS chest_audit_losses (     -- lo looteado que se perdió al morir (para estadísticas)
     audit_id  INTEGER NOT NULL,
     cta_id    INTEGER NOT NULL,
@@ -399,7 +421,8 @@ def audit(loot_files: List[List[LootEvent]], chest: List[ChestEntry]) -> dict:
     for pr in players.values():
         agg: Dict[tuple, dict] = {}
         for lot in pr.lots:
-            m = agg.setdefault(lot.key, {"item": lot.item_name, "enchant": lot.key[1], "qty": 0, "food": is_food(lot.item_id)})
+            m = agg.setdefault(lot.key, {"item": lot.item_name, "item_id": lot.item_id, "enchant": lot.key[1], "qty": 0,
+                                         "food": is_food(lot.item_id)})
             m["qty"] += lot.qty
         items = sorted(agg.values(), key=lambda m: (-m["qty"], m["item"]))
         pr.missing, pr.tolerated = split_tolerated(items)
@@ -520,5 +543,71 @@ def loot_averages(db_path: str, names_norm: Iterable[str]) -> Tuple[float, float
             row = (0, 0)
         n = len(ctas)
         return float(row[0]) / n, float(row[1]) / n, n
+    finally:
+        conn.close()
+
+
+# ---------- tags en el canal ----------
+def set_general(db_path: str, audit_id: int, channel_id: int, message_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT OR REPLACE INTO chest_audit_posts(audit_id, channel_id, message_id) VALUES (?, ?, ?)",
+                         (audit_id, channel_id, message_id))
+    finally:
+        conn.close()
+
+
+def add_tag(db_path: str, audit_id: int, guild_id: int, channel_id: int, message_id: int, name: str,
+            discord_id: Optional[int], title: str, missing: int) -> int:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            cur = conn.execute("INSERT INTO chest_audit_tags(audit_id, guild_id, channel_id, message_id, name_norm, name, discord_id,"
+                               " title, missing) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               (audit_id, guild_id, channel_id, message_id, norm(name), name, discord_id, title, missing))
+            return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def set_tag_thread(db_path: str, tag_id: int, thread_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE chest_audit_tags SET thread_id=? WHERE id=?", (thread_id, tag_id))
+    finally:
+        conn.close()
+
+
+def tag_by_message(db_path: str, message_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM chest_audit_tags WHERE message_id=?", (message_id,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def resolve_tag(db_path: str, tag_id: int, actor_id: int) -> Optional[dict]:
+    """Marca el tag como solucionado (una sola vez). Devuelve {'pending': tags sin solucionar de esa auditoría,
+    'general': mensaje general si quedó en 0 y hay que borrarlo} o None si ya estaba solucionado."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            cur = conn.execute("UPDATE chest_audit_tags SET resolved_by=?, resolved_at=? WHERE id=? AND resolved_at IS NULL",
+                               (actor_id, utcnow_iso(), tag_id))
+            if not cur.rowcount:
+                return None
+            aid = conn.execute("SELECT audit_id FROM chest_audit_tags WHERE id=?", (tag_id,)).fetchone()[0]
+            pending = conn.execute("SELECT COUNT(*) FROM chest_audit_tags WHERE audit_id=? AND resolved_at IS NULL", (aid,)).fetchone()[0]
+            general = None
+            if not pending:
+                g = conn.execute("SELECT channel_id, message_id FROM chest_audit_posts WHERE audit_id=? AND deleted_at IS NULL",
+                                 (aid,)).fetchone()
+                if g:
+                    general = (int(g[0]), int(g[1]))
+                    conn.execute("UPDATE chest_audit_posts SET deleted_at=? WHERE audit_id=?", (utcnow_iso(), aid))
+            return {"pending": int(pending), "general": general}
     finally:
         conn.close()
