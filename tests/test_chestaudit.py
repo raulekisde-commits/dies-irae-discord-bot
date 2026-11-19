@@ -194,7 +194,10 @@ class PersistTests(unittest.TestCase):
         self.assertFalse(ca.mark_tagged(self.db, aid, 99))
         conn = connect(self.db)
         try:
-            for bid, cta in (("b1", 10), ("b2", 11), ("b3", None)):        # CTA 11: con killboard y sin auditoría → 0
+            conn.execute("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, created_at TEXT)")
+            conn.executemany("INSERT INTO cta_runs VALUES (?, ?)", [(10, "2026-11-20T01:00:00+00:00"), (11, "2026-11-21T01:00:00+00:00"),
+                                                                    (12, "2026-11-01T01:00:00+00:00")])   # la 12: antes del sistema
+            for bid, cta in (("b1", 10), ("b2", 11), ("b3", None), ("b4", 12)):   # CTA 11: con killboard y sin auditoría → 0
                 conn.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES (?, ?, 1, 'x')", (bid, cta))
                 conn.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES (?, 'ana', 'Ana')", (bid,))
             conn.execute("INSERT INTO albion_links(discord_id, char_name, registered_at, updated_at) VALUES (5, 'ANA', 'x', 'x')")

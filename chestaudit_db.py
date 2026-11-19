@@ -30,6 +30,8 @@ DEDUPE_SECONDS = 2.0                       # mismo evento en dos combatlogs dist
 DEATH_GAP_SECONDS = 120.0                  # dos loots del mismo cuerpo separados por más de esto = otra muerte
 ALIVE_SECONDS = 60.0                       # si la «víctima» lootea algo en este lapso después, no murió (no se toma como muerte)
 CHEST_WINDOW = timedelta(hours=1)          # depósitos válidos: [último registro − 1 h, último registro]
+# /stats: los promedios de loot por CTA solo cuentan las CTA creadas desde que se empezó a usar la auditoría.
+STATS_SINCE = os.getenv("CHEST_STATS_SINCE", "2026-11-19T06:30:00+00:00")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chest_audits (
@@ -578,8 +580,8 @@ def discord_ids_by_name(db_path: str, names: Iterable[str]) -> Dict[str, int]:
 
 
 def loot_averages(db_path: str, names_norm: Iterable[str]) -> Tuple[float, float, int]:
-    """(promedio looteado, promedio dropeado, CTAs) por CTA. Cuenta toda CTA con killboard cargado (kb_battles.cta_id)
-    en la que aparece el jugador; si no hay auditoría o no looteó, esa CTA suma 0. De cada CTA vale la última auditoría."""
+    """(promedio looteado, promedio dropeado, CTAs) por CTA. Cuenta toda CTA creada desde STATS_SINCE con killboard
+    cargado (kb_battles.cta_id) en la que aparece el jugador; si no hay auditoría o no looteó, esa CTA suma 0. De cada CTA vale la última auditoría."""
     names = [n for n in names_norm if n]
     if not names:
         return 0.0, 0.0, 0
@@ -589,7 +591,8 @@ def loot_averages(db_path: str, names_norm: Iterable[str]) -> Tuple[float, float
         try:
             ctas = {int(r[0]) for r in conn.execute(
                 f"SELECT DISTINCT b.cta_id FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id"
-                f" WHERE b.cta_id IS NOT NULL AND p.name_norm IN ({q})", names)}
+                f" JOIN cta_runs c ON c.id=b.cta_id"
+                f" WHERE b.cta_id IS NOT NULL AND c.created_at >= ? AND p.name_norm IN ({q})", [STATS_SINCE] + names)}
         except Exception:
             ctas = set()
         if not ctas:
