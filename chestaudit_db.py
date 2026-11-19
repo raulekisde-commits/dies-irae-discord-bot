@@ -2,7 +2,8 @@
 y dice qué quedó sin depositar. También guarda lo looteado / dropeado por jugador para /stats jugador.
 
 Reglas (ver claude/diseno-auditoria-chest-cta.md):
-- Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). No se excluye ningún ítem.
+- Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). La Trash no cuenta.
+- Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3.
 - Ítem = nombre + encantamiento (la calidad no viene en el loot logger). Las pociones se comparan solo por nombre.
 - Los archivos de distintos loggers se combinan sin duplicar (mismo evento visto por dos personas, ±2 s).
 - Muerte = el jugador aparece como `looted_from`. Lo que había looteado antes de morir:
@@ -52,11 +53,33 @@ CREATE TABLE IF NOT EXISTS chest_audit_players (
     dropped      INTEGER NOT NULL DEFAULT 0,      -- unidades looteadas que perdió al morir
     missing      INTEGER NOT NULL DEFAULT 0,      -- unidades sin depositar
     missing_json TEXT NOT NULL DEFAULT '[]',
-    filtered     INTEGER NOT NULL DEFAULT 0,      -- 1 = tenía faltantes pero un filtro lo dejó sin tag
+    filtered     INTEGER NOT NULL DEFAULT 0,      -- 1 = solo le faltaba lo tolerado (sin tag)
     PRIMARY KEY (audit_id, name_norm),
     FOREIGN KEY (audit_id) REFERENCES chest_audits(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_chest_audit_players_name ON chest_audit_players(name_norm);
+CREATE TABLE IF NOT EXISTS chest_audit_posts (      -- mensaje general del canal de tags (se borra cuando se soluciona todo)
+    audit_id   INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    deleted_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chest_audit_tags (       -- un mensaje (con hilo y botón Solucionado) por persona tagueada
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_id    INTEGER NOT NULL,
+    guild_id    INTEGER NOT NULL,
+    channel_id  INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    thread_id   INTEGER,
+    name_norm   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    discord_id  INTEGER,
+    title       TEXT,
+    missing     INTEGER NOT NULL DEFAULT 0,
+    resolved_by INTEGER,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chest_audit_tags_msg ON chest_audit_tags(message_id);
 CREATE TABLE IF NOT EXISTS chest_audit_losses (     -- lo looteado que se perdió al morir (para estadísticas)
     audit_id  INTEGER NOT NULL,
     cta_id    INTEGER NOT NULL,
@@ -237,6 +260,25 @@ def parse_chest_log(text: str) -> List[ChestEntry]:
     return out
 
 
+def merge_chest(files: Iterable[List[ChestEntry]]) -> List[ChestEntry]:
+    """Combina varias subidas del log del chest. Una fila idéntica (misma hora, persona, ítem, calidad y cantidad) que aparece
+    en dos subidas cuenta una sola vez; si un mismo archivo la tiene repetida, se respeta cuántas veces (de cada fila vale
+    el máximo de veces que aparece en una sola subida)."""
+    best: Dict[tuple, int] = {}
+    rows: Dict[tuple, ChestEntry] = {}
+    for entries in files:
+        count: Dict[tuple, int] = {}
+        for e in entries:
+            k = (e.ts, norm(e.player), norm(e.item), e.enchant, e.quality, e.amount)
+            count[k] = count.get(k, 0) + 1
+            rows.setdefault(k, e)
+        for k, n in count.items():
+            best[k] = max(best.get(k, 0), n)
+    out = [rows[k] for k, n in best.items() for _ in range(n)]
+    out.sort(key=lambda e: e.ts, reverse=True)
+    return out
+
+
 def valid_deposits(entries: List[ChestEntry]) -> Tuple[List[ChestEntry], Optional[datetime], Optional[datetime]]:
     """Depósitos que cuentan (sin retiros, dentro de la última hora del log) y la ventana usada."""
     if not entries:
@@ -264,8 +306,9 @@ class PlayerResult:
     looted: int = 0
     dropped: int = 0
     lots: List[Lot] = field(default_factory=list)        # lo looteado que todavía tiene encima (sin depositar ni perder)
-    missing: List[dict] = field(default_factory=list)
-    filtered: bool = False
+    missing: List[dict] = field(default_factory=list)      # faltantes que cuentan (se taguean)
+    tolerated: List[dict] = field(default_factory=list)    # faltantes dentro de la tolerancia (no se taguean)
+    filtered: bool = False                                 # solo tenía tolerados
 
     @property
     def missing_units(self) -> int:
@@ -369,22 +412,40 @@ def compute(events: List[LootEvent], deposits: List[ChestEntry]) -> Tuple[Dict[s
 
 
 # ---------- filtros antes de taguear ----------
-def tag_filtered(missing: List[dict]) -> bool:
-    """True = no se taguea aunque falte algo. Regla actual: si lo único que falta es 1 comida."""
-    return sum(m["qty"] for m in missing) == 1 and all(m.get("food") for m in missing)
+GIGANTIFY = "major gigantify potion"
+GIGANTIFY_TOLERANCE = 25                   # Major Gigantify Potion: solo cuenta si faltan más de 25
+FOOD_TOLERANCE = 3                         # comidas (todas juntas): solo cuentan si faltan más de 3
+
+
+def is_trash(item_id: str) -> bool:
+    return "_TRASH" in str(item_id or "").upper()
+
+
+def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """(faltantes que cuentan, tolerados). Gigantify ≤ 25 y comidas ≤ 3 (sumadas) se toleran."""
+    gig = [m for m in items if norm(m["item"]) == GIGANTIFY]
+    food = [m for m in items if m.get("food")]
+    tol = []
+    if gig and sum(m["qty"] for m in gig) <= GIGANTIFY_TOLERANCE:
+        tol += gig
+    if food and sum(m["qty"] for m in food) <= FOOD_TOLERANCE:
+        tol += food
+    return [m for m in items if m not in tol], tol
 
 
 def audit(loot_files: List[List[LootEvent]], chest: List[ChestEntry]) -> dict:
-    events = merge_logs(loot_files)
+    events = [e for e in merge_logs(loot_files) if not is_trash(e.item_id)]     # la Trash no cuenta para nada
     deposits, start, last = valid_deposits(chest)
     players, losses = compute(events, deposits)
     for pr in players.values():
         agg: Dict[tuple, dict] = {}
         for lot in pr.lots:
-            m = agg.setdefault(lot.key, {"item": lot.item_name, "enchant": lot.key[1], "qty": 0, "food": is_food(lot.item_id)})
+            m = agg.setdefault(lot.key, {"item": lot.item_name, "item_id": lot.item_id, "enchant": lot.key[1], "qty": 0,
+                                         "food": is_food(lot.item_id)})
             m["qty"] += lot.qty
-        pr.missing = sorted(agg.values(), key=lambda m: (-m["qty"], m["item"]))
-        pr.filtered = bool(pr.missing) and tag_filtered(pr.missing)
+        items = sorted(agg.values(), key=lambda m: (-m["qty"], m["item"]))
+        pr.missing, pr.tolerated = split_tolerated(items)
+        pr.filtered = not pr.missing and bool(pr.tolerated)
     return {"events": events, "players": players, "losses": losses, "chest_from": start, "chest_to": last,
             "chest_rows": len(chest)}
 
@@ -405,11 +466,15 @@ def report_text(result: dict, title: str) -> str:
     for p in pl:
         if not p.missing:
             continue
-        tag = " (filtrado, sin tag)" if p.filtered else ""
-        lines.append(f"{p.name} [{p.guild}] — looteó {p.looted}, dropeó {p.dropped}, falta {p.missing_units}{tag}")
+        lines.append(f"{p.name} [{p.guild}] — looteó {p.looted}, dropeó {p.dropped}, falta {p.missing_units}")
         lines += [f"   - {item_label(m)}" for m in p.missing]
-    lines += ["", "== Depositaron todo =="]
-    lines += [f"{p.name} — looteó {p.looted}, dropeó {p.dropped}" for p in pl if not p.missing]
+        if p.tolerated:
+            lines.append("   tolerado: " + ", ".join(item_label(m) for m in p.tolerated))
+    lines += ["", "== Depositaron todo (o solo falta lo tolerado) =="]
+    for p in pl:
+        if not p.missing:
+            tol = f" · tolerado: {', '.join(item_label(m) for m in p.tolerated)}" if p.tolerated else ""
+            lines.append(f"{p.name} — looteó {p.looted}, dropeó {p.dropped}{tol}")
     lines += ["", "== Perdido al morir =="]
     for l in result["losses"]:
         who = f"lo sacó {l.picked_by}" if l.picked_by else "nadie lo sacó (perdonado)"
@@ -497,5 +562,71 @@ def loot_averages(db_path: str, names_norm: Iterable[str]) -> Tuple[float, float
             row = (0, 0)
         n = len(ctas)
         return float(row[0]) / n, float(row[1]) / n, n
+    finally:
+        conn.close()
+
+
+# ---------- tags en el canal ----------
+def set_general(db_path: str, audit_id: int, channel_id: int, message_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT OR REPLACE INTO chest_audit_posts(audit_id, channel_id, message_id) VALUES (?, ?, ?)",
+                         (audit_id, channel_id, message_id))
+    finally:
+        conn.close()
+
+
+def add_tag(db_path: str, audit_id: int, guild_id: int, channel_id: int, message_id: int, name: str,
+            discord_id: Optional[int], title: str, missing: int) -> int:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            cur = conn.execute("INSERT INTO chest_audit_tags(audit_id, guild_id, channel_id, message_id, name_norm, name, discord_id,"
+                               " title, missing) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               (audit_id, guild_id, channel_id, message_id, norm(name), name, discord_id, title, missing))
+            return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def set_tag_thread(db_path: str, tag_id: int, thread_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE chest_audit_tags SET thread_id=? WHERE id=?", (thread_id, tag_id))
+    finally:
+        conn.close()
+
+
+def tag_by_message(db_path: str, message_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM chest_audit_tags WHERE message_id=?", (message_id,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def resolve_tag(db_path: str, tag_id: int, actor_id: int) -> Optional[dict]:
+    """Marca el tag como solucionado (una sola vez). Devuelve {'pending': tags sin solucionar de esa auditoría,
+    'general': mensaje general si quedó en 0 y hay que borrarlo} o None si ya estaba solucionado."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            cur = conn.execute("UPDATE chest_audit_tags SET resolved_by=?, resolved_at=? WHERE id=? AND resolved_at IS NULL",
+                               (actor_id, utcnow_iso(), tag_id))
+            if not cur.rowcount:
+                return None
+            aid = conn.execute("SELECT audit_id FROM chest_audit_tags WHERE id=?", (tag_id,)).fetchone()[0]
+            pending = conn.execute("SELECT COUNT(*) FROM chest_audit_tags WHERE audit_id=? AND resolved_at IS NULL", (aid,)).fetchone()[0]
+            general = None
+            if not pending:
+                g = conn.execute("SELECT channel_id, message_id FROM chest_audit_posts WHERE audit_id=? AND deleted_at IS NULL",
+                                 (aid,)).fetchone()
+                if g:
+                    general = (int(g[0]), int(g[1]))
+                    conn.execute("UPDATE chest_audit_posts SET deleted_at=? WHERE audit_id=?", (utcnow_iso(), aid))
+            return {"pending": int(pending), "general": general}
     finally:
         conn.close()

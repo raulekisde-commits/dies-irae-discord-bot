@@ -45,6 +45,15 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(ch[0].enchant, 3)
         self.assertEqual(ch[1].amount, -1)
 
+    def test_combinar_subidas_del_chest(self):
+        a = chest(C("00:50:00", "Ana", "Trash"), C("00:50:00", "Ana", "Trash"), C("00:51:00", "Bob", "Beef Stew", 2))
+        b = chest(C("00:50:00", "Ana", "Trash"), C("00:52:00", "Cam", "Direwolf"))      # solapa con la primera
+        m = ca.merge_chest([a, b])
+        self.assertEqual(sorted((e.player, e.item) for e in m),
+                         [("Ana", "Trash"), ("Ana", "Trash"), ("Bob", "Beef Stew"), ("Cam", "Direwolf")])
+        self.assertEqual(m[0].player, "Cam")                                             # más nuevo primero
+        self.assertEqual(ca.merge_chest([]), [])
+
     def test_pociones_sin_encantamiento(self):
         self.assertEqual(ca.item_key("Major Gigantify Potion", 1), ca.item_key("major gigantify potion", 0))
         self.assertNotEqual(ca.item_key("Beef Stew", 2), ca.item_key("Beef Stew", 0))
@@ -109,13 +118,27 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(r["players"]["ana"].dropped, 0)
         self.assertEqual(r["players"]["ana"].missing_units, 2)
 
-    def test_filtro_una_comida(self):
-        ev = loot(L("00:33:00", "Ana", "T7_MEAL_OMELETTE_AVALON@2", "Avalonian Pork Omelette"),
-                  L("00:33:01", "Bob", "T7_MEAL_OMELETTE_AVALON@2", "Avalonian Pork Omelette", 2))
-        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Trash")))
-        self.assertTrue(r["players"]["ana"].filtered)
-        self.assertFalse(r["players"]["bob"].filtered)
-        self.assertIn("Faltantes", ca.report_text(r, "CTA"))
+    def test_trash_no_cuenta(self):
+        ev = loot(L("00:33:00", "Ana", "T5_TRASH", "Trash", 3), L("00:33:01", "Ana", "T8_TRASH", "Trash"))
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        self.assertNotIn("ana", r["players"])
+
+    def test_tolerancias_gigantify_y_comidas(self):
+        ev = loot(L("00:33:00", "Ana", "T7_POTION_REVIVE", "Major Gigantify Potion", 25),
+                  L("00:33:01", "Ana", "T7_MEAL_OMELETTE_AVALON@2", "Avalonian Pork Omelette", 2),
+                  L("00:33:02", "Ana", "T8_MEAL_STEW@2", "Beef Stew", 1),                      # 3 comidas: toleradas
+                  L("00:33:03", "Bob", "T7_POTION_REVIVE@1", "Major Gigantify Potion", 20),
+                  L("00:33:04", "Bob", "T7_POTION_REVIVE", "Major Gigantify Potion", 6),       # 26: cuenta
+                  L("00:33:05", "Bob", "T8_MEAL_STEW@2", "Beef Stew", 4),                      # 4 comidas: cuentan
+                  L("00:33:06", "Cam", "T7_POTION_REVIVE", "Major Gigantify Potion", 30))
+        r = ca.audit([ev], chest(C("00:55:00", "Cam", "Major Gigantify Potion", 0, 10)))     # Cam deja 20 sin depositar
+        ana, bob, cam = r["players"]["ana"], r["players"]["bob"], r["players"]["cam"]
+        self.assertEqual(ana.missing, [])
+        self.assertTrue(ana.filtered)
+        self.assertEqual(len(ana.tolerated), 3)
+        self.assertEqual(sorted((m["item"], m["qty"]) for m in bob.missing), [("Beef Stew", 4), ("Major Gigantify Potion", 26)])
+        self.assertEqual((cam.missing, [m["qty"] for m in cam.tolerated]), ([], [20]))
+        self.assertIn("tolerado", ca.report_text(r, "CTA"))
 
 
 class PersistTests(unittest.TestCase):
@@ -216,5 +239,41 @@ class ThreadFilesTests(unittest.TestCase):
         c._thread = fake_thread
         files, chest_rows = asyncio.run(c.thread_files(None, {"id": 3, "combatlog_priv_thread_id": 50}))
         self.assertEqual(len(files), 1)
-        self.assertEqual([(e.item, e.ts.hour) for e in chest_rows], [("Elder's Assassin Hood", 0)])
+        self.assertEqual([e.item for e in chest_rows], ["Elder's Assassin Hood", "Trash"])        # las dos subidas, sin la del no-bot
         self.assertEqual(ca.audit(files, chest_rows)["players"]["ana"].missing, [])
+
+
+class TagFlowTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+        ca.init_schema(self.db)
+
+    def tearDown(self):
+        os.remove(self.db)
+
+    def test_resolver_tags_y_borrar_general(self):
+        ca.set_general(self.db, 7, 100, 555)
+        t1 = ca.add_tag(self.db, 7, 1, 100, 901, "Ana", 5, "CTA X", 3)
+        t2 = ca.add_tag(self.db, 7, 1, 100, 902, "Bob", None, "CTA X", 1)
+        ca.set_tag_thread(self.db, t1, 77)
+        tag = ca.tag_by_message(self.db, 901)
+        self.assertEqual((tag["id"], tag["thread_id"], tag["discord_id"]), (t1, 77, 5))
+        self.assertEqual(ca.resolve_tag(self.db, t1, 9), {"pending": 1, "general": None})
+        self.assertIsNone(ca.resolve_tag(self.db, t1, 9))                              # no dos veces
+        self.assertEqual(ca.resolve_tag(self.db, t2, 9), {"pending": 0, "general": (100, 555)})
+
+    def test_texto_e_imagen_del_tag(self):
+        import test_give_deposits  # noqa: F401  (carga el stub de discord)
+        import chestaudit as cog
+        import chestcard
+        ev = loot(L("00:33:00", "Ana", "T8_HEAD_LEATHER_SET3", "Elder's Assassin Hood", 2),
+                  L("00:33:01", "Bob", "T7_MEAL_STEW@2", "Beef Stew"))                  # tolerado: no se taguea
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        entries = cog.to_tag(r, {"ana": 5})
+        self.assertEqual([(p.name, uid) for p, uid in entries], [("Ana", 5)])
+        txt = cog.tag_text(entries[0][0], 5, "CTA X")
+        self.assertIn("<@5>", txt); self.assertIn("2× Elder's Assassin Hood", txt)
+        self.assertIn("ataque personal", cog.GENERAL_NOTICE)
+        items = [{"item": f"Item {i}", "item_id": f"T4_X{i}", "enchant": i % 4, "qty": i + 1} for i in range(35)]
+        png = chestcard.render("Ana", items, "CTA X", {})
+        self.assertTrue(png.startswith(b"\x89PNG"))
