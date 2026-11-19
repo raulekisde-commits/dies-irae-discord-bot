@@ -136,6 +136,22 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(sorted((m["item"], m["enchant"]) for m in ana.missing),
                          [("Elder's Bag", 2), ("Elder's Satchel of Insight", 4)])
         self.assertFalse(ca.ignored("T8_MOUNT_ARMORED_HORSE"))
+        self.assertTrue(ca.ignored("T3_MOUNT_OX"))
+
+    def test_monturas_y_juguetes(self):
+        ev = loot(L("00:33:00", "Ana", "T5_MOUNT_COUGAR_KEEPER@1", "Swiftclaw", 2),
+                  L("00:33:01", "Ana", "T6_MOUNT_DIREWOLF", "Direwolf", 1),                    # 3 T4-T6: tolerado
+                  L("00:33:02", "Ana", "T3_MOUNT_HORSE", "Journeyman's Riding Horse"),         # T3: ignorado
+                  L("00:33:03", "Ana", "TREASURE_SILVERWARE_RARITY2", "Silver Mirror", 2),     # juguete: ignorado
+                  L("00:33:04", "Bob", "T5_MOUNT_GREYWOLF_FW_CAERLEON", "Saddled Greywolf", 2),
+                  L("00:33:05", "Bob", "T6_MOUNT_DIREWOLF", "Direwolf", 2),                    # 4: se taguea
+                  L("00:33:06", "Cam", "T7_MOUNT_ARMORED_HORSE", "Grandmaster's Armored Horse"))  # T7: siempre cuenta
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        ana, bob, cam = r["players"]["ana"], r["players"]["bob"], r["players"]["cam"]
+        self.assertEqual((ana.looted, ana.missing, ana.filtered), (3, [], True))
+        self.assertEqual(bob.missing_units, 4)
+        self.assertEqual(cam.missing_units, 1)
+        self.assertTrue(ca.ignored("TREASURE_RITUAL_RARITY1"))
 
     def test_tolerancias_gigantify_y_comidas(self):
         ev = loot(L("00:33:00", "Ana", "T7_POTION_REVIVE", "Major Gigantify Potion", 25),

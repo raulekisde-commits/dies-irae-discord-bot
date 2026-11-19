@@ -3,8 +3,9 @@ y dice qué quedó sin depositar. También guarda lo looteado / dropeado por jug
 
 Reglas (ver claude/diseno-auditoria-chest-cta.md):
 - Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). No cuentan: Trash, mementos de kill
-  (FURNITUREITEM_KILLTROPHY) y bolsos que no sean 8.1 a 8.4.
-- Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3.
+  (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*), monturas T3 o menos y bolsos que no sean 8.1 a 8.4.
+- Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3;
+  monturas T4-T6 (sumadas) solo si faltan 4 o más.
 - Ítem = nombre + encantamiento (la calidad no viene en el loot logger). Las pociones se comparan solo por nombre.
 - Los archivos de distintos loggers se combinan sin duplicar (mismo evento visto por dos personas, ±2 s).
 - Muerte = el jugador aparece como `looted_from`. Lo que había looteado antes de morir:
@@ -416,6 +417,7 @@ def compute(events: List[LootEvent], deposits: List[ChestEntry]) -> Tuple[Dict[s
 GIGANTIFY = "major gigantify potion"
 GIGANTIFY_TOLERANCE = 25                   # Major Gigantify Potion: solo cuenta si faltan más de 25
 FOOD_TOLERANCE = 3                         # comidas (todas juntas): solo cuentan si faltan más de 3
+MOUNT_TOLERANCE = 3                        # monturas T4-T6 (todas juntas): solo cuentan si faltan 4 o más
 
 
 def is_trash(item_id: str) -> bool:
@@ -428,10 +430,28 @@ def is_bag(item_id: str) -> bool:
     return "_BAG" in base and base[:1] == "T"
 
 
+def tier_of(item_id: str) -> Optional[int]:
+    head = str(item_id or "").upper().split("_", 1)[0]
+    return int(head[1:]) if head[:1] == "T" and head[1:].isdigit() else None
+
+
+def is_mount(item_id: str) -> bool:
+    """Monturas: T6_MOUNT_DIREWOLF, T5_MOUNT_COUGAR_KEEPER@1, UNIQUE_MOUNT_BAT_PERSONAL…"""
+    return "_MOUNT" in str(item_id or "").upper()
+
+
+def is_low_mount(item_id: str) -> bool:
+    """Monturas T4, T5 y T6 (tienen tolerancia)."""
+    return is_mount(item_id) and tier_of(item_id) in (4, 5, 6)
+
+
 def ignored(item_id: str) -> bool:
-    """Ítems que no cuentan para nada: Trash, mementos de kill (FURNITUREITEM_KILLTROPHY) y bolsos que no sean 8.1 a 8.4."""
+    """Ítems que no cuentan para nada: Trash, mementos de kill (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*:
+    Silver Mirror, Ritual Candles…), monturas T3 o menos y bolsos que no sean 8.1 a 8.4."""
     iid = str(item_id or "").upper()
-    if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid:
+    if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid or iid.startswith("TREASURE_"):
+        return True
+    if is_mount(iid) and (tier_of(iid) or 99) <= 3:
         return True
     if is_bag(iid):
         return not (iid.split("_", 1)[0] == "T8" and enchant_of(iid) in (1, 2, 3, 4))
@@ -439,7 +459,7 @@ def ignored(item_id: str) -> bool:
 
 
 def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """(faltantes que cuentan, tolerados). Gigantify ≤ 25 y comidas ≤ 3 (sumadas) se toleran."""
+    """(faltantes que cuentan, tolerados). Gigantify ≤ 25, comidas ≤ 3 y monturas T4-T6 ≤ 3 (cada grupo sumado) se toleran."""
     gig = [m for m in items if norm(m["item"]) == GIGANTIFY]
     food = [m for m in items if m.get("food")]
     tol = []
@@ -447,6 +467,9 @@ def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
         tol += gig
     if food and sum(m["qty"] for m in food) <= FOOD_TOLERANCE:
         tol += food
+    mounts = [m for m in items if is_low_mount(m.get("item_id"))]
+    if mounts and sum(m["qty"] for m in mounts) <= MOUNT_TOLERANCE:
+        tol += mounts
     return [m for m in items if m not in tol], tol
 
 
