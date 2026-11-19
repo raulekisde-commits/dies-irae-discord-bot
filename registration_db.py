@@ -549,6 +549,7 @@ def set_flag(db_path: str, key: str, value: Optional[str]) -> None:
 REQUIRED_KEY = "registro:obligatorio"
 REVIEW_CHANNEL_KEY = "registro:canal"
 ROSTER_KEY = "registro:roster"
+MEMBER_COUNT_CHANNEL_KEY = "registro:canal_miembros"
 
 
 # ---------- últimos miembros registrados que se fueron del servidor ----------

@@ -229,6 +229,35 @@ class RegistrationDiscordTests(DiscordBase):
         run(self.cog.lookup_character("OtroMas"))                              # dentro de los 5 min: ni siquiera vuelve a bajarla
         self.assertEqual(self.calls, [])
 
+    def test_canal_miembros_renombra_con_la_cantidad_de_la_guild(self):
+        self.cog.albion_guild_id = "GID"
+        members = [{"Id": f"i{n}", "Name": f"P{n}", "GuildName": "Smogg"} for n in range(3)]
+
+        async def roster(url, params=None):
+            if "/guilds/GID/members" in url and "ams" not in url and "sgp" not in url:
+                return members
+            raise RuntimeError("HTTP 503")
+
+        self.cog.fetch_json = roster
+        vc = discord.VoiceChannel(PANEL_CH + 9, self.guild, "contador")
+        self.guild._channels[vc.id] = vc
+        self.bot.channels[vc.id] = vc
+        i = self.inter(self.alice)
+        run(self.cog.canal_miembros(i, vc, False))
+        self.assertIn("Solo el Council", i.text)
+        i = self.inter(self.admin)
+        run(self.cog.canal_miembros(i, vc, False))
+        self.assertEqual(vc.name, "Smogg 3/300")
+        members.append({"Id": "i9", "Name": "P9", "GuildName": "Smogg"})
+        run(self.cog.refresh_roster())
+        self.assertEqual(run(self.cog.update_member_count_channel()), "Smogg 4/300")
+        self.assertEqual(vc.name, "Smogg 4/300")
+        run(self.cog.update_member_count_channel())                              # sin cambios: no se vuelve a editar
+        self.assertEqual(vc.edits, ["Smogg 3/300", "Smogg 4/300"])
+        i = self.inter(self.admin)
+        run(self.cog.canal_miembros(i, None, True))
+        self.assertIsNone(run(self.cog.update_member_count_channel()))
+
     def test_roster_survives_a_restart(self):
         self.cog.albion_guild_id = "GID"
 

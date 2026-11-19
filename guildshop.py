@@ -446,6 +446,11 @@ class GuildShopCog(commands.Cog):
     async def canal_wujupon_regalos_cmd(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         await self._canal_delegate(interaction, "WujuponCog", "canal_regalos", "Wujupón", canal, desactivar)
 
+    @canal.command(name="miembros", description="(Council) Canal de voz que muestra 'Smogg N/300' con los miembros de la guild en el juego")
+    @app_commands.describe(canal="Canal de voz a renombrar", desactivar="Dejar de actualizar el nombre")
+    async def canal_miembros_cmd(self, interaction: discord.Interaction, canal: Optional[discord.VoiceChannel] = None, desactivar: bool = False):
+        await self._canal_delegate(interaction, "RegistrationCog", "canal_miembros", "registro", canal, desactivar)
+
     @canal.command(name="log-foco", description="(Council) Canal donde se registran las donaciones de foco aprobadas")
     @app_commands.describe(canal="Canal de registro (por defecto, este canal)")
     async def canal_log_foco(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):

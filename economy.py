@@ -1302,7 +1302,7 @@ class EconomyCog(commands.Cog):
         return {r.char_name.casefold(): r.discord_id for r in await self._db(rdb.all_registrations)}
 
     async def _embo_import(self, interaction: discord.Interaction, archivo: discord.Attachment, *, kind: str,
-                           only_day: Optional[str], title: str):
+                           only_day: Optional[str], title: str, before_day: Optional[str] = None):
         """Lee el archivo, carga los movimientos y responde (privado) con el resumen y los jugadores no encontrados."""
         if (getattr(archivo, "size", 0) or 0) > self.EMBO_FILE_MAX:
             return await self._ephemeral(interaction, "❌ El archivo es demasiado grande (máx. 5 MB).")
@@ -1316,9 +1316,13 @@ class EconomyCog(commands.Cog):
             return await self._ephemeral(interaction, "❌ No pude leer el archivo.")
         if not movements:
             return await self._ephemeral(interaction, "❌ No encontré movimientos en el archivo.")
+        skip_days = None
+        if before_day:                                                # sin fecha: se saltean los días que ya estaban cargados
+            file_days = {m.day for m in movements if m.day < before_day}
+            skip_days = await self._db(embo_db.loaded_days, file_days) | await asyncio.to_thread(self._done_embo_days, file_days)
         try:
             res = await self._db(embo_db.import_movements, movements, await self._embo_name_map(), actor_id=interaction.user.id,
-                                 kind=kind, only_day=only_day)
+                                 kind=kind, only_day=only_day, before_day=before_day, skip_days=skip_days)
         except embo_db.EmboError as exc:
             return await self._ephemeral(interaction, f"❌ {exc} No se cargó nada.")
         day_txt = f" del **{only_day[8:10]}/{only_day[5:7]}/{only_day[:4]}** (UTC)" if only_day else ""
@@ -1327,6 +1331,11 @@ class EconomyCog(commands.Cog):
                  f"ya estaban cargados: **{res.duplicates}** · jugadores: **{len(res.users)}**"]
         if only_day:
             lines.append(f"• Filas de otros días ignoradas: **{res.skipped_days}**")
+        elif before_day:
+            dd = lambda ds: ", ".join(f"{d[8:10]}/{d[5:7]}" for d in sorted(ds)) or "ninguno"
+            lines.append(f"• Días que faltaban (cargados ahora): **{dd(res.days)}**")
+            lines.append(f"• Ya estaban cargados (salteados): **{dd(res.already_days)}**")
+            lines.append(f"• Filas de hoy ignoradas: **{res.skipped_days}** (se cargan con el log de mañana)")
         if res.not_found:
             nf = sorted(res.not_found.items(), key=lambda kv: kv[0].casefold())
             lines.append(f"\n**❌ Jugadores no encontrados ({len(nf)})** — no tienen personaje registrado con ese nick, no se les cargó nada:")
@@ -1350,13 +1359,13 @@ class EconomyCog(commands.Cog):
         emb.add_field(name="Resultado", value=f"{res.applied} cargados · {res.duplicates} repetidos · {len(res.users)} jugadores · "
                                               f"{len(res.not_found)} no encontrados", inline=False)
         await self._audit_note(emb)
-        if only_day:
-            enc = self.bot.get_cog("EncargosCog")
-            if enc is not None:
-                try:
-                    await enc.complete_by_source(f"{self.EMBO_TASK_PREFIX}{only_day}", interaction.user.id)
-                except Exception:
-                    traceback.print_exc()
+        done_days = [only_day] if only_day else (sorted(res.days) if before_day else [])
+        enc = self.bot.get_cog("EncargosCog") if done_days else None
+        for d in done_days if enc is not None else []:
+            try:
+                await enc.complete_by_source(f"{self.EMBO_TASK_PREFIX}{d}", interaction.user.id)
+            except Exception:
+                traceback.print_exc()
 
     @embo_g.command(name="importar-historico", description="(Admin) Carga al balance de embo todos los movimientos de un archivo")
     @app_commands.describe(archivo="CSV con Fecha y hora / Jugador / Motivo / Cantidad (o Date / Player / Reason / Amount)")
@@ -1381,6 +1390,23 @@ class EconomyCog(commands.Cog):
         except ValueError:
             return None
 
+    def _done_embo_days(self, days) -> set:
+        """De los días dados, los que tienen el encargo diario de embo terminado."""
+        days = sorted(set(days))
+        if not days:
+            return set()
+        import dbutil
+        conn = dbutil.connect(self.db_path)
+        try:
+            q = ",".join("?" * len(days))
+            rows = conn.execute(f"SELECT source FROM tasks WHERE status = 'done' AND source IN ({q})",
+                                [self.EMBO_TASK_PREFIX + d for d in days]).fetchall()
+            return {r["source"][len(self.EMBO_TASK_PREFIX):] for r in rows}
+        except Exception:
+            return set()
+        finally:
+            conn.close()
+
     def _oldest_open_embo_day(self) -> Optional[str]:
         import dbutil
         conn = dbutil.connect(self.db_path)
@@ -1393,9 +1419,9 @@ class EconomyCog(commands.Cog):
         finally:
             conn.close()
 
-    @embo_g.command(name="cargar-dia", description="(Staff) Carga las embotelladas de UN día desde el log (ignora las filas de otros días)")
+    @embo_g.command(name="cargar-dia", description="(Staff) Carga las embotelladas del log: todos los días anteriores a hoy, o solo la fecha indicada")
     @app_commands.describe(archivo="Log de embotelladas: Date / Player / Reason / Amount",
-                           fecha="(Opcional) Día a cargar, DD/MM o AAAA-MM-DD. Por defecto: el encargo pendiente más viejo, o ayer (UTC)")
+                           fecha="(Opcional) Cargar solo ese día, DD/MM o AAAA-MM-DD. Sin fecha: todos los días del log anteriores a hoy (UTC)")
     async def embo_load_day(self, interaction: discord.Interaction, archivo: discord.Attachment, fecha: Optional[str] = None):
         if not await self.has_command_permission(interaction.user, "embo", staff_ok=True):
             return await self._ephemeral(interaction, "❌ Solo el Staff, los administradores o un rol con `/eco perms-comando comando:embo` "
@@ -1405,9 +1431,9 @@ class EconomyCog(commands.Cog):
             day = self._parse_day(fecha, now)
             if day is None:
                 return await self._ephemeral(interaction, "❌ Fecha inválida. Usá DD/MM o AAAA-MM-DD (ej: 04/11).")
-        else:
-            day = await asyncio.to_thread(self._oldest_open_embo_day) or (now - timedelta(days=1)).date().isoformat()
-        await self._embo_import(interaction, archivo, kind="import_dia", only_day=day, title="Embotelladas del día cargadas")
+            return await self._embo_import(interaction, archivo, kind="import_dia", only_day=day, title="Embotelladas del día cargadas")
+        await self._embo_import(interaction, archivo, kind="import_dia", only_day=None, before_day=now.date().isoformat(),
+                                title="Embotelladas cargadas")
 
     @embo_g.command(name="ultima-fecha", description="(Staff) Última fecha cargada del log de embotelladas y estado del encargo diario")
     async def embo_last_date(self, interaction: discord.Interaction):
@@ -1460,7 +1486,7 @@ class EconomyCog(commands.Cog):
                 return
             nice = f"{day[8:10]}/{day[5:7]}/{day[:4]}"
             await enc.create(text=f"🍾 Cargar las embotelladas del {nice} (UTC): exportá el log de embotelladas de la guild y subilo con "
-                                  f"/eco embo cargar-dia (archivo). Solo se cargan los movimientos de ese día; el bot avisa qué jugadores "
+                                  f"/eco embo cargar-dia (archivo). Se cargan todos los días anteriores a hoy sin repetir lo ya cargado; el bot avisa qué jugadores "
                                   f"no encontró. La tarea se cierra sola al cargarlo.",
                              created_by=self.bot.user.id, source=source)
         except Exception:
