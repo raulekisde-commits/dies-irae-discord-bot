@@ -134,6 +134,22 @@ def last_loaded(db_path: str) -> Optional[Tuple[str, str, int]]:
         conn.close()
 
 
+def loaded_days(db_path: str, days) -> set:
+    """De los días dados ("YYYY-MM-DD"), los que ya tienen algún movimiento del log de embotelladas cargado."""
+    days = sorted(set(days))
+    if not days:
+        return set()
+    init_schema(db_path)
+    conn = connect(db_path)
+    try:
+        q = ",".join("?" * len(days))
+        rows = conn.execute(f"SELECT DISTINCT substr(request_key, 9, 10) AS d FROM embo_movements "
+                            f"WHERE request_key LIKE 'embomov:%' AND substr(request_key, 9, 10) IN ({q})", days).fetchall()
+        return {r["d"] for r in rows}
+    finally:
+        conn.close()
+
+
 def history(db_path: str, user_id: int, limit: int = 15) -> List[Tuple[str, int, int, str, str]]:
     """(fecha, delta, balance_after, kind, reason) más recientes primero."""
     init_schema(db_path)
@@ -169,6 +185,8 @@ class ImportResult:
     users: dict = field(default_factory=dict)       # discord_id -> suma cargada
     not_found: dict = field(default_factory=dict)   # nick -> [cantidad de movimientos, suma]
     skipped_days: int = 0                           # filas de otros días (ignoradas)
+    days: set = field(default_factory=set)          # días ("YYYY-MM-DD") con filas consideradas
+    already_days: set = field(default_factory=set)  # días salteados porque ya estaban cargados (skip_days)
 
 
 HEADER_ALIASES = {
@@ -222,21 +240,28 @@ def parse_movements(data: bytes) -> List[Movement]:
 
 
 def import_movements(db_path: str, movements: List[Movement], name_to_user: dict, *, actor_id: int, kind: str,
-                     only_day: Optional[str] = None) -> ImportResult:
+                     only_day: Optional[str] = None, before_day: Optional[str] = None,
+                     skip_days: Optional[set] = None) -> ImportResult:
     """Carga cada movimiento al balance de embo de quien tiene ese personaje registrado (name_to_user: nick casefold -> discord_id).
     Cada movimiento se identifica por fecha+jugador+motivo+cantidad (+ cuántas veces se repite igual en el archivo), así subir
     el mismo archivo dos veces, o el mismo día por el import histórico y por el diario, no lo carga de nuevo.
-    Con only_day ("YYYY-MM-DD") se ignoran las filas de otros días. Todo en una sola transacción."""
+    Con only_day ("YYYY-MM-DD") se ignoran las filas de otros días; con before_day, las de ese día en adelante;
+    con skip_days, las de esos días (ya cargados), que se informan en already_days.
+    Todo en una sola transacción."""
     res = ImportResult()
     seen: dict = {}
     conn = connect(db_path)
     try:
         with write_tx(conn):
             for m in movements:
-                if only_day and m.day != only_day:
+                if (only_day and m.day != only_day) or (before_day and m.day >= before_day):
                     res.skipped_days += 1
                     continue
+                if skip_days and m.day in skip_days:
+                    res.already_days.add(m.day)
+                    continue
                 res.rows += 1
+                res.days.add(m.day)
                 base = f"{m.when}|{m.player.casefold()}|{m.reason.casefold()}|{m.amount}"
                 seen[base] = seen.get(base, 0) + 1
                 uid = name_to_user.get(m.player.casefold())

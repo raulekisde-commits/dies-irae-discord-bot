@@ -89,6 +89,30 @@ class EmboImportTests(DiscordBase):
         self.assertEqual(embo_db.get_balance(self.db, self.council.id), 11)
         self.assertIn("Fecha inválida", self.call("embo_load_day", self.stf, archivo(DIARIO), "ayer"))
 
+    def test_cargar_sin_fecha_toma_todos_los_dias_anteriores_sin_pisar(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        d = lambda n: (now - timedelta(days=n)).date().isoformat()
+        log = ('"Date"\t"Player"\t"Reason"\t"Amount"\n'
+               f'"{d(0)} 00:10:00"\t"SraGendarme"\t"Deposit"\t"7"\n'          # hoy: se ignora
+               f'"{d(1)} 10:00:00"\t"SraGendarme"\t"Deposit"\t"5"\n'
+               f'"{d(2)} 10:00:00"\t"SraGendarme"\t"Deposit"\t"3"\n'
+               f'"{d(2)} 11:00:00"\t"ElNikitooo"\t"Withdrawal"\t"-2"\n')
+        dm = lambda n: f"{d(n)[8:10]}/{d(n)[5:7]}"
+        first = '"Date"\t"Player"\t"Reason"\t"Amount"\n' + f'"{d(2)} 09:00:00"\t"SraGendarme"\t"Deposit"\t"1"\n'
+        self.call("embo_load_day", self.stf, archivo(first), None)                        # anteayer ya cargado (otro archivo)
+        text = self.call("embo_load_day", self.stf, archivo(log), None)
+        self.assertIn("cargados ahora: **1**", text)                                      # solo ayer
+        self.assertIn(f"Días que faltaban (cargados ahora): **{dm(1)}**", text)
+        self.assertIn(f"Ya estaban cargados (salteados): **{dm(2)}**", text)
+        self.assertIn("Filas de hoy ignoradas: **1**", text)
+        self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 6)                 # 1 + 5 (no suma 3 ni 7)
+        self.assertEqual(embo_db.get_balance(self.db, self.bob.id), 0)
+        text = self.call("embo_load_day", self.stf, archivo(log), None)                  # mismo log otra vez: no carga nada
+        self.assertIn("cargados ahora: **0**", text)
+        self.assertIn(f"Ya estaban cargados (salteados): **{dm(2)}, {dm(1)}**", text)
+        self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 6)
+
     def test_encargo_diario_y_se_cierra_al_cargar(self):
         import encargos, encargos_db as edb
         from datetime import datetime, timedelta, timezone
