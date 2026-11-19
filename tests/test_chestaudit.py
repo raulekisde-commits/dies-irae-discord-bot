@@ -232,3 +232,39 @@ class ThreadFilesTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual([(e.item, e.ts.hour) for e in chest_rows], [("Elder's Assassin Hood", 0)])
         self.assertEqual(ca.audit(files, chest_rows)["players"]["ana"].missing, [])
+
+
+class TagFlowTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+        ca.init_schema(self.db)
+
+    def tearDown(self):
+        os.remove(self.db)
+
+    def test_resolver_tags_y_borrar_general(self):
+        ca.set_general(self.db, 7, 100, 555)
+        t1 = ca.add_tag(self.db, 7, 1, 100, 901, "Ana", 5, "CTA X", 3)
+        t2 = ca.add_tag(self.db, 7, 1, 100, 902, "Bob", None, "CTA X", 1)
+        ca.set_tag_thread(self.db, t1, 77)
+        tag = ca.tag_by_message(self.db, 901)
+        self.assertEqual((tag["id"], tag["thread_id"], tag["discord_id"]), (t1, 77, 5))
+        self.assertEqual(ca.resolve_tag(self.db, t1, 9), {"pending": 1, "general": None})
+        self.assertIsNone(ca.resolve_tag(self.db, t1, 9))                              # no dos veces
+        self.assertEqual(ca.resolve_tag(self.db, t2, 9), {"pending": 0, "general": (100, 555)})
+
+    def test_texto_e_imagen_del_tag(self):
+        import test_give_deposits  # noqa: F401  (carga el stub de discord)
+        import chestaudit as cog
+        import chestcard
+        ev = loot(L("00:33:00", "Ana", "T8_HEAD_LEATHER_SET3", "Elder's Assassin Hood", 2),
+                  L("00:33:01", "Bob", "T7_MEAL_STEW@2", "Beef Stew"))                  # tolerado: no se taguea
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        entries = cog.to_tag(r, {"ana": 5})
+        self.assertEqual([(p.name, uid) for p, uid in entries], [("Ana", 5)])
+        txt = cog.tag_text(entries[0][0], 5, "CTA X")
+        self.assertIn("<@5>", txt); self.assertIn("2× Elder's Assassin Hood", txt)
+        self.assertIn("ataque personal", cog.GENERAL_NOTICE)
+        items = [{"item": f"Item {i}", "item_id": f"T4_X{i}", "enchant": i % 4, "qty": i + 1} for i in range(35)]
+        png = chestcard.render("Ana", items, "CTA X", {})
+        self.assertTrue(png.startswith(b"\x89PNG"))
