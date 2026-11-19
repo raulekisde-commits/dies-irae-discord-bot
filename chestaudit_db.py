@@ -2,8 +2,11 @@
 y dice qué quedó sin depositar. También guarda lo looteado / dropeado por jugador para /stats jugador.
 
 Reglas (ver claude/diseno-auditoria-chest-cta.md):
-- Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). La Trash no cuenta.
-- Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3.
+- Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). No cuentan: Trash, mementos de kill
+  (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*), monturas T3 o menos, Siege Hammer que no sean T8 y
+  bolsos que no sean 8.1 a 8.4.
+- Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3;
+  monturas T4-T6 (sumadas) solo si faltan 4 o más.
 - Ítem = nombre + encantamiento (la calidad no viene en el loot logger). Las pociones se comparan solo por nombre.
 - Los archivos de distintos loggers se combinan sin duplicar (mismo evento visto por dos personas, ±2 s).
 - Muerte = el jugador aparece como `looted_from`. Lo que había looteado antes de morir:
@@ -27,6 +30,8 @@ DEDUPE_SECONDS = 2.0                       # mismo evento en dos combatlogs dist
 DEATH_GAP_SECONDS = 120.0                  # dos loots del mismo cuerpo separados por más de esto = otra muerte
 ALIVE_SECONDS = 60.0                       # si la «víctima» lootea algo en este lapso después, no murió (no se toma como muerte)
 CHEST_WINDOW = timedelta(hours=1)          # depósitos válidos: [último registro − 1 h, último registro]
+# /stats: los promedios de loot por CTA solo cuentan las CTA creadas desde que se empezó a usar la auditoría.
+STATS_SINCE = os.getenv("CHEST_STATS_SINCE", "2026-11-19T06:30:00+00:00")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chest_audits (
@@ -415,14 +420,51 @@ def compute(events: List[LootEvent], deposits: List[ChestEntry]) -> Tuple[Dict[s
 GIGANTIFY = "major gigantify potion"
 GIGANTIFY_TOLERANCE = 25                   # Major Gigantify Potion: solo cuenta si faltan más de 25
 FOOD_TOLERANCE = 3                         # comidas (todas juntas): solo cuentan si faltan más de 3
+MOUNT_TOLERANCE = 3                        # monturas T4-T6 (todas juntas): solo cuentan si faltan 4 o más
 
 
 def is_trash(item_id: str) -> bool:
     return "_TRASH" in str(item_id or "").upper()
 
 
+def is_bag(item_id: str) -> bool:
+    """Bolsos (T4_BAG, T6_BAG@1, T7_BAG_INSIGHT…)."""
+    base = str(item_id or "").upper().split("@", 1)[0]
+    return "_BAG" in base and base[:1] == "T"
+
+
+def tier_of(item_id: str) -> Optional[int]:
+    head = str(item_id or "").upper().split("_", 1)[0]
+    return int(head[1:]) if head[:1] == "T" and head[1:].isdigit() else None
+
+
+def is_mount(item_id: str) -> bool:
+    """Monturas: T6_MOUNT_DIREWOLF, T5_MOUNT_COUGAR_KEEPER@1, UNIQUE_MOUNT_BAT_PERSONAL…"""
+    return "_MOUNT" in str(item_id or "").upper()
+
+
+def is_low_mount(item_id: str) -> bool:
+    """Monturas T4, T5 y T6 (tienen tolerancia)."""
+    return is_mount(item_id) and tier_of(item_id) in (4, 5, 6)
+
+
+def ignored(item_id: str) -> bool:
+    """Ítems que no cuentan para nada: Trash, mementos de kill (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*:
+    Silver Mirror, Ritual Candles…), monturas T3 o menos, Siege Hammer que no sean T8 y bolsos que no sean 8.1 a 8.4."""
+    iid = str(item_id or "").upper()
+    if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid or iid.startswith("TREASURE_"):
+        return True
+    if is_mount(iid) and (tier_of(iid) or 99) <= 3:
+        return True
+    if "SIEGEHAMMER" in iid and tier_of(iid) != 8:          # Siege Hammer: solo cuentan los T8
+        return True
+    if is_bag(iid):
+        return not (iid.split("_", 1)[0] == "T8" and enchant_of(iid) in (1, 2, 3, 4))
+    return False
+
+
 def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """(faltantes que cuentan, tolerados). Gigantify ≤ 25 y comidas ≤ 3 (sumadas) se toleran."""
+    """(faltantes que cuentan, tolerados). Gigantify ≤ 25, comidas ≤ 3 y monturas T4-T6 ≤ 3 (cada grupo sumado) se toleran."""
     gig = [m for m in items if norm(m["item"]) == GIGANTIFY]
     food = [m for m in items if m.get("food")]
     tol = []
@@ -430,11 +472,14 @@ def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
         tol += gig
     if food and sum(m["qty"] for m in food) <= FOOD_TOLERANCE:
         tol += food
+    mounts = [m for m in items if is_low_mount(m.get("item_id"))]
+    if mounts and sum(m["qty"] for m in mounts) <= MOUNT_TOLERANCE:
+        tol += mounts
     return [m for m in items if m not in tol], tol
 
 
 def audit(loot_files: List[List[LootEvent]], chest: List[ChestEntry]) -> dict:
-    events = [e for e in merge_logs(loot_files) if not is_trash(e.item_id)]     # la Trash no cuenta para nada
+    events = [e for e in merge_logs(loot_files) if not ignored(e.item_id)]      # Trash, mementos y bolsos no T8.1-8.4
     deposits, start, last = valid_deposits(chest)
     players, losses = compute(events, deposits)
     for pr in players.values():
@@ -535,8 +580,8 @@ def discord_ids_by_name(db_path: str, names: Iterable[str]) -> Dict[str, int]:
 
 
 def loot_averages(db_path: str, names_norm: Iterable[str]) -> Tuple[float, float, int]:
-    """(promedio looteado, promedio dropeado, CTAs) por CTA. Cuenta toda CTA con killboard cargado (kb_battles.cta_id)
-    en la que aparece el jugador; si no hay auditoría o no looteó, esa CTA suma 0. De cada CTA vale la última auditoría."""
+    """(promedio looteado, promedio dropeado, CTAs) por CTA. Cuenta toda CTA creada desde STATS_SINCE con killboard
+    cargado (kb_battles.cta_id) en la que aparece el jugador; si no hay auditoría o no looteó, esa CTA suma 0. De cada CTA vale la última auditoría."""
     names = [n for n in names_norm if n]
     if not names:
         return 0.0, 0.0, 0
@@ -546,7 +591,8 @@ def loot_averages(db_path: str, names_norm: Iterable[str]) -> Tuple[float, float
         try:
             ctas = {int(r[0]) for r in conn.execute(
                 f"SELECT DISTINCT b.cta_id FROM kb_players p JOIN kb_battles b ON b.battle_id=p.battle_id"
-                f" WHERE b.cta_id IS NOT NULL AND p.name_norm IN ({q})", names)}
+                f" JOIN cta_runs c ON c.id=b.cta_id"
+                f" WHERE b.cta_id IS NOT NULL AND c.created_at >= ? AND p.name_norm IN ({q})", [STATS_SINCE] + names)}
         except Exception:
             ctas = set()
         if not ctas:

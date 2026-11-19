@@ -112,8 +112,8 @@ class AuditTests(unittest.TestCase):
 
     def test_si_sigue_looteando_no_murio(self):
         ev = loot(L("00:35:00", "Ana", "T8_HEAD_LEATHER_SET3", "Elder's Assassin Hood"),
-                  L("00:35:30", "Eve", "T5_BAG@2", "Expert's Bag", src="Ana", src_guild="Smogg", by_guild="Ignum"),
-                  L("00:35:40", "Ana", "T5_BAG", "Expert's Bag"))
+                  L("00:35:30", "Eve", "T6_MOUNT_DIREWOLF", "Direwolf", src="Ana", src_guild="Smogg", by_guild="Ignum"),
+                  L("00:35:40", "Ana", "T8_2H_LONGBOW@1", "Elder's Longbow"))
         r = ca.audit([ev], chest(C("00:55:00", "Otro", "Trash")))
         self.assertEqual(r["players"]["ana"].dropped, 0)
         self.assertEqual(r["players"]["ana"].missing_units, 2)
@@ -122,6 +122,40 @@ class AuditTests(unittest.TestCase):
         ev = loot(L("00:33:00", "Ana", "T5_TRASH", "Trash", 3), L("00:33:01", "Ana", "T8_TRASH", "Trash"))
         r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
         self.assertNotIn("ana", r["players"])
+
+    def test_mementos_y_bolsos(self):
+        ev = loot(L("00:33:00", "Ana", "UNIQUE_FURNITUREITEM_KILLTROPHY_OPENWORLD_SMALL", "Combat Memento"),
+                  L("00:33:01", "Ana", "T6_BAG@1", "Master's Bag"),
+                  L("00:33:02", "Ana", "T8_BAG", "Elder's Bag"),
+                  L("00:33:03", "Ana", "T7_BAG_INSIGHT@2", "Grandmaster's Satchel of Insight"),
+                  L("00:33:04", "Ana", "T8_BAG@2", "Elder's Bag"),                          # este sí
+                  L("00:33:05", "Ana", "T8_BAG_INSIGHT@4", "Elder's Satchel of Insight"))     # y este
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        ana = r["players"]["ana"]
+        self.assertEqual(ana.looted, 2)
+        self.assertEqual(sorted((m["item"], m["enchant"]) for m in ana.missing),
+                         [("Elder's Bag", 2), ("Elder's Satchel of Insight", 4)])
+        self.assertFalse(ca.ignored("T8_MOUNT_ARMORED_HORSE"))
+        self.assertTrue(ca.ignored("T3_MOUNT_OX"))
+        self.assertTrue(ca.ignored("T7_2H_TOOL_SIEGEHAMMER"))
+        self.assertTrue(ca.ignored("T6_2H_TOOL_SIEGEHAMMER@1"))
+        self.assertFalse(ca.ignored("T8_2H_TOOL_SIEGEHAMMER"))
+        self.assertFalse(ca.ignored("T8_2H_TOOL_SIEGEHAMMER@2"))
+
+    def test_monturas_y_juguetes(self):
+        ev = loot(L("00:33:00", "Ana", "T5_MOUNT_COUGAR_KEEPER@1", "Swiftclaw", 2),
+                  L("00:33:01", "Ana", "T6_MOUNT_DIREWOLF", "Direwolf", 1),                    # 3 T4-T6: tolerado
+                  L("00:33:02", "Ana", "T3_MOUNT_HORSE", "Journeyman's Riding Horse"),         # T3: ignorado
+                  L("00:33:03", "Ana", "TREASURE_SILVERWARE_RARITY2", "Silver Mirror", 2),     # juguete: ignorado
+                  L("00:33:04", "Bob", "T5_MOUNT_GREYWOLF_FW_CAERLEON", "Saddled Greywolf", 2),
+                  L("00:33:05", "Bob", "T6_MOUNT_DIREWOLF", "Direwolf", 2),                    # 4: se taguea
+                  L("00:33:06", "Cam", "T7_MOUNT_ARMORED_HORSE", "Grandmaster's Armored Horse"))  # T7: siempre cuenta
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        ana, bob, cam = r["players"]["ana"], r["players"]["bob"], r["players"]["cam"]
+        self.assertEqual((ana.looted, ana.missing, ana.filtered), (3, [], True))
+        self.assertEqual(bob.missing_units, 4)
+        self.assertEqual(cam.missing_units, 1)
+        self.assertTrue(ca.ignored("TREASURE_RITUAL_RARITY1"))
 
     def test_tolerancias_gigantify_y_comidas(self):
         ev = loot(L("00:33:00", "Ana", "T7_POTION_REVIVE", "Major Gigantify Potion", 25),
@@ -160,7 +194,10 @@ class PersistTests(unittest.TestCase):
         self.assertFalse(ca.mark_tagged(self.db, aid, 99))
         conn = connect(self.db)
         try:
-            for bid, cta in (("b1", 10), ("b2", 11), ("b3", None)):        # CTA 11: con killboard y sin auditoría → 0
+            conn.execute("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, created_at TEXT)")
+            conn.executemany("INSERT INTO cta_runs VALUES (?, ?)", [(10, "2026-11-20T01:00:00+00:00"), (11, "2026-11-21T01:00:00+00:00"),
+                                                                    (12, "2026-11-01T01:00:00+00:00")])   # la 12: antes del sistema
+            for bid, cta in (("b1", 10), ("b2", 11), ("b3", None), ("b4", 12)):   # CTA 11: con killboard y sin auditoría → 0
                 conn.execute("INSERT INTO kb_battles(battle_id, cta_id, loaded_by, loaded_at) VALUES (?, ?, 1, 'x')", (bid, cta))
                 conn.execute("INSERT INTO kb_players(battle_id, name_norm, name) VALUES (?, 'ana', 'Ana')", (bid,))
             conn.execute("INSERT INTO albion_links(discord_id, char_name, registered_at, updated_at) VALUES (5, 'ANA', 'x', 'x')")
