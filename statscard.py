@@ -383,7 +383,7 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     """PNG de la tarjeta. `data` sale de KillboardCog.stats (solo datos ya calculados, nada se calcula acá)."""
     has_kb = bool(data.get("has_kb"))
     main = data.get("main")
-    HH, CH, MH, BH, G = 176, 150, 236, 262, 20
+    HH, CH, MH, BH, G = 176, 150, 236, 318, 20               # BH: +56 para la fila de loot por CTA
     OH = 132                                                        # franja de cores y vortex
     H = M + HH + G + CH + G + MH + G + BH + G + OH + 70
     img = _background(H)
@@ -612,6 +612,20 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
             _seg_bar(d, rx0, py_ + 22, rx1, 12, (wk / wn) if wn else 0.0, wcol, segs=20)
     else:
         d.text((rx0, y + 100), "Sin datos de asistencia", font=pf(24), fill=DIM)
+    # loot por CTA (auditoría del chest): promedio looteado / dropeado
+    fy3 = y + BH - 114
+    d.line((rx0, fy3 - 2, rx1, fy3 - 2), fill=(42, 43, 50), width=1)
+    half_ = (rx1 - rx0) / 2
+    ln_ = int(data.get("loot_ctas") or 0)
+    _tracked(d, rx0, fy3 + 10, "Looteado por CTA", pf(12, "Bold"), MUTED, 2)
+    la = f"{float(data.get('loot_avg') or 0):.1f}".replace(".", ",") if ln_ else "—"
+    d.text((rx0, fy3 + 26), la, font=pf(22, "Bold"), fill=GOLD if ln_ else DIM)
+    if ln_:
+        d.text((rx0 + d.textlength(la, font=pf(22, "Bold")) + 10, fy3 + 41), f"en {ln_} CTA", font=pf(15, "Medium"),
+               fill=MUTED, anchor="ls")
+    _tracked(d, rx0 + half_, fy3 + 10, "Dropeado por CTA", pf(12, "Bold"), MUTED, 2)
+    da = f"{float(data.get('drop_avg') or 0):.1f}".replace(".", ",") if ln_ else "—"
+    d.text((rx0 + half_, fy3 + 26), da, font=pf(22, "Bold"), fill=RED if ln_ and data.get("drop_avg") else (GREEN if ln_ else DIM))
     # skipeadas / looteado
     fy2 = y + BH - 58
     d.line((rx0, fy2 - 2, rx1, fy2 - 2), fill=(42, 43, 50), width=1)
