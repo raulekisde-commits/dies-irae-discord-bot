@@ -137,6 +137,10 @@ class AuditTests(unittest.TestCase):
                          [("Elder's Bag", 2), ("Elder's Satchel of Insight", 4)])
         self.assertFalse(ca.ignored("T8_MOUNT_ARMORED_HORSE"))
         self.assertTrue(ca.ignored("T3_MOUNT_OX"))
+        self.assertTrue(ca.ignored("T7_2H_TOOL_SIEGEHAMMER"))
+        self.assertTrue(ca.ignored("T6_2H_TOOL_SIEGEHAMMER@1"))
+        self.assertFalse(ca.ignored("T8_2H_TOOL_SIEGEHAMMER"))
+        self.assertFalse(ca.ignored("T8_2H_TOOL_SIEGEHAMMER@2"))
 
     def test_monturas_y_juguetes(self):
         ev = loot(L("00:33:00", "Ana", "T5_MOUNT_COUGAR_KEEPER@1", "Swiftclaw", 2),

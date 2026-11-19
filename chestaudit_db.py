@@ -3,7 +3,8 @@ y dice qué quedó sin depositar. También guarda lo looteado / dropeado por jug
 
 Reglas (ver claude/diseno-auditoria-chest-cta.md):
 - Solo se auditan los looters de las guilds de AUDIT_GUILDS (Smogg y Smogged). No cuentan: Trash, mementos de kill
-  (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*), monturas T3 o menos y bolsos que no sean 8.1 a 8.4.
+  (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*), monturas T3 o menos, Siege Hammer que no sean T8 y
+  bolsos que no sean 8.1 a 8.4.
 - Tolerancias para taguear: Major Gigantify Potion solo si faltan más de 25; comidas solo si faltan más de 3;
   monturas T4-T6 (sumadas) solo si faltan 4 o más.
 - Ítem = nombre + encantamiento (la calidad no viene en el loot logger). Las pociones se comparan solo por nombre.
@@ -447,11 +448,13 @@ def is_low_mount(item_id: str) -> bool:
 
 def ignored(item_id: str) -> bool:
     """Ítems que no cuentan para nada: Trash, mementos de kill (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*:
-    Silver Mirror, Ritual Candles…), monturas T3 o menos y bolsos que no sean 8.1 a 8.4."""
+    Silver Mirror, Ritual Candles…), monturas T3 o menos, Siege Hammer que no sean T8 y bolsos que no sean 8.1 a 8.4."""
     iid = str(item_id or "").upper()
     if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid or iid.startswith("TREASURE_"):
         return True
     if is_mount(iid) and (tier_of(iid) or 99) <= 3:
+        return True
+    if "SIEGEHAMMER" in iid and tier_of(iid) != 8:          # Siege Hammer: solo cuentan los T8
         return True
     if is_bag(iid):
         return not (iid.split("_", 1)[0] == "T8" and enchant_of(iid) in (1, 2, 3, 4))
