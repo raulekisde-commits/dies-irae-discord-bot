@@ -202,7 +202,7 @@ class ChestAuditCog(commands.Cog):
                    f"Combatlogs: **{len(files)}** · eventos de loot: **{len(result['events'])}** · "
                    f"auditados: **{len(result['players'])}**\n"
                    f"Depósitos válidos: <t:{int(result['chest_from'].timestamp())}:t> → <t:{int(result['chest_to'].timestamp())}:t>\n"
-                   f"Sin depositar: **{len(lines)}**" + (f" · filtrados (sin tag): **{filtered}**" if filtered else "") + "\n\n")
+                   f"Sin depositar: **{len(lines)}**" + (f" · solo tolerado (sin tag): **{filtered}**" if filtered else "") + "\n\n")
         preview = "\n".join(lines) or "✅ Todos depositaron."
         if len(summary) + len(preview) > 1900:
             preview = preview[:1900 - len(summary) - 40].rsplit("\n", 1)[0] + "\n… (el resto en el archivo)"
