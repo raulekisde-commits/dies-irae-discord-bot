@@ -45,6 +45,15 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(ch[0].enchant, 3)
         self.assertEqual(ch[1].amount, -1)
 
+    def test_combinar_subidas_del_chest(self):
+        a = chest(C("00:50:00", "Ana", "Trash"), C("00:50:00", "Ana", "Trash"), C("00:51:00", "Bob", "Beef Stew", 2))
+        b = chest(C("00:50:00", "Ana", "Trash"), C("00:52:00", "Cam", "Direwolf"))      # solapa con la primera
+        m = ca.merge_chest([a, b])
+        self.assertEqual(sorted((e.player, e.item) for e in m),
+                         [("Ana", "Trash"), ("Ana", "Trash"), ("Bob", "Beef Stew"), ("Cam", "Direwolf")])
+        self.assertEqual(m[0].player, "Cam")                                             # más nuevo primero
+        self.assertEqual(ca.merge_chest([]), [])
+
     def test_pociones_sin_encantamiento(self):
         self.assertEqual(ca.item_key("Major Gigantify Potion", 1), ca.item_key("major gigantify potion", 0))
         self.assertNotEqual(ca.item_key("Beef Stew", 2), ca.item_key("Beef Stew", 0))
@@ -230,7 +239,7 @@ class ThreadFilesTests(unittest.TestCase):
         c._thread = fake_thread
         files, chest_rows = asyncio.run(c.thread_files(None, {"id": 3, "combatlog_priv_thread_id": 50}))
         self.assertEqual(len(files), 1)
-        self.assertEqual([(e.item, e.ts.hour) for e in chest_rows], [("Elder's Assassin Hood", 0)])
+        self.assertEqual([e.item for e in chest_rows], ["Elder's Assassin Hood", "Trash"])        # las dos subidas, sin la del no-bot
         self.assertEqual(ca.audit(files, chest_rows)["players"]["ana"].missing, [])
 
 

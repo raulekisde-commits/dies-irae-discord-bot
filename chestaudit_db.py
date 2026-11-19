@@ -260,6 +260,25 @@ def parse_chest_log(text: str) -> List[ChestEntry]:
     return out
 
 
+def merge_chest(files: Iterable[List[ChestEntry]]) -> List[ChestEntry]:
+    """Combina varias subidas del log del chest. Una fila idéntica (misma hora, persona, ítem, calidad y cantidad) que aparece
+    en dos subidas cuenta una sola vez; si un mismo archivo la tiene repetida, se respeta cuántas veces (de cada fila vale
+    el máximo de veces que aparece en una sola subida)."""
+    best: Dict[tuple, int] = {}
+    rows: Dict[tuple, ChestEntry] = {}
+    for entries in files:
+        count: Dict[tuple, int] = {}
+        for e in entries:
+            k = (e.ts, norm(e.player), norm(e.item), e.enchant, e.quality, e.amount)
+            count[k] = count.get(k, 0) + 1
+            rows.setdefault(k, e)
+        for k, n in count.items():
+            best[k] = max(best.get(k, 0), n)
+    out = [rows[k] for k, n in best.items() for _ in range(n)]
+    out.sort(key=lambda e: e.ts, reverse=True)
+    return out
+
+
 def valid_deposits(entries: List[ChestEntry]) -> Tuple[List[ChestEntry], Optional[datetime], Optional[datetime]]:
     """Depósitos que cuentan (sin retiros, dentro de la última hora del log) y la ventana usada."""
     if not entries:
