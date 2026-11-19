@@ -287,16 +287,15 @@ class ChestAuditCog(commands.Cog):
 
     async def thread_files(self, guild, run: dict) -> Tuple[List[List[ca.LootEvent]], List[ca.ChestEntry]]:
         """Archivos de los hilos de combatlog de la CTA (privado y, si hay, el público viejo):
-        cada archivo del loot logger por separado, y el chestlog del último mensaje que traiga uno («Subir chestlog»)."""
+        cada archivo del loot logger por separado, y todos los chestlogs subidos con «Subir chestlog» combinados sin repetir filas."""
         files: List[List[ca.LootEvent]] = []
-        chest: List[ca.ChestEntry] = []
+        chest_files: List[List[ca.ChestEntry]] = []
         seen = set()
         for tid in (run.get("combatlog_priv_thread_id"), run.get("combatlog_thread_id")):
             th = await self._thread(guild, tid)
             if th is None:
                 continue
             async for msg in th.history(limit=None, oldest_first=True):
-                msg_chest: List[ca.ChestEntry] = []
                 for a in msg.attachments:
                     if a.id in seen or not (a.filename or "").lower().endswith(LOG_EXT):
                         continue
@@ -311,10 +310,10 @@ class ChestAuditCog(commands.Cog):
                         if events:
                             files.append(events)
                     elif self._is_chestlog_msg(msg):
-                        msg_chest += ca.parse_chest_log(text)
-                if msg_chest:                             # vale el chestlog más nuevo
-                    chest = msg_chest
-        return files, chest
+                        rows = ca.parse_chest_log(text)
+                        if rows:
+                            chest_files.append(rows)
+        return files, ca.merge_chest(chest_files)
 
     def _is_chestlog_msg(self, msg) -> bool:
         """Solo cuentan los chestlog que reenvió el bot con «Subir chestlog» (Staff/Council), no cualquier archivo del hilo."""
@@ -364,7 +363,7 @@ class ChestAuditCog(commands.Cog):
         await self.audit_and_preview(interaction, run, files, chest)
 
     @chest.command(name="auditar", description="(Staff/Council) Compara los combatlogs de la CTA con el log del chest")
-    @app_commands.describe(archivo="Log del chest (si no lo pasás, se usa el subido con «Subir chestlog»)",
+    @app_commands.describe(archivo="Log del chest (se suma a los subidos con «Subir chestlog»)",
                            archivo2="Otra parte del log del chest (opcional)",
                            cta="Número de CTA (si no lo usás en un hilo de la CTA)")
     async def auditar(self, interaction: discord.Interaction, archivo: Optional[discord.Attachment] = None,
@@ -375,18 +374,19 @@ class ChestAuditCog(commands.Cog):
         run = await asyncio.to_thread(_cta_row, self.db_path, cta, interaction.channel_id)
         if run is None:
             return await interaction.followup.send("❌ No encontré la CTA. Usalo en su hilo de combatlog o indicá `cta`.", ephemeral=True)
-        chest: List[ca.ChestEntry] = []
+        attached: List[List[ca.ChestEntry]] = []
         for att in (archivo, archivo2):
             if att is None:
                 continue
             try:
-                chest += ca.parse_chest_log(_decode(await att.read()))
+                rows = ca.parse_chest_log(_decode(await att.read()))
             except Exception as exc:
                 return await interaction.followup.send(f"❌ No pude leer {att.filename}: {exc!r}", ephemeral=True)
-        if (archivo or archivo2) and not chest:
-            return await interaction.followup.send("❌ El log del chest no tiene registros que entienda.", ephemeral=True)
+            if not rows:
+                return await interaction.followup.send(f"❌ {att.filename} no tiene registros del chest que entienda.", ephemeral=True)
+            attached.append(rows)
         files, thread_chest = await self.thread_files(interaction.guild, run)
-        chest = chest or thread_chest
+        chest = ca.merge_chest(attached + ([thread_chest] if thread_chest else []))   # adjuntos + todo lo subido al hilo
         if not chest:
             return await interaction.followup.send("❌ No hay chestlog: adjuntalo o subilo con **Subir chestlog**.", ephemeral=True)
         if not files:
