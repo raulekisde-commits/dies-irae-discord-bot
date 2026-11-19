@@ -3,7 +3,7 @@ del Staff o el Council, taguea en el canal de auditoría a quien no depositó. L
 import asyncio
 import io
 import traceback
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -21,6 +21,7 @@ LOG_EXT = (".txt", ".log", ".csv")
 NO_MENTIONS = discord.AllowedMentions.none()
 TAG_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True)
 MAX_ITEMS_PER_LINE = 6
+CHESTLOG_PREFIX = "📦 Chestlog"                        # así empieza el mensaje del bot en cta_chestlog_upload (bot.py)
 
 
 def _cta_row(db_path: str, cta_id: Optional[int], channel_id: int) -> Optional[dict]:
@@ -146,15 +147,18 @@ class ChestAuditCog(commands.Cog):
                 return None
         return th
 
-    async def loot_files(self, guild, run: dict) -> List[List[ca.LootEvent]]:
-        """Los archivos del loot logger subidos a los hilos de combatlog de la CTA (privado y, si hay, el público viejo)."""
+    async def thread_files(self, guild, run: dict) -> Tuple[List[List[ca.LootEvent]], List[ca.ChestEntry]]:
+        """Archivos de los hilos de combatlog de la CTA (privado y, si hay, el público viejo):
+        cada archivo del loot logger por separado, y el chestlog del último mensaje que traiga uno («Subir chestlog»)."""
         files: List[List[ca.LootEvent]] = []
+        chest: List[ca.ChestEntry] = []
         seen = set()
         for tid in (run.get("combatlog_priv_thread_id"), run.get("combatlog_thread_id")):
             th = await self._thread(guild, tid)
             if th is None:
                 continue
             async for msg in th.history(limit=None, oldest_first=True):
+                msg_chest: List[ca.ChestEntry] = []
                 for a in msg.attachments:
                     if a.id in seen or not (a.filename or "").lower().endswith(LOG_EXT):
                         continue
@@ -168,32 +172,24 @@ class ChestAuditCog(commands.Cog):
                         events = ca.parse_loot_log(text)
                         if events:
                             files.append(events)
-        return files
+                    elif self._is_chestlog_msg(msg):
+                        msg_chest += ca.parse_chest_log(text)
+                if msg_chest:                             # vale el chestlog más nuevo
+                    chest = msg_chest
+        return files, chest
 
-    @chest.command(name="auditar", description="(Staff/Council) Compara los combatlogs de la CTA con el log del chest")
-    @app_commands.describe(archivo="Log del chest (copiado del juego, .txt)", archivo2="Otra parte del log del chest (opcional)",
-                           cta="Número de CTA (si no lo usás en un hilo de la CTA)")
-    async def auditar(self, interaction: discord.Interaction, archivo: discord.Attachment,
-                      archivo2: Optional[discord.Attachment] = None, cta: Optional[int] = None):
-        if not is_staff_or_council(interaction.user):
-            return await interaction.response.send_message("🔒 Solo el Staff o el Council.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        run = await asyncio.to_thread(_cta_row, self.db_path, cta, interaction.channel_id)
-        if run is None:
-            return await interaction.followup.send("❌ No encontré la CTA. Usalo en su hilo de combatlog o indicá `cta`.", ephemeral=True)
-        chest: List[ca.ChestEntry] = []
-        for att in (archivo, archivo2):
-            if att is None:
-                continue
-            try:
-                chest += ca.parse_chest_log(_decode(await att.read()))
-            except Exception as exc:
-                return await interaction.followup.send(f"❌ No pude leer {att.filename}: {exc!r}", ephemeral=True)
-        if not chest:
-            return await interaction.followup.send("❌ El log del chest no tiene registros que entienda.", ephemeral=True)
-        files = await self.loot_files(interaction.guild, run)
-        if not files:
-            return await interaction.followup.send("❌ Esta CTA no tiene combatlogs (del loot logger) subidos.", ephemeral=True)
+    def _is_chestlog_msg(self, msg) -> bool:
+        """Solo cuentan los chestlog que reenvió el bot con «Subir chestlog» (Staff/Council), no cualquier archivo del hilo."""
+        me = getattr(self.bot, "user", None)
+        return me is not None and getattr(msg.author, "id", None) == me.id and (msg.content or "").startswith(CHESTLOG_PREFIX)
+
+    async def loot_files(self, guild, run: dict) -> List[List[ca.LootEvent]]:
+        return (await self.thread_files(guild, run))[0]
+
+    async def audit_and_preview(self, interaction: discord.Interaction, run: dict, files: List[List[ca.LootEvent]],
+                                chest: List[ca.ChestEntry]):
+        """Corre la auditoría, la guarda y manda el preview (solo a quien la pidió) con el botón Taguear.
+        La interacción ya tiene que estar diferida."""
         result = await asyncio.to_thread(ca.audit, files, chest)
         audit_id = await asyncio.to_thread(ca.save_audit, self.db_path, interaction.guild.id, int(run["id"]),
                                            interaction.user.id, result, len(files))
@@ -213,6 +209,50 @@ class ChestAuditCog(commands.Cog):
         file = discord.File(io.BytesIO(report.encode("utf-8")), filename=f"auditoria-chest-{audit_id}.txt")
         view = TagView(self, audit_id, title, lines, report) if lines else discord.utils.MISSING
         await interaction.followup.send(summary + preview, file=file, view=view, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    async def audit_from_panel(self, interaction: discord.Interaction, cta_id: int):
+        """Botón «Auditar» del panel de combatlog: usa los combatlogs y el chestlog ya subidos a la CTA."""
+        if not is_staff_or_council(interaction.user):
+            return await interaction.response.send_message("🔒 Solo el Staff o el Council.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        run = await asyncio.to_thread(_cta_row, self.db_path, cta_id, 0)
+        if run is None:
+            return await interaction.followup.send("❌ No encontré la CTA de este panel.", ephemeral=True)
+        files, chest = await self.thread_files(interaction.guild, run)
+        falta = [t for t, ok in (("combatlogs (botón **Subir combatlog**)", files), ("chestlog (botón **Subir chestlog**)", chest)) if not ok]
+        if falta:
+            return await interaction.followup.send("❌ Todavía no hay " + " ni ".join(falta) + " en esta CTA.", ephemeral=True)
+        await self.audit_and_preview(interaction, run, files, chest)
+
+    @chest.command(name="auditar", description="(Staff/Council) Compara los combatlogs de la CTA con el log del chest")
+    @app_commands.describe(archivo="Log del chest (si no lo pasás, se usa el subido con «Subir chestlog»)",
+                           archivo2="Otra parte del log del chest (opcional)",
+                           cta="Número de CTA (si no lo usás en un hilo de la CTA)")
+    async def auditar(self, interaction: discord.Interaction, archivo: Optional[discord.Attachment] = None,
+                      archivo2: Optional[discord.Attachment] = None, cta: Optional[int] = None):
+        if not is_staff_or_council(interaction.user):
+            return await interaction.response.send_message("🔒 Solo el Staff o el Council.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        run = await asyncio.to_thread(_cta_row, self.db_path, cta, interaction.channel_id)
+        if run is None:
+            return await interaction.followup.send("❌ No encontré la CTA. Usalo en su hilo de combatlog o indicá `cta`.", ephemeral=True)
+        chest: List[ca.ChestEntry] = []
+        for att in (archivo, archivo2):
+            if att is None:
+                continue
+            try:
+                chest += ca.parse_chest_log(_decode(await att.read()))
+            except Exception as exc:
+                return await interaction.followup.send(f"❌ No pude leer {att.filename}: {exc!r}", ephemeral=True)
+        if (archivo or archivo2) and not chest:
+            return await interaction.followup.send("❌ El log del chest no tiene registros que entienda.", ephemeral=True)
+        files, thread_chest = await self.thread_files(interaction.guild, run)
+        chest = chest or thread_chest
+        if not chest:
+            return await interaction.followup.send("❌ No hay chestlog: adjuntalo o subilo con **Subir chestlog**.", ephemeral=True)
+        if not files:
+            return await interaction.followup.send("❌ Esta CTA no tiene combatlogs (del loot logger) subidos.", ephemeral=True)
+        await self.audit_and_preview(interaction, run, files, chest)
 
 
 async def setup_chestaudit(bot, db_path: str, guild_id: int) -> ChestAuditCog:

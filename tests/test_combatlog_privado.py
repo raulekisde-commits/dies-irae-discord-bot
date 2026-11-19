@@ -43,5 +43,13 @@ class CombatlogPrivadoTests(unittest.TestCase):
         self.assertNotIn("complete_by_source", body)              # no cierra la tarea del combatlog
         self.assertNotIn("reward", body)                          # ni da tirada
 
+    def test_boton_auditar_solo_staff_council(self):
+        self.assertIn('custom_id="combatlog:audit"', self.src)
+        i = self.src.index("    async def audit(self, interaction")
+        btn = self.src[i:self.src.index("\n\n\n", i)]
+        self.assertIn("is_staff_or_council(interaction.user)", btn)
+        self.assertIn('get_cog("ChestAuditCog")', btn)
+        self.assertIn("audit_from_panel(", btn)
+
 if __name__ == "__main__":
     unittest.main()

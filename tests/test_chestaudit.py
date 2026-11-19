@@ -170,3 +170,51 @@ class CogTextTests(unittest.TestCase):
         msgs = cog.chunk_lines("H", ["x" * 1000] * 3)
         self.assertTrue(all(len(m) <= 1900 for m in msgs))
         self.assertEqual(cog.bs.default_of("chest_audit"), 1462185027247931660)
+
+
+class ThreadFilesTests(unittest.TestCase):
+    def test_combatlogs_y_ultimo_chestlog_del_bot(self):
+        import asyncio
+        import test_give_deposits  # noqa: F401  (carga el stub de discord)
+        import chestaudit as cog_mod
+
+        class Att:
+            _n = 0
+
+            def __init__(self, text, name="log.txt"):
+                Att._n += 1
+                self.id, self.filename, self._raw = Att._n, name, text.encode("utf-8")
+
+            async def read(self):
+                return self._raw
+
+        class Msg:
+            def __init__(self, author_id, content, atts):
+                self.author, self.content, self.attachments = type("U", (), {"id": author_id})(), content, atts
+
+        class Th:
+            def __init__(self, msgs):
+                self.msgs = msgs
+
+            async def history(self, limit=None, oldest_first=True):
+                for m in self.msgs:
+                    yield m
+
+        loot_txt = "\n".join((HEAD, L("00:33:00", "Ana", "T8_HEAD_LEATHER_SET3", "Elder's Assassin Hood")))
+        old_chest = "\n".join((CHEAD, C("00:40:00", "Ana", "Trash")))
+        new_chest = "\n".join((CHEAD, C("00:55:00", "Ana", "Elder's Assassin Hood")))
+        fake_chest = "\n".join((CHEAD, C("01:55:00", "Ana", "Trash")))
+        th = Th([Msg(1, "📎 combatlog", [Att(loot_txt)]),
+                 Msg(1, "📦 Chestlog · x", [Att(old_chest)]),
+                 Msg(7, "lo subo yo", [Att(fake_chest)]),                    # no es del bot: no cuenta
+                 Msg(1, "📦 Chestlog · y", [Att(new_chest)])])
+        bot = type("B", (), {"user": type("U", (), {"id": 1})()})()
+        c = cog_mod.ChestAuditCog(bot, ":memory:", 1)
+
+        async def fake_thread(guild, tid):
+            return th if tid == 50 else None
+        c._thread = fake_thread
+        files, chest_rows = asyncio.run(c.thread_files(None, {"id": 3, "combatlog_priv_thread_id": 50}))
+        self.assertEqual(len(files), 1)
+        self.assertEqual([(e.item, e.ts.hour) for e in chest_rows], [("Elder's Assassin Hood", 0)])
+        self.assertEqual(ca.audit(files, chest_rows)["players"]["ana"].missing, [])

@@ -4703,6 +4703,18 @@ class CombatlogPanelView(discord.ui.View):
             return await interaction.response.send_message("❌ Esta versión del bot no permite subir archivos con formulario.", ephemeral=True)
         await interaction.response.send_modal(ChestlogUploadModal(int(rows[0]["id"])))
 
+    @discord.ui.button(label="Auditar", style=discord.ButtonStyle.success, custom_id="combatlog:audit", emoji="🔎")
+    async def audit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff_or_council(interaction.user):
+            return await interaction.response.send_message("🔒 Solo el Staff o el Council pueden auditar.", ephemeral=True)
+        rows = db_fetchall("SELECT id FROM cta_runs WHERE combatlog_message_id=?", (interaction.message.id,)) if interaction.message else []
+        if not rows:
+            return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
+        cog = bot.get_cog("ChestAuditCog")
+        if cog is None:
+            return await interaction.response.send_message("❌ El módulo de auditoría del chest no está cargado.", ephemeral=True)
+        await cog.audit_from_panel(interaction, int(rows[0]["id"]))
+
 
 class ChestlogUploadModal(discord.ui.Modal):
     """Formulario del log del chest (Staff/Council): lo reenvía al mismo hilo privado que los combatlogs."""
