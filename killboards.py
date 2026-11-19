@@ -18,6 +18,7 @@ import killboard_db as kb
 import registration_db as rdb
 import splits_db as sdb
 import cores_db as odb
+import chestaudit_db as ca
 from dbutil import connect
 from guildshop import can_manage
 
@@ -977,6 +978,9 @@ class KillboardCog(commands.Cog):
         looted = await self.run(sdb.looted_total, target.id)
         looted_n = await self.run(sdb.looted_ctas, target.id)
         looted_value = f"**{looted:,}**".replace(",", ".") + f" en **{looted_n}** CTA"
+        loot_avg, drop_avg, loot_ctas = await self.run(ca.loot_averages, names)   # auditoría del chest (/chest auditar)
+        loot_value = (f"Looteado: **{loot_avg:.1f}** · Dropeado: **{drop_avg:.1f}** · en **{loot_ctas}** CTA".replace(".", ",")
+                      if loot_ctas else None)
         orbs = await self.run(odb.user_stats, target.id)                 # /core y /vortex que le dieron tiradas
         orbs_value = "\n".join(f"**{odb.KIND_LABEL[k]}** · " + " · ".join(f"{odb.RARITY_LABEL[r]} ({orbs[k][r]})" for r in odb.RARITIES)
                                 for k in odb.KINDS)
@@ -1008,6 +1012,8 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="📈 IP promedio", value=f"**{s['avg_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬆️ IP máxima", value=f"**{s['max_ip']:.0f}**", inline=True)
                 emb.add_field(name="⬇️ IP mínima", value=f"**{s['min_ip']:.0f}**", inline=True)
+        if loot_value:
+            emb.add_field(name="📦 Loot por CTA (promedio)", value=loot_value, inline=False)
         emb.add_field(name="🔮 Cores y vortex", value=orbs_value, inline=False)
         cta = None
         try:                                          # killboard, o anotado + más de 20 min en el canal de voz (guildcheck_db)
@@ -1029,6 +1035,7 @@ class KillboardCog(commands.Cog):
                 "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
                 "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],
                 "skips": skips, "looted": looted, "looted_ctas": looted_n, "roles": roles_top, "main": main_data,
+                "loot_avg": round(loot_avg, 1), "drop_avg": round(drop_avg, 1), "loot_ctas": loot_ctas,
                 "orbs": {k: [orbs[k][r] for r in odb.RARITIES] for k in odb.KINDS},
                 "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0}
         await self._send_stats(interaction, target, data, emb)
