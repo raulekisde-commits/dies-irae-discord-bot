@@ -120,9 +120,10 @@ def _ts(text) -> Optional[datetime]:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
-def parse_events(events: Iterable[dict], guild_name: str) -> dict:
-    """Devuelve {'players': {norm: {...}}, 'events': n, 'smogg_deaths': n, 'ts_missing': n}. Solo jugadores de la guild."""
-    gl = norm(guild_name)
+def parse_events(events: Iterable[dict], guild_name) -> dict:
+    """Devuelve {'players': {norm: {...}}, 'events': n, 'smogg_deaths': n, 'ts_missing': n}. Solo jugadores de la guild.
+    `guild_name` puede ser un nombre o varios (guild principal + hermanas, que cuentan igual)."""
+    gls = {norm(g) for g in ([guild_name] if isinstance(guild_name, str) else guild_name)}
     players: Dict[str, dict] = {}
 
     def entry(p) -> Optional[dict]:
@@ -130,7 +131,7 @@ def parse_events(events: Iterable[dict], guild_name: str) -> dict:
             return None
         name = p.get("Name") or p.get("name")
         guild = p.get("GuildName") or p.get("guildName")
-        if not name or norm(guild) != gl:
+        if not name or norm(guild) not in gls:
             return None
         e = players.setdefault(norm(name), {"name": str(name), "kills": 0, "deaths": 0, "assists": 0, "damage": 0.0, "death_fame": 0, "ips": [], "death_time": None, "deaths_list": [], "weapons": {}})
         return e

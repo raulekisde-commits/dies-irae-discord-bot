@@ -245,9 +245,32 @@ class GuildCheckTests(DiscordBase):
         self.assertFalse(run(view.interaction_check(self.inter(self.council))))
         self.assertTrue(run(view.interaction_check(self.inter(self.staff))))
 
+    def test_limpiar_registros_sin_rol_miembro(self):
+        rdb.admin_link(self.db, self.outsider.id, "Fantasma", 1, char_id="id-f")        # sin rol Miembro: se libera
+        obs = discord.Role(gc.OBSERVACION_ROLE_ID, "Observación", self.guild)
+        self.council.roles.append(obs)
+        rdb.admin_link(self.db, self.council.id, "Obsi", 1, char_id="id-o")             # Observación: exceptuado
+        rdb.admin_link(self.db, self.staff.id, "Jefe", 1, char_id="id-j")               # Staff: exceptuado
+        i = self.inter(self.alice)
+        run(self.cog.do_limpiar_registros(i))
+        self.assertIn("🔒", i.text)
+        i = self.inter(self.staff)
+        run(self.cog.do_limpiar_registros(i))
+        self.assertIn("Fantasma", i.text)
+        self.assertNotIn("Obsi", i.text)
+        self.assertNotIn("Jefe", i.text)
+        self.assertNotIn("Kingnian", i.text)                                            # tiene rol Miembro
+        view = i.response.sent[0][1]["view"]
+        j = self.inter(self.staff)
+        run(view.children[0].callback(j))
+        self.assertIsNone(rdb.get_registration(self.db, self.outsider.id))
+        self.assertIsNotNone(rdb.get_registration(self.db, self.council.id))
+        self.assertIsNotNone(rdb.get_registration(self.db, self.alice.id))
+        self.assertIn("Liberé el registro de **1**", j.text)
+
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 

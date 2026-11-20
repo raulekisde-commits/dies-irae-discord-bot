@@ -7,6 +7,7 @@
   /miembros kick-lista       Candidatos a expulsar por motivo: inactivos, poca asistencia a CTA, faltan VODs; marca quién tiene /ausencia.
   /miembros asistencias      Asistencias a CTA por semana o de una persona (killboard, o anotado + 20 min en voz).
   /miembros antiguedad       Registrados: tag, personaje, días desde que se registraron y VODs subidos desde entonces.
+  /miembros limpiar-registros Libera el personaje de quienes siguen en el Discord sin rol Miembro (con confirmación).
   /miembros fuera-guild      Registrados cuyo personaje ya no está en la guild, con listas para expulsar.
   /miembros canal-avisos     Canal donde el bot avisa solo cuando alguien sale de la guild, con botones Expulsar / Ignorar.
 
@@ -444,6 +445,70 @@ class GuildCheckCog(commands.Cog):
         for chunk in _chunks(lines):
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    # ---------- limpiar registros de quienes ya no tienen rol Miembro ----------
+    def _cleanup_candidates(self, guild: discord.Guild, links: list, guests: set) -> list:
+        """[(miembro, [registros])] de quienes siguen en el Discord sin rol Miembro.
+        No toca invitados, Staff/Council/admins ni a quienes tienen el rol Observación."""
+        by_user: dict = {}
+        for r in links:
+            by_user.setdefault(r.discord_id, []).append(r)
+        out = []
+        for uid, rs in by_user.items():
+            m = guild.get_member(uid)
+            if m is None or getattr(m, "bot", False) or uid in guests or _is_admin(m) or can_admin_registro(m):
+                continue
+            ids = {r.id for r in getattr(m, "roles", [])}
+            if MIEMBRO_ROLE_ID in ids or OBSERVACION_ROLE_ID in ids:
+                continue
+            out.append((m, rs))
+        out.sort(key=lambda x: x[0].display_name.casefold())
+        return out
+
+    async def do_limpiar_registros(self, interaction):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        import registration_db as rdb
+        guild, actor = interaction.guild, interaction.user
+        links = await asyncio.to_thread(rdb.all_registrations, self.db_path)
+        guests = await asyncio.to_thread(self._guest_ids, guild.id)
+        cands = self._cleanup_candidates(guild, links, guests)
+        if not cands:
+            return await _say(interaction, "✅ Todos los registrados que siguen en el Discord tienen rol Miembro (o están exceptuados). No hay nada que liberar.")
+        esc = discord.utils.escape_markdown
+        lines = [f"• <@{m.id}> (`{esc(m.name)}`) → " + ", ".join(f"**{esc(r.char_name)}**" for r in rs) for m, rs in cands]
+        head = (f"🧹 **{len(cands)}** registrados siguen en el Discord **sin rol Miembro**. Se les va a liberar el personaje "
+                "(como si se hubieran ido del servidor). No se los expulsa ni se les tocan los roles.\n"
+                "No incluye invitados, Staff, Council, administradores ni rol Observación.\n")
+        chunks = _chunks(lines, 1500)
+
+        async def yes(i: discord.Interaction):
+            await i.response.edit_message(content="⏳ Liberando personajes…", view=None)
+            links_now = await asyncio.to_thread(rdb.all_registrations, self.db_path)
+            guests_now = await asyncio.to_thread(self._guest_ids, guild.id)
+            still = self._cleanup_candidates(guild, links_now, guests_now)          # se vuelve a revisar: alguien pudo recuperar el rol
+            freed, names = 0, []
+            for m, _rs in still:
+                try:
+                    await asyncio.to_thread(rdb.cancel_active_for, self.db_path, m.id, actor.id, "registro liberado: sin rol Miembro")
+                    removed = await asyncio.to_thread(rdb.unlink, self.db_path, m.id, actor.id, None, "sin rol Miembro (/miembros limpiar-registros)")
+                except Exception:
+                    traceback.print_exc()
+                    continue
+                if removed:
+                    freed += 1
+                    names.append(f"<@{m.id}> → " + ", ".join(f"**{esc(r.char_name)}**" for r in removed))
+            await i.followup.send(f"✅ Liberé el registro de **{freed}** persona(s).", ephemeral=True)
+            reg = self.reg()
+            if reg is not None and names:
+                for chunk in _chunks([f"🧹 <@{actor.id}> liberó los registros de {freed} persona(s) sin rol Miembro:"] + [f"• {n}" for n in names]):
+                    await reg.audit_log(chunk.rstrip("\n"))
+
+        await interaction.response.send_message(head + chunks[0] + ("\n…y la lista sigue abajo." if len(chunks) > 1 else ""),
+                                                view=YesNoView(actor.id, yes, f"Liberar {len(cands)} registros"),
+                                                ephemeral=True, allowed_mentions=NO_MENTIONS)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     # ---------- canal de avisos ----------
     async def do_canal_avisos(self, interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         if interaction.guild is None or not can_manage(interaction.user):
@@ -518,7 +583,7 @@ class GuildCheckCog(commands.Cog):
                 break
             checked += 1
             current = await reg._current_guild(rs[0])                           # se confirma con la API antes de avisar
-            if current is None or (current and current.casefold() == (reg.required_guild or "").casefold()):
+            if current is None or (current and reg.is_own_guild(current)):
                 continue
             esc = discord.utils.escape_markdown
             emb = discord.Embed(title="🚪 Salió de la guild de Albion", color=discord.Color.orange())
@@ -656,6 +721,10 @@ class GuildCheckCog(commands.Cog):
     @miembros_g.command(name="antiguedad", description="(Staff) Miembros con nombre en Albion, días desde que se registraron y VODs subidos")
     async def antiguedad_cmd(self, interaction: discord.Interaction):
         await self.do_antiguedad(interaction)
+
+    @miembros_g.command(name="limpiar-registros", description="(Staff) Libera el personaje de quienes siguen en el Discord sin rol Miembro")
+    async def limpiar_registros_cmd(self, interaction: discord.Interaction):
+        await self.do_limpiar_registros(interaction)
 
     @miembros_g.command(name="fuera-guild",description="(Staff) Registrados cuyo personaje ya no está en la guild, con opción de expulsarlos")
     async def fuera_guild_cmd(self, interaction: discord.Interaction):

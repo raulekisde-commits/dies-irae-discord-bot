@@ -15,7 +15,7 @@ import os
 import re
 import traceback
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -243,9 +243,13 @@ class KickOutsidersView(discord.ui.View):
 # ============================================================
 class RegistrationCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "", default_log_channel: int = 0,
-                 albion_guild_id: str = "", member_role_id: int = 0, public_role_id: int = 0):
+                 albion_guild_id: str = "", member_role_id: int = 0, public_role_id: int = 0,
+                 extra_guilds: Optional[List[Tuple[str, str]]] = None):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self.albion_guild_id = (albion_guild_id or "").strip()
+        # Guilds hermanas (ej. Smogged): se tratan igual que la principal (registro, lista, avisos); su gente recibe un rol con su nombre.
+        self.extra_guilds: List[Tuple[str, str]] = [(n.strip(), i.strip()) for n, i in (extra_guilds or []) if n and n.strip() and i and i.strip()]
+        self._fresh_guilds: set = set()             # guilds (casefold) cuya lista se bajó bien en la última actualización
         self.member_role_id = int(member_role_id or 0)
         self.public_role_id = int(public_role_id or 0)
         self.roster: Dict[str, Character] = {}      # nombre (casefold) → personaje, de la última lista bajada
@@ -272,6 +276,26 @@ class RegistrationCog(commands.Cog):
         self.roster_loop.cancel()
         self.recruit_loop.cancel()
 
+    # ---------- guilds aceptadas (principal + hermanas) ----------
+    @property
+    def guilds(self) -> List[Tuple[str, str]]:
+        """[(nombre, id de Albion)]: primero la principal."""
+        return [(self.required_guild, self.albion_guild_id)] + self.extra_guilds
+
+    @property
+    def guild_names(self) -> set:
+        return {n.casefold() for n, _i in self.guilds if n}
+
+    @property
+    def guild_label(self) -> str:
+        return " / ".join(n for n, _i in self.guilds if n) or "Smogg"
+
+    def is_own_guild(self, name: Optional[str]) -> bool:
+        return bool(name) and name.casefold() in self.guild_names
+
+    def _roster_key_id(self) -> str:
+        return ",".join(i for _n, i in self.guilds if i)
+
     # ---------- lista de miembros de la guild (se baja cada tanto, no en cada registro) ----------
     async def _load_saved_roster(self):
         """Recupera la última lista guardada, para no depender de la API al reiniciar el bot."""
@@ -279,7 +303,7 @@ class RegistrationCog(commands.Cog):
         try:
             raw = await self.run(rdb.get_flag, rdb.ROSTER_KEY)
             data = json.loads(raw) if raw else None
-            if data and data.get("guild") == self.albion_guild_id:
+            if data and data.get("guild") in (self._roster_key_id(), self.albion_guild_id):
                 members = [Character(*m) for m in data["members"]]
                 if members:
                     self.roster = {c.name.casefold(): c for c in members}
@@ -290,39 +314,66 @@ class RegistrationCog(commands.Cog):
     async def _save_roster(self):
         import json
         try:
-            payload = {"guild": self.albion_guild_id, "at": self.roster_at,
+            payload = {"guild": self._roster_key_id(), "at": self.roster_at,
                        "members": [[c.char_id, c.name, c.region, c.guild, c.alliance, c.kill_fame, c.death_fame] for c in self.roster.values()]}
             await self.run(rdb.set_flag, rdb.ROSTER_KEY, json.dumps(payload, separators=(",", ":")))
         except Exception:
             traceback.print_exc()
 
-    async def refresh_roster(self) -> bool:
-        """Baja la lista de miembros de la guild y la guarda en memoria. Si falla, conserva la anterior."""
-        import time
-        if not self.albion_guild_id:
-            return False
-        errors = []
+    async def _fetch_guild_members(self, gid: str, gname: str, errors: list) -> Optional[List[Character]]:
         bases = sorted(GAMEINFO_BASES, key=lambda rb: rb[0] != getattr(self, "_roster_region", None))   # primero el servidor que ya funcionó
         for region, base in bases:
             try:
-                data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/guilds/{self.albion_guild_id}/members"), HTTP_TIMEOUT + 5)
+                data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/guilds/{gid}/members"), HTTP_TIMEOUT + 5)
             except Exception as exc:
-                errors.append(f"{region}: {type(exc).__name__} {exc}")
+                errors.append(f"{gname} {region}: {type(exc).__name__} {exc}")
                 continue
             members = [c for c in (_character(m, region) for m in (data if isinstance(data, list) else []) if isinstance(m, dict)) if c is not None]
             if not members:                           # lista vacía = respuesta sospechosa: no pisamos la buena
-                errors.append(f"{region}: lista vacía")
+                errors.append(f"{gname} {region}: lista vacía")
                 continue
             for c in members:
                 if not c.guild:
-                    c.guild = self.required_guild
-            self.roster = {c.name.casefold(): c for c in members}
-            self.roster_at = time.time()
+                    c.guild = gname
             self._roster_region = region
-            await self._save_roster()
-            return True
-        print(f"⚠️ Registro: no pude actualizar la lista de la guild: {' | '.join(errors)[:300]}")
-        return False
+            return members
+        return None
+
+    async def refresh_roster(self) -> bool:
+        """Baja la lista de miembros de todas las guilds y la guarda en memoria. Si falla la principal, conserva la anterior;
+        si falla una guild hermana, se mantiene la parte que ya se tenía de ella."""
+        import time
+        if not self.albion_guild_id:
+            return False
+        errors: list = []
+        main = await self._fetch_guild_members(self.albion_guild_id, self.required_guild, errors)
+        if main is None:
+            self._fresh_guilds = set()
+            print(f"⚠️ Registro: no pude actualizar la lista de la guild: {' | '.join(errors)[:300]}")
+            return False
+        fresh = {self.required_guild.casefold()}
+        combined = list(main)
+        for gname, gid in self.extra_guilds:
+            got = await self._fetch_guild_members(gid, gname, errors)
+            if got is None:
+                got = [c for c in self.roster.values() if (c.guild or "").casefold() == gname.casefold()]
+                print(f"⚠️ Registro: no pude actualizar la lista de {gname}; uso la anterior ({len(got)} jugadores).")
+            else:
+                fresh.add(gname.casefold())
+            combined.extend(got)
+        roster: Dict[str, Character] = {}
+        for c in combined:
+            roster.setdefault(c.name.casefold(), c)   # ante un nombre repetido gana la guild principal (va primero)
+        self.roster = roster
+        self._fresh_guilds = fresh
+        self.roster_at = time.time()
+        await self._save_roster()
+        return True
+
+    def main_guild_count(self) -> int:
+        """Miembros solo de la guild principal (para el contador 'Smogg N/300')."""
+        g = (self.required_guild or "").casefold()
+        return sum(1 for c in self.roster.values() if (c.guild or "").casefold() == g) if g else len(self.roster)
 
     def roster_fresh(self) -> bool:
         import time
@@ -335,6 +386,93 @@ class RegistrationCog(commands.Cog):
         except Exception:
             traceback.print_exc()
         await self.update_member_count_channel()
+        await self.sync_guild_roles()
+
+    # ---------- rol de las guilds hermanas (ej. rol "Smogged" para la gente de Smogged) ----------
+    async def guild_role(self, guild: discord.Guild, gname: str, create: bool = True) -> Optional[discord.Role]:
+        """Rol de Discord con el nombre de la guild hermana. Si no existe, lo crea (una vez) y guarda su ID."""
+        key = f"registro:rol_guild:{gname.casefold()}"
+        try:
+            rid = await self.run(rdb.get_flag, key, "")
+            role = guild.get_role(int(rid)) if rid and rid.isdigit() else None
+            if role is None:
+                role = next((r for r in guild.roles if r.name.casefold() == gname.casefold()), None)
+            if role is None and create:
+                role = await guild.create_role(name=gname, mentionable=False, reason=f"Rol automático para los miembros de la guild {gname}")
+                await self.audit_log(f"🆕 Creé el rol {role.mention} para la gente de la guild **{discord.utils.escape_markdown(gname)}**.")
+            if role is not None and rid != str(role.id):
+                await self.run(rdb.set_flag, key, str(role.id))
+            return role
+        except discord.Forbidden:
+            print(f"⚠️ Registro: no tengo permiso para crear el rol {gname} (necesito Gestionar roles).")
+        except Exception:
+            traceback.print_exc()
+        return None
+
+    def guild_of_char(self, char_name: Optional[str], char_id: Optional[str] = None) -> Optional[str]:
+        """Guild (de la lista guardada) del personaje, o None si no figura."""
+        if char_id:
+            for c in self.roster.values():
+                if c.char_id == char_id:
+                    return c.guild
+        hit = self.roster.get((char_name or "").casefold())
+        return hit.guild if hit else None
+
+    async def apply_guild_role(self, member) -> None:
+        """Pone o saca el rol de guild hermana a una persona según dónde figura su personaje. Si no figura en la lista, no toca nada."""
+        if not self.extra_guilds or member is None or getattr(member, "bot", False):
+            return
+        try:
+            regs = await self.run(rdb.get_registrations, member.id)
+            found = [g for g in (self.guild_of_char(r.char_name, r.char_id) for r in regs) if g]
+            if not found:
+                return
+            for gname, _gid in self.extra_guilds:
+                role = await self.guild_role(member.guild, gname)
+                if role is None:
+                    continue
+                want = any(g.casefold() == gname.casefold() for g in found)
+                if want and role not in member.roles:
+                    await member.add_roles(role, reason=f"Su personaje está en la guild {gname}")
+                elif not want and role in member.roles:
+                    await member.remove_roles(role, reason=f"Su personaje ya no está en la guild {gname}")
+        except Exception:
+            traceback.print_exc()
+
+    async def sync_guild_roles(self) -> None:
+        """Con la lista recién bajada: rol de cada guild hermana a quienes tienen su personaje ahí, y se lo saca al resto."""
+        if not self.extra_guilds:
+            return
+        guild = self.bot.get_guild(self.guild_id)
+        if guild is None:
+            return
+        try:
+            regs = await self.run(rdb.all_registrations)
+        except Exception:
+            traceback.print_exc()
+            return
+        for gname, _gid in self.extra_guilds:
+            if gname.casefold() not in self._fresh_guilds:          # sin lista nueva de esa guild no se saca ni se pone nada
+                continue
+            role = await self.guild_role(guild, gname)
+            if role is None:
+                continue
+            gf = gname.casefold()
+            ids = {c.char_id for c in self.roster.values() if c.char_id and (c.guild or "").casefold() == gf}
+            names = {k for k, c in self.roster.items() if (c.guild or "").casefold() == gf}
+            want = {r.discord_id for r in regs if (r.char_id and r.char_id in ids) or r.char_name.casefold() in names}
+            try:
+                for uid in want:
+                    m = guild.get_member(uid)
+                    if m is not None and not getattr(m, "bot", False) and role not in m.roles:
+                        await m.add_roles(role, reason=f"Su personaje está en la guild {gname}")
+                for m in list(role.members):
+                    if m.id not in want:
+                        await m.remove_roles(role, reason=f"Su personaje no está en la guild {gname}")
+            except discord.Forbidden:
+                print(f"⚠️ Registro: no puedo dar/sacar el rol {gname} (mi rol tiene que estar por encima).")
+            except Exception:
+                traceback.print_exc()
 
     # ---------- canal contador de miembros (/canal miembros) ----------
     async def update_member_count_channel(self) -> Optional[str]:
@@ -347,7 +485,7 @@ class RegistrationCog(commands.Cog):
             channel = self.bot.get_channel(int(cid))
             if channel is None:
                 return None
-            name = MEMBER_COUNT_NAME.format(n=len(self.roster))
+            name = MEMBER_COUNT_NAME.format(n=self.main_guild_count())
             if getattr(channel, "name", None) != name:
                 await channel.edit(name=name, reason="Contador de miembros de la guild")
             return name
@@ -373,7 +511,7 @@ class RegistrationCog(commands.Cog):
         await self.run(rdb.set_flag, rdb.MEMBER_COUNT_CHANNEL_KEY, str(canal.id))
         await self.run(rdb.audit, interaction.user.id, "member_count_channel_set", None, None, f"canal={canal.id}")
         try:
-            await canal.edit(name=MEMBER_COUNT_NAME.format(n=len(self.roster)), reason="Contador de miembros de la guild")
+            await canal.edit(name=MEMBER_COUNT_NAME.format(n=self.main_guild_count()), reason="Contador de miembros de la guild")
         except discord.Forbidden:
             return await _say(interaction, f"⚠️ Guardado, pero no tengo permiso para renombrar {canal.mention} (necesito **Gestionar canales**).")
         except discord.HTTPException as exc:
@@ -458,7 +596,7 @@ class RegistrationCog(commands.Cog):
                         return Lookup("ok", character=hit)
                     if not refreshed:                  # la API no respondió: no se puede afirmar que no esté en la guild
                         return Lookup("error", detail="No pude actualizar la lista de la guild (la API de Albion está fallando).")
-                return Lookup("not_in_roster", detail=self.required_guild)
+                return Lookup("not_in_roster", detail=self.guild_label)
 
         async def one(region, base):
             data = await self.fetch_json(f"{base}/api/gameinfo/search", {"q": name})
@@ -484,13 +622,13 @@ class RegistrationCog(commands.Cog):
                 return Lookup("error", detail=" | ".join(errors)[:400])
             return Lookup("none")
         if any_guild and len(exact) > 1 and self.required_guild:      # reclutamiento: si hay homónimos, gana el que ya está en la guild
-            mine = [c for c in exact if c.guild.casefold() == self.required_guild.casefold()]
+            mine = [c for c in exact if self.is_own_guild(c.guild)]
             if len(mine) == 1:
                 exact = mine
         if self.required_guild and not any_guild:
-            in_guild = [c for c in exact if c.guild.casefold() == self.required_guild.casefold()]
+            in_guild = [c for c in exact if self.is_own_guild(c.guild)]
             if not in_guild:
-                return Lookup("wrong_guild", character=exact[0], detail=self.required_guild)
+                return Lookup("wrong_guild", character=exact[0], detail=self.guild_label)
             exact = in_guild
         if len(exact) > 1:
             return Lookup("ambiguous", options=exact)
@@ -586,6 +724,7 @@ class RegistrationCog(commands.Cog):
         except rdb.RegError as exc:
             return await _say(interaction, f"❌ {exc}")
         nick_msg = await self.apply_nickname(interaction.user, reg.char_name)
+        await self.apply_guild_role(interaction.user)
         await interaction.response.edit_message(
             content=f"🔗 {interaction.user.mention} quedó vinculado a **{discord.utils.escape_markdown(reg.char_name)}**.\n{nick_msg}",
             embeds=[], view=None, allowed_mentions=NO_MENTIONS)
@@ -733,6 +872,7 @@ class RegistrationCog(commands.Cog):
         except rdb.RegError as exc:
             return await _say(interaction, f"❌ {exc}")
         nick_msg = await self.apply_nickname(usuario, reg.char_name)
+        await self.apply_guild_role(usuario)
         role_msg = ""
         member_role = interaction.guild.get_role(self.member_role_id) if self.member_role_id else None
         if member_role is None:
@@ -773,7 +913,7 @@ class RegistrationCog(commands.Cog):
                                guild_name=(c.guild or None) if c else None, method="recruitment" if c else "admin_override")
             except rdb.RegError as exc:
                 return False, f"{exc}", False
-        in_guild = ((bool(self.required_guild) and bool(c.guild) and c.guild.casefold() == self.required_guild.casefold()) if c else False) or name.casefold() in self.roster
+        in_guild = (self.is_own_guild(c.guild) if c else False) or name.casefold() in self.roster
         safe = discord.utils.escape_markdown(name)
         if existing is not None:
             await self.audit_log(f"🧾 <@{recruiter.id}> aceptó a <@{member.id}> (ya estaba registrado como **{safe}**).")
@@ -786,11 +926,12 @@ class RegistrationCog(commands.Cog):
             return False, (f"quedó registrado como **{safe}**, pero **no pude darle los roles** "
                            "(revisá que el rol del bot esté por encima de Miembro y de los roles de CTA)."), False
         if in_guild:
+            await self.apply_guild_role(member)
             return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
         pend_id = existing.char_id if existing is not None else (c.char_id if c else None)
         await self.run(rdb.add_pending_recruit, member.id, name, pend_id, role_id, role_name, recruiter.id, tuple(extra_role_ids))
         try:
-            await member.send(f"✅ Fuiste aceptado en **{self.required_guild or 'la guild'}** como **{role_name}** y ya tenés tus roles. "
+            await member.send(f"✅ Fuiste aceptado en **{(c.guild if c and self.is_own_guild(c.guild) else self.required_guild) or 'la guild'}** como **{role_name}** y ya tenés tus roles. "
                               f"Acordate de entrar a la guild en el juego con tu personaje **{name}**.")
         except Exception:
             pass
@@ -1297,7 +1438,7 @@ class RegistrationCog(commands.Cog):
         alters = await asyncio.to_thread(self._alter_names)
         n_alters = sum(1 for n in guild_unlinked if n.casefold() in alters)
         guild_unlinked = [n for n in guild_unlinked if n.casefold() not in alters]
-        head = f"🎮 **{len(guild_unlinked)}** de {len(self.roster)} jugadores de la guild {self.required_guild or ''} no tienen Discord vinculado.".replace("  ", " ")
+        head = f"🎮 **{len(guild_unlinked)}** de {len(self.roster)} jugadores de la guild {self.guild_label} no tienen Discord vinculado.".replace("  ", " ")
         if n_alters:
             head += f"\nℹ️ {n_alters} son alters enlazados con `/alter` y no se listan."
         if not guild_unlinked:
@@ -1343,7 +1484,7 @@ class RegistrationCog(commands.Cog):
         links, *_ = res
         ids = {c.char_id for c in self.roster.values() if c.char_id}
         out = [r for r in links if not ((r.char_id and r.char_id in ids) or r.char_name.casefold() in self.roster)]
-        guild_name = self.required_guild or "Smogg"
+        guild_name = self.guild_label
         if not out:
             return await interaction.followup.send(f"✅ Los {len(links)} personajes registrados siguen en la guild {guild_name}.", ephemeral=True)
         out.sort(key=lambda r: r.char_name.casefold())
@@ -1395,7 +1536,7 @@ class RegistrationCog(commands.Cog):
                 failed.append(f"<@{uid}>: {problem}")
                 continue
             try:
-                await target.kick(reason=f"Fuera de la guild {self.required_guild or 'Smogg'} · expulsado por {actor} ({actor.id})")
+                await target.kick(reason=f"Fuera de la guild {self.guild_label} · expulsado por {actor} ({actor.id})")
                 done.append(f"<@{uid}> ({discord.utils.escape_markdown(target.display_name)})")
             except Exception as exc:
                 failed.append(f"<@{uid}>: {type(exc).__name__}")
@@ -1555,10 +1696,11 @@ def install_gate(bot: commands.Bot, db_path: str) -> RegistrationGate:
 
 async def setup_registration(bot: commands.Bot, db_path: str, guild_id: int, *, required_guild: str = "",
                              default_log_channel: int = 0, albion_guild_id: str = "", member_role_id: int = 0,
-                             public_role_id: int = 0) -> RegistrationCog:
+                             public_role_id: int = 0, extra_guilds: Optional[List[Tuple[str, str]]] = None) -> RegistrationCog:
     cog = RegistrationCog(bot, db_path, guild_id, required_guild=required_guild,
                           default_log_channel=int(os.getenv("REGISTRO_CANAL_ID", "0") or default_log_channel or 0),
-                          albion_guild_id=albion_guild_id, member_role_id=member_role_id, public_role_id=public_role_id)
+                          albion_guild_id=albion_guild_id, member_role_id=member_role_id, public_role_id=public_role_id,
+                          extra_guilds=extra_guilds)
     await bot.add_cog(cog, guilds=[discord.Object(id=guild_id)])
     install_gate(bot, db_path)
     return cog
