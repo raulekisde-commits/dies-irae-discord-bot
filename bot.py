@@ -449,6 +449,7 @@ PUBLIC_ROLE_ID = 1266805315547041902
 STAFF_ROLE_ID = 1257896709246423083
 
 COOLDOWN_SECONDS = 60
+RECRUIT_COOLDOWN_SECONDS = 20 * 60   # entre aperturas de postulación (botón ⚡ Abrir Postulación)
 
 # ✅ Timers
 TIMERS_ROLE_ID = 1462515835326169159
@@ -512,6 +513,7 @@ FOCO_PANEL_DESC = (
 ticket_images = {}         
 active_applications = {}
 cooldowns = {}
+recruit_cooldowns = {}   # user_id -> última vez que abrió el formulario de postulación
 
 # NUEVO: foco tickets
 active_foco_tickets = {}   # user_id -> channel_id (ayuda rápida, pero además validamos por topic)
@@ -2602,10 +2604,11 @@ class PanelView(discord.ui.View):
         if left > 0:
             return await respond_ephemeral(interaction, f"⏳ Tu última postulación fue rechazada. Podés volver a postularte <t:{int(time.time() + left)}:R>.")
 
-        if user_id in cooldowns and (now - cooldowns[user_id] < COOLDOWN_SECONDS):
-            return await respond_ephemeral(interaction, "⏳ Esperá un momento antes de volver a intentar.")
+        last = recruit_cooldowns.get(user_id)
+        if last is not None and now - last < RECRUIT_COOLDOWN_SECONDS:
+            return await respond_ephemeral(interaction, f"⏳ Ya abriste una postulación hace poco. Podés volver a intentar <t:{int(last + RECRUIT_COOLDOWN_SECONDS)}:R>.")
 
-        cooldowns[user_id] = now
+        recruit_cooldowns[user_id] = now
         await interaction.response.send_modal(RecruitFormModal())
 
 
@@ -5453,8 +5456,37 @@ async def cta_create_stats_panel(run: dict, actor_id: int) -> str:
     return f"Panel de stats creado: {thread.mention}."
 
 
+async def cta_delete_msg_and_thread(run_id: int, channel_id, message_id, thread_id) -> None:
+    """Borra un hilo y el mensaje que lo inició (panel de stats, bomb, combatlog, split...). Nunca lanza errores."""
+    th = None
+    if thread_id:
+        try:
+            th = bot.get_channel(int(thread_id)) or await bot.fetch_channel(int(thread_id))
+        except discord.NotFound:
+            th = None
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude buscar el hilo {thread_id}: {exc!r}")
+    parent_id = channel_id or getattr(th, "parent_id", None)
+    if th is not None:
+        try:
+            await th.delete()
+        except discord.NotFound:
+            pass
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude borrar el hilo {thread_id}: {exc!r}")
+    if message_id and parent_id:
+        try:
+            ch = bot.get_channel(int(parent_id)) or await bot.fetch_channel(int(parent_id))
+            await (await ch.fetch_message(int(message_id))).delete()
+        except discord.NotFound:
+            pass
+        except Exception as exc:
+            print(f"CTA #{run_id}: no pude borrar el mensaje {message_id}: {exc!r}")
+
+
 async def cta_abort_run(run_id: int, actor_id: int) -> str:
-    """Botón «Cancelar CTA»: borra la CTA y deja un registro en el canal de splits; el split (si existe) queda cancelado."""
+    """Botón «Cancelar CTA»: borra la CTA, sus tareas e hilos (stats, bomb, combatlog, split) y deja solo el registro en el
+    canal de splits; el split (si existe) queda cancelado."""
     run = cta_run_get(run_id)
     if not run:
         return "No encontré esta CTA."
@@ -5465,10 +5497,11 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
     voice = bot.get_cog("CTAVoiceCog")
     if voice is not None:
         await voice.stop_run(run_id)
+    tasks_deleted = 0
     enc = bot.get_cog("EncargosCog")
     if enc is not None:                                   # las tareas del Staff que ya había generado esta CTA dejan de tener sentido
         try:
-            await enc.cancel_by_prefix(f"cta:{run_id}:", actor_id, f"cancelada porque <@{actor_id}> canceló la CTA #{run_id}")
+            tasks_deleted = await enc.cancel_by_prefix(f"cta:{run_id}:", actor_id, f"cancelada porque <@{actor_id}> canceló la CTA #{run_id}", log=False)
         except Exception as exc:
             print(f"CTA #{run_id}: no pude cancelar sus tareas: {exc!r}")
     import splits_db as _sdb
@@ -5480,13 +5513,9 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
             split = await cog.run(_sdb.find_by_cta, run_id)
             if split is not None:
                 r = await cog.run(_sdb.cancel_split, split.id, actor_id)
-                if r == "cancelled":
-                    await cog.sync_split(split.id)
-                    th = await cog._get_channel(split.thread_id)
-                    if th is not None:
-                        await th.send((f"🚫 **El contenido {title} fue cancelado**" if run.get("kind") == "content" else f"🚫 **La CTA {title} fue cancelada**")
-                                      + f" por <@{actor_id}>. Este split no se puede pagar.", allowed_mentions=CTA_NO_PINGS)
-                    split_note = "Split cancelado."
+                if r == "cancelled":                      # cancelado: se borran su panel y su hilo (queda el registro de la CTA)
+                    await cta_delete_msg_and_thread(run_id, split.channel_id, split.message_id, split.thread_id)
+                    split_note = "Split cancelado y borrado."
                 elif r in ("closed", "closing"):
                     split_note = "⚠️ El split ya estaba pagado o pagándose: no se pudo cancelar."
         except Exception as exc:
@@ -5499,7 +5528,8 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
     is_content = run.get("kind") == "content"
     record = (f"🛑 **{'Contenido cancelado' if is_content else 'CTA cancelada'}** · {title} ({run['composition_name']})\n"
               f"{'Cancelado' if is_content else 'Cancelada'} por <@{actor_id}> · <t:{int(datetime.now(timezone.utc).timestamp())}:f>\n"
-              f"Anotados: **{len(signups)}**" + (f"\n{mentions}" if mentions else "") + (f"\n{split_note}" if split_note else ""))
+              f"Anotados: **{len(signups)}**" + (f"\n{mentions}" if mentions else "") + (f"\n{split_note}" if split_note else "")
+              + (f"\nTareas borradas: **{tasks_deleted}**" if tasks_deleted else ""))
     rec_ch = None
     if cog is not None:
         rec_ch = await cog._get_channel(split.channel_id if split is not None else cog.channel_id)
@@ -5509,6 +5539,9 @@ async def cta_abort_run(run_id: int, actor_id: int) -> str:
         except Exception as exc:
             print(f"CTA #{run_id}: no pude dejar el registro de cancelación: {exc!r}")
     deleted = await cta_delete_message(run)
+    for kind in ("stats", "bomb", "combatlog"):             # paneles e hilos que creó la CTA
+        await cta_delete_msg_and_thread(run_id, run.get(f"{kind}_channel_id"), run.get(f"{kind}_message_id"), run.get(f"{kind}_thread_id"))
+    await cta_delete_msg_and_thread(run_id, None, run.get("combatlog_priv_message_id"), run.get("combatlog_priv_thread_id"))
     if is_content:
         return f"🛑 **{title}** cancelado. " + (split_note + " " if split_note else "") + ("Se borró el contenido." if deleted else "⚠️ No pude borrar el mensaje del contenido.")
     return f"🛑 **{title}** cancelada. " + (split_note + " " if split_note else "") + ("Se borró la CTA." if deleted else "⚠️ No pude borrar el mensaje de la CTA.")
