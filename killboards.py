@@ -30,6 +30,9 @@ except Exception:
 
 NO_MENTIONS = discord.AllowedMentions.none()
 GUILD_NAME = os.getenv("ALBION_GUILD_NAME", "Smogg")
+# Guilds hermanas que cuentan igual en los killboards (mismo formato que en bot.py: "Nombre:ID,...").
+KB_GUILDS = (GUILD_NAME,) + tuple(x.split(":", 1)[0].strip() for x in os.getenv("ALBION_EXTRA_GUILDS", "Smogged:PrAIGLB7QDiq2aARE6brwQ").split(",") if ":" in x)
+GUILD_LABEL = "/".join(KB_GUILDS)
 REGION = os.getenv("ALBIONBB_REGION", "eu")
 BASE_URL = f"https://api.albionbb.com/{REGION}"
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
@@ -152,9 +155,9 @@ def parse_ids(text: str) -> List[str]:
     return out
 
 
-def extract_guild_names(data, guild_name: str) -> List[str]:
-    """Nombres de la guild que figuran en cualquier parte de la ficha de la batalla (para la asistencia)."""
-    gl = kb.norm(guild_name)
+def extract_guild_names(data, guild_name) -> List[str]:
+    """Nombres de la guild (o guilds) que figuran en cualquier parte de la ficha de la batalla (para la asistencia)."""
+    gls = {kb.norm(g) for g in ([guild_name] if isinstance(guild_name, str) else guild_name)}
     found = {}
 
     def walk(o):
@@ -166,7 +169,7 @@ def extract_guild_names(data, guild_name: str) -> List[str]:
                 g = go.get("Name") or go.get("name")
             elif not g and isinstance(go, str):
                 g = go
-            if isinstance(n, str) and isinstance(g, str) and kb.norm(g) == gl:
+            if isinstance(n, str) and isinstance(g, str) and kb.norm(g) in gls:
                 found.setdefault(kb.norm(n), n)
             for v in o.values():
                 walk(v)
@@ -328,10 +331,10 @@ class KillboardCog(commands.Cog):
         events = await self.fetch_json(f"{BASE_URL}/battles/kills", {"ids": battle_id})
         if not isinstance(events, list):
             raise RuntimeError("la respuesta de kills no tiene el formato esperado")
-        parsed = kb.parse_events(events, GUILD_NAME)
+        parsed = kb.parse_events(events, KB_GUILDS)
         try:
             detail = await self.fetch_json(f"{BASE_URL}/battles/{battle_id}")
-            kb.add_attendees(parsed, extract_guild_names(detail, GUILD_NAME))
+            kb.add_attendees(parsed, extract_guild_names(detail, KB_GUILDS))
         except Exception as exc:                         # la ficha solo suma asistencia: si falla, se sigue con los eventos
             print(f"Killboard {battle_id}: no pude leer la ficha de la batalla: {exc!r}")
         return parsed
@@ -382,7 +385,7 @@ class KillboardCog(commands.Cog):
                 lines.append(f"❌ `{bid}`: no pude leerlo de AlbionBB ({exc}).")
                 continue
             if not parsed["players"]:
-                lines.append(f"⚠️ `{bid}`: no encontré jugadores de **{GUILD_NAME}** (¿otro ID o servidor?). No se guardó.")
+                lines.append(f"⚠️ `{bid}`: no encontré jugadores de **{GUILD_LABEL}** (¿otro ID o servidor?). No se guardó.")
                 continue
             try:
                 res = await self.run(kb.save_battle, bid, cta_id, me.id, parsed)
@@ -395,7 +398,7 @@ class KillboardCog(commands.Cog):
                 continue
             loaded += 1
             warn = f" ⚠️ {parsed['ts_missing']} muerte(s) sin hora" if parsed["ts_missing"] else ""
-            lines.append(f"✅ `{bid}`: {len(parsed['players'])} jugadores de {GUILD_NAME}, {parsed['smogg_deaths']} muertes propias.{warn}")
+            lines.append(f"✅ `{bid}`: {len(parsed['players'])} jugadores de {GUILD_LABEL}, {parsed['smogg_deaths']} muertes propias.{warn}")
         await _say(interaction, "\n".join(lines))
         if cta_id is not None and (loaded or linked):
             await self.after_cta_load(interaction, cta_id)
@@ -830,14 +833,14 @@ class KillboardCog(commands.Cog):
             return await _say(interaction, f"❌ AlbionBB no respondió: {exc}")
         if not isinstance(events, list):
             return await _say(interaction, "❌ La respuesta no es una lista de eventos. Formato inesperado.")
-        p = kb.parse_events(events, GUILD_NAME)
+        p = kb.parse_events(events, KB_GUILDS)
         with_ts = sum(1 for e in events if isinstance(e, dict) and e.get("TimeStamp"))
         with_dmg = sum(1 for e in events if isinstance(e, dict) and any(isinstance(x, dict) and x.get("DamageDone") for x in e.get("Participants") or []))
         with_fame = sum(1 for e in events if isinstance(e, dict) and e.get("TotalVictimKillFame"))
         with_ip = sum(1 for e in events if isinstance(e, dict) and isinstance(e.get("Victim"), dict) and e["Victim"].get("AverageItemPower"))
         firsts = sorted((v for v in p["players"].values() if v.get("death_rank")), key=lambda v: v["death_rank"])[:5]
         txt = (f"🔎 Batalla `{ids[0]}`\n• Eventos recibidos: **{len(events)}**\n• Con hora de muerte (TimeStamp): **{with_ts}**\n"
-               f"• Víctimas con IP: **{with_ip}**\n• Con daño de participantes: **{with_dmg}** · con fame: **{with_fame}**\n• Jugadores de {GUILD_NAME}: **{len(p['players'])}** · muertes propias: **{p['smogg_deaths']}**\n"
+               f"• Víctimas con IP: **{with_ip}**\n• Con daño de participantes: **{with_dmg}** · con fame: **{with_fame}**\n• Jugadores de {GUILD_LABEL}: **{len(p['players'])}** · muertes propias: **{p['smogg_deaths']}**\n"
                f"• Primeras muertes propias: " + (", ".join(f"{v['name']} ({(v['death_time'] or 'sin hora')[11:19]})" for v in firsts) or "—") +
                "\n\nSi los eventos son muchos menos que las muertes reales de la batalla, AlbionBB está recortando la lista: avisame antes de confiar en estos números.")
         await _say(interaction, txt)
