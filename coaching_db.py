@@ -371,6 +371,28 @@ def count_between(db_path: str, start: datetime, end: datetime, *, only_obs: Opt
         conn.close()
 
 
+def count_since_by_user(db_path: str, since: Dict[int, datetime]) -> Dict[int, int]:
+    """{usuario: VODs subidos desde su fecha en `since`} (solo usuarios de `since`)."""
+    out = {u: 0 for u in since}
+    conn = connect(db_path)
+    try:
+        for r in conn.execute("SELECT user_id, created_at FROM coaching_vods"):
+            u = int(r["user_id"])
+            if u not in since:
+                continue
+            try:
+                when = datetime.fromisoformat(r["created_at"])
+            except (TypeError, ValueError):
+                continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            if when >= since[u]:
+                out[u] += 1
+        return out
+    finally:
+        conn.close()
+
+
 def totals(db_path: str) -> Dict[int, int]:
     conn = connect(db_path)
     try:
