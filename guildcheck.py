@@ -6,6 +6,7 @@
   /miembros inactivos        Más de N días sin conectarse a Albion (según el último archivo de la guild subido).
   /miembros kick-lista       Candidatos a expulsar por motivo: inactivos, poca asistencia a CTA, faltan VODs; marca quién tiene /ausencia.
   /miembros asistencias      Asistencias a CTA por semana o de una persona (killboard, o anotado + 20 min en voz).
+  /miembros antiguedad       Registrados: tag, personaje, días desde que se registraron y VODs subidos desde entonces.
   /miembros fuera-guild      Registrados cuyo personaje ya no está en la guild, con listas para expulsar.
   /miembros canal-avisos     Canal donde el bot avisa solo cuando alguien sale de la guild, con botones Expulsar / Ignorar.
 
@@ -414,6 +415,35 @@ class GuildCheckCog(commands.Cog):
         for chunk in _chunks(lines):
             await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
 
+    # ---------- antigüedad: días desde que se registró y VODs subidos desde entonces ----------
+    async def do_antiguedad(self, interaction):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        now = datetime.now(timezone.utc)
+        regs = await self.run(gdb.registered_at_by_user)
+        rows = []
+        for uid, (since, char) in regs.items():
+            m = guild.get_member(uid)
+            if m is None or getattr(m, "bot", False):
+                continue
+            rows.append((m, since, char))
+        if not rows:
+            return await _say(interaction, "ℹ️ No hay miembros registrados con el bot en el servidor.")
+        vods = await self.run(cdb.count_since_by_user, {m.id: since for m, since, _c in rows})
+        rows.sort(key=lambda x: (x[1], vods.get(x[0].id, 0), x[0].display_name.casefold()))   # más antiguo primero, menos VODs primero
+        esc = discord.utils.escape_markdown
+        lines = [f"📋 **Miembros por antigüedad** · **{len(rows)}** registrados con el bot",
+                 "Ordenado de más días en la guild a menos; a igual antigüedad, los que menos VODs subieron primero.", ""]
+        for m, since, char in rows:
+            days = max(0, (now - since).days)
+            n = vods.get(m.id, 0)
+            lines.append(f"• <@{m.id}> (`{esc(m.name)}`) · **{esc(char or '?')}** · {days} día{'s' if days != 1 else ''} "
+                         f"(<t:{_ts(since)}:D>) · 🎥 {n} VOD{'s' if n != 1 else ''}")
+        for chunk in _chunks(lines):
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     # ---------- canal de avisos ----------
     async def do_canal_avisos(self, interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         if interaction.guild is None or not can_manage(interaction.user):
@@ -623,7 +653,11 @@ class GuildCheckCog(commands.Cog):
     async def poca_asistencia_cmd(self, interaction: discord.Interaction):
         await self.do_poca_asistencia(interaction)
 
-    @miembros_g.command(name="fuera-guild", description="(Staff) Registrados cuyo personaje ya no está en la guild, con opción de expulsarlos")
+    @miembros_g.command(name="antiguedad", description="(Staff) Miembros con nombre en Albion, días desde que se registraron y VODs subidos")
+    async def antiguedad_cmd(self, interaction: discord.Interaction):
+        await self.do_antiguedad(interaction)
+
+    @miembros_g.command(name="fuera-guild",description="(Staff) Registrados cuyo personaje ya no está en la guild, con opción de expulsarlos")
     async def fuera_guild_cmd(self, interaction: discord.Interaction):
         await self.do_fuera_guild(interaction)
 
