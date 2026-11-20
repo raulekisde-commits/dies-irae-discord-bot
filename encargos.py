@@ -510,8 +510,8 @@ class EncargosCog(commands.Cog):
         await self.after_cancel(res.task, f"cancelada por <@{interaction.user.id}>")
         await interaction.response.edit_message(content="🗑️ Tarea cancelada.", view=None)
 
-    async def after_cancel(self, t: edb.Task, who: str) -> None:
-        """Borra el panel y el hilo de una tarea ya cancelada y deja el registro en el canal de logs."""
+    async def after_cancel(self, t: edb.Task, who: str, log: bool = True) -> None:
+        """Borra el panel y el hilo de una tarea ya cancelada y (salvo log=False) deja el registro en el canal de logs."""
         await self.drop_thread(t)
         if t.message_id:
             try:
@@ -520,20 +520,23 @@ class EncargosCog(commands.Cog):
                 await msg.delete()
             except Exception as exc:
                 print(f"Tarea {t.id}: cancelada pero no pude borrar el panel: {exc!r}")
+        if not log:
+            return
         try:
-            log = await self._channel(bs.get("task_log_cmd" if from_command(t) else "task_log"))
-            if log is not None:
-                await log.send(f"🗑️ Tarea #{t.id} {who}.\n> {t.text[:300]}", allowed_mentions=NO_MENTIONS)
+            ch = await self._channel(bs.get("task_log_cmd" if from_command(t) else "task_log"))
+            if ch is not None:
+                await ch.send(f"🗑️ Tarea #{t.id} {who}.\n> {t.text[:300]}", allowed_mentions=NO_MENTIONS)
         except Exception:
             traceback.print_exc()
 
-    async def cancel_by_prefix(self, prefix: str, actor_id: int, why: str) -> int:
-        """Cancela todas las tareas abiertas cuyo `source` empieza con `prefix` (p. ej. las de una CTA cancelada). Devuelve cuántas."""
+    async def cancel_by_prefix(self, prefix: str, actor_id: int, why: str, log: bool = True) -> int:
+        """Cancela todas las tareas abiertas cuyo `source` empieza con `prefix` (p. ej. las de una CTA cancelada). Devuelve cuántas.
+        Con log=False no deja un registro por tarea (lo deja quien llama)."""
         n = 0
         for tid in await self.run(edb.open_by_source_prefix, prefix):
             res = await self.run(edb.cancel, tid, actor_id)
             if res.status == "ok":
-                await self.after_cancel(res.task, why)
+                await self.after_cancel(res.task, why, log=log)
                 n += 1
         return n
 

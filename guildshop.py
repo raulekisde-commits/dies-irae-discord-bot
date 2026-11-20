@@ -760,7 +760,7 @@ class GuildShopCog(commands.Cog):
         emb.set_footer(text="Solo un Seller (o Council) puede confirmar o cancelar.")
         await interaction.response.defer(ephemeral=True)
         try:
-            msg = await interaction.channel.send(f"<@&{SELLER_ROLE_ID}> ¿{interaction.user.mention} vende por **{label}** a **{self.money_of(currency, net)}**? Confirmá o cancelá.",
+            msg = await interaction.channel.send(f"¿{interaction.user.mention} vende por **{label}** a **{self.money_of(currency, net)}**? Confirmá o cancelá.",
                                                  embed=emb, view=ConfirmSaleView(self), allowed_mentions=PING_ROLE)
         except Exception:
             traceback.print_exc()
