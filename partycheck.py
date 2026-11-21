@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import partycheck_db as pc
+from killboards import is_loader_in_cta
 
 OCR_URL = "https://api.ocr.space/parse/image"
 OCR_MAX_BYTES = 1_000_000                               # límite del plan gratis de OCR.space
@@ -149,6 +150,49 @@ class PartyCheckCog(commands.Cog):
             return await interaction.followup.send(f"❌ La CTA #{run['id']} no tiene anotados.")
         res = pc.compare(names, rows, party)
         await interaction.followup.send(embed=build_embed(run, res, names), allowed_mentions=NO_MENTIONS)
+
+    @party.command(name="mover", description="(Staff/Council/Caller) Mueve al voice a los anotados de una party que estén conectados")
+    @app_commands.describe(party="Número de party de la CTA", canal="Canal de voz destino",
+                           cta="Número de CTA (si no lo usás en el hilo de la CTA)")
+    async def mover(self, interaction: discord.Interaction, party: app_commands.Range[int, 1, 20],
+                    canal: discord.VoiceChannel, cta: Optional[int] = None):
+        if not is_loader_in_cta(interaction.user):
+            return await interaction.response.send_message("🔒 Solo Staff, Council o Caller.", ephemeral=True)
+        run = await asyncio.to_thread(pc.cta_for_channel, self.db_path, interaction.channel_id, cta)
+        if run is None:
+            return await interaction.response.send_message("❌ No encontré la CTA. Usalo en el hilo de la CTA o indicá `cta`.",
+                                                           ephemeral=True)
+        rows = await asyncio.to_thread(pc.signups, self.db_path, int(run["id"]))
+        ids = [r["user_id"] for r in rows if r["party_no"] == party]
+        if not ids:
+            parties = ", ".join(str(p) for p in sorted({r["party_no"] for r in rows})) or "ninguna"
+            return await interaction.response.send_message(f"❌ La Party {party} no tiene anotados en la CTA #{run['id']} "
+                                                           f"(con anotados: {parties}).", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        moved, already, offline, failed = [], [], [], []
+        for uid in ids:
+            m = interaction.guild.get_member(uid)
+            if m is None or m.voice is None or m.voice.channel is None:
+                offline.append(uid)
+            elif m.voice.channel.id == canal.id:
+                already.append(uid)
+            else:
+                try:
+                    await m.move_to(canal, reason=f"/party mover CTA #{run['id']} Party {party} por {interaction.user}")
+                    moved.append(uid)
+                except Exception as exc:
+                    print(f"/party mover: no pude mover a {uid}: {exc!r}")
+                    failed.append(uid)
+        e = discord.Embed(title=f"Party {party} → {canal.name} · CTA #{run['id']}",
+                          color=discord.Color.green() if not failed else discord.Color.orange())
+        e.add_field(name=f"✅ Movidos ({len(moved)})", value=_field([f"<@{u}>" for u in moved]), inline=False)
+        if already:
+            e.add_field(name=f"🔊 Ya estaban ({len(already)})", value=_field([f"<@{u}>" for u in already]), inline=False)
+        e.add_field(name=f"💤 No conectados a voz ({len(offline)})", value=_field([f"<@{u}>" for u in offline]), inline=False)
+        if failed:
+            e.add_field(name=f"❌ No pude mover ({len(failed)})", value=_field([f"<@{u}>" for u in failed]) +
+                        "\n(¿el bot tiene permiso «Mover miembros» en ese canal?)", inline=False)
+        await interaction.followup.send(embed=e, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
 
 async def setup_partycheck(bot, db_path: str, guild_id: int) -> PartyCheckCog:
