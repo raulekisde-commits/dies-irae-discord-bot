@@ -316,7 +316,7 @@ class GuildCheckTests(DiscordBase):
 
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild", "historial"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 
