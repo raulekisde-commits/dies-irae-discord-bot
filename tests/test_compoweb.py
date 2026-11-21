@@ -45,6 +45,22 @@ class T(unittest.TestCase):
         with self.assertRaises(cw.WebError):
             cw.parse_comp_html("<html>nada</html>")
 
+    def test_parse_formato_nuevo(self):
+        payload = {"comp": {"id": "c1", "title": "Compo OPEN 2.0", "parties": [["b-mace", "b-heal", None, "b-mount"], ["b-mace"]], "tags": []},
+                   "builds": {"b-mace": {"id": "b-mace", "name": "CALLER", "playstyle": "caller", "weapon": {"src": "/item-icons/MAIN_MACE__t8.png"}},
+                              "b-heal": {"id": "b-heal", "name": "Holy", "playstyle": "healer", "weapon": {"src": "/item-icons/MAIN_HOLYSTAFF_AVALON__t8_e1.png"}},
+                              "b-mount": {"id": "b-mount", "name": "Chariot", "playstyle": "battlemount", "weapon": {"src": "/item-icons/UNIQUE_MOUNT_TOWER_CHARIOT_CRYSTAL.png"}}}}
+        text = '5:["$","$L2d",null,{"payload":' + json.dumps(payload) + ',"initialView":"builds"}]\n'
+        p = cw.parse_comp_html('<html><script>self.__next_f.push([1,"%s"])</script></html>' % json.dumps(text)[1:-1])
+        self.assertEqual(p["title"], "Compo OPEN 2.0")
+        self.assertEqual([x["slots"] for x in p["parties"]], [[["b-mace"], ["b-heal"], [], ["b-mount"]], [["b-mace"]]])
+        self.assertEqual(p["weapons"], {"b-mace": "MAIN_MACE", "b-heal": "MAIN_HOLYSTAFF_AVALON", "b-mount": "UNIQUE_MOUNT_TOWER_CHARIOT_CRYSTAL"})
+        self.assertEqual(p["builds"]["b-mace"], {"name": "CALLER", "playstyle": "caller"})
+        defs, _ = cw.build_slot_defs(p, {}, lambda w: ar.role_for(self.db, 1, w), lambda l: ar.discord_role_for(self.db, 1, l))
+        by = {(d["party_no"], d["position_no"]): d for d in defs}
+        self.assertEqual(by[(1, 1)]["role_ids"], [111])
+        self.assertEqual((by[(1, 4)]["role_name"], by[(1, 4)]["role_ids"]), ("Chariot", [888]))     # battlemount -> rol battle mount
+
     def test_id_del_link(self):
         self.assertEqual(cw.comp_id_from("https://www.albionzvz.com/comps/4C88EF6B-92ED-46B9-BDFA-8F68F55F5267?x=1"), "4c88ef6b-92ed-46b9-bdfa-8f68f55f5267")
         self.assertIsNone(cw.comp_id_from("hola"))

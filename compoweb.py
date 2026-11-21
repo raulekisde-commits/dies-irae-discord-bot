@@ -103,6 +103,10 @@ def parse_comp_html(html: str) -> dict:
         text = "".join(json.loads('"' + c + '"') for c in chunks)
     except ValueError:
         raise WebError("No pude leer los datos de la página de la compo.")
+    pk = text.find('"payload":{"comp":')
+    if pk >= 0:                                                       # formato nuevo: payload {comp: {title, parties: [[build_id, ...], ...]}, builds: {id: {...}}}
+        payload = json.loads(_balanced(text, pk + len('"payload":')))
+        return _parse_payload(payload)
     k = text.find('"roleOptions"')
     a = text.find('"layout":{')
     if k < 0 or a < 0:
@@ -116,6 +120,25 @@ def parse_comp_html(html: str) -> dict:
     weapons = {m.group(1): m.group(2) for m in ICON_RE.finditer(text)}              # id de build -> arma principal (viene en la propia página)
     return {"title": json.loads('"' + t.group(1) + '"') if t else "", "parties": parties, "weapons": weapons,
             "builds": {o["id"]: {"name": o.get("name") or "Build", "playstyle": (o.get("playstyle") or "").lower()} for o in options}}
+
+
+_SRC_RE = re.compile(r"/item-icons/([A-Z0-9_]+?)(?:__t\d(?:_e\d)?)?\.png")       # las monturas vienen sin tier
+
+
+def _parse_payload(payload: dict) -> dict:
+    comp = payload.get("comp") or {}
+    builds = payload.get("builds") or {}
+    parties = [{"title": f"Party {i}", "slots": [[bid] if bid else [] for bid in (p or [])]}
+               for i, p in enumerate(comp.get("parties") or [], start=1)]
+    if not parties:
+        raise WebError("La compo no tiene grupos.")
+    weapons = {}
+    for bid, b in builds.items():                                     # id de build -> arma principal (del ícono del arma)
+        m = _SRC_RE.search(((b or {}).get("weapon") or {}).get("src") or "")
+        if m:
+            weapons[bid] = m.group(1)
+    return {"title": comp.get("title") or "", "parties": parties, "weapons": weapons,
+            "builds": {bid: {"name": (b or {}).get("name") or "Build", "playstyle": ((b or {}).get("playstyle") or "").lower()} for bid, b in builds.items()}}
 
 
 def fetch_comp(web_id: str) -> dict:
@@ -192,6 +215,9 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
             for bid in slot or []:
                 if bid == FILL_BATTLEMOUNT_ID:
                     names.append("Battlemount")
+                    label = "battle mount"
+                elif parsed["builds"].get(bid, {}).get("playstyle") == "battlemount":     # formato nuevo: la battlemount es una build más
+                    names.append(parsed["builds"][bid]["name"])
                     label = "battle mount"
                 else:
                     meta = parsed["builds"].get(bid, {"name": "Build", "playstyle": ""})
