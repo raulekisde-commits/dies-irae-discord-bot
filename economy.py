@@ -536,6 +536,7 @@ class EconomyCog(commands.Cog):
         balance, lifetime, embo, gamble = values
         net = gamble.net                                       # mismos números que el embed (ganado/perdido = neto)
         data = {"name": getattr(target, "display_name", str(target.id)), "currency": eco.CURRENCY_NAME, "rank": guild_rank(target),
+                "guild": statscard.member_guild(target),
                 "balance": balance, "lifetime": lifetime, "embo": embo, "wagered": gamble.wagered,
                 "won": net if net > 0 else 0, "lost": net if net < 0 else 0}
         try:

@@ -334,7 +334,12 @@ class GamesCog(commands.Cog):
             emb.set_thumbnail(url=target.display_avatar.url)
         except Exception:
             pass
-        data = {"name": getattr(target, "display_name", str(target.id)), "banned": bool(banned), "rank": rank,
+        try:
+            from statscard import member_guild
+            guild_tag = member_guild(target)
+        except Exception:
+            guild_tag = None
+        data = {"name": getattr(target, "display_name", str(target.id)), "banned": bool(banned), "rank": rank, "guild": guild_tag,
                 "dice": {"played": dice.played, "wins": dice.wins}, "coin": {"played": coin.played, "wins": coin.wins},
                 "wagered": st.wagered, "games": st.games, "net": st.net, "streak": streak.current, "best": streak.best,
                 "level": level.name if level else None, "level_min": level.min_wagered if level else 0,
