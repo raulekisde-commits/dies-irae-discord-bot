@@ -159,6 +159,36 @@ class CoresDiscord(DiscordBase):
         self.assertEqual(wdb.get_spins(self.db, self.alice.id) + wdb.get_spins(self.db, self.bob.id), 5)
         self.assertGreaterEqual(min(wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), 2)
 
+    def test_aprobar_con_repartir_si_reparte_sin_elegir(self):
+        i = self.inter(self.alice)
+        run(self.cog.submit(i, "core", "si", "dorado", FakeAttachment(), self.bob.mention))
+        msg = self.panelch.sent[-1]
+        run(self.cog.approve(self.inter(self.council, message=msg), msg))
+        self.assertEqual(odb.get_by_message(self.db, msg.id)["status"], "shared")
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id) + wdb.get_spins(self.db, self.bob.id), 5)
+        self.assertGreaterEqual(min(wdb.get_spins(self.db, self.alice.id), wdb.get_spins(self.db, self.bob.id)), 2)
+        self.assertIn("Reparto del", self.general.sent[-1].content)
+        self.assertNotIn("Sumados por el Staff", self.general.sent[-1].content)
+
+    def test_panel_sin_boton_repartir(self):
+        ids = [getattr(c, "custom_id", None) for c in self.cog.view.children]
+        self.assertIn("orb:approve", ids)
+        self.assertNotIn("orb:share", ids)
+
+    def test_top_reportados(self):
+        _i, msg = self.report(self.alice, "dorado")
+        run(self.cog.approve(self.inter(self.council, message=msg), msg))
+        _i, msg = self.report(self.alice, "verde")
+        run(self.cog.approve(self.inter(self.council, message=msg), msg))
+        _i, msg = self.report(self.bob, "azul")
+        run(self.cog.approve(self.inter(self.council, message=msg), msg))
+        _i, msg = self.report(self.bob, "azul", kind="vortex")
+        run(self.cog.reject(self.inter(self.council, message=msg), msg, ""))
+        top = odb.top(self.db, "core")
+        self.assertEqual([(u, t) for u, t, _c in top], [(self.alice.id, 2), (self.bob.id, 1)])
+        self.assertEqual(top[0][2]["dorado"], 1)
+        self.assertEqual(odb.top(self.db, "vortex"), [])                  # rechazado no cuenta
+
     def test_repartir_si_obliga_a_poner_companeros(self):
         i = self.inter(self.alice)
         run(self.cog.submit(i, "vortex", "si", "verde", FakeAttachment()))
