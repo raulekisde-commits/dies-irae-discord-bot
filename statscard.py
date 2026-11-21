@@ -695,8 +695,15 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     # foco donado (tickets de Foco Donor cerrados como exitosos)
     fy4 = y + 132
     d.line((lx0, fy4 - 6, rx1, fy4 - 6), fill=(42, 43, 50), width=1)
+    cn_ = int(data.get("coach_n") or 0)                 # nota de coaching (promedio 1 a 10 de sus VODs), mitad izquierda
+    _tracked(d, lx0, fy4 + 12, "Nota de coaching", pf(13, "Bold"), MUTED, 2.2)
+    ca_ = float(data.get("coach_avg") or 0)
+    cv = f"{ca_:.1f}".replace(".", ",") + " / 10" if cn_ else "—"
+    d.text((lx1, fy4 + 4), cv, font=pf(24, "Bold"), fill=(GREEN if ca_ >= 7 else RED) if cn_ else DIM, anchor="ra")
+    if cn_:
+        d.text((lx1 - d.textlength(cv, font=pf(24, "Bold")) - 12, fy4 + 11), f"en {cn_} VOD", font=pf(15, "Medium"), fill=MUTED, anchor="ra")
     fn_ = int(data.get("foco_n") or 0)
-    _tracked(d, lx0, fy4 + 12, "Foco donado", pf(13, "Bold"), MUTED, 2.2)
+    _tracked(d, rx0, fy4 + 12, "Foco donado", pf(13, "Bold"), MUTED, 2.2)
     fv = data.get("foco_short") or _fmt(data.get("foco_total") or 0) if fn_ else "—"
     d.text((rx1, fy4 + 4), fv, font=pf(24, "Bold"), fill=GOLD if fn_ else DIM, anchor="ra")
     if fn_:

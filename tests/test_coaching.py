@@ -269,86 +269,63 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4271, reply_to=4100)))
         self.assertEqual(self.paid([4100, 4101]), 1)
 
-    def test_devolucion_corta_espera_voto_del_staff(self):
-        self.open_post(self.novato)
-        th = self.vods(2)
-        before = len(self.tasks_ch.sent)
-        m = self.reply_msg(self.coach, th, 4400, reply_to=4100, text="buen vod")       # corta: no completa, pregunta al Staff
-        run(self.cog.process_message(m))
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        self.assertIn("⏳", m.reactions)
-        rev = self.tasks_ch.sent[before]
-        self.assertIn(f"<@&{co.STAFF_ROLE_ID}>", rev.content)
-        i = self.inter(self.coach, message=rev)                                           # el coach no puede votar
-        run(self.cog.on_review_vote(i, bad=False))
-        self.assertIn("Solo el Staff", i.text)
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        i = self.inter(self.council, message=rev)                                         # Staff: está bien → completa a nombre del coach
-        run(self.cog.on_review_vote(i, bad=False))
-        t = edb.find_by_source(self.db, "coach:4100")
-        self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
-        self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")
-        i = self.inter(self.council, message=rev)                                         # no se vota dos veces
-        run(self.cog.on_review_vote(i, bad=True))
-        self.assertIn("ya fue votada", i.text)
-
-    def test_devolucion_corta_mal_hecha_queda_abierta(self):
+    def test_devolucion_corta_ya_no_se_revisa_ni_penaliza(self):
         self.open_post(self.novato)
         th = self.vods(1)
         before = len(self.tasks_ch.sent)
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4500, text="ok")))
-        rev = self.tasks_ch.sent[before]
-        i = self.inter(self.council, message=rev)
-        run(self.cog.on_review_vote(i, bad=True))
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        self.assertEqual(cdb.pending_msgs(self.db, th.id), [4100])
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4501)))              # después responde bien: cobra
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, self.coach.id)
+        m = self.reply_msg(self.coach, th, 4400, text="buen vod")                             # corta: completa igual, sin aviso al Staff
+        run(self.cog.process_message(m))
+        t = edb.find_by_source(self.db, "coach:4100")
+        self.assertEqual((t.status, t.done_by, t.reward_spins), ("done", self.coach.id, 1))
+        self.assertEqual(len(self.tasks_ch.sent), before)
+        self.assertNotIn("⏳", m.reactions)
 
-    def test_mal_hecha_penaliza_una_vez_y_no_se_acumula(self):
-        self.open_post(self.novato)
-        th = self.vods(3)
-        for k, mid in enumerate((4700, 4701)):                                            # dos devoluciones cortas, las dos mal
-            before = len(self.tasks_ch.sent)
-            run(self.cog.process_message(self.reply_msg(self.coach, th, mid, reply_to=4100 + k, text="ok")))
-            run(self.cog.on_review_vote(self.inter(self.council, message=self.tasks_ch.sent[before]), bad=True))
-        self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4702, reply_to=4100)))  # primera bien hecha: sin tirada
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").reward_spins, 0)
-        self.assertFalse(cdb.has_penalty(self.db, self.coach.id))
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4703, reply_to=4101)))  # misma tanda: la penalización se llevó la tirada
-        t = edb.find_by_source(self.db, "coach:4101")
-        self.assertEqual((t.status, t.reward_spins), ("done", 0))
-        run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/nuevo", 4710)))
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4711, reply_to=4710)))  # VOD nuevo: ya cobra
-        t = edb.find_by_source(self.db, "coach:4710")
-        self.assertEqual((t.status, t.reward_spins), ("done", 1))
+    def grade_pick(self, user, reply_id, grade):
+        i = self.inter(user, message=SimpleNamespace(reference=SimpleNamespace(message_id=reply_id)))
+        run(self.cog.on_grade_pick(i, grade))
+        return i
 
-    def test_revision_retro_de_devoluciones_con_x(self):
+    def test_nota_del_coach_y_promedios(self):
         self.open_post(self.novato)
         th = self.vods(2)
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4800, reply_to=4100)))   # cobró la tirada
-        now = datetime.now(timezone.utc)
-        con_x = SimpleNamespace(id=4800, author=self.coach, content="X mal posicionado", created_at=now, jump_url="u1")
-        sin_x = SimpleNamespace(id=4801, author=self.coach, content="bien ahí, próximo", created_at=now, jump_url="u2")
-        vieja = SimpleNamespace(id=4802, author=self.coach, content="x", created_at=co.RETRO_SINCE - timedelta(hours=1), jump_url="u3")
-        dueno = SimpleNamespace(id=4803, author=self.novato, content="x", created_at=now, jump_url="u4")
-
-        async def history(limit=100, **kw):
-            for m in (con_x, sin_x, vieja, dueno):
-                m.channel = th
-                yield m
-        th.history = history
-        import dbutil
-        c = dbutil.connect(self.db); c.execute("DELETE FROM coaching_flags"); c.commit(); c.close()
-        before = len(self.tasks_ch.sent)
-        self.assertEqual(run(self.cog.retro_x_review()), 1)
-        self.assertEqual(run(self.cog.retro_x_review()), 0)                                     # solo una vez
-        rev = self.tasks_ch.sent[before]
-        self.assertIn("ya cobrada", rev.content)
-        run(self.cog.on_review_vote(self.inter(self.council, message=rev), bad=True))
-        self.assertTrue(cdb.has_penalty(self.db, self.coach.id))
-        self.assertEqual(edb.find_by_source(self.db, "coach:4101").status, "open")            # no toca otros VODs
+        m = self.reply_msg(self.coach, th, 4900, reply_to=4100)                                 # sin nota escrita: el bot la pide
+        run(self.cog.process_message(m))
+        self.assertEqual(len(m.replies), 1)
+        self.assertIn("nota del 1 al 10", m.replies[0][0])
+        self.assertIsInstance(m.replies[0][1]["view"], co.CoachGradeView)
+        self.assertIn("Solo el coach", self.grade_pick(self.alice, 4900, 3).text)              # otro no puede
+        self.assertEqual(cdb.player_avg(self.db, self.novato.id), (None, 0))
+        self.grade_pick(self.coach, 4900, 7)
+        self.grade_pick(self.coach, 4900, 8)                                                   # la puede cambiar
+        self.assertEqual(cdb.player_avg(self.db, self.novato.id), (8.0, 1))
+        m2 = self.reply_msg(self.council, th, 4901, reply_to=4101, text=self.LONG_REPLY + " Nota: 10")   # nota escrita: sin menú
+        run(self.cog.process_message(m2))
+        self.assertEqual(m2.replies, [])
+        self.assertIn("⭐", m2.reactions)
+        self.assertEqual(cdb.player_avg(self.db, self.novato.id), (9.0, 2))
+        self.assertEqual(cdb.coach_avgs(self.db), [(self.coach.id, 8.0, 1), (self.council.id, 10.0, 1)] if self.coach.id < self.council.id
+                         else [(self.council.id, 10.0, 1), (self.coach.id, 8.0, 1)])
+        i = self.inter(self.novato)                                                            # sus propias notas
+        run(self.cog.coaching_notas.callback(self.cog, i, None))
+        self.assertIn("9.0/10", i.text)
+        i = self.inter(self.alice)
+        run(self.cog.coaching_notas.callback(self.cog, i, self.novato))
+        self.assertIn("Solo el Staff", i.text)
+        i = self.inter(self.coach)
+        run(self.cog.coaching_notas_coaches.callback(self.cog, i, None))
+        body = "\n".join(str(getattr(e, "description", "")) for _, kw in i.response.sent + getattr(i, "followups", []) for e in [kw.get("embed")] if e)
+        self.assertIn("8.0/10", body)
+        self.assertEqual(cdb.players_between(self.db, 8, 9), [(self.novato.id, 9.0, 2)])
+        self.assertEqual(cdb.players_between(self.db, 9.5, 10), [])
+        i = self.inter(self.coach)
+        run(self.cog.coaching_nota_lista.callback(self.cog, i, 9, 7))                          # el orden de los números no importa
+        body = "\n".join(str(getattr(e, "description", "")) for _, kw in i.response.sent + getattr(i, "followups", []) for e in [kw.get("embed")] if e)
+        self.assertIn(f"<@{self.novato.id}> — **9.0/10**", body)
+        i = self.inter(self.alice)
+        run(self.cog.coaching_nota_lista.callback(self.cog, i, 1, 10))
+        self.assertIn("Solo el Staff", i.text)
+        run(self.cog.on_raw_message_delete(SimpleNamespace(message_id=4100)))                  # VOD borrado: su nota no cuenta
+        self.assertEqual(cdb.player_avg(self.db, self.novato.id), (10.0, 1))
 
     def test_devolucion_corta_del_staff_no_se_revisa(self):
         self.open_post(self.novato)

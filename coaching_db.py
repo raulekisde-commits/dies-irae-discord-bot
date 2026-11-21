@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS coaching_flags (
     key        TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coaching_grades (
+    vod_msg_id INTEGER PRIMARY KEY,
+    player_id  INTEGER NOT NULL,
+    coach_id   INTEGER NOT NULL,
+    grade      INTEGER NOT NULL CHECK (grade BETWEEN 1 AND 10),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_coaching_grades_player ON coaching_grades(player_id);
+CREATE INDEX IF NOT EXISTS idx_coaching_grades_coach ON coaching_grades(coach_id);
+CREATE TABLE IF NOT EXISTS coaching_grade_prompts (
+    reply_msg_id INTEGER PRIMARY KEY,
+    coach_id     INTEGER NOT NULL,
+    vod_msgs     TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS coaching_track (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     title      TEXT NOT NULL,
@@ -352,6 +367,7 @@ def remove_message(db_path: str, message_id: int) -> int:
         with write_tx(conn):
             n = conn.execute("DELETE FROM coaching_vods WHERE message_id=?", (message_id,)).rowcount
             conn.execute("DELETE FROM coaching_msgs WHERE message_id=?", (message_id,))
+            conn.execute("DELETE FROM coaching_grades WHERE vod_msg_id=?", (message_id,))
             return n
     finally:
         conn.close()
@@ -397,6 +413,106 @@ def totals(db_path: str) -> Dict[int, int]:
     conn = connect(db_path)
     try:
         return {int(r["user_id"]): int(r["n"]) for r in conn.execute("SELECT user_id, COUNT(*) AS n FROM coaching_vods GROUP BY user_id")}
+    finally:
+        conn.close()
+
+
+# ---------- notas del coach (1 a 10) por VOD ----------
+GRADE_RE = re.compile(r"(?i)(?:\b(?:nota|puntaje|puntuaci[oó]n)\s*[:=]?\s*(10|[1-9])\b|\b(10|[1-9])\s*/\s*10\b)")
+
+
+def grade_in_text(text: str) -> Optional[int]:
+    """Nota escrita por el coach en la devolución («Nota: 7», «8/10»). None si no hay."""
+    m = GRADE_RE.search(text or "")
+    return int(m.group(1) or m.group(2)) if m else None
+
+
+def add_grade_prompt(db_path: str, reply_msg_id: int, coach_id: int, vod_msgs: List[int]) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT OR REPLACE INTO coaching_grade_prompts(reply_msg_id,coach_id,vod_msgs,created_at) VALUES (?,?,?,?)",
+                         (reply_msg_id, coach_id, ",".join(str(int(m)) for m in vod_msgs), utcnow_iso()))
+    finally:
+        conn.close()
+
+
+def get_grade_prompt(db_path: str, reply_msg_id: int) -> Optional[dict]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM coaching_grade_prompts WHERE reply_msg_id=?", (reply_msg_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["vod_msgs"] = [int(x) for x in str(d["vod_msgs"]).split(",") if x]
+        return d
+    finally:
+        conn.close()
+
+
+def set_grades(db_path: str, vod_msgs: List[int], coach_id: int, grade: int) -> int:
+    """Pone (o cambia) la nota de esos VODs. Solo los que siguen existiendo. Devuelve cuántos quedaron con nota."""
+    grade = int(grade)
+    if not 1 <= grade <= 10:
+        raise ValueError("La nota va de 1 a 10.")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            n = 0
+            for mid in vod_msgs:
+                r = conn.execute("SELECT user_id FROM coaching_msgs WHERE message_id=?", (int(mid),)).fetchone()
+                if not r:
+                    continue
+                conn.execute("INSERT INTO coaching_grades(vod_msg_id,player_id,coach_id,grade,created_at) VALUES (?,?,?,?,?) "
+                             "ON CONFLICT(vod_msg_id) DO UPDATE SET coach_id=excluded.coach_id, grade=excluded.grade, created_at=excluded.created_at",
+                             (int(mid), int(r["user_id"]), int(coach_id), grade, utcnow_iso()))
+                n += 1
+            return n
+    finally:
+        conn.close()
+
+
+def player_avg(db_path: str, user_id: int) -> Tuple[Optional[float], int]:
+    """(promedio, cantidad de VODs con nota) de un jugador."""
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT AVG(grade) AS a, COUNT(*) AS n FROM coaching_grades WHERE player_id=?", (user_id,)).fetchone()
+        return (float(r["a"]) if r["n"] else None), int(r["n"])
+    finally:
+        conn.close()
+
+
+def player_grades(db_path: str, user_id: int, limit: int = 10) -> List[dict]:
+    """Últimas notas de un jugador (la más nueva primero)."""
+    conn = connect(db_path)
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM coaching_grades WHERE player_id=? ORDER BY created_at DESC, vod_msg_id DESC LIMIT ?",
+                                              (user_id, limit))]
+    finally:
+        conn.close()
+
+
+def players_between(db_path: str, low: float, high: float) -> List[Tuple[int, float, int]]:
+    """[(jugador, promedio, cantidad)] con promedio entre low y high (ambos incluidos), de mayor a menor promedio."""
+    conn = connect(db_path)
+    try:
+        return [(int(r["player_id"]), float(r["a"]), int(r["n"])) for r in conn.execute(
+            "SELECT player_id, AVG(grade) AS a, COUNT(*) AS n FROM coaching_grades GROUP BY player_id "
+            "HAVING AVG(grade) >= ? AND AVG(grade) <= ? ORDER BY a DESC, n DESC, player_id", (float(low), float(high)))]
+    finally:
+        conn.close()
+
+
+def coach_avgs(db_path: str, coach_id: Optional[int] = None) -> List[Tuple[int, float, int]]:
+    """[(coach, promedio de las notas que pone, cantidad)] de más notas a menos."""
+    sql = "SELECT coach_id, AVG(grade) AS a, COUNT(*) AS n FROM coaching_grades"
+    args: list = []
+    if coach_id is not None:
+        sql += " WHERE coach_id=?"
+        args.append(coach_id)
+    conn = connect(db_path)
+    try:
+        return [(int(r["coach_id"]), float(r["a"]), int(r["n"])) for r in conn.execute(sql + " GROUP BY coach_id ORDER BY n DESC, coach_id", args)]
     finally:
         conn.close()
 
