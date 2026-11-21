@@ -1021,7 +1021,7 @@ class KillboardCog(commands.Cog):
             emb.add_field(name="📦 Loot por CTA (promedio)", value=loot_value, inline=False)
         emb.add_field(name="🔮 Cores y vortex", value=orbs_value, inline=False)
         if foco_n:
-            emb.add_field(name="🔆 Foco donado", value=f"**{foco_total:,}**".replace(",", ".") + f" en **{foco_n}** donación(es)",
+            emb.add_field(name="🔆 Foco donado", value=f"**{fdb.fmt_short(foco_total)}** en **{foco_n}** donación(es)",
                           inline=False)
         cta = None
         try:                                          # killboard, o anotado + más de 20 min en el canal de voz (guildcheck_db)
@@ -1045,7 +1045,7 @@ class KillboardCog(commands.Cog):
                 "skips": skips, "looted": looted, "looted_ctas": looted_n, "roles": roles_top, "main": main_data,
                 "loot_avg": round(loot_avg, 1), "drop_avg": round(drop_avg, 1), "loot_ctas": loot_ctas,
                 "orbs": {k: [orbs[k][r] for r in odb.RARITIES] for k in odb.KINDS},
-                "foco_total": foco_total, "foco_n": foco_n,
+                "foco_total": foco_total, "foco_n": foco_n, "foco_short": fdb.fmt_short(foco_total),
                 "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0}
         await self._send_stats(interaction, target, data, emb)
 

@@ -18,6 +18,11 @@ class FocoDbTests(unittest.TestCase):
         for txt in ("", "mucho", "30000 foco", None):
             self.assertIsNone(fdb.parse_amount(txt), txt)
 
+    def test_formato_corto(self):
+        for n, txt in ((0, "0"), (950, "950"), (1000, "1k"), (150000, "150k"), (1500, "1.5k"), (1_500_000, "1.5m"),
+                       (2_000_000_000, "2b"), (1_250_000_000, "1.2b")):
+            self.assertEqual(fdb.fmt_short(n), txt, n)
+
     def test_acumula_y_no_duplica_ticket(self):
         self.assertEqual(fdb.user_total(self.db, 1), (0, 0))
         self.assertTrue(fdb.record(self.db, 1, 30000, 100, 9))

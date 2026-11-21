@@ -34,6 +34,16 @@ def parse_amount(text: Optional[str]) -> Optional[int]:
     return int(num.replace(".", "").replace(",", ""))
 
 
+def fmt_short(n: int) -> str:
+    """150000 → '150k', 1500000 → '1.5m', 2000000000 → '2b' (un decimal, sin '.0')."""
+    n = int(n or 0)
+    for div, suf in ((1_000_000_000, "b"), (1_000_000, "m"), (1_000, "k")):
+        if abs(n) >= div:
+            v = f"{n / div:.1f}".rstrip("0").rstrip(".")
+            return v + suf
+    return str(n)
+
+
 def _conn(db_path: str):
     conn = connect(db_path)
     conn.executescript(SCHEMA)

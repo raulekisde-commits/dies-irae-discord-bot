@@ -697,7 +697,7 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     d.line((lx0, fy4 - 6, rx1, fy4 - 6), fill=(42, 43, 50), width=1)
     fn_ = int(data.get("foco_n") or 0)
     _tracked(d, lx0, fy4 + 12, "Foco donado", pf(13, "Bold"), MUTED, 2.2)
-    fv = _fmt(data.get("foco_total") or 0) if fn_ else "—"
+    fv = data.get("foco_short") or _fmt(data.get("foco_total") or 0) if fn_ else "—"
     d.text((rx1, fy4 + 4), fv, font=pf(24, "Bold"), fill=GOLD if fn_ else DIM, anchor="ra")
     if fn_:
         fw_ = d.textlength(fv, font=pf(24, "Bold"))
