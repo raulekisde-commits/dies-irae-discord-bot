@@ -462,12 +462,16 @@ class RegistrationCog(commands.Cog):
             names = {k for k, c in self.roster.items() if (c.guild or "").casefold() == gf}
             want = {r.discord_id for r in regs if (r.char_id and r.char_id in ids) or r.char_name.casefold() in names}
             try:
+                pending = {p.discord_id for p in await self.run(rdb.list_pending_recruits)}   # aceptados que todavía no entraron: no se les saca
+            except Exception:
+                pending = set()
+            try:
                 for uid in want:
                     m = guild.get_member(uid)
                     if m is not None and not getattr(m, "bot", False) and role not in m.roles:
                         await m.add_roles(role, reason=f"Su personaje está en la guild {gname}")
                 for m in list(role.members):
-                    if m.id not in want:
+                    if m.id not in want and m.id not in pending:
                         await m.remove_roles(role, reason=f"Su personaje no está en la guild {gname}")
             except discord.Forbidden:
                 print(f"⚠️ Registro: no puedo dar/sacar el rol {gname} (mi rol tiene que estar por encima).")
@@ -889,9 +893,12 @@ class RegistrationCog(commands.Cog):
         await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**")
 
     # ---------- reclutamiento: registro al aceptar y roles recién cuando entra a la guild ----------
-    async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter, extra_role_ids=()) -> tuple:
+    async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter, extra_role_ids=(),
+                             guild_name: Optional[str] = None) -> tuple:
         """Registra al postulante con su nick de Albion y le da los roles en el momento. Devuelve (ok, texto, ya_esta_en_la_guild).
-        Si el personaje todavía no figura en la guild, queda en /reclutas-pendientes hasta que el bot lo vea adentro (sin vencimiento)."""
+        Si el personaje todavía no figura en la guild, queda en /reclutas-pendientes hasta que el bot lo vea adentro (sin vencimiento).
+        `guild_name`: guild a la que entra (principal o hermana, ej. Smogged). Si es una hermana, recibe su rol en el momento."""
+        target = next((n for n, _i in self.guilds if guild_name and n.casefold() == guild_name.casefold()), None) or self.required_guild
         look = await self.lookup_character(nick, any_guild=True)
         # Si la API no responde, no encuentra el personaje o no puede saber cuál de varios homónimos es, no se frena la aceptación: se vincula
         # a mano con el nick del ticket, igual que /admin_vincular (queda marcado como vínculo administrativo y auditado).
@@ -909,8 +916,9 @@ class RegistrationCog(commands.Cog):
             name = existing.char_name
         else:
             try:
+                reg_guild = c.guild if (c and self.is_own_guild(c.guild)) else (target or ((c.guild or None) if c else None))
                 await self.run(rdb.admin_link, member.id, name, recruiter.id, char_id=c.char_id if c else None, region=c.region if c else None,
-                               guild_name=(c.guild or None) if c else None, method="recruitment" if c else "admin_override")
+                               guild_name=reg_guild or None, method="recruitment" if c else "admin_override")
             except rdb.RegError as exc:
                 return False, f"{exc}", False
         in_guild = (self.is_own_guild(c.guild) if c else False) or name.casefold() in self.roster
@@ -925,17 +933,29 @@ class RegistrationCog(commands.Cog):
         if not await self.grant_recruit_roles(member, role_id, role_name, name, recruiter.id, extra_role_ids):
             return False, (f"quedó registrado como **{safe}**, pero **no pude darle los roles** "
                            "(revisá que el rol del bot esté por encima de Miembro y de los roles de CTA)."), False
+        actual = (c.guild if c and self.is_own_guild(c.guild) else None) or self.guild_of_char(name, c.char_id if c else None)
+        if in_guild and actual and target and actual.casefold() != target.casefold():
+            warn += f"\n⚠️ Lo aceptaste para **{target}**, pero su personaje figura en **{actual}**: se registró según la guild real."
         if in_guild:
             await self.apply_guild_role(member)
-            return True, f"Registrado como **{safe}** y ya está en la guild: roles entregados.{warn}", True
+            return True, f"Registrado como **{safe}** y ya está en **{actual or target}**: roles entregados.{warn}", True
+        if target and target.casefold() != (self.required_guild or "").casefold():      # entra a una guild hermana: su rol desde ya
+            role = await self.guild_role(member.guild, target)
+            if role is None:
+                warn += f"\n⚠️ No pude darle el rol **{target}** (revisá que tenga permiso de Gestionar roles)."
+            elif role not in member.roles:
+                try:
+                    await member.add_roles(role, reason=f"Reclutamiento: entra a la guild {target}")
+                except Exception as exc:
+                    warn += f"\n⚠️ No pude darle el rol **{target}** ({type(exc).__name__})."
         pend_id = existing.char_id if existing is not None else (c.char_id if c else None)
         await self.run(rdb.add_pending_recruit, member.id, name, pend_id, role_id, role_name, recruiter.id, tuple(extra_role_ids))
         try:
-            await member.send(f"✅ Fuiste aceptado en **{(c.guild if c and self.is_own_guild(c.guild) else self.required_guild) or 'la guild'}** como **{role_name}** y ya tenés tus roles. "
+            await member.send(f"✅ Fuiste aceptado en **{target or 'la guild'}** como **{role_name}** y ya tenés tus roles. "
                               f"Acordate de entrar a la guild en el juego con tu personaje **{name}**.")
         except Exception:
             pass
-        return True, (f"Registrado como **{safe}**: roles entregados. ⏳ **Todavía no figura en la guild**: queda en "
+        return True, (f"Registrado como **{safe}** para **{target or 'la guild'}**: roles entregados. ⏳ **Todavía no figura en la guild**: queda en "
                       f"`/reclutas-pendientes` hasta que el bot lo vea adentro.{warn}"), False
 
     async def grant_recruit_roles(self, member: discord.Member, role_id: int, role_name: str, char_name: str, recruiter_id=None, extra_role_ids=()) -> bool:
