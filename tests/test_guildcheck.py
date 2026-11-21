@@ -121,6 +121,30 @@ class GuildCheckTests(DiscordBase):
         self.assertEqual((n, att), (5, {a: 2, b: 1}))
         self.assertEqual(gdb.cta_attendance(self.db, GUILD_ID, None, None, gdb.chars_by_user(self.db), user_id=a)[1], {a: 2})
 
+    def test_poca_asistencia_con_killboard_cta_y_vods(self):
+        now = datetime.now(timezone.utc)
+        conn = connect(self.db)
+        try:
+            conn.execute("UPDATE albion_links SET registered_at=?", ((now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),))
+            conn.commit()
+        finally:
+            conn.close()
+        a, b = self.alice.id, self.bob.id
+        for n in range(10):                                                         # 10 CTA con killboard en los últimos 20 días
+            self._cta(100 + n, now - timedelta(days=20 - 2 * n), [a] + ([b] if n < 3 else []),
+                      kb=["Kingnian"] + (["zabonin"] if n < 2 else []))
+        cdb.init_schema(self.db)
+        cdb.add_vods(self.db, message_id=1, thread_id=1, user_id=b, is_obs=True, vods=[("k", "https://youtu.be/k")],
+                     created_at=now - timedelta(days=3))
+        i = self.inter(self.staff)
+        run(self.cog.do_poca_asistencia(i))
+        out = i.text
+        self.assertIn(f"<@{b}>", out)
+        self.assertIn("killboard **2/10** (20%)", out)
+        self.assertIn("anotado a /cta **3/10** (30%)", out)
+        self.assertIn("🎥 1 VOD", out)
+        self.assertNotIn(f"<@{a}>", out)                                            # Alice fue a todas: no está abajo
+
     def test_comando_asistencias(self):
         start, _ = gdb.week_bounds(0)
         self._cta(1, start + timedelta(minutes=1), [self.alice.id], voice=[self.alice.id])
@@ -177,32 +201,54 @@ class GuildCheckTests(DiscordBase):
             raise RuntimeError("HTTP 503")
         self.reg.fetch_json = fake
 
-    def test_aviso_de_salida_una_vez_y_expulsar(self):
+    def test_salida_saca_los_roles_una_vez_y_queda_registrada(self):
+        extra = discord.Role(4242, "Tank", self.guild)
+        self.bob.roles.append(extra)
         self._leave_setup(["Kingnian"])                                             # Bob (zabonin) ya no figura
         self.assertEqual(run(self.cog.check_leavers()), 1)
+        self.assertEqual(self.bob.roles, [])                                        # sin roles, y sin Public (no existe)
         self.assertEqual(run(self.cog.check_leavers()), 0)                          # no se repite
         msg = self.alerts.sent[-1]
         self.assertIn("zabonin", msg.embeds[0].description)
         self.assertIn("OtraGuild", msg.embeds[0].description)
-        i = self.inter(self.alice, message=msg)
-        run(self.cog.alert_kick(i))
-        self.assertIn("🔒", i.text)
-        kicked = []
+        self.assertIsNone(msg.view)                                                 # ya no hay botón de expulsar
+        self.assertIn("2** rol", msg.embeds[0].fields[0][1])
+        self.assertEqual(gdb.get_alert(self.db, self.bob.id)["status"], "roles_removed")
 
-        async def kick(reason=None):
-            kicked.append(reason)
-        self.bob.kick = kick
-        i = self.inter(self.staff, message=msg)
-        with mock.patch("expulsar.check_target", return_value=None):
-            run(self.cog.alert_kick(i))
-            confirm = i.response.sent[-1][1]["view"]
-            j = self.inter(self.staff)
-            run(confirm.children[0].callback(j))
-        self.assertEqual(len(kicked), 1)
-        self.assertEqual(gdb.alert_by_message(self.db, msg.id)["status"], "kicked")
-        i = self.inter(self.staff, message=msg)
-        run(self.cog.alert_ignore(i))
-        self.assertIn("ya fue resuelto", i.text)
+    def test_salida_no_toca_staff_ni_pases_de_guild(self):
+        rdb.admin_link(self.db, self.staff.id, "Jefazo", 1, char_id="id-jefe")
+        self._leave_setup(["Kingnian"])
+        rdb.set_guild(self.db, self.bob.id, "Smogged", 1)                           # se está pasando a Smogged
+        self.assertEqual(run(self.cog.check_leavers()), 0)
+        self.assertIn(self.r_member, self.bob.roles)
+        self.assertTrue(self.staff.roles)
+
+    def test_cambiar_guild(self):
+        self.reg.extra_guilds = [("Smogged", "SGID")]
+        created = []
+
+        async def create_role(name=None, **kw):
+            r = discord.Role(9100 + len(created), name, self.guild)
+            self.guild.roles.append(r)
+            created.append(r)
+            return r
+        self.guild.create_role = create_role
+        i = self.inter(self.alice)
+        run(self.cog.do_cambiar_guild(i, self.bob, "Smogged"))
+        self.assertIn("🔒", i.text)
+        i = self.inter(self.staff)
+        run(self.cog.do_cambiar_guild(i, self.bob, "Smogged"))
+        self.assertIn("Smogged", i.text)
+        self.assertEqual(rdb.get_registration(self.db, self.bob.id).guild_name, "Smogged")
+        self.assertIn(created[0], self.bob.roles)
+        self.assertEqual(rdb.active_transfers(self.db), {self.bob.id: "Smogged"})
+        i = self.inter(self.staff)
+        run(self.cog.do_cambiar_guild(i, self.bob, "Smogg"))                         # vuelta a Smogg: se saca el rol
+        self.assertNotIn(created[0], self.bob.roles)
+        self.assertEqual(rdb.get_registration(self.db, self.bob.id).guild_name, "Smogg")
+        i = self.inter(self.staff)
+        run(self.cog.do_cambiar_guild(i, self.outsider, "Smogged"))                  # sin registro
+        self.assertIn("no tiene personaje registrado", i.text)
 
     def test_sin_aviso_si_la_api_dice_que_sigue_en_la_guild_o_si_es_invitado(self):
         self._leave_setup(["Kingnian"], current_guild="Smogg")
@@ -270,7 +316,7 @@ class GuildCheckTests(DiscordBase):
 
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 

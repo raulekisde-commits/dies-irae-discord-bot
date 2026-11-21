@@ -418,6 +418,22 @@ class RegistrationCog(commands.Cog):
         hit = self.roster.get((char_name or "").casefold())
         return hit.guild if hit else None
 
+    async def transfer_targets(self) -> Dict[int, str]:
+        """Pases de guild en curso {discord_id: destino}. Los que ya figuran en la guild de destino se dan por terminados."""
+        try:
+            pending = await self.run(rdb.active_transfers)
+        except Exception:
+            traceback.print_exc()
+            return {}
+        out = {}
+        for uid, target in pending.items():
+            regs = await self.run(rdb.get_registrations, uid)
+            if any((self.guild_of_char(r.char_name, r.char_id) or "").casefold() == target.casefold() for r in regs):
+                await self.run(rdb.end_transfer, uid)
+                continue
+            out[uid] = target
+        return out
+
     async def apply_guild_role(self, member) -> None:
         """Pone o saca el rol de guild hermana a una persona según dónde figura su personaje. Si no figura en la lista, no toca nada."""
         if not self.extra_guilds or member is None or getattr(member, "bot", False):
@@ -425,6 +441,9 @@ class RegistrationCog(commands.Cog):
         try:
             regs = await self.run(rdb.get_registrations, member.id)
             found = [g for g in (self.guild_of_char(r.char_name, r.char_id) for r in regs) if g]
+            moving = (await self.transfer_targets()).get(member.id)
+            if moving:                                     # /miembros cambiar-guild en curso: manda la guild de destino
+                found = [moving]
             if not found:
                 return
             for gname, _gid in self.extra_guilds:
@@ -451,6 +470,7 @@ class RegistrationCog(commands.Cog):
         except Exception:
             traceback.print_exc()
             return
+        moving = await self.transfer_targets()
         for gname, _gid in self.extra_guilds:
             if gname.casefold() not in self._fresh_guilds:          # sin lista nueva de esa guild no se saca ni se pone nada
                 continue
@@ -461,6 +481,11 @@ class RegistrationCog(commands.Cog):
             ids = {c.char_id for c in self.roster.values() if c.char_id and (c.guild or "").casefold() == gf}
             names = {k for k, c in self.roster.items() if (c.guild or "").casefold() == gf}
             want = {r.discord_id for r in regs if (r.char_id and r.char_id in ids) or r.char_name.casefold() in names}
+            for uid, target in moving.items():                     # pase de guild en curso: manda el destino
+                if target.casefold() == gf:
+                    want.add(uid)
+                else:
+                    want.discard(uid)
             try:
                 pending = {p.discord_id for p in await self.run(rdb.list_pending_recruits)}   # aceptados que todavía no entraron: no se les saca
             except Exception:
@@ -471,7 +496,7 @@ class RegistrationCog(commands.Cog):
                     if m is not None and not getattr(m, "bot", False) and role not in m.roles:
                         await m.add_roles(role, reason=f"Su personaje está en la guild {gname}")
                 for m in list(role.members):
-                    if m.id not in want and m.id not in pending:
+                    if m.id not in want and (m.id not in pending or m.id in moving):
                         await m.remove_roles(role, reason=f"Su personaje no está en la guild {gname}")
             except discord.Forbidden:
                 print(f"⚠️ Registro: no puedo dar/sacar el rol {gname} (mi rol tiene que estar por encima).")

@@ -11,7 +11,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from dbutil import connect, utcnow_iso
 
@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS recruit_pending (
     role_name    TEXT NOT NULL,
     recruiter_id INTEGER,
     created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS guild_transfers (              -- /miembros cambiar-guild: pase entre la guild principal y una hermana
+    discord_id INTEGER PRIMARY KEY,
+    target     TEXT NOT NULL,                              -- guild de destino (ej. Smogged)
+    actor_id   INTEGER,
+    created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS albion_link_audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -591,5 +597,49 @@ def delete_left_member(db_path: str, discord_id: int) -> None:
     try:
         with _tx(conn):
             conn.execute("DELETE FROM left_members WHERE discord_id=?", (discord_id,))
+    finally:
+        conn.close()
+
+
+# ---------- pases entre guilds (Smogg ↔ Smogged) ----------
+TRANSFER_HOURS = 72                                        # cuánto se espera a que el personaje aparezca en la guild nueva
+
+
+def set_guild(db_path: str, discord_id: int, guild_name: str, actor_id: int) -> List[Registration]:
+    """Pasa los personajes registrados de la persona a `guild_name` y anota el pase (pisa uno anterior). Devuelve los registros."""
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            rows = conn.execute("SELECT * FROM albion_links WHERE discord_id=?", (discord_id,)).fetchall()
+            if not rows:
+                raise RegError("Esa persona no tiene personaje registrado.")
+            now = _iso(_now())
+            conn.execute("UPDATE albion_links SET guild_name=?, updated_at=? WHERE discord_id=?", (guild_name, now, discord_id))
+            conn.execute("INSERT INTO guild_transfers(discord_id, target, actor_id, created_at) VALUES (?,?,?,?) "
+                         "ON CONFLICT(discord_id) DO UPDATE SET target=excluded.target, actor_id=excluded.actor_id, created_at=excluded.created_at",
+                         (discord_id, guild_name, actor_id, now))
+            _audit(conn, actor_id, "guild_transfer", discord_id, None, f"a {guild_name}")
+            return [_reg(r) for r in conn.execute("SELECT * FROM albion_links WHERE discord_id=? ORDER BY id", (discord_id,))]
+    finally:
+        conn.close()
+
+
+def active_transfers(db_path: str) -> Dict[int, str]:
+    """{discord_id: guild de destino} de los pases de las últimas TRANSFER_HOURS (los vencidos se borran)."""
+    cutoff = _iso(_now() - timedelta(hours=TRANSFER_HOURS))
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            conn.execute("DELETE FROM guild_transfers WHERE created_at < ?", (cutoff,))
+            return {int(r["discord_id"]): r["target"] for r in conn.execute("SELECT discord_id, target FROM guild_transfers")}
+    finally:
+        conn.close()
+
+
+def end_transfer(db_path: str, discord_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            conn.execute("DELETE FROM guild_transfers WHERE discord_id=?", (discord_id,))
     finally:
         conn.close()

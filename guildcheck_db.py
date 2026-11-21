@@ -279,6 +279,24 @@ def kb_cta_presence(db_path: str, guild_id: int, chars: Dict[int, Set[str]]) -> 
         conn.close()
 
 
+def cta_signups(db_path: str, guild_id: int) -> List[Tuple[datetime, Set[int]]]:
+    """[(cierre de la CTA, {anotados})] de todas las CTA normales cerradas (con o sin killboard), ordenadas por fecha."""
+    conn = connect(db_path)
+    try:
+        if not (_has_table(conn, "cta_runs") and _has_table(conn, "cta_positions")):
+            return []
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cta_runs)")}
+        sql = ("SELECT id, closes_at FROM cta_runs WHERE guild_id=? AND status='closed'"
+               + (" AND kind='cta'" if "kind" in cols else "") + " ORDER BY closes_at")
+        out: List[Tuple[datetime, Set[int]]] = []
+        for r in conn.execute(sql, (guild_id,)).fetchall():
+            signed = {int(p["user_id"]) for p in conn.execute("SELECT user_id FROM cta_positions WHERE cta_id=?", (r["id"],))}
+            out.append((_dt(r["closes_at"]), signed))
+        return out
+    finally:
+        conn.close()
+
+
 def registered_at_by_user(db_path: str) -> Dict[int, Tuple[datetime, str]]:
     """{discord_id: (fecha en que lo reclutaron o vinculó su personaje principal, nombre del personaje)} (albion_links)."""
     conn = connect(db_path)
