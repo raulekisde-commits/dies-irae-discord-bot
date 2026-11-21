@@ -427,7 +427,7 @@ NODES_SOURCE_GUILD_ID = 1086080340587712584      # servidor del otro bot (solo s
 NODES_SOURCE_CHANNEL_ID = 1546326872097427516    # canal donde el otro bot mantiene su panel de timers
 NODES_SOURCE_BOT_ID = 1546325145503928431
 NODES_SOURCE_OWNER_ID = 542775576461705218       # los timers copiados quedan a nombre de la persona dueña de ese bot
-PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista", "votacion", "killboard"}          # comandos con «!» que siguen funcionando (el resto está apagado)
+PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista", "votacion", "killboard", "ts"}          # comandos con «!» que siguen funcionando (el resto está apagado)
 EVENT_GUILD_IDS = {GUILD_ID}          # servidores cuyos eventos se atienden (el resto se ignora)
 RENT_GUILD_ID = 1571721151023947906           # servidor de rentas de Albion (rentas.py): solo slash, botones y formularios
 RENT_COUNCIL_ROLE_ID = 1571728246586740877    # rol Council del servidor de rentas
@@ -7786,6 +7786,31 @@ async def disarray_slash(interaction: discord.Interaction, numero: int):
     await interaction.response.send_message(disarray_message(numero))
 
 
+# ================== /ts y !ts: datos del TeamSpeak ==================
+TS_ADDRESS = os.getenv("TS_ADDRESS", "voleurs.ts356.ovh")
+TS_DOWNLOAD_URL = os.getenv("TS_DOWNLOAD_URL", "https://www.teamspeak.com/en/downloads/")
+
+
+def ts_embed() -> discord.Embed:
+    emb = discord.Embed(title="🎧 TeamSpeak de la guild", color=discord.Color.blurple())
+    emb.add_field(name="🌐 Dirección del servidor", value=f"`{TS_ADDRESS}`", inline=False)
+    emb.add_field(name="⬇️ Descargar TeamSpeak 3", value=f"[teamspeak.com/downloads]({TS_DOWNLOAD_URL}) · elegí **TeamSpeak 3 Client** para tu sistema.",
+                  inline=False)
+    emb.add_field(name="🔌 Cómo entrar", value="En TeamSpeak: **Connections → Connect** (Ctrl+S), pegá la dirección y poné tu nick de Albion.",
+                  inline=False)
+    return emb
+
+
+@bot.tree.command(name="ts", description="Dirección del TeamSpeak de la guild y link para descargar TeamSpeak 3", guild=GUILD_OBJ)
+async def ts_slash(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=ts_embed())
+
+
+@bot.command(name="ts")
+async def ts_prefix(ctx: commands.Context):
+    await ctx.send(embed=ts_embed())
+
+
 # ================== !topkills / !topattend / !topdeaths ==================
 # Salen SOLO de los killboards que cargó el staff (ver killboards.py). También existe /top tipo.
 TOP_PREFIX_KEYS = {"kills": "kills", "attendance": "attendance", "deaths": "deaths"}
@@ -7863,6 +7888,7 @@ HELP_SECTIONS = [
         ("/top [tipo]", "Miembros", "Todos los tops en un solo comando: Wuju Coins (por defecto), kills, muertes, asistencia, skippers, muertes en el primer engage, IP promedio/máxima/mínima, winrate, tareas del staff y coaches (quién da más devoluciones). Los de killboard solo cuentan lo cargado por el staff. También `!topkills`, `!topattend`, `!topdeaths`."),
         ("/stats jugador [usuario]", "Miembros", "Tarjeta pública PLAYER PERFORMANCE de un jugador (por defecto, vos): kills, muertes, peleas, KDA, primer engage, item power, roles más jugados, rol main y actividad en CTA."),
         ("/killboard cargar · conectados · borrar · probar", "Staff / Council (cargar y conectados también Caller y Opinólogo en el hilo de stats de una CTA, con los botones del panel)", "Carga killboards de AlbionBB (sin repetir), los borra o prueba qué datos trae una batalla."),
+        ("/ts · `!ts`", "Todos", "Dirección del TeamSpeak de la guild (voleurs.ts356.ovh) y link para descargar TeamSpeak 3."),
         ("/disarray numero", "Miembros", "Cuántos jugadores hacen falta para un nivel de Disarray (sin contar monturas de batalla). Niveles 1 a 67."),
         ("/rolalbion ids", "Gestionar roles", "Crea un rol y se lo da a los participantes de una batalla de AlbionBB."),
     ]),
@@ -8142,7 +8168,7 @@ def _get_recruit_uid_from_channel(ch: discord.abc.GuildChannel) -> Optional[int]
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Los comandos con prefijo «!» están apagados salvo los de PREFIX_COMMANDS_ON (hoy !bal, !coinflip, !1v1, !dados, !agregarlista, !agregarlistamitad, !eliminarlista, !votacion y !killboard): todo lo demás se hace con los comandos /.
+    # Los comandos con prefijo «!» están apagados salvo los de PREFIX_COMMANDS_ON (hoy !bal, !coinflip, !1v1, !dados, !agregarlista, !agregarlistamitad, !eliminarlista, !votacion, !killboard y !ts): todo lo demás se hace con los comandos /.
     # Los objetos de comando siguen existiendo porque varios comandos / reutilizan su código con .callback.
     if message.guild is not None and not message.author.bot and message.content.startswith(bot.command_prefix):
         ctx = await bot.get_context(message)

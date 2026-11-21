@@ -1033,7 +1033,7 @@ class KillboardCog(commands.Cog):
             traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         data = {"title": ", ".join(r.char_name for r in regs), "display": getattr(target, "display_name", ""),
-                "rank": guild_rank(target),
+                "rank": guild_rank(target), "guild": statscard.member_guild(target) if statscard is not None else None,
                 "has_kb": bool(s["attendance"]), "kills": s["kills"], "deaths": s["deaths"], "attendance": s["attendance"],
                 "kda": s["kda"], "first5": s["first5"], "first5_pct": s["first5_pct"],
                 "avg_ip": s["avg_ip"], "max_ip": s["max_ip"], "min_ip": s["min_ip"],

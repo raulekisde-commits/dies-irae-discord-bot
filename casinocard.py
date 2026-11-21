@@ -125,7 +125,9 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
         d.text((acx, acy), (data.get("name") or "?")[:1].upper(), font=pf(52), fill=GOLD_DIM, anchor="mm")
     d = ImageDraw.Draw(img)
     tx = acx + av_r + 32
-    _tracked(d, tx, y + 24, "Casino stats", pf(15, "Medium"), GOLD, 3.2)
+    ew = _tracked(d, tx, y + 24, "Casino stats", pf(15, "Medium"), GOLD, 3.2)
+    sc.guild_pill(img, tx + ew + 16, y + 19, data.get("guild"))
+    d = ImageDraw.Draw(img)
     d.line((tx, y + 49, tx + 46, y + 49), fill=GOLD, width=2)
     name = data.get("name") or "—"
     d.text((tx - 2, y + 54), name, font=_fit(d, name, 48, x1 - tx - 330), fill=TEXT)

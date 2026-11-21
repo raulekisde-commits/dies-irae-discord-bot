@@ -79,6 +79,40 @@ def _tracked(d, x, y, text, f, fill, spacing=2.0, anchor_right=False):
     return width
 
 
+# ---------- guild del jugador (Smogg / Smogged) en las tarjetas de /stats, casino y /bal ----------
+MAIN_GUILD = os.getenv("ALBION_GUILD_NAME", "Smogg")
+SISTER_GUILDS = [x.split(":", 1)[0].strip() for x in os.getenv("ALBION_EXTRA_GUILDS", "Smogged:PrAIGLB7QDiq2aARE6brwQ").split(",") if ":" in x]
+MEMBER_ROLE = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
+SISTER_COLOR = (150, 196, 220)                     # celeste acero: distingue a la guild hermana del dorado de la principal
+
+
+def member_guild(member) -> Optional[str]:
+    """Guild a mostrar según los roles (como el rango): rol de la guild hermana → esa; rol Miembro → la principal; si no, None."""
+    roles = list(getattr(member, "roles", []) or [])
+    names = {str(getattr(r, "name", "")).casefold() for r in roles}
+    for g in SISTER_GUILDS:
+        if g.casefold() in names:
+            return g
+    if any(getattr(r, "id", None) == MEMBER_ROLE for r in roles):
+        return MAIN_GUILD
+    return None
+
+
+def guild_pill(img, x: float, y: float, guild: Optional[str], h: int = 26) -> float:
+    """Etiqueta con el nombre de la guild (dorada para la principal, celeste para la hermana). Devuelve el ancho (0 si no hay guild)."""
+    if not guild:
+        return 0.0
+    d = ImageDraw.Draw(img)
+    c = GOLD if guild.casefold() == MAIN_GUILD.casefold() else SISTER_COLOR
+    f = pf(13, "Bold")
+    text = guild.upper()
+    tw = sum(d.textlength(ch, font=f) + 2.2 for ch in text) - 2.2
+    w = tw + 24
+    d.rounded_rectangle((x, y, x + w, y + h), radius=h // 2, fill=(c[0] // 6, c[1] // 6, c[2] // 6), outline=c, width=1)
+    _tracked(d, x + 12, y + (h - 15) / 2, text, f, c, 2.2)
+    return w
+
+
 def _fit(d, text, size, max_w, weight="Bold"):
     while size > 14 and d.textlength(text, font=pf(size, weight)) > max_w:
         size -= 2
@@ -418,7 +452,7 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
 
     def watermark(d):
         f = pf(118, "Bold")
-        d.text((inner_x1 - 34 - 168 - 26, y + HH / 2 + 6), "SMOGG", font=f, fill=_rgba(GOLD, 12), anchor="rm")
+        d.text((inner_x1 - 34 - 168 - 26, y + HH / 2 + 6), (data.get("guild") or MAIN_GUILD).upper(), font=f, fill=_rgba(GOLD, 12), anchor="rm")
     _overlay(img, watermark)
     d = ImageDraw.Draw(img)
 
@@ -445,7 +479,9 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     d = ImageDraw.Draw(img)
 
     tx = acx + av_r + 34
-    _tracked(d, tx, y + 22, "Player Performance", pf(15, "Medium"), GOLD, 3.2)
+    ew = _tracked(d, tx, y + 22, "Player Performance", pf(15, "Medium"), GOLD, 3.2)
+    guild_pill(img, tx + ew + 16, y + 17, data.get("guild"))
+    d = ImageDraw.Draw(img)
     d.line((tx, y + 47, tx + 46, y + 47), fill=GOLD, width=2)
     name = data.get("title") or "—"
     d.text((tx - 2, y + 52), name, font=_fit(d, name, 50, inner_x1 - tx - 250), fill=TEXT)

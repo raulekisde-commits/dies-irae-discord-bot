@@ -25,11 +25,18 @@ class SinPrefijoTests(unittest.TestCase):
 
     def test_solo_algunos_siguen_con_prefijo(self):
         src = source("bot.py")
-        self.assertIn('PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista", "votacion", "killboard"}', src)
+        self.assertIn('PREFIX_COMMANDS_ON = {"bal", "coinflip", "1v1", "dados", "agregarlista", "agregarlistamitad", "eliminarlista", "votacion", "killboard", "ts"}', src)
         fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_message")
         code = ast.get_source_segment(src, fn)
         self.assertIn("ctx.command.name in PREFIX_COMMANDS_ON", code)
         self.assertIn("bot.invoke(ctx)", code)
+
+    def test_ts_con_slash_y_con_prefijo(self):
+        src = source("bot.py")
+        self.assertIn('@bot.tree.command(name="ts"', src)
+        self.assertIn('@bot.command(name="ts")', src)
+        self.assertIn('"voleurs.ts356.ovh"', src)
+        self.assertIn("teamspeak.com", src)
 
     def test_los_dos_comandos_que_solo_existian_con_prefijo_tienen_slash(self):
         bot_src = source("bot.py")

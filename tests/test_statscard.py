@@ -204,5 +204,27 @@ class StatsCommandTests(KBBase):
         self.assertTrue(any("skipeadas" in str(f) or "Roles" in str(f) or "Rol main" in str(f) for f in kw["embed"].fields))
 
 
+
+
+class GuildTagTests(unittest.TestCase):
+    """Etiqueta Smogg / Smogged en las tarjetas de /stats, casino y /bal."""
+
+    def test_member_guild_por_roles(self):
+        import types
+        r = lambda i, n: types.SimpleNamespace(id=i, name=n)
+        self.assertEqual(sc.member_guild(types.SimpleNamespace(roles=[r(sc.MEMBER_ROLE, "Miembro"), r(5, "Smogged")])), "Smogged")
+        self.assertEqual(sc.member_guild(types.SimpleNamespace(roles=[r(sc.MEMBER_ROLE, "Miembro")])), sc.MAIN_GUILD)
+        self.assertIsNone(sc.member_guild(types.SimpleNamespace(roles=[r(7, "Invitado")])))
+
+    def test_las_tres_tarjetas_dibujan_con_guild(self):
+        import casinocard, walletcard
+        import test_casinocard as tc, test_walletcard as tw
+        for g in ("Smogg", "Smogged", None):
+            self.assertTrue(sc.render(dict(DATA, guild=g)).startswith(b"\x89PNG"))
+            self.assertTrue(casinocard.render(dict(tc.DATA, guild=g)).startswith(b"\x89PNG"))
+            self.assertTrue(walletcard.render(dict(tw.DATA, guild=g)).startswith(b"\x89PNG"))
+        self.assertNotEqual(sc.card_key(dict(DATA, guild="Smogg")), sc.card_key(dict(DATA, guild="Smogged")))   # caché distinto
+
+
 if __name__ == "__main__":
     unittest.main()
