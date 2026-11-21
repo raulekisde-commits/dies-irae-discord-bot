@@ -1,9 +1,19 @@
-"""/party check: lógica sin Discord. Saca los nicks de la respuesta de Google Cloud Vision (TEXT_DETECTION) y los
-cruza con los anotados de la CTA (cta_signups → albion_links.char_name, más sus alters)."""
+"""/party check: lógica sin Discord. Saca los nicks de la respuesta de OCR.space y los cruza con los anotados de la CTA
+(cta_signups → albion_links.char_name, más sus alters). La API key se guarda en partycheck_settings (/party apikey)."""
 import re
 from typing import Dict, List, Optional, Tuple
 
-from dbutil import connect
+from dbutil import connect, utcnow_iso, write_tx
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS partycheck_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_by INTEGER,
+    updated_at TEXT NOT NULL
+);
+"""
+API_KEY = "ocrspace_api_key"
 
 NICK_RE = re.compile(r"^[A-Za-z0-9]{3,16}$")              # nicks de Albion: alfanuméricos, 3 a 16
 UI_WORDS = {                                             # textos de la ventana "Region Access Priority" y similares
@@ -19,28 +29,57 @@ def norm(name: str) -> str:
     return (name or "").strip().lower().translate(_CONFUSABLE)
 
 
-def _center_y(ann: dict) -> float:
-    vs = (ann.get("boundingPoly") or {}).get("vertices") or []
-    ys = [v.get("y", 0) for v in vs]
-    return sum(ys) / len(ys) if ys else 0.0
+def init_schema(db_path: str) -> None:
+    conn = connect(db_path)
+    try:
+        conn.executescript(SCHEMA)
+    finally:
+        conn.close()
 
 
-def extract_names(vision: dict) -> List[str]:
-    """Nicks de la respuesta de Vision. Usa las palabras sueltas (textAnnotations[1:]); si encuentra el encabezado
-    "Party Member Priority", se queda solo con lo que está debajo."""
-    words = (vision or {}).get("textAnnotations") or []
-    words = words[1:]                                    # [0] es el texto completo
+def get_api_key(db_path: str) -> Optional[str]:
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT value FROM partycheck_settings WHERE key=?", (API_KEY,)).fetchone()
+        return r["value"] if r else None
+    finally:
+        conn.close()
+
+
+def set_api_key(db_path: str, value: str, actor: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("INSERT INTO partycheck_settings(key, value, updated_by, updated_at) VALUES (?,?,?,?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_by=excluded.updated_by, "
+                         "updated_at=excluded.updated_at", (API_KEY, value, actor, utcnow_iso()))
+    finally:
+        conn.close()
+
+
+def ocrspace_words(resp: dict) -> List[Tuple[str, float]]:
+    """Palabras de la respuesta de OCR.space (isOverlayRequired=true) con el centro vertical de cada una."""
+    out = []
+    for pr in (resp or {}).get("ParsedResults") or []:
+        for line in ((pr.get("TextOverlay") or {}).get("Lines") or []):
+            for w in line.get("Words") or []:
+                out.append((str(w.get("WordText") or ""), float(w.get("Top") or 0) + float(w.get("Height") or 0) / 2))
+    return out
+
+
+def extract_names(words: List[Tuple[str, float]]) -> List[str]:
+    """Nicks entre las palabras leídas [(texto, y)]. Si encuentra el encabezado "Party Member Priority", se queda
+    solo con lo que está debajo."""
     header_y = None
-    for w in words:
-        if (w.get("description") or "").strip().lower() == HEADER_WORD:
-            y = _center_y(w)
+    for t, y in words:
+        if t.strip().lower() == HEADER_WORD:
             header_y = y if header_y is None else min(header_y, y)
     out, seen = [], set()
-    for w in words:
-        t = (w.get("description") or "").strip()
+    for t, y in words:
+        t = t.strip()
         if not NICK_RE.match(t) or t.lower() in UI_WORDS:
             continue
-        if header_y is not None and _center_y(w) <= header_y + 2:
+        if header_y is not None and y <= header_y + 2:
             continue
         if t.lower() not in seen:
             seen.add(t.lower())

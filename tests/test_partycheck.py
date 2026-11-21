@@ -1,35 +1,50 @@
-import os, sys, tempfile, unittest
+import io, os, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 import partycheck_db as pc  # noqa: E402
 from dbutil import connect  # noqa: E402
 
-
-def W(text, y):
-    return {"description": text, "boundingPoly": {"vertices": [{"x": 0, "y": y}, {"x": 9, "y": y}, {"x": 9, "y": y + 10}, {"x": 0, "y": y + 10}]}}
-
-
-VISION = {"textAnnotations": [W("todo", 0)] + [
-    W("Region", 10), W("Access", 10), W("Priority", 10), W("Party", 80), W("Priority", 80), W("Party's", 100),
-    W("Alliance/Guild:", 100), W("Party", 120), W("Member", 120), W("Priority", 120), W("1", 120), W("First", 120),
-    W("DomiAkd", 150), W("Rexsort", 150), W("-", 150), W("lordthemarth", 175), W("Geladinhaa", 175),
-    W("Arg2prmrd", 375), W("Wujumecanicos", 325), W("TRIGORE", 200),
-]}
+WORDS = [
+    ("Region", 10), ("Access", 10), ("Priority", 10), ("Party", 80), ("Priority", 80), ("Party's", 100),
+    ("Alliance/Guild:", 100), ("Party", 120), ("Member", 120), ("Priority", 120), ("1", 120), ("First", 120),
+    ("DomiAkd", 150), ("Rexsort", 150), ("-", 150), ("lordthemarth", 175), ("Geladinhaa", 175),
+    ("Arg2prmrd", 375), ("Wujumecanicos", 325), ("TRIGORE", 200),
+]
 
 
 class ExtractTests(unittest.TestCase):
     def test_solo_nicks_debajo_del_encabezado(self):
-        self.assertEqual(pc.extract_names(VISION),
+        self.assertEqual(pc.extract_names(WORDS),
                          ["DomiAkd", "Rexsort", "lordthemarth", "Geladinhaa", "Arg2prmrd", "Wujumecanicos", "TRIGORE"])
 
     def test_sin_encabezado_filtra_ui(self):
-        v = {"textAnnotations": [W("x", 0), W("Party", 5), W("Foo123", 10), W("ab", 10)]}
-        self.assertEqual(pc.extract_names(v), ["Foo123"])
+        self.assertEqual(pc.extract_names([("x", 0), ("Party", 5), ("Foo123", 10), ("ab", 10)]), ["Foo123"])
+
+    def test_respuesta_ocrspace(self):
+        resp = {"ParsedResults": [{"TextOverlay": {"Lines": [
+            {"Words": [{"WordText": "Party", "Top": 100, "Height": 10}, {"WordText": "Member", "Top": 100, "Height": 10}]},
+            {"Words": [{"WordText": "DomiAkd", "Top": 130, "Height": 10}, {"WordText": "Rexsort", "Top": 131, "Height": 10}]},
+        ]}}]}
+        self.assertEqual(pc.extract_names(pc.ocrspace_words(resp)), ["DomiAkd", "Rexsort"])
 
     def test_tolerancia(self):
         self.assertTrue(pc.same("Ismaelgrt", "lsmaelgrt"))
         self.assertTrue(pc.same("Creddyj", "Creddy"))
         self.assertFalse(pc.same("Rexsort", "Rexxsortt"))
+
+
+class ShrinkTests(unittest.TestCase):
+    def test_achica_imagen_grande(self):
+        try:
+            import partycheck
+            from PIL import Image
+        except Exception as exc:                          # sin discord/aiohttp instalados en el entorno de pruebas
+            self.skipTest(str(exc))
+        buf = io.BytesIO()
+        Image.frombytes("RGB", (1500, 1500), os.urandom(1500 * 1500 * 3)).save(buf, "PNG")
+        data, name = partycheck.shrink(buf.getvalue(), "x.png")
+        self.assertLessEqual(len(data), partycheck.OCR_MAX_BYTES)
+        self.assertEqual(name, "party.jpg")
 
 
 class CompareTests(unittest.TestCase):
@@ -50,6 +65,13 @@ class CompareTests(unittest.TestCase):
 
     def tearDown(self):
         os.remove(self.db)
+
+    def test_api_key(self):
+        pc.init_schema(self.db)
+        self.assertIsNone(pc.get_api_key(self.db))
+        pc.set_api_key(self.db, "K1", 9)
+        pc.set_api_key(self.db, "K2", 9)
+        self.assertEqual(pc.get_api_key(self.db), "K2")
 
     def test_cta_por_hilo(self):
         self.assertEqual(pc.cta_for_channel(self.db, 555)["id"], 7)
