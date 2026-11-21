@@ -1036,6 +1036,14 @@ class KillboardCog(commands.Cog):
                           value=f"Total: **{tot.get(target.id, 0)}** · Esta semana: **{week.get(target.id, 0)}/{gdb.CTA_WEEKLY_MIN}**", inline=False)
         except Exception:
             traceback.print_exc()
+        coach_avg, coach_n = None, 0
+        try:                                          # promedio de las notas de coaching (1 a 10) de sus VODs
+            import coaching_db as cdb
+            coach_avg, coach_n = await self.run(cdb.player_avg, target.id)
+            if coach_n:
+                emb.add_field(name="⭐ Nota de coaching", value=f"**{coach_avg:.1f}/10** en **{coach_n}** VOD(s)", inline=False)
+        except Exception:
+            traceback.print_exc()
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         data = {"title": ", ".join(r.char_name for r in regs), "display": getattr(target, "display_name", ""),
                 "rank": guild_rank(target), "guild": statscard.member_guild(target) if statscard is not None else None,
@@ -1046,7 +1054,8 @@ class KillboardCog(commands.Cog):
                 "loot_avg": round(loot_avg, 1), "drop_avg": round(drop_avg, 1), "loot_ctas": loot_ctas,
                 "orbs": {k: [orbs[k][r] for r in odb.RARITIES] for k in odb.KINDS},
                 "foco_total": foco_total, "foco_n": foco_n, "foco_short": fdb.fmt_short(foco_total),
-                "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0}
+                "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0,
+                "coach_avg": round(coach_avg, 1) if coach_n else None, "coach_n": coach_n}
         await self._send_stats(interaction, target, data, emb)
 
     async def _send_stats(self, interaction: discord.Interaction, target, data: dict, fallback: discord.Embed):

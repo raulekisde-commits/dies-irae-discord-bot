@@ -5293,15 +5293,17 @@ class CTAFinalConfirmView(discord.ui.View):
             await interaction.edit_original_response(content=text, view=None)
 
 
-class CTADeleteMessageView(discord.ui.View):
-    def __init__(self, run_id: int, user_id: int):
-        super().__init__(timeout=300)
-        self.run_id, self.user_id = run_id, user_id
-        ok = discord.ui.Button(label="Borrar mensaje de la CTA", style=discord.ButtonStyle.danger)
-        no = discord.ui.Button(label="Dejarlo", style=discord.ButtonStyle.secondary)
-        ok.callback, no.callback = self._ok, self._no
-        self.add_item(ok)
-        self.add_item(no)
+class CTADeleteMessageButton(discord.ui.DynamicItem[discord.ui.Button], template=r"cta:delmsg:(?P<act>ok|no):(?P<run>\d+):(?P<user>\d+)"):
+    """Botones «Borrar mensaje de la CTA» / «Dejarlo». Persistentes: siguen andando aunque pase el tiempo o se reinicie el bot."""
+    def __init__(self, act: str, run_id: int, user_id: int):
+        self.act, self.run_id, self.user_id = act, int(run_id), int(user_id)
+        super().__init__(discord.ui.Button(label="Borrar mensaje de la CTA" if act == "ok" else "Dejarlo",
+                                           style=discord.ButtonStyle.danger if act == "ok" else discord.ButtonStyle.secondary,
+                                           custom_id=f"cta:delmsg:{act}:{self.run_id}:{self.user_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match):
+        return cls(match["act"], int(match["run"]), int(match["user"]))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -5309,15 +5311,23 @@ class CTADeleteMessageView(discord.ui.View):
             return False
         return True
 
-    async def _no(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="👍 El mensaje de la CTA queda en el canal.", view=None)
-
-    async def _ok(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction):
+        if self.act == "no":
+            return await interaction.response.edit_message(content="👍 El mensaje de la CTA queda en el canal.", view=None)
         run = cta_run_get(self.run_id)
+        if not run:
+            return await interaction.response.edit_message(content="No encontré esta CTA.", view=None)
         await interaction.response.edit_message(content="⏳ Borrando…", view=None)
         ok = await cta_delete_message(run)
         cta_audit(int(run["guild_id"]), interaction.user.id, "cta_message_deleted", self.run_id, f"ok={ok}")
         await interaction.edit_original_response(content="🗑️ Mensaje de la CTA borrado." if ok else "⚠️ No pude borrar el mensaje (¿ya no existe o me falta permiso?).", view=None)
+
+
+def CTADeleteMessageView(run_id: int, user_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(CTADeleteMessageButton("ok", run_id, user_id))
+    view.add_item(CTADeleteMessageButton("no", run_id, user_id))
+    return view
 
 
 async def cta_delete_thread(run: dict) -> bool:
@@ -7978,6 +7988,9 @@ HELP_SECTIONS = [
         ("/estado-api", "Admin", "Revisa si la API de Albion está respondiendo en cada región (búsqueda de jugadores y lista de la guild), cuánto tarda, el estado de la lista guardada en el bot y cuántos registros/reclutas quedaron pendientes."),
         ("/panel coaching", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea para el rol Coaching indicando el rol que juega; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
         ("/coaching reporte [semana]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte."),
+        ("/coaching notas [usuario]", "Miembros (las propias) · Staff / Coaching / Opinólogo / Council (las de otro)", "Promedio de las notas (1 a 10) que pusieron los coaches a los VODs del jugador y sus últimas notas. Escala: 7 cumplió su papel, 8-9 más de lo esperado, 10 gameplay de core member. También sale en /stats."),
+        ("/coaching nota-lista mayor_a menor_a", "Staff / Coaching / Opinólogo / Council", "Lista de jugadores con promedio de nota de coaching entre esos dos números (incluidos), de mayor a menor."),
+        ("/coaching notas-coaches [coach]", "Staff / Coaching / Opinólogo / Council", "Promedio de las notas que pone cada coach y cuántas puso."),
         ("/coaching mis-vods", "Miembros", "Cuántos VODs subiste esta semana y cuántos te faltan para el mínimo (si tenés el rol Observación)."),
         ("/canal registro · /registro_obligatorio", "Council / Admin", "Canal de avisos de registros / exigir (o no) estar registrado para usar los comandos de miembros."),
         ("/canal miembros canal [desactivar]", "Council / Admin", "Renombra un canal de voz a 'Smogg N/300' con los miembros de la guild en el juego; se actualiza solo cada 30 min."),
@@ -8102,6 +8115,7 @@ async def on_ready():
         bot.add_view(SplitSoldView())
         bot.add_view(TimerDeleteView())
         bot.add_view(CTAPanelView())
+        bot.add_dynamic_items(CTADeleteMessageButton)
         bot.add_view(BombPanelView())
         bot.add_view(CombatlogPanelView())
         bot._views_registered = True

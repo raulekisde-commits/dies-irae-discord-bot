@@ -26,12 +26,14 @@ STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 COACHING_TASKS_CHANNEL_ID = int(os.getenv("COACHING_TASKS_CHANNEL_ID", "1566710577173102602"))     # canal donde salen las tareas de devolución
 ROLE_LABELS = [n for n in cu.PLAYED_ROLES.values() if n != "Bomb"]
-SHORT_REPLY_MIN = 100                                      # devoluciones con menos caracteres: las revisa el Staff antes de dar la tirada
 STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
 # Revisión única al subir el cambio: devoluciones ya cobradas desde esta hora (UTC) que tienen una «X» en el texto
 RETRO_FLAG = "retro_x_review_2026_11"
 RETRO_SINCE = datetime(2026, 11, 16, 1, 13, tzinfo=timezone.utc)
 X_RE = re.compile(r"(?<!\w)[xX❌✖❎](?!\w)")
+GRADE_SCALE = ("**Escala:** 1-6 · no llegó a lo esperado · **7** · cumplió su papel · **8-9** · hizo más de lo esperado · "
+               "**10** · gameplay de core member")
+GRADE_HINTS = {7: "Cumplió su papel", 8: "Hizo más de lo esperado", 9: "Hizo más de lo esperado", 10: "Gameplay de core member"}
 
 
 def _roles(m) -> set:
@@ -117,6 +119,19 @@ class CoachReviewView(discord.ui.View):
         await self.cog.on_review_vote(interaction, bad=False)
 
 
+class CoachGradeView(discord.ui.View):
+    """Menú persistente para que el coach le ponga la nota (1 a 10) al VOD que devolvió. Responde al mensaje del coach."""
+    def __init__(self, cog: "CoachingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.select(custom_id="coach:grade", placeholder="Nota del VOD (1 a 10)", min_values=1, max_values=1,
+                       options=[discord.SelectOption(label=f"{n}/10", value=str(n), description=GRADE_HINTS.get(n, "No llegó a lo esperado"))
+                                for n in range(10, 0, -1)])
+    async def pick(self, interaction: discord.Interaction, select):
+        await self.cog.on_grade_pick(interaction, int(interaction.data["values"][0]))
+
+
 class CoachingCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
@@ -127,7 +142,7 @@ class CoachingCog(commands.Cog):
         self.bot.add_view(CoachPanelView(self))
         self.bot.add_view(CoachRoleView(self))
         self.bot.add_view(CoachReviewView(self))
-        self._retro_task = asyncio.create_task(self._retro_when_ready())
+        self.bot.add_view(CoachGradeView(self))
 
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(fn, self.db_path, *a, **kw)
@@ -304,14 +319,47 @@ class CoachingCog(commands.Cog):
             pending = [ref]
         if not pending:
             return
-        text = (message.content or "").strip()
-        if len(text) < SHORT_REPLY_MIN and not is_staff_or_council(message.author):
-            return await self.ask_review(message, pending, text)
         if await self._complete(pending, message.author.id):
             try:
                 await message.add_reaction("✅")
             except Exception:
                 pass
+            await self.ask_grade(message, pending)
+
+    async def ask_grade(self, message: discord.Message, vod_msgs: List[int]):
+        """Nota del VOD: si el coach la escribió («Nota: 7», «8/10») queda puesta; si no, el bot le pide que la elija."""
+        grade = cdb.grade_in_text(message.content)
+        if grade is not None:
+            await self.run(cdb.set_grades, vod_msgs, message.author.id, grade)
+            try:
+                await message.add_reaction("⭐")
+            except Exception:
+                pass
+            return
+        try:
+            await self.run(cdb.add_grade_prompt, message.id, message.author.id, vod_msgs)
+            await message.reply(f"⭐ <@{message.author.id}>, ponele una **nota del 1 al 10** a este VOD.\n{GRADE_SCALE}",
+                                view=CoachGradeView(self), mention_author=False,
+                                allowed_mentions=discord.AllowedMentions(users=[message.author], roles=False, everyone=False))
+        except Exception as exc:
+            print(f"coaching: no pude pedir la nota del VOD: {exc!r}")
+
+    async def on_grade_pick(self, interaction: discord.Interaction, grade: int):
+        ref = getattr(getattr(interaction, "message", None), "reference", None)
+        mid = getattr(ref, "message_id", None)
+        row = await self.run(cdb.get_grade_prompt, mid) if mid else None
+        if row is None:
+            return await _say(interaction, "❌ No encuentro la devolución de este mensaje.")
+        if interaction.user.id != int(row["coach_id"]) and not is_staff_or_council(interaction.user):
+            return await _say(interaction, "🔒 Solo el coach que hizo la devolución (o el Staff) puede poner la nota.")
+        n = await self.run(cdb.set_grades, row["vod_msgs"], interaction.user.id, grade)
+        if not n:
+            return await _say(interaction, "❌ Ese VOD ya no existe (lo borraron).")
+        text = f"⭐ Nota del VOD: **{grade}/10** · {GRADE_HINTS.get(grade, 'No llegó a lo esperado')} (puesta por <@{interaction.user.id}>). Podés cambiarla con el menú."
+        try:
+            await interaction.response.edit_message(content=text, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            await _say(interaction, text)
 
     async def _complete(self, pending: List[int], user_id: int) -> int:
         """Completa las tareas de esos VODs a nombre de user_id. Devuelve cuántas cerró.
@@ -321,7 +369,7 @@ class CoachingCog(commands.Cog):
         enc = self.bot.get_cog("EncargosCog")
         if enc is None:
             return 0
-        penalized = await self.run(cdb.has_penalty, user_id)
+        penalized = False                                     # ya no hay penalizaciones por devoluciones cortas
         paid = False                                          # ya se usó la tirada de esta tanda (cobrada o perdida por la penalización)
         done = 0
         for mid in pending:
@@ -405,11 +453,8 @@ class CoachingCog(commands.Cog):
             return await _say(interaction, "Esta revisión ya fue votada.")
         coach_id = int(row["coach_id"])
         coach, who = f"<@{coach_id}>", f"<@{interaction.user.id}>"
-        if bad:
-            await self.run(cdb.add_penalty, coach_id)                    # no acumulable
-            lost = "ya cobró esa tirada, así que" if row.get("kind") == "retro" else "no cobra la tirada y el VOD sigue pendiente;"
-            result = (f"❌ {who}: **mal hecha**. {coach} {lost} queda penalizado: su próxima VOD review bien hecha "
-                      f"no da tirada (la penalización no se acumula).")
+        if bad:                                                          # revisiones viejas: ya no se penaliza
+            result = (f"❌ {who}: **mal hecha**. " + ("" if row.get("kind") == "retro" else "El VOD sigue pendiente."))
         elif row.get("kind") == "retro":
             result = f"✅ {who}: **está bien**. {coach} se queda con su tirada."
         else:
@@ -629,6 +674,51 @@ class CoachingCog(commands.Cog):
             text = (f"📊 **Tus VODs esta semana:** {n} · total histórico: **{total}**\n"
                     f"No tenés mínimo semanal: subís cuando quieras una devolución.{link}")
         await _say(interaction, text)
+
+    # ---------- notas (1 a 10) ----------
+    @coaching_g.command(name="notas", description="Promedio de las notas de coaching de un jugador (sin usuario: las tuyas)")
+    @app_commands.describe(usuario="Jugador (ver las de otro: Staff/Coaching/Opinólogo/Council)")
+    async def coaching_notas(self, interaction: discord.Interaction, usuario: Optional[discord.Member] = None):
+        target = usuario or interaction.user
+        if target.id != interaction.user.id and not can_report(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, Coaching, Opinólogo y el Council pueden ver las notas de otro jugador.")
+        avg, n = await self.run(cdb.player_avg, target.id)
+        if not n:
+            return await _say(interaction, f"⭐ {target.mention} todavía no tiene VODs con nota.")
+        last = await self.run(cdb.player_grades, target.id, 10)
+        lines = [f"• **{g['grade']}/10** · por <@{g['coach_id']}>" for g in last]
+        await _say(interaction, f"⭐ **Notas de coaching de {target.mention}:** promedio **{avg:.1f}/10** en **{n}** VOD(s).\n"
+                                f"{GRADE_SCALE}\n\nÚltimas notas:\n" + "\n".join(lines))
+
+    @coaching_g.command(name="notas-coaches", description="(Staff/Coaching) Promedio de las notas que pone cada coach")
+    @app_commands.describe(coach="Ver solo un coach")
+    async def coaching_notas_coaches(self, interaction: discord.Interaction, coach: Optional[discord.Member] = None):
+        if not can_report(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, Coaching, Opinólogo y el Council pueden ver esto.")
+        rows = await self.run(cdb.coach_avgs, coach.id if coach else None)
+        if not rows:
+            return await _say(interaction, "⭐ Todavía no hay notas" + (f" puestas por {coach.mention}." if coach else "."))
+        lines = [f"<@{cid}> — promedio **{avg:.1f}/10** · {n} nota(s)" for cid, avg, n in rows]
+        for k, chunk in enumerate(self._chunks(lines)):
+            emb = discord.Embed(title="⭐ Notas que pone cada coach" if k == 0 else None, description=chunk, color=discord.Color.gold())
+            await _say(interaction, None, embed=emb)
+
+    @coaching_g.command(name="nota-lista", description="(Staff/Coaching) Jugadores con promedio de nota entre dos números")
+    @app_commands.describe(mayor_a="Promedio mínimo (incluido), de 1 a 10", menor_a="Promedio máximo (incluido), de 1 a 10")
+    async def coaching_nota_lista(self, interaction: discord.Interaction,
+                                  mayor_a: app_commands.Range[float, 1, 10], menor_a: app_commands.Range[float, 1, 10]):
+        if not can_report(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, Coaching, Opinólogo y el Council pueden ver esto.")
+        low, high = sorted((float(mayor_a), float(menor_a)))
+        rows = await self.run(cdb.players_between, low, high)
+        rango = f"{low:g} y {high:g}"
+        if not rows:
+            return await _say(interaction, f"⭐ Nadie tiene un promedio de nota entre {rango}.")
+        lines = [f"<@{pid}> — **{avg:.1f}/10** · {n} VOD(s)" for pid, avg, n in rows]
+        for k, chunk in enumerate(self._chunks(lines)):
+            emb = discord.Embed(title=f"⭐ Promedio de nota entre {rango} · {len(rows)} jugador(es)" if k == 0 else None,
+                                description=chunk, color=discord.Color.gold())
+            await _say(interaction, None, embed=emb)
 
     # ---------- track: quiénes tienen que mandar el VOD de una CTA ----------
     track_g = app_commands.Group(name="track", description="(Staff/Coaching) Lista de quiénes tienen que mandar el VOD de una CTA", parent=coaching_g)
