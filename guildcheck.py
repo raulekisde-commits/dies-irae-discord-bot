@@ -10,6 +10,7 @@
   /miembros cambiar-guild    Pasa a alguien entre Smogg y Smogged: actualiza el registro y el rol (no lo toma como salida mientras se cambia).
   /miembros limpiar-registros Libera el personaje de quienes siguen en el Discord sin rol Miembro (con confirmación).
   /miembros fuera-guild      Registrados cuyo personaje ya no está en la guild, con listas para expulsar.
+  /miembros historial      Guilds por las que pasó un personaje y con quién comparte kills (API de Albion en vivo, no guarda nada).
   /miembros canal-avisos     Canal donde queda registrado cuando alguien sale de la guild (Smogg o Smogged): el bot le saca los roles solo.
 
 Los cuatro reportes que ya existían (sin-albion, sin-discord, guild-sin-discord, fuera-de-guild) siguen en registration.py
@@ -27,6 +28,7 @@ from discord.ext import commands, tasks
 
 import coaching_db as cdb
 import guildcheck_db as gdb
+import historial as hist
 from guildshop import can_manage
 from registration import YesNoView, can_admin_registro
 
@@ -803,6 +805,14 @@ class GuildCheckCog(commands.Cog):
     async def asistencias_cmd(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None,
                               persona: Optional[discord.Member] = None):
         await self.do_asistencias(interaction, getattr(semana, "value", semana) or "actual", persona)
+
+    @miembros_g.command(name="historial", description="(Staff/Council/Reclutador) Guilds por las que pasó un personaje y con quién comparte kills")
+    @app_commands.describe(nombre="Nombre exacto del personaje en Albion", servidor="Servidor (si hay homónimos)",
+                           publico="true = la respuesta la ve todo el canal (por defecto oculta)")
+    @app_commands.choices(servidor=hist.REGION_CHOICES)
+    async def historial_cmd(self, interaction: discord.Interaction, nombre: str,
+                            servidor: Optional[app_commands.Choice[str]] = None, publico: bool = False):
+        await hist.Historial(self.bot).run(interaction, nombre, getattr(servidor, "value", servidor), publico)
 
     @miembros_g.command(name="poca-asistencia", description="(Staff) Lista pública: menos de 5 CTA por semana desde que entraron (killboards)")
     async def poca_asistencia_cmd(self, interaction: discord.Interaction):
