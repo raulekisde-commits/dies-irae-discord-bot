@@ -1846,7 +1846,7 @@ class RecruitView(discord.ui.View):
         return member
 
     async def accept_player(self, interaction: discord.Interaction, role_id: int, role_name: str, extra_role_ids=(), main_role_id: Optional[int] = None,
-                            nick_override: Optional[str] = None):
+                            nick_override: Optional[str] = None, guild_name: Optional[str] = None):
         member = await self._get_applicant(interaction)
         if member is None:
             return await respond_ephemeral(interaction, "❌ No encontré al postulante (se fue del servidor o su ID no es válido).")
@@ -1864,23 +1864,29 @@ class RecruitView(discord.ui.View):
         nick = nick_override or original_nick
         reg_cog = interaction.client.get_cog("RegistrationCog") if nick else None
         roles_pending = False
+        gname = guild_name or ALBION_GUILD_NAME
         if nick and reg_cog is not None:
-            ok, reg_text, granted_now = await reg_cog.accept_recruit(member, nick, role_id, role_name, interaction.user, tuple(extra_role_ids))
+            ok, reg_text, granted_now = await reg_cog.accept_recruit(member, nick, role_id, role_name, interaction.user, tuple(extra_role_ids),
+                                                                    guild_name=gname)
             if not ok:
                 return await respond_ephemeral(interaction, f"❌ No se aceptó: {reg_text}")
             roles_pending = not granted_now
             await respond_ephemeral(interaction, f"✅ {reg_text}")
             try:
                 if roles_pending:
-                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️ Ya tiene sus roles; falta que entre "
+                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **{gname}** ⚔️ Ya tiene sus roles; falta que entre "
                                                    f"a la guild en el juego como **{discord.utils.escape_markdown(nick)}**.")
                 else:
-                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
+                    await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **{gname}** ⚔️")
             except Exception:
                 pass
         else:
+            sister = None
+            if gname.casefold() != ALBION_GUILD_NAME.casefold():          # ticket viejo sin nick pero aceptado para Smogged: igual lleva su rol
+                any_reg = interaction.client.get_cog("RegistrationCog")
+                sister = await any_reg.guild_role(interaction.guild, gname) if any_reg is not None else None
             try:
-                await member.add_roles(*dict.fromkeys([member_role, role, *extra_roles]), reason=f"Aceptado como {role_name}")
+                await member.add_roles(*dict.fromkeys([member_role, role, *extra_roles] + ([sister] if sister else [])), reason=f"Aceptado como {role_name}")
                 if public_role and public_role in member.roles:
                     await member.remove_roles(public_role, reason="Aceptado: se quita rol Public")
             except discord.Forbidden:
@@ -1889,7 +1895,7 @@ class RecruitView(discord.ui.View):
                 return await respond_ephemeral(interaction, "❌ Ocurrió un error inesperado al asignar los roles.")
 
             try:
-                await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **Smogg** ⚔️")
+                await interaction.channel.send(f"✅ {member.mention} aceptado como **{role_name}** en **{gname}** ⚔️")
             except Exception:
                 pass
 
@@ -1917,7 +1923,7 @@ class RecruitView(discord.ui.View):
             embed = recruit_record_embed(
                 "✅ POSTULACIÓN ACEPTADA" + (" (falta confirmar ingreso a la guild)" if roles_pending else ""),
                 discord.Color.green(), member, interaction.user, getattr(interaction, "message", None),
-                extra=main_fields + [("🎭 Rol asignado", role_name, False)] + ([("🎰 Wujupón", spin_text, False)] if spin_text else []))
+                extra=main_fields + [("🏰 Guild", gname, True), ("🎭 Rol asignado", role_name, False)] + ([("🎰 Wujupón", spin_text, False)] if spin_text else []))
 
             # Imagen: la guardás por uid
             img_data = ticket_images.get(member.id)
@@ -2147,6 +2153,13 @@ class RecruitRolesView(discord.ui.View):
         self.select.callback = self.picked
         self.add_item(self.select)
         self.chosen = [default_role_id] if default_role_id in RECRUIT_CTA_ROLES else []
+        self.guild_name = ALBION_GUILD_NAME
+        if ALBION_EXTRA_GUILDS:                      # Smogg o una guild hermana (Smogged): define el registro y el rol que recibe
+            gopts = [discord.SelectOption(label=n, value=n, emoji="🏰", default=(n == ALBION_GUILD_NAME))
+                     for n in [ALBION_GUILD_NAME] + [g[0].strip() for g in ALBION_EXTRA_GUILDS]]
+            self.guild_select = discord.ui.Select(placeholder="🏰 Guild a la que entra", min_values=1, max_values=1, options=gopts)
+            self.guild_select.callback = self.picked_guild
+            self.add_item(self.guild_select)
         self.raw_main = ""
         self.original_nick = recruit_nick_from_message(getattr(origin, "message", None))
         self.nick = self.original_nick
@@ -2161,6 +2174,8 @@ class RecruitRolesView(discord.ui.View):
     def render(self) -> str:
         text = (f"⚔ **Rol main** (escribió: *{discord.utils.escape_markdown(self.raw_main or '—')}*) y 🎭 **roles de CTA** que le vas a dar.\n"
                 "👁️ El rol **Observación** se le da siempre.")
+        if ALBION_EXTRA_GUILDS:
+            text += f"\n🏰 **Guild:** **{self.guild_name}**" + ("" if self.guild_name == ALBION_GUILD_NAME else f" (recibe el rol **{self.guild_name}**)")
         if self.nick:
             changed = " *(corregido)*" if self.nick != self.original_nick else ""
             text += (f"\n🎮 **Nick en Albion:** `{self.nick}`{changed} — ¿está bien escrito? "
@@ -2182,6 +2197,12 @@ class RecruitRolesView(discord.ui.View):
             o.default = o.value == self.main_select.values[0]
         await interaction.response.edit_message(view=self)
 
+    async def picked_guild(self, interaction: discord.Interaction):
+        self.guild_name = self.guild_select.values[0]
+        for o in self.guild_select.options:
+            o.default = o.value == self.guild_name
+        await interaction.response.edit_message(content=self.render(), view=self)
+
     async def picked(self, interaction: discord.Interaction):
         self.chosen = [int(v) for v in self.select.values]
         for o in self.select.options:
@@ -2200,13 +2221,14 @@ class RecruitRolesView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         self.stop()
-        await interaction.response.edit_message(content=f"⏳ Aceptando con: **{label}**…", view=self)
+        await interaction.response.edit_message(content=f"⏳ Aceptando en **{self.guild_name}** con: **{label}**…", view=self)
         nick_override = None
         if self.nick and self.nick != self.original_nick:
             nick_override = self.nick
             await recruit_set_ticket_nick(getattr(self.origin, "message", None), self.nick)
         # accept_player responde con followups sobre la interacción del botón original
-        await self.ticket_view.accept_player(self.origin, primary, label, extra, main_role_id=self.main_id, nick_override=nick_override)
+        await self.ticket_view.accept_player(self.origin, primary, label, extra, main_role_id=self.main_id, nick_override=nick_override,
+                                             guild_name=self.guild_name)
 
 
 async def recruit_set_ticket_nick(message, nick: str) -> None:

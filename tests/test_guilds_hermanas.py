@@ -89,6 +89,48 @@ class GuildsHermanasTests(DiscordBase):
         run(self.reg.apply_guild_role(self.alice))
         self.assertTrue(any(r.name == "Smogged" for r in self.alice.roles))
 
+    def _newbie(self, uid=880):
+        m = discord.Member(uid, "Nuevo", guild=self.guild)
+        self.guild.members.append(m)
+        return m
+
+    def test_reclutar_a_smogged_pendiente_da_el_rol_y_registra_smogged(self):
+        run(self.reg.refresh_roster())
+        newbie = self._newbie()
+        ok, text, granted = run(self.reg.accept_recruit(newbie, "Recluta", self.r_member.id, "Miembro", self.council, guild_name="Smogged"))
+        self.assertEqual((ok, granted), (True, False))
+        self.assertIn("Smogged", text)
+        self.assertTrue(any(r.name == "Smogged" for r in newbie.roles))                 # rol desde el momento de aceptar
+        self.assertIn(self.r_member, newbie.roles)
+        self.assertEqual(rdb.get_registration(self.db, newbie.id).guild_name, "Smogged")
+        self.assertEqual(len(rdb.list_pending_recruits(self.db)), 1)
+        run(self.reg.sync_guild_roles())                                                # todavía no entró: no se le saca
+        self.assertTrue(any(r.name == "Smogged" for r in newbie.roles))
+
+    def test_reclutar_a_smogg_no_da_el_rol(self):
+        run(self.reg.refresh_roster())
+        newbie = self._newbie(881)
+        ok, _t, _g = run(self.reg.accept_recruit(newbie, "Recluta", self.r_member.id, "Miembro", self.council))
+        self.assertTrue(ok)
+        self.assertFalse(any(r.name == "Smogged" for r in newbie.roles))
+        self.assertEqual(rdb.get_registration(self.db, newbie.id).guild_name, "Smogg")
+
+    def test_reclutar_a_smogged_ya_adentro(self):
+        run(self.reg.refresh_roster())
+        newbie = self._newbie(882)
+        ok, text, granted = run(self.reg.accept_recruit(newbie, "Charlie", self.r_member.id, "Miembro", self.council, guild_name="Smogged"))
+        self.assertEqual((ok, granted), (True, True))
+        self.assertTrue(any(r.name == "Smogged" for r in newbie.roles))
+        self.assertEqual(rdb.list_pending_recruits(self.db), [])
+
+    def test_ticket_tiene_selector_de_guild(self):
+        """bot.py no se puede importar en las pruebas: se revisa el código fuente."""
+        src = open(os.path.join(os.path.dirname(HERE), "bot.py"), encoding="utf-8").read()
+        bloque = src[src.index("class RecruitRolesView"):src.index("class RecruitTicketView")]
+        self.assertIn("self.guild_select", bloque)
+        self.assertIn("guild_name=self.guild_name", bloque)
+        self.assertIn("guild_name=gname", src[src.index("async def accept_player"):src.index("class RecruitRolesView")])
+
     def test_killboard_cuenta_las_dos_guilds(self):
         events = [{"Killer": {"Name": "Alfa", "GuildName": "Smogg"}, "Victim": {"Name": "Charlie", "GuildName": "Smogged"},
                    "Participants": [], "GroupMembers": []}]
