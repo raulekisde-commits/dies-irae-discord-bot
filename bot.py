@@ -230,6 +230,13 @@ except Exception:
     async def setup_chestaudit(*_a, _imp_err=_imp_err):
         raise RuntimeError('No se pudo importar chestaudit.py (¿falta subirlo al repo?):\n' + _imp_err)
 try:
+    from partycheck import setup_partycheck
+except Exception:
+    import traceback as _tb
+    _imp_err = _tb.format_exc()
+    async def setup_partycheck(*_a, _imp_err=_imp_err):
+        raise RuntimeError('No se pudo importar partycheck.py (¿falta subirlo al repo?):\n' + _imp_err)
+try:
     from rentas import setup_rentas
 except Exception:
     import traceback as _tb
@@ -689,6 +696,7 @@ class MyBot(commands.Bot):
                 _kb_cog.expected_weapons = cta_expected_weapons
                 _kb_cog.weapon_name = lambda w: _armas.weapon_names(DB_PATH, GUILD_ID).get(w)
             await _safe_setup("chestaudit", setup_chestaudit, self, DB_PATH, GUILD_ID)
+            await _safe_setup("partycheck", setup_partycheck, self, DB_PATH, GUILD_ID)
             await _safe_setup("sorteos", setup_sorteos, self, DB_PATH, GUILD_ID, STAFF_ROLE_ID)
             await _safe_setup("config", setup_config, self, DB_PATH, GUILD_ID)
             await _safe_setup("panels", setup_panels, self, GUILD_ID)
