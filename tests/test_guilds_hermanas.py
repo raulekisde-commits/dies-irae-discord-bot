@@ -83,6 +83,25 @@ class GuildsHermanasTests(DiscordBase):
         run(self.reg.sync_guild_roles())
         self.assertIn(role, self.bob.roles)
 
+    def test_pase_de_guild_en_curso_manda_sobre_la_lista(self):
+        rdb.admin_link(self.db, self.bob.id, "Alfa", 1, char_id="id-a")             # en el juego sigue en Smogg
+        rdb.set_guild(self.db, self.bob.id, "Smogged", 1)                           # pero se lo está pasando a Smogged
+        run(self.reg.refresh_roster())
+        run(self.reg.sync_guild_roles())
+        self.assertTrue(any(r.name == "Smogged" for r in self.bob.roles))
+        global SMOGGED
+        old = SMOGGED
+        try:                                                                        # ya figura en Smogged: el pase se da por terminado
+            SMOGGED = old + [{"Id": "id-a2", "Name": "Alfa", "GuildName": "Smogged"}]
+            SMOGG[:] = [p for p in SMOGG if p["Name"] != "Alfa"]
+            run(self.reg.refresh_roster())
+            run(self.reg.sync_guild_roles())
+            self.assertEqual(rdb.active_transfers(self.db), {})
+            self.assertTrue(any(r.name == "Smogged" for r in self.bob.roles))
+        finally:
+            SMOGGED = old
+            SMOGG[:] = [{"Id": "id-a", "Name": "Alfa", "GuildName": "Smogg"}, {"Id": "id-b", "Name": "Beta", "GuildName": "Smogg"}]
+
     def test_apply_guild_role_al_registrarse(self):
         run(self.reg.refresh_roster())
         rdb.admin_link(self.db, self.alice.id, "Charlie", 1, char_id="id-c")

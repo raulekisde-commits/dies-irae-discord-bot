@@ -7,9 +7,10 @@
   /miembros kick-lista       Candidatos a expulsar por motivo: inactivos, poca asistencia a CTA, faltan VODs; marca quién tiene /ausencia.
   /miembros asistencias      Asistencias a CTA por semana o de una persona (killboard, o anotado + 20 min en voz).
   /miembros antiguedad       Registrados: tag, personaje, días desde que se registraron y VODs subidos desde entonces.
+  /miembros cambiar-guild    Pasa a alguien entre Smogg y Smogged: actualiza el registro y el rol (no lo toma como salida mientras se cambia).
   /miembros limpiar-registros Libera el personaje de quienes siguen en el Discord sin rol Miembro (con confirmación).
   /miembros fuera-guild      Registrados cuyo personaje ya no está en la guild, con listas para expulsar.
-  /miembros canal-avisos     Canal donde el bot avisa solo cuando alguien sale de la guild, con botones Expulsar / Ignorar.
+  /miembros canal-avisos     Canal donde queda registrado cuando alguien sale de la guild (Smogg o Smogged): el bot le saca los roles solo.
 
 Los cuatro reportes que ya existían (sin-albion, sin-discord, guild-sin-discord, fuera-de-guild) siguen en registration.py
 y se llaman desde acá; ya no son comandos sueltos."""
@@ -37,6 +38,9 @@ NEW_LINK_DAYS = 5                  # /miembros poca-asistencia: los vinculados h
 LEAVE_CONFIRM_PER_ROUND = 10       # consultas a la API por ronda para confirmar el gremio actual
 ROSTER_DROP_GUARD = 0.7            # si la lista de la guild baja de golpe más de un 30 %, esa ronda no se avisa nada
 NO_MENTIONS = discord.AllowedMentions.none()
+# Guilds para /miembros cambiar-guild (mismo formato que ALBION_EXTRA_GUILDS en bot.py: "Nombre:ID,...").
+GUILD_CHOICES = [os.getenv("ALBION_GUILD_NAME", "Smogg")] + [x.split(":", 1)[0].strip() for x in
+                                                            os.getenv("ALBION_EXTRA_GUILDS", "Smogged:PrAIGLB7QDiq2aARE6brwQ").split(",") if ":" in x]
 
 
 async def _say(interaction: discord.Interaction, text: str, **kw):
@@ -373,6 +377,7 @@ class GuildCheckCog(commands.Cog):
         ctas = await self.run(gdb.kb_cta_presence, guild.id, chars)
         if not ctas:
             return await interaction.followup.send("ℹ️ Todavía no hay CTA con killboard cargado: no hay nada que comparar.")
+        signups = await self.run(gdb.cta_signups, guild.id)
         esc = discord.utils.escape_markdown
         low, new, no_char = [], [], 0
         for m in pool:
@@ -390,6 +395,17 @@ class GuildCheckCog(commands.Cog):
         low.sort(key=lambda x: (x[3] / x[4], x[3], x[0].display_name.casefold()))
         new.sort(key=lambda x: x[1])
         absent = await self.run(gdb.ausencias_en, guild.id, ctas[0][0], now)
+        vods = await self.run(cdb.count_since_by_user, {x[0].id: x[1] for x in low + new})
+
+        def stats(m, since) -> str:
+            """Killboard N/total (%) · anotado a /cta N/total (%) · VODs, todo desde que entró."""
+            kb_tot = sum(1 for when, _p in ctas if when >= since)
+            kb_in = sum(1 for when, present in ctas if when >= since and m.id in present)
+            cta_tot = sum(1 for when, _s in signups if when >= since)
+            cta_in = sum(1 for when, signed in signups if when >= since and m.id in signed)
+            pct = lambda a, b: f"{a * 100 // b}%" if b else "—"
+            return (f"🗡️ killboard **{kb_in}/{kb_tot}** ({pct(kb_in, kb_tot)}) · 📝 anotado a /cta **{cta_in}/{cta_tot}** ({pct(cta_in, cta_tot)})"
+                    f" · 🎥 {vods.get(m.id, 0)} VOD{'s' if vods.get(m.id, 0) != 1 else ''}")
 
         def who(m, char) -> str:
             return f"<@{m.id}>" + (f" (**{esc(char)}**)" if char else "")
@@ -404,13 +420,15 @@ class GuildCheckCog(commands.Cog):
         lines = [f"⚔️ **Poca asistencia a CTA** · se piden **{gdb.CTA_WEEKLY_MIN} por semana**, contadas desde que lo reclutaron o vinculó su cuenta de Albion",
                  f"Solo cuentan las CTA con killboard cargado (desde <t:{_ts(ctas[0][0])}:D>, **{len(ctas)}** CTA). "
                  "Si entró hace poco, se le pide la parte proporcional.",
+                 "🗡️ killboard = CTA con killboard en las que aparece / CTA con killboard desde que entró · "
+                 "📝 /cta = CTA a las que se anotó / CTA hechas desde que entró · 🎥 VODs subidos desde que entró.",
                  f"**{len(low)}** de {len(pool) - no_char - len(new)} miembros por debajo"
                  + (f" · 🟡 {sum(1 for x in low if x[0].id in absent)} con /ausencia (revisar)" if any(x[0].id in absent for x in low) else "") + ":", ""]
-        lines += [f"• {who(m, char)} · **{a}/{need}** ({a * 100 // need}%) · vinculado <t:{_ts(since)}:R>{tag(m)}"
+        lines += [f"• {who(m, char)} · pedidas **{need}** · vinculado <t:{_ts(since)}:R>\n   {stats(m, since)}{tag(m)}"
                   for m, since, char, a, need, _n in low] or ["✅ Nadie está por debajo."]
         if new:
             lines += ["", f"**🆕 Vinculados hace {NEW_LINK_DAYS} días o menos ({len(new)})** · no se evalúan todavía"]
-            lines += [f"• {who(m, char)} · vinculado <t:{_ts(since)}:R> · {n} CTA{tag(m)}" for m, since, char, n in new]
+            lines += [f"• {who(m, char)} · vinculado <t:{_ts(since)}:R>\n   {stats(m, since)}{tag(m)}" for m, since, char, n in new]
         if no_char:
             lines.append(f"\nℹ️ {no_char} miembro(s) sin personaje registrado no se evalúan (ver `/miembros sin-vincular`).")
         for chunk in _chunks(lines):
@@ -509,6 +527,44 @@ class GuildCheckCog(commands.Cog):
         for chunk in chunks[1:]:
             await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
+    # ---------- pase entre guilds (Smogg ↔ Smogged) ----------
+    async def do_cambiar_guild(self, interaction, persona: discord.Member, guild_name: str):
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        reg = await self._need_reg(interaction)
+        if reg is None:
+            return
+        target = next((n for n, _i in reg.guilds if n and n.casefold() == (guild_name or "").casefold()), None)
+        if target is None:
+            return await _say(interaction, f"❌ Guild desconocida. Opciones: {reg.guild_label}.")
+        import registration_db as rdb
+        try:
+            regs = await asyncio.to_thread(rdb.set_guild, self.db_path, persona.id, target, interaction.user.id)
+        except rdb.RegError as exc:
+            return await _say(interaction, f"❌ {exc}")
+        esc = discord.utils.escape_markdown
+        notes = []
+        for gname, _gid in reg.extra_guilds:                      # rol de la guild hermana: se pone o se saca según el destino
+            role = await reg.guild_role(interaction.guild, gname)
+            if role is None:
+                notes.append(f"⚠️ No pude encontrar ni crear el rol **{esc(gname)}**.")
+                continue
+            try:
+                if gname.casefold() == target.casefold() and role not in persona.roles:
+                    await persona.add_roles(role, reason=f"/miembros cambiar-guild a {target} por {interaction.user}")
+                    notes.append(f"✅ Le di el rol {role.mention}.")
+                elif gname.casefold() != target.casefold() and role in persona.roles:
+                    await persona.remove_roles(role, reason=f"/miembros cambiar-guild a {target} por {interaction.user}")
+                    notes.append(f"✅ Le saqué el rol {role.mention}.")
+            except discord.Forbidden:
+                notes.append(f"⚠️ No pude cambiar el rol {role.mention} (revisá que mi rol esté por encima).")
+        await self.run(gdb.clear_alerts, [persona.id])
+        chars = ", ".join(f"**{esc(r.char_name)}**" for r in regs)
+        await reg.audit_log(f"🔀 <@{interaction.user.id}> pasó a <@{persona.id}> ({chars}) a la guild **{esc(target)}**.")
+        await _say(interaction, f"🔀 <@{persona.id}> ({chars}) ahora figura en **{esc(target)}**.\n" + "\n".join(notes) +
+                   f"\nℹ️ Mientras se cambia de guild en el juego no se lo toma como salida. Si en {rdb.TRANSFER_HOURS} h no aparece en "
+                   f"**{esc(target)}**, el bot vuelve a usar la guild real de su personaje.")
+
     # ---------- canal de avisos ----------
     async def do_canal_avisos(self, interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         if interaction.guild is None or not can_manage(interaction.user):
@@ -525,8 +581,8 @@ class GuildCheckCog(commands.Cog):
             if not (perms.view_channel and perms.send_messages):
                 return await _say(interaction, f"❌ No tengo permiso para escribir en {channel.mention}.")
         await self.run(gdb.set_setting, gdb.CHANNEL_KEY, str(channel.id))
-        await _say(interaction, f"✅ Cuando un registrado salga de la guild de Albion, aviso en {channel.mention} con botones para expulsarlo o ignorar. "
-                                f"Se revisa cada {LEAVE_CHECK_MINUTES} min.")
+        await _say(interaction, f"✅ Cuando un registrado salga de la guild de Albion (Smogg o Smogged), le saco los roles de Discord y lo dejo "
+                                f"anotado en {channel.mention}. Se revisa cada {LEAVE_CHECK_MINUTES} min.")
 
     # ---------- detección automática de quien sale de la guild ----------
     @tasks.loop(minutes=LEAVE_CHECK_MINUTES)
@@ -572,12 +628,13 @@ class GuildCheckCog(commands.Cog):
         alerted = await self.run(gdb.all_alert_ids)
         await self.run(gdb.clear_alerts, alerted & inside)                       # volvió a la guild: si se va de nuevo, se avisa de nuevo
         guests = await asyncio.to_thread(self._guest_ids, guild.id)
+        moving = await reg.transfer_targets()                                   # /miembros cambiar-guild en curso: no es una salida
         sent, checked = 0, 0
         for uid, rs in by_user.items():
-            if uid in inside or uid in alerted or uid in guests:
+            if uid in inside or uid in alerted or uid in guests or uid in moving:
                 continue
             member = guild.get_member(uid)
-            if member is None or getattr(member, "bot", False):
+            if member is None or getattr(member, "bot", False) or _is_admin(member) or can_admin_registro(member):
                 continue
             if checked >= LEAVE_CONFIRM_PER_ROUND:
                 break
@@ -585,19 +642,52 @@ class GuildCheckCog(commands.Cog):
             current = await reg._current_guild(rs[0])                           # se confirma con la API antes de avisar
             if current is None or (current and reg.is_own_guild(current)):
                 continue
-            esc = discord.utils.escape_markdown
-            emb = discord.Embed(title="🚪 Salió de la guild de Albion", color=discord.Color.orange())
-            emb.description = (f"<@{uid}> ({esc(member.display_name)})\nPersonaje: **{esc(rs[0].char_name)}**\n"
-                               f"Gremio actual: {('**' + esc(current) + '**') if current else 'sin gremio'}\n\n¿Lo expulso del Discord?")
-            emb.timestamp = datetime.now(timezone.utc)
-            try:
-                msg = await channel.send(embed=emb, view=LeaveAlertView(self), allowed_mentions=NO_MENTIONS)
-            except Exception:
-                traceback.print_exc()
-                return sent
-            await self.run(gdb.add_alert, uid, rs[0].char_name, channel.id, msg.id)
+            await self._strip_leaver(guild, channel, member, rs[0].char_name, current)
             sent += 1
         return sent
+
+    @staticmethod
+    def _removable_roles(guild, member) -> list:
+        """Roles que el bot puede sacar: no @everyone, no los de integraciones, y solo los que están por debajo de su rol más alto."""
+        top = getattr(getattr(getattr(guild, "me", None), "top_role", None), "position", None)
+        out = []
+        for r in getattr(member, "roles", []):
+            if r.id == guild.id or getattr(r, "managed", False):
+                continue
+            if top is not None and getattr(r, "position", 0) >= top:
+                continue
+            out.append(r)
+        return out
+
+    async def _strip_leaver(self, guild, channel, member, char_name: str, current: str) -> None:
+        """Salió de la guild de Albion: se le sacan los roles de Discord y queda registrado en el canal de avisos."""
+        esc = discord.utils.escape_markdown
+        roles = self._removable_roles(guild, member)
+        result = "No tenía roles para sacar."
+        if roles:
+            try:
+                await member.remove_roles(*roles, reason=f"Salió de la guild de Albion ({char_name})")
+                result = f"Se le sacaron **{len(roles)}** rol(es): " + " ".join(f"<@&{r.id}>" for r in roles)
+            except discord.Forbidden:
+                result = "⚠️ No pude sacarle los roles (revisá que mi rol esté por encima)."
+            except Exception as exc:
+                result = f"⚠️ No pude sacarle los roles ({type(exc).__name__})."
+        emb = discord.Embed(title="🚪 Salió de la guild de Albion", color=discord.Color.orange())
+        emb.description = (f"<@{member.id}> ({esc(member.display_name)})\nPersonaje: **{esc(char_name)}**\n"
+                           f"Gremio actual: {('**' + esc(current) + '**') if current else 'sin gremio'}")
+        emb.add_field(name="🎭 Roles", value=result[:1000], inline=False)
+        emb.timestamp = datetime.now(timezone.utc)
+        msg_id = 0
+        try:
+            msg = await channel.send(embed=emb, allowed_mentions=NO_MENTIONS)
+            msg_id = getattr(msg, "id", 0) or 0
+        except Exception:
+            traceback.print_exc()
+        await self.run(gdb.add_alert, member.id, char_name, channel.id, msg_id)          # una sola vez por salida
+        await self.run(gdb.close_alert, msg_id, "roles_removed", 0)
+        reg = self.reg()
+        if reg is not None:
+            await reg.audit_log(f"🚪 <@{member.id}> (**{esc(char_name)}**) salió de la guild de Albion: {result}")
 
     async def _alert_for(self, interaction):
         if not can_admin_registro(interaction.user):
@@ -721,6 +811,12 @@ class GuildCheckCog(commands.Cog):
     @miembros_g.command(name="antiguedad", description="(Staff) Miembros con nombre en Albion, días desde que se registraron y VODs subidos")
     async def antiguedad_cmd(self, interaction: discord.Interaction):
         await self.do_antiguedad(interaction)
+
+    @miembros_g.command(name="cambiar-guild", description="(Staff) Pasa a alguien de Smogg a Smogged o al revés (registro y rol)")
+    @app_commands.describe(persona="A quién", guild="Guild de destino")
+    @app_commands.choices(guild=[app_commands.Choice(name=g, value=g) for g in GUILD_CHOICES])
+    async def cambiar_guild_cmd(self, interaction: discord.Interaction, persona: discord.Member, guild: app_commands.Choice[str]):
+        await self.do_cambiar_guild(interaction, persona, getattr(guild, "value", guild))
 
     @miembros_g.command(name="limpiar-registros", description="(Staff) Libera el personaje de quienes siguen en el Discord sin rol Miembro")
     async def limpiar_registros_cmd(self, interaction: discord.Interaction):
