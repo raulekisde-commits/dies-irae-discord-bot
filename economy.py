@@ -742,7 +742,10 @@ class EconomyCog(commands.Cog):
                       app_commands.Choice(name="🎓 Coaches (devoluciones)", value="coach"),
                       app_commands.Choice(name="🍾 Embo: mayor deuda", value="embo"),
                       app_commands.Choice(name="🃏 Wujupón: los que más ganaron", value="wujupon"),
-                      app_commands.Choice(name="⚔ Rol secundario: los que menos juegan su main", value="rolsec")])
+                      app_commands.Choice(name="⚔ Rol secundario: los que menos juegan su main", value="rolsec"),
+                      app_commands.Choice(name="🔆 Foco donado", value="foco"),
+                      app_commands.Choice(name="🔮 Cores reportados", value="core"),
+                      app_commands.Choice(name="🌀 Vortex reportados", value="vortex")])
 
     @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
     @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
@@ -778,6 +781,10 @@ class EconomyCog(commands.Cog):
             return await self.send_top_embo_debt(interaction)
         if key == "wujupon":
             return await self.send_top_wujupon(interaction)
+        if key == "foco":
+            return await self.send_top_foco(interaction)
+        if key in ("core", "vortex"):
+            return await self.send_top_orbs(interaction, key)
         if key == "rolsec":
             other = self.bot.get_cog("MainRoleCog")
             if other is None:
@@ -842,6 +849,48 @@ class EconomyCog(commands.Cog):
                 pass
         else:
             await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
+
+    async def _send_paged_top(self, interaction: discord.Interaction, title: str, lines: List[str], empty: str,
+                              color: discord.Color, footer: str = ""):
+        """Top en embeds de a 10 líneas, con páginas si hace falta."""
+        pages = chunk(lines, 10) or [[]]
+        embeds = []
+        for n, page in enumerate(pages, start=1):
+            emb = discord.Embed(title=title, color=color, description="\n".join(page) or empty)
+            foot = footer + (f" · Página {n}/{len(pages)}" if len(pages) > 1 else "")
+            if foot.strip(" ·"):
+                emb.set_footer(text=foot.strip(" ·"))
+            embeds.append(emb)
+        if len(embeds) > 1:
+            view = PagedView(embeds, owner_id=interaction.user.id)
+            await interaction.response.send_message(embed=embeds[0], view=view, allowed_mentions=NO_MENTIONS)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
+        else:
+            await interaction.response.send_message(embed=embeds[0], allowed_mentions=NO_MENTIONS)
+
+    async def send_top_foco(self, interaction: discord.Interaction):
+        """`/top foco`: quién donó más foco (tickets de Foco Donor cerrados como exitosos)."""
+        import foco_db
+        rows = await self._db(foco_db.top)
+        lines = [f"`{i}.` <@{u}> — **{foco_db.fmt_short(t)}** en {n} donación" + ("" if n == 1 else "es")
+                 for i, (u, t, n) in enumerate(rows, start=1)]
+        total = sum(t for _u, t, _n in rows)
+        await self._send_paged_top(interaction, "🔆 Top foco donado", lines, "Todavía nadie donó foco.", discord.Color.gold(),
+                                   f"{len(rows)} donante(s) · total {foco_db.fmt_short(total)}" if rows else "")
+
+    async def send_top_orbs(self, interaction: discord.Interaction, kind: str):
+        """`/top core` y `/top vortex`: quién reportó más orbes aprobados o repartidos, con el detalle por rareza."""
+        import cores_db as odb
+        rows = await self._db(odb.top, kind)
+        lines = [f"`{i}.` <@{u}> — **{t}** · " + " ".join(f"{odb.RARITY_EMOJI[r]} {c[r]}" for r in odb.RARITIES if c.get(r))
+                 for i, (u, t, c) in enumerate(rows, start=1)]
+        label = odb.KIND_LABEL[kind]
+        await self._send_paged_top(interaction, f"{'🔮' if kind == 'core' else '🌀'} Top {label.lower()} reportados", lines,
+                                   f"Todavía nadie reportó un {label.lower()} aprobado.", discord.Color.purple(),
+                                   f"Aprobados o repartidos · total {sum(t for _u, t, _c in rows)}" if rows else "")
 
     eco_g = app_commands.Group(name="eco", description="Administración de Wuju Coins y permisos económicos", guild_only=True)
 

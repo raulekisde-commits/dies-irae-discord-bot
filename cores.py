@@ -2,8 +2,8 @@
 
 - El comando pide los tres datos (repartir, rareza y foto); la respuesta al miembro es privada.
 - El panel se publica en el canal «cores» (configurable con /canal) con la foto reenviada y los botones.
-- Aprobar: 1/2/3/5 tiradas de Wujupón (Verde/Azul/Morado/Dorado) a quien lo reportó.
-- Repartir: se eligen miembros (quien lo reportó entra siempre); a cada uno le toca la parte entera y el sobrante se sortea.
+- Aprobar: 1/2/3/5 tiradas de Wujupón (Verde/Azul/Morado/Dorado) a quien lo reportó. Si pidió repartirlo, se reparte
+  directamente entre quien lo reportó y los compañeros que puso: a cada uno le toca la parte entera y el sobrante se sortea.
   Si hay más personas que tiradas, se sortean todas.
 - Todos los avisos van al canal general etiquetando a las personas.
 - /stats cuenta, por rareza, cuántos orbes le dieron tiradas a cada persona."""
@@ -139,29 +139,6 @@ class EditView(discord.ui.View):
         await self.cog.edit_rarity(interaction, self.message, self.sel.values[0])
 
 
-class ShareView(discord.ui.View):
-    """Elegir con quiénes se reparte (miembros). Quien lo reportó entra siempre."""
-
-    def __init__(self, cog: "CoresCog", message, n_mates: int = 0):
-        super().__init__(timeout=300)
-        self.cog, self.message = cog, message
-        sel = discord.ui.UserSelect(placeholder="Sumar más miembros al reparto" if n_mates else "Elegí con quiénes se reparte",
-                                    min_values=1, max_values=25)
-        sel.callback = self.on_pick
-        self.sel = sel
-        self.add_item(sel)
-        if n_mates:
-            btn = discord.ui.Button(label=f"Repartir con los que puso ({n_mates})", emoji="🎲", style=discord.ButtonStyle.primary)
-            btn.callback = self.on_mates
-            self.add_item(btn)
-
-    async def on_pick(self, interaction: discord.Interaction):
-        await self.cog.share(interaction, self.message, list(self.sel.values))
-
-    async def on_mates(self, interaction: discord.Interaction):
-        await self.cog.share(interaction, self.message, [])
-
-
 class OrbPanelView(discord.ui.View):
     """Botones del panel (persistentes: el reporte se busca por el mensaje)."""
 
@@ -186,18 +163,6 @@ class OrbPanelView(discord.ui.View):
             return
         await _say(interaction, f"✏️ Elegí la rareza correcta del **{orb_name(report)}** #{report['id']}.",
                    view=EditView(self.cog, interaction.message, report["rarity"]))
-
-    @discord.ui.button(label="Repartir", style=discord.ButtonStyle.primary, emoji="🎲", custom_id="orb:share")
-    async def share_btn(self, interaction: discord.Interaction, button):
-        report = await self.cog.pending_or_say(interaction, interaction.message)
-        if report is None:
-            return
-        mates = odb.mates_of(report)
-        extra = (f" También entran los que puso al reportarlo: {' '.join(f'<@{u}>' for u in mates)}. "
-                 "Tocá el botón para repartir solo entre ellos, o elegí más miembros para sumarlos." if mates else "")
-        await _say(interaction, f"🎲 Elegí con qué miembros se reparten las **{odb.RARITY_SPINS[report['rarity']]}** tirada(s) del "
-                                f"**{orb_name(report)}**. <@{report['user_id']}> (quien lo reportó) entra siempre.{extra}",
-                   view=ShareView(self.cog, interaction.message, len(mates)))
 
 
 class CoresCog(commands.Cog):
@@ -445,10 +410,19 @@ class CoresCog(commands.Cog):
         await self._refresh(message, done, awards, interaction.user.id, final=True)
         return done
 
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Paneles viejos todavía tienen el botón «Repartir» (orb:share): ahora hace lo mismo que Aprobar."""
+        data = getattr(interaction, "data", None) or {}
+        if data.get("custom_id") == "orb:share" and not interaction.response.is_done():
+            await self.approve(interaction, interaction.message)
+
     async def approve(self, interaction: discord.Interaction, message):
         report = await self.pending_or_say(interaction, message)
         if report is None:
             return
+        if report["share"]:                            # pidió repartirlo: se reparte con los que puso, sin elegir a nadie más
+            return await self.share(interaction, message, [])
         await interaction.response.defer(ephemeral=True)
         n = odb.RARITY_SPINS[report["rarity"]]
         done = await self._decide(interaction, message, "approved", {int(report["user_id"]): n})

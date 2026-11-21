@@ -1,6 +1,6 @@
 """Foco donado: se suma al cerrar como exitoso un ticket de Foco Donor (bot.py, FocoCloseModal) y se muestra en /stats jugador."""
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from dbutil import connect, utcnow_iso, write_tx
 
@@ -69,5 +69,16 @@ def user_total(db_path: str, user_id: int) -> Tuple[int, int]:
         r = conn.execute("SELECT COALESCE(SUM(amount), 0) AS t, COUNT(*) AS n FROM foco_donations WHERE user_id=?",
                          (user_id,)).fetchone()
         return int(r["t"]), int(r["n"])
+    finally:
+        conn.close()
+
+
+def top(db_path: str) -> List[Tuple[int, int, int]]:
+    """[(user_id, foco donado, donaciones)] de mayor a menor."""
+    conn = _conn(db_path)
+    try:
+        rows = conn.execute("SELECT user_id, SUM(amount) AS t, COUNT(*) AS n FROM foco_donations GROUP BY user_id "
+                            "HAVING SUM(amount) > 0 ORDER BY t DESC, n DESC").fetchall()
+        return [(int(r["user_id"]), int(r["t"]), int(r["n"])) for r in rows]
     finally:
         conn.close()

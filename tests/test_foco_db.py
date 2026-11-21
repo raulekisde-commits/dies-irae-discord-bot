@@ -30,6 +30,7 @@ class FocoDbTests(unittest.TestCase):
         self.assertFalse(fdb.record(self.db, 1, 20000, 101, 9))        # mismo ticket
         self.assertTrue(fdb.record(self.db, 2, 5000, 102, 9))
         self.assertEqual(fdb.user_total(self.db, 1), (50000, 2))
+        self.assertEqual(fdb.top(self.db), [(1, 50000, 2), (2, 5000, 1)])
 
 
 if __name__ == "__main__":
