@@ -3,7 +3,7 @@
 Cada reporte pasa por: pending → processing (mientras se dan las tiradas) → approved | shared | rejected.
 La estadística de /stats cuenta, por tipo y rareza, cuántos orbes le dieron tiradas a cada persona (orb_awards con spins > 0)."""
 import random
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from dbutil import connect, utcnow_iso, write_tx
 
@@ -200,3 +200,21 @@ def awards_of(db_path: str, report_id: int) -> List[dict]:
         return [dict(r) for r in conn.execute("SELECT * FROM orb_awards WHERE report_id=? ORDER BY spins DESC, user_id", (report_id,))]
     finally:
         conn.close()
+
+
+def top(db_path: str, kind: str) -> List[Tuple[int, int, Dict[str, int]]]:
+    """[(user_id, total, {rareza: n})]: quiénes reportaron más orbes de ese tipo (aprobados o repartidos), de mayor a menor."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT user_id, rarity, COUNT(*) AS n FROM orb_reports WHERE kind=? AND status IN ('approved','shared') "
+                            "GROUP BY user_id, rarity", (kind,)).fetchall()
+    except Exception:                                  # tablas todavía no creadas
+        return []
+    finally:
+        conn.close()
+    per: Dict[int, Dict[str, int]] = {}
+    for r in rows:
+        per.setdefault(int(r["user_id"]), {x: 0 for x in RARITIES})[r["rarity"]] = int(r["n"])
+    out = [(u, sum(c.values()), c) for u, c in per.items()]
+    out.sort(key=lambda t: (-t[1], -t[2].get("dorado", 0), -t[2].get("morado", 0)))
+    return out
