@@ -287,7 +287,7 @@ class CoachingCog(commands.Cog):
                 else:
                     await enc.create(text=text, created_by=message.author.id, source=f"coach:{message.id}", link=message.jump_url,
                                      ping_roles=[COACHING_ROLE_ID, OPINOLOGO_ROLE_ID], ping_staff=False,
-                                     channel_id=COACHING_TASKS_CHANNEL_ID)
+                                     channel_id=COACHING_TASKS_CHANNEL_ID, reward_spins=0)   # la tirada la cobra el jugador al recibir nota
             except Exception as exc:
                 print(f"coaching: no pude crear la tarea del VOD {message.id}: {exc!r}")
         try:
@@ -335,6 +335,11 @@ class CoachingCog(commands.Cog):
                 await message.add_reaction("⭐")
             except Exception:
                 pass
+            if await self.pay_grades(vod_msgs, message.author.id):
+                try:
+                    await message.add_reaction("🎰")
+                except Exception:
+                    pass
             return
         try:
             await self.run(cdb.add_grade_prompt, message.id, message.author.id, vod_msgs)
@@ -343,6 +348,29 @@ class CoachingCog(commands.Cog):
                                 allowed_mentions=discord.AllowedMentions(users=[message.author], roles=False, everyone=False))
         except Exception as exc:
             print(f"coaching: no pude pedir la nota del VOD: {exc!r}")
+
+    async def pay_grades(self, vod_msgs: List[int], actor_id: int) -> Dict[int, int]:
+        """Por cada video con nota, 1 tirada de Wujupón para el jugador que lo subió. Una sola vez por VOD
+        (request_key coachgrade:<mensaje>): cambiar la nota no vuelve a pagar. Devuelve {jugador: tiradas dadas ahora}."""
+        cog = self.bot.get_cog("WujuponCog")
+        if cog is None:
+            return {}
+        import wujupon_db as wdb
+        out: Dict[int, int] = {}
+        for mid in vod_msgs:
+            try:
+                row = await self.run(cdb.get_msg, mid)
+                if row is None or not int(row["vods"]):
+                    continue
+                uid, n = int(row["user_id"]), int(row["vods"])
+                before = await cog.run(wdb.get_spins, uid)
+                after = await cog.run(wdb.gift_spins, actor_id=actor_id, user_id=uid, count=n, request_key=f"coachgrade:{mid}",
+                                      reason=f"VOD con nota de coaching ({n} video(s))")
+                if after > before:
+                    out[uid] = out.get(uid, 0) + (after - before)
+            except Exception as exc:
+                print(f"coaching: no pude dar la tirada por la nota del VOD {mid}: {exc!r}")
+        return out
 
     async def on_grade_pick(self, interaction: discord.Interaction, grade: int):
         ref = getattr(getattr(interaction, "message", None), "reference", None)
@@ -355,7 +383,10 @@ class CoachingCog(commands.Cog):
         n = await self.run(cdb.set_grades, row["vod_msgs"], interaction.user.id, grade)
         if not n:
             return await _say(interaction, "❌ Ese VOD ya no existe (lo borraron).")
+        paid = await self.pay_grades(row["vod_msgs"], interaction.user.id)
         text = f"⭐ Nota del VOD: **{grade}/10** · {GRADE_HINTS.get(grade, 'No llegó a lo esperado')} (puesta por <@{interaction.user.id}>). Podés cambiarla con el menú."
+        if paid:
+            text += "\n" + " · ".join(f"🎰 <@{uid}> +{n} tirada(s) de Wujupón" for uid, n in paid.items())
         try:
             await interaction.response.edit_message(content=text, allowed_mentions=NO_MENTIONS)
         except Exception:
@@ -375,7 +406,7 @@ class CoachingCog(commands.Cog):
         for mid in pending:
             try:
                 t = await enc.run(edb.find_by_source, f"coach:{mid}")
-                no_spin = (paid or penalized) and t is not None and t.status not in ("done", "cancelled") and t.reward_spins > 0
+                no_spin = t is not None and t.status not in ("done", "cancelled") and t.reward_spins > 0   # la devolución ya no paga
                 if no_spin:
                     await enc.run(edb.set_reward_spins, t.id, 0)
                 if await enc.complete_by_source(f"coach:{mid}", user_id):

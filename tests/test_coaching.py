@@ -240,7 +240,7 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.process_message(self.reply_msg(self.coach, th, 4202, reply_to=4101)))      # coach responde a UN vod
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["open", "done", "open"])
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").done_by, self.coach.id)
-        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").reward_spins for k in range(3)], [0, 1, 0])  # 1 sola
+        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").reward_spins for k in range(3)], [0, 0, 0])  # la devolución no paga
         m = self.reply_msg(self.council, th, 4203)                                              # respuesta general: cierra las que quedan
         run(self.cog.process_message(m))
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["done", "done", "done"])
@@ -252,22 +252,36 @@ class CoachingDiscordTests(DiscordBase):
         ts = [edb.find_by_source(self.db, f"coach:{m}") for m in mids]
         return sum(t.reward_spins for t in ts if t.status == "done")
 
-    def test_varios_vods_sin_respuesta_dan_una_sola_tirada(self):
-        self.open_post(self.novato)
-        th = self.vods(5)                                                                       # 5 VODs seguidos sin respuesta
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4250)))
-        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(5)], ["done"] * 5)
-        self.assertEqual(self.paid(range(4100, 4105)), 1)
-        run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/otro", 4260)))
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4261)))                    # VOD nuevo con respuesta: +1
-        self.assertEqual(self.paid([4260]), 1)
+    def wujupon(self):
+        """Wujupón mínimo para estos tests: solo lo que usa coaching (run → funciones de wujupon_db sobre la misma base)."""
+        import wujupon_db as wdb
+        wdb.init_schema(self.db)
 
-    def test_respuesta_a_un_vod_deja_sin_tirada_a_los_otros_pendientes(self):
+        class WujuponCog:
+            async def run(_s, fn, *a, **kw):
+                return fn(self.db, *a, **kw)
+        self.bot.cogs["WujuponCog"] = WujuponCog()
+        return wdb
+
+    def test_la_devolucion_no_paga_y_cada_video_con_nota_da_una_tirada_al_jugador(self):
+        wdb = self.wujupon()
         self.open_post(self.novato)
-        th = self.vods(2)                                                                       # hoy uno, mañana otro
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4270, reply_to=4101)))
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4271, reply_to=4100)))
-        self.assertEqual(self.paid([4100, 4101]), 1)
+        th = self.vods(2)
+        run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/a1 https://youtu.be/a2", 4120)))   # 2 videos
+        m = self.reply_msg(self.coach, th, 4250, reply_to=4100)
+        run(self.cog.process_message(m))
+        self.assertEqual(self.paid([4100, 4101, 4120]), 0)                                      # el coach no cobra por devolver
+        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 0)                             # sin nota todavía
+        i = self.grade_pick(self.coach, 4250, 7)
+        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 1)
+        self.assertIn("+1 tirada", i.response.sent[-1][1].get("content", "") if i.response.sent else i.text)
+        self.grade_pick(self.coach, 4250, 9)                                                    # cambiar la nota no vuelve a pagar
+        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 1)
+        self.assertEqual(wdb.get_spins(self.db, self.coach.id), 0)
+        m2 = self.reply_msg(self.coach, th, 4251, reply_to=4120, text=self.LONG_REPLY + " 8/10")  # nota escrita: VOD con 2 videos
+        run(self.cog.process_message(m2))
+        self.assertIn("🎰", m2.reactions)
+        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 3)
 
     def test_devolucion_corta_ya_no_se_revisa_ni_penaliza(self):
         self.open_post(self.novato)
@@ -276,7 +290,7 @@ class CoachingDiscordTests(DiscordBase):
         m = self.reply_msg(self.coach, th, 4400, text="buen vod")                             # corta: completa igual, sin aviso al Staff
         run(self.cog.process_message(m))
         t = edb.find_by_source(self.db, "coach:4100")
-        self.assertEqual((t.status, t.done_by, t.reward_spins), ("done", self.coach.id, 1))
+        self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
         self.assertEqual(len(self.tasks_ch.sent), before)
         self.assertNotIn("⏳", m.reactions)
 
