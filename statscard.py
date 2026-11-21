@@ -418,7 +418,7 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     has_kb = bool(data.get("has_kb"))
     main = data.get("main")
     HH, CH, MH, BH, G = 176, 150, 236, 318, 20               # BH: +56 para la fila de loot por CTA
-    OH = 132                                                        # franja de cores y vortex
+    OH = 132 + 56                                                   # franja de cores y vortex (+56: foco donado)
     H = M + HH + G + CH + G + MH + G + BH + G + OH + 70
     img = _background(H)
     inner_x0, inner_x1 = M, W - M
@@ -679,7 +679,7 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     # ---- H. cores y vortex (orbes que le dieron tiradas) ----
     y += BH + G
     _panel(img, (inner_x0, y, inner_x1, y + OH), radius=14)
-    _vrule(img, mid, y + 18, y + OH - 18)
+    _vrule(img, mid, y + 18, y + 132 - 18)
     d = ImageDraw.Draw(img)
     orbs = data.get("orbs") or {}
     for (kname, label), x0, x1 in ((("core", "Cores"), lx0, lx1), (("vortex", "Vortex"), rx0, rx1)):
@@ -692,6 +692,17 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
             _tracked(d, cx + 22, y + 62, rname, pf(13, "Bold"), MUTED, 2)
             v = int(vals[i] or 0)
             d.text((cx, y + 84), _fmt(v), font=pf(30, "Bold"), fill=TEXT if v else DIM)
+    # foco donado (tickets de Foco Donor cerrados como exitosos)
+    fy4 = y + 132
+    d.line((lx0, fy4 - 6, rx1, fy4 - 6), fill=(42, 43, 50), width=1)
+    fn_ = int(data.get("foco_n") or 0)
+    _tracked(d, lx0, fy4 + 12, "Foco donado", pf(13, "Bold"), MUTED, 2.2)
+    fv = _fmt(data.get("foco_total") or 0) if fn_ else "—"
+    d.text((rx1, fy4 + 4), fv, font=pf(24, "Bold"), fill=GOLD if fn_ else DIM, anchor="ra")
+    if fn_:
+        fw_ = d.textlength(fv, font=pf(24, "Bold"))
+        d.text((rx1 - fw_ - 12, fy4 + 11), f"en {fn_} " + ("donación" if fn_ == 1 else "donaciones"), font=pf(15, "Medium"),
+               fill=MUTED, anchor="ra")
 
     # ---- pie ----
     y += OH + 16

@@ -17,6 +17,7 @@ import asyncio
 import random
 import sqlite3
 import botsettings as bs
+import foco_db as _foco_db
 import json
 from decimal import Decimal
 from economy import setup_economy
@@ -2422,6 +2423,17 @@ class FocoCloseModal(discord.ui.Modal, title="Cerrar donación de foco"):
         required=True,
         max_length=4
     )
+    foco_donado = discord.ui.TextInput(
+        label="Foco donado (para /stats)",
+        placeholder="Ej: 30000 o 30k",
+        required=True,
+        max_length=20
+    )
+
+    def __init__(self, foco_default: Optional[int] = None):
+        super().__init__()
+        if foco_default is not None:
+            self.foco_donado.default = str(foco_default)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -2436,6 +2448,9 @@ class FocoCloseModal(discord.ui.Modal, title="Cerrar donación de foco"):
             return await respond_ephemeral(interaction, "❌ La cantidad de tiradas tiene que ser un número (0 o más).")
         if n < 0 or n > 1000:
             return await respond_ephemeral(interaction, "❌ La cantidad de tiradas tiene que estar entre 0 y 1000.")
+        foco_amount = _foco_db.parse_amount(str(self.foco_donado.value))
+        if foco_amount is None or foco_amount > _foco_db.MAX_AMOUNT:
+            return await respond_ephemeral(interaction, "❌ El foco donado tiene que ser un número (ej: 30000 o 30k).")
 
         info = parse_foco_topic(ch.topic)
         uid = info.get("uid")
@@ -2466,10 +2481,18 @@ class FocoCloseModal(discord.ui.Modal, title="Cerrar donación de foco"):
                 return await respond_ephemeral(interaction, f"❌ No pude dar las tiradas ({exc}). No cerré el ticket.")
             tiradas_txt = f" | 🎰 **{n}** tirada(s) de Wujupón (ahora tiene {after})"
 
+        # Foco donado para /stats jugador (si falla, el ticket se cierra igual)
+        if foco_amount > 0:
+            try:
+                await asyncio.to_thread(_foco_db.record, DB_PATH, int(uid), foco_amount, ch.id, interaction.user.id)
+            except Exception:
+                traceback.print_exc()
+
         if member:
             await send_foco_log(
                 interaction.guild,
-                f"✅ **FOCO DONADO (OK)** {member.mention} → **{foco}** foco | Item: **{item}**{tiradas_txt}"
+                f"✅ **FOCO DONADO (OK)** {member.mention} → **{foco_amount:,}** foco donado".replace(",", ".") +
+                f" (en el ticket: {foco}) | Item: **{item}**{tiradas_txt}"
             )
             try:
                 extra = f" Recibiste **{n}** tirada(s) de Wujupón 🎰" if tiradas_txt else ""
@@ -2509,7 +2532,8 @@ class FocoTicketActionView(discord.ui.View):
             return await respond_ephemeral(interaction, "❌ Este canal no es válido para esta acción.")
         if not parse_foco_topic(ch.topic).get("uid"):
             return await respond_ephemeral(interaction, "❌ No pude leer los datos del ticket.")
-        await interaction.response.send_modal(FocoCloseModal())
+        info = parse_foco_topic(getattr(interaction.channel, "topic", None))
+        await interaction.response.send_modal(FocoCloseModal(_foco_db.parse_amount(info.get("foco"))))
 
     @discord.ui.button(
         label="❌ Rechazar Donación",
