@@ -314,9 +314,37 @@ class GuildCheckTests(DiscordBase):
         self.assertIsNotNone(rdb.get_registration(self.db, self.alice.id))
         self.assertIn("Liberé el registro de **1**", j.text)
 
+    def test_kick_saca_roles_y_desvincula(self):
+        otro = discord.Role(5555, "Tank", self.guild)
+        self.alice.roles.append(otro)
+        i = self.inter(self.alice)
+        run(self.cog.do_kick(i, self.bob))
+        self.assertIn("🔒", i.text)                                                     # solo Staff/Council/admin
+        i = self.inter(self.staff)
+        run(self.cog.do_kick(i, self.council))
+        self.assertIn("Solo un administrador", i.text)                                  # al Council no
+        i = self.inter(self.staff)
+        run(self.cog.do_kick(i, self.alice, "se fue"))
+        self.assertIsNotNone(rdb.get_registration(self.db, self.alice.id))              # todavía no confirmó
+        view = i.response.sent[0][1]["view"]
+        j = self.inter(self.staff)
+        run(view.children[0].callback(j))
+        self.assertIsNone(rdb.get_registration(self.db, self.alice.id))
+        self.assertEqual(self.alice.roles, [])
+        self.assertIn("Kingnian", j.text)
+        self.assertEqual(rdb.guild_seconds(self.db, self.alice.id), {})                 # desvinculado: no suma
+        conn = connect(self.db)
+        try:                                                                            # pero el tiempo del personaje queda guardado
+            self.assertIsNotNone(conn.execute("SELECT end_at FROM guild_periods WHERE lower(char_name)='kingnian'").fetchone()["end_at"])
+        finally:
+            conn.close()
+        i = self.inter(self.staff)
+        run(self.cog.do_kick(i, self.alice))
+        self.assertIn("no tiene roles", i.text)
+
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild", "historial"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild", "historial", "kick"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 
