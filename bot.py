@@ -4045,6 +4045,8 @@ CTA_MIN_MINUTES = 10
 CTA_DEFAULT_MINUTES = 40
 CTA_MAX_MINUTES = 23 * 60 + 59
 CTA_MAX_SLOTS = 250
+CTA_PANEL_MESSAGES = 3           # /cta reserva 3 mensajes seguidos (panel + 2) para que la lista larga no quede debajo de otros mensajes
+CTA_EMPTY_MSG = "\u200b"         # contenido de un mensaje reservado que todavía no se usa
 CTA_BOARD_CHAR_BUDGET = 5200      # el límite de Discord es 6000 caracteres de embeds por mensaje
 CTA_NAME_RE = re.compile(r"[\w -]{2,40}", re.UNICODE)
 CTA_LEAVE_WORDS = {"salir", "cancelar", "baja", "liberar", "-"}
@@ -4481,6 +4483,11 @@ async def cta_refresh_board(run_id: int):
         if channel is None:
             return
         groups = cta_panel_groups(run)[1:]           # el primer grupo va en el panel principal
+        try:                                         # CTA nuevas: siempre hay mensajes reservados (vacíos si no hacen falta)
+            reserve = int(json.loads(run.get("snapshot_json") or "{}").get("reserve_msgs") or 0)
+        except Exception:
+            reserve = 0
+        groups = groups + [None] * max(0, reserve - 1 - len(groups))
         try:
             ids = [int(x) for x in json.loads(run.get("panel_extra_ids_json") or "[]")]
         except Exception:
@@ -4490,12 +4497,16 @@ async def cta_refresh_board(run_id: int):
             msg_id = None
             if i < len(ids):
                 try:
-                    await channel.get_partial_message(ids[i]).edit(content=None, embeds=embeds)
+                    if embeds is None:
+                        await channel.get_partial_message(ids[i]).edit(content=CTA_EMPTY_MSG, embeds=[])
+                    else:
+                        await channel.get_partial_message(ids[i]).edit(content=None, embeds=embeds)
                     msg_id = ids[i]
                 except discord.NotFound:
                     msg_id = None
             if msg_id is None:
-                sent = await channel.send(embeds=embeds, allowed_mentions=CTA_NO_PINGS)
+                sent = (await channel.send(CTA_EMPTY_MSG, allowed_mentions=CTA_NO_PINGS) if embeds is None
+                        else await channel.send(embeds=embeds, allowed_mentions=CTA_NO_PINGS))
                 msg_id = sent.id
             new_ids.append(msg_id)
         for old_id in ids[len(groups):]:
@@ -7411,6 +7422,7 @@ async def cta_publish(guild: discord.Guild, comp: dict, minutes: int, title_over
     title = cu.unique_title(base, existing)
     snapshot = cta_snapshot_from_comp(comp)
     snapshot["lock_p34"], snapshot["dps_last"] = bool(lock_p34), bool(dps_last)
+    snapshot["reserve_msgs"] = CTA_PANEL_MESSAGES if kind == "cta" else 0
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status,track,title,kind) VALUES (?,?,?,?,?,?,?,?, 'open', 1, ?, ?)",
                            (guild.id, comp["id"], comp["name"], json.dumps(snapshot, ensure_ascii=False), channel.id, creator_id, now.isoformat(), close_at.isoformat(), title,

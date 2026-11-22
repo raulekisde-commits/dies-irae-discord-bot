@@ -1044,6 +1044,25 @@ class KillboardCog(commands.Cog):
                 emb.add_field(name="⭐ Nota de coaching", value=f"**{coach_avg:.1f}/10** en **{coach_n}** VOD(s)", inline=False)
         except Exception:
             traceback.print_exc()
+        guilds = [statscard.MAIN_GUILD] + list(statscard.SISTER_GUILDS) if statscard is not None else [rdb.MAIN_GUILD]
+        tenure = await self.run(rdb.guild_seconds, target.id)                          # antigüedad: total en cada guild
+        season = await self.run(rdb.guild_seconds, target.id, rdb.season_start())     # días en la season actual, por guild
+        for g in tenure:
+            if g not in guilds:
+                guilds.append(g)
+
+        def _per_guild(secs: dict) -> str:
+            return " · ".join(f"{g}: **{rdb.fmt_span(secs.get(g, 0))}**" for g in guilds)
+        emb.add_field(name=f"📅 Season {rdb.SEASON_NUMBER}", value=_per_guild(season), inline=False)
+        emb.add_field(name="🏰 Antigüedad", value=_per_guild(tenure).replace("**", ""), inline=False)
+        alters = []
+        try:
+            import alters_db
+            alters = [a["alter_name"] for a in await self.run(alters_db.alters_of, target.id)]
+        except Exception:
+            traceback.print_exc()
+        if alters:
+            emb.add_field(name="👥 Alters", value=discord.utils.escape_markdown(", ".join(alters)), inline=False)
         emb.set_footer(text=f"Smogg · datos de los killboards cargados por el staff")
         data = {"title": ", ".join(r.char_name for r in regs), "display": getattr(target, "display_name", ""),
                 "rank": guild_rank(target), "guild": statscard.member_guild(target) if statscard is not None else None,
@@ -1055,7 +1074,9 @@ class KillboardCog(commands.Cog):
                 "orbs": {k: [orbs[k][r] for r in odb.RARITIES] for k in odb.KINDS},
                 "foco_total": foco_total, "foco_n": foco_n, "foco_short": fdb.fmt_short(foco_total),
                 "cta_total": cta[0] if cta else None, "cta_week": cta[1] if cta else 0, "cta_week_n": cta[2] if cta else 0,
-                "coach_avg": round(coach_avg, 1) if coach_n else None, "coach_n": coach_n}
+                "coach_avg": round(coach_avg, 1) if coach_n else None, "coach_n": coach_n,
+                "guild_time": [(g, tenure.get(g, 0) // 3600, season.get(g, 0) // 3600) for g in guilds],   # (guild, h total, h season)
+                "season_n": rdb.SEASON_NUMBER, "alters": alters}
         await self._send_stats(interaction, target, data, emb)
 
     async def _send_stats(self, interaction: discord.Interaction, target, data: dict, fallback: discord.Embed):
