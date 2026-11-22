@@ -165,6 +165,21 @@ class RegistrationDbTests(unittest.TestCase):
         with self.assertRaises(rdb.RegError):
             mkreq(self.db, target=1, name="Otro")
 
+    def test_admin_relink_crea_actualiza_y_reemplaza(self):
+        reg, mode, prev = rdb.admin_relink(self.db, 1, "Viejo", 9, char_id="id-a", guild_name="Smogg")
+        self.assertEqual((mode, prev), ("new", None))
+        first = reg.registered_at
+        reg, mode, prev = rdb.admin_relink(self.db, 1, "Renombrado", 9, char_id="id-a", guild_name="Smogged")   # mismo ID
+        self.assertEqual((mode, prev, reg.char_name, reg.guild_name, reg.registered_at), ("updated", "Viejo", "Renombrado", "Smogged", first))
+        reg, mode, prev = rdb.admin_relink(self.db, 1, "Otro", 9, char_id="id-b")                                 # otro personaje
+        self.assertEqual((mode, prev, reg.char_id), ("replaced", "Renombrado", "id-b"))
+        self.assertEqual(len(rdb.get_registrations(self.db, 1)), 1)
+        with self.assertRaises(rdb.RegError):                                                                 # de otra cuenta: no se pisa
+            rdb.admin_relink(self.db, 2, "Otro", 9, char_id="id-b")
+        rdb.admin_relink(self.db, 3, "SinId", 9)                                                              # sin ID por la API caída
+        reg, mode, _ = rdb.admin_relink(self.db, 3, "SinId", 9, char_id="id-c")
+        self.assertEqual((mode, reg.char_id), ("updated", "id-c"))
+
     def test_admin_link_is_marked_and_audited(self):
         reg = rdb.admin_link(self.db, 5, "Manual", 99, char_id="id-m")
         self.assertEqual((reg.method, reg.linked_by), ("admin_override", 99))
@@ -786,6 +801,30 @@ class RegistrationDiscordTests(DiscordBase):
         run(self.cog.admin_desvincular.callback(self.cog, i, self.bob, "error"))
         run(i.response.sent[0][1]["view"].children[0].callback(self.inter(self.council)))
         self.assertFalse(rdb.is_registered(self.db, self.bob.id))
+
+    def test_admin_vincular_por_id_y_pisa_el_registro(self):
+        renamed = {"Id": "id-nuevo-0001", "Name": "NombreNuevo", "GuildName": "Smogg", "AllianceName": "", "KillFame": 1, "DeathFame": 1}
+
+        async def fake(url, params=None):
+            if url.endswith("/players/id-nuevo-0001") and "ams" not in url and "sgp" not in url:
+                return renamed
+            if "/players/" in url:
+                raise RuntimeError("HTTP 404")
+            return {"players": []}
+        self.cog.fetch_json = fake
+        rdb.admin_link(self.db, self.bob.id, "NombreViejo", 1, char_id="id-nuevo-0001", guild_name="Smogg")   # se renombró en el juego
+        i = self.inter(self.council)
+        run(self.cog.admin_vincular.callback(self.cog, i, self.bob, None, "id-nuevo-0001"))
+        reg = rdb.get_registration(self.db, self.bob.id)
+        self.assertEqual((reg.char_name, reg.char_id), ("NombreNuevo", "id-nuevo-0001"))
+        self.assertIn("NombreViejo", i.text)                                    # avisa el cambio de nombre
+        self.assertIn("NombreNuevo", i.text)
+        i = self.inter(self.council)
+        run(self.cog.admin_vincular.callback(self.cog, i, self.bob, None, "id-no-existe-99"))
+        self.assertIn("No encontré", i.text)
+        i = self.inter(self.council)
+        run(self.cog.admin_vincular.callback(self.cog, i, self.bob))
+        self.assertIn("nombre del personaje o su ID", i.text)
 
     def test_leaving_the_server_cancels_requests_and_frees_characters(self):
         self.register(self.alice, "Cazador", target=self.bob)
