@@ -180,6 +180,19 @@ class RegistrationDbTests(unittest.TestCase):
         reg, mode, _ = rdb.admin_relink(self.db, 3, "SinId", 9, char_id="id-c")
         self.assertEqual((mode, reg.char_id), ("updated", "id-c"))
 
+    def test_nombres_anteriores(self):
+        rdb.admin_relink(self.db, 1, "GooglyMoogly3625", 9, char_id="id-g")
+        rdb.admin_relink(self.db, 1, "killgringos", 9, char_id="id-g")                  # se renombró: el viejo queda anotado solo
+        self.assertEqual(rdb.old_names(self.db, 1), ["GooglyMoogly3625"])
+        rdb.add_old_name(self.db, 1, "OtroViejo", 9)
+        rdb.add_old_name(self.db, 1, "otroviejo", 9)                                     # repetido: no se duplica
+        self.assertEqual(rdb.old_names(self.db, 1), ["GooglyMoogly3625", "OtroViejo"])
+        rdb.admin_link(self.db, 2, "Ajeno", 9)
+        with self.assertRaises(rdb.RegError):
+            rdb.add_old_name(self.db, 1, "Ajeno", 9)                                     # es el registrado de otra cuenta
+        import guildcheck_db as gdb
+        self.assertEqual(gdb.chars_by_user(self.db)[1], {"killgringos", "googlymoogly3625", "otroviejo"})
+
     def test_admin_link_is_marked_and_audited(self):
         reg = rdb.admin_link(self.db, 5, "Manual", 99, char_id="id-m")
         self.assertEqual((reg.method, reg.linked_by), ("admin_override", 99))
@@ -825,6 +838,12 @@ class RegistrationDiscordTests(DiscordBase):
         i = self.inter(self.council)
         run(self.cog.admin_vincular.callback(self.cog, i, self.bob))
         self.assertIn("nombre del personaje o su ID", i.text)
+
+    def test_admin_vincular_nombre_anterior(self):
+        i = self.inter(self.council)
+        run(self.cog.admin_vincular.callback(self.cog, i, self.bob, "Cazador", None, "CazadorViejo"))
+        self.assertIn("CazadorViejo", i.text)
+        self.assertEqual(rdb.old_names(self.db, self.bob.id), ["CazadorViejo"])
 
     def test_leaving_the_server_cancels_requests_and_frees_characters(self):
         self.register(self.alice, "Cazador", target=self.bob)

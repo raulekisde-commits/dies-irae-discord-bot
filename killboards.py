@@ -968,6 +968,7 @@ class KillboardCog(commands.Cog):
         if not regs:
             return await _say(interaction, f"{target.mention} no tiene un personaje de Albion registrado.")
         names = [kb.norm(r.char_name) for r in regs]
+        names += [kb.norm(n) for n in await self.run(rdb.old_names, target.id) if kb.norm(n) not in names]   # renombrados
         s = await self.run(kb.player_stats, names)
         emb = discord.Embed(title=f"📊 Stats · {', '.join(r.char_name for r in regs)}", color=discord.Color.gold())
         try:

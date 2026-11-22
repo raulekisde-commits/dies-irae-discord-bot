@@ -195,6 +195,16 @@ class TopStatsTests(KBBase):
         emb = i.response.sent[0][1]["embed"]
         self.assertTrue(any("Muertes" in str(f) for f in emb.fields))
 
+    def test_stats_suma_killboards_del_nombre_anterior(self):
+        self.load(self.stf, "1473088480")                                     # killboard donde figura «Ana»
+        rdb.admin_relink(self.db, self.mem.id, "Ana", 1, char_id="id-ana")
+        rdb.admin_relink(self.db, self.mem.id, "AnaNueva", 1, char_id="id-ana")   # se renombró
+        i = self.inter(self.mem)
+        run(self.cog.stats.callback(self.cog, i, None))
+        emb = i.response.sent[0][1]["embed"]
+        self.assertTrue(any("Muertes" in str(f) for f in emb.fields))        # le cuentan las peleas con el nombre viejo
+        self.assertIn("AnaNueva", emb.title)
+
     def test_stats_muestra_top_de_roles_aunque_no_haya_killboard(self):
         rdb.admin_link(self.db, self.mem.id, "Ana", 1)
         c = connect(self.db)
