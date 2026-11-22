@@ -174,6 +174,26 @@ class CoresCog(commands.Cog):
     async def run(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, self.db_path, *args, **kwargs)
 
+    async def cog_load(self):
+        self._panels_task = asyncio.create_task(self.refresh_old_panels())
+
+    async def refresh_old_panels(self):
+        """Al arrancar: los paneles pendientes publicados antes de sacar el botón «Repartir» pasan a tener los botones actuales."""
+        try:
+            await self.bot.wait_until_ready()
+            for channel_id, message_id in await self.run(odb.pending_panels):
+                try:
+                    ch = await self._channel(channel_id)
+                    msg = await ch.fetch_message(message_id) if ch is not None else None
+                    ids = [getattr(c, "custom_id", None) for row in getattr(msg, "components", []) or []
+                           for c in getattr(row, "children", []) or []]
+                    if msg is not None and "orb:share" in ids:
+                        await msg.edit(view=self.view)
+                except Exception as exc:
+                    print(f"cores: no pude actualizar el panel {message_id}: {exc!r}")
+        except Exception:
+            traceback.print_exc()
+
     async def _channel(self, channel_id: int):
         if not channel_id:
             return None

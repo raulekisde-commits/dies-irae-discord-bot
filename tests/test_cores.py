@@ -175,6 +175,33 @@ class CoresDiscord(DiscordBase):
         self.assertIn("orb:approve", ids)
         self.assertNotIn("orb:share", ids)
 
+    def test_paneles_viejos_pierden_el_boton_repartir(self):
+        _i, msg = self.report(self.alice)
+        rep = odb.get_by_message(self.db, msg.id)
+        self.assertEqual(odb.pending_panels(self.db), [(rep["channel_id"], msg.id)])
+
+        class Btn:
+            def __init__(self, cid): self.custom_id = cid
+
+        class Row:
+            def __init__(self, ids): self.children = [Btn(c) for c in ids]
+
+        class Msg:
+            def __init__(self, ids): self.components, self.edited = [Row(ids)], None
+            async def edit(self, **kw): self.edited = kw
+
+        viejo, nuevo = Msg(["orb:approve", "orb:share"]), Msg(["orb:approve"])
+
+        class Ch:
+            def __init__(self, m): self.m = m
+            async def fetch_message(self, _id): return self.m
+
+        for m, esperado in ((viejo, self.cog.view), (nuevo, None)):
+            async def fake_channel(_cid, m=m): return Ch(m)
+            self.cog._channel = fake_channel
+            run(self.cog.refresh_old_panels())
+            self.assertIs((m.edited or {}).get("view"), esperado)
+
     def test_top_reportados(self):
         _i, msg = self.report(self.alice, "dorado")
         run(self.cog.approve(self.inter(self.council, message=msg), msg))
