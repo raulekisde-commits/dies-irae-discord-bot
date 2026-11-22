@@ -119,6 +119,21 @@ class CoachReviewView(discord.ui.View):
         await self.cog.on_review_vote(interaction, bad=False)
 
 
+class CoachConfirmView(discord.ui.View):
+    """Pregunta persistente al coach: ¿esta es la review completa del VOD? (la review puede ir en varios mensajes)."""
+    def __init__(self, cog: "CoachingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Sí, está completa", style=discord.ButtonStyle.success, custom_id="coach:rev_done", emoji="✅")
+    async def done(self, interaction: discord.Interaction, button):
+        await self.cog.on_confirm(interaction, True)
+
+    @discord.ui.button(label="Todavía no", style=discord.ButtonStyle.secondary, custom_id="coach:rev_more", emoji="✍️")
+    async def more(self, interaction: discord.Interaction, button):
+        await self.cog.on_confirm(interaction, False)
+
+
 class CoachGradeView(discord.ui.View):
     """Menú persistente para que el coach le ponga la nota (1 a 10) al VOD que devolvió. Responde al mensaje del coach."""
     def __init__(self, cog: "CoachingCog"):
@@ -136,6 +151,7 @@ class CoachingCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
         self._locks: Dict[int, asyncio.Lock] = {}
+        self._confirm_prompts: Dict[tuple, discord.Message] = {}      # (post, coach) -> última pregunta «¿review completa?»
 
     async def cog_load(self):
         await self.run(cdb.init_schema)
@@ -143,6 +159,7 @@ class CoachingCog(commands.Cog):
         self.bot.add_view(CoachRoleView(self))
         self.bot.add_view(CoachReviewView(self))
         self.bot.add_view(CoachGradeView(self))
+        self.bot.add_view(CoachConfirmView(self))
 
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(fn, self.db_path, *a, **kw)
@@ -307,51 +324,112 @@ class CoachingCog(commands.Cog):
                 print(f"coaching: no pude preguntar el rol: {exc!r}")
 
     async def complete_on_reply(self, message: discord.Message):
-        """Un coach/opinólogo/staff/council responde en el post: se completa la tarea del VOD al que responde, o todas las pendientes del post."""
+        """Un coach/opinólogo/staff/council responde en el post. La review puede ir en varios mensajes: a cada uno el bot le pregunta
+        si la review está completa. Recién con «Sí» se cierra la tarea de ESE VOD (al que responde o el más viejo pendiente) y se
+        pide la nota. Si en el texto ya puso la nota («Nota: 7», «8/10»), se toma como completa sin preguntar."""
         if not can_take(message.author):
             return
-        enc = self.bot.get_cog("EncargosCog")
-        if enc is None:
+        if self.bot.get_cog("EncargosCog") is None:
             return
         pending = await self.run(cdb.pending_msgs, message.channel.id)
         ref = getattr(getattr(message, "reference", None), "message_id", None)
-        if ref in pending:
-            pending = [ref]
-        if not pending:
+        if ref is not None and ref not in pending and await self.run(cdb.get_msg, ref) is not None:
+            return                                                   # sigue comentando un VOD que ya tiene su review cerrada
+        target = ref if ref in pending else (pending[0] if pending else None)
+        if target is None:
             return
-        if await self._complete(pending, message.author.id):
+        await self.run(cdb.add_grade_prompt, message.id, message.author.id, [target])
+        key = (message.channel.id, message.author.id)
+        old = self._confirm_prompts.pop(key, None)                   # la pregunta queda solo en el último mensaje de la review
+        if old is not None:
+            try:
+                await old.delete()
+            except Exception:
+                pass
+        grade = cdb.grade_in_text(message.content)
+        if grade is not None:
+            return await self.finish_review(message.author.id, message.id, [target], grade=grade, message=message)
+        try:
+            self._confirm_prompts[key] = await message.reply(
+                f"📝 <@{message.author.id}>, ¿**esta es la review completa** de este VOD? Si vas a mandar más mensajes, apretá "
+                f"«Todavía no» (o seguí escribiendo y te pregunto en el último).", view=CoachConfirmView(self), mention_author=False,
+                allowed_mentions=discord.AllowedMentions(users=[message.author], roles=False, everyone=False))
+        except Exception as exc:
+            print(f"coaching: no pude preguntar si la review está completa: {exc!r}")
+
+    async def _next_pending_line(self, vod_mid: int, guild_id: Optional[int]) -> str:
+        row = await self.run(cdb.get_msg, vod_mid)
+        if row is None:
+            return ""
+        rest = await self.run(cdb.pending_msgs, int(row["thread_id"]))
+        if not rest:
+            return ""
+        link = f"https://discord.com/channels/{guild_id or self.guild_id}/{int(row['thread_id'])}/{rest[0]}"
+        return f"\n📌 Queda{'n' if len(rest) > 1 else ''} **{len(rest)}** VOD(s) sin review en este post. El que sigue: {link}"
+
+    async def finish_review(self, coach_id: int, reply_id: int, vod_msgs: List[int], grade: Optional[int] = None, message=None) -> None:
+        """Cierra la review: completa la tarea de esos VODs a nombre del coach. Con `grade` además pone la nota y paga."""
+        await self._complete(vod_msgs, coach_id)
+        if message is not None:
             try:
                 await message.add_reaction("✅")
             except Exception:
                 pass
-            await self.ask_grade(message, pending)
-
-    async def ask_grade(self, message: discord.Message, vod_msgs: List[int]):
-        """Nota del VOD: si el coach la escribió («Nota: 7», «8/10») queda puesta; si no, el bot le pide que la elija."""
-        grade = cdb.grade_in_text(message.content)
-        if grade is not None:
-            await self.run(cdb.set_grades, vod_msgs, message.author.id, grade)
-            try:
-                await message.add_reaction("⭐")
-            except Exception:
-                pass
-            if await self.pay_grades(vod_msgs, message.author.id):
+        if grade is None:
+            return
+        await self.run(cdb.set_grades, vod_msgs, coach_id, grade)
+        paid = await self.pay_grades(vod_msgs, coach_id)
+        if message is not None:
+            for e in ("⭐", "🎰") if paid else ("⭐",):
                 try:
-                    await message.add_reaction("🎰")
+                    await message.add_reaction(e)
                 except Exception:
                     pass
-            return
-        try:
-            await self.run(cdb.add_grade_prompt, message.id, message.author.id, vod_msgs)
-            await message.reply(f"⭐ <@{message.author.id}>, ponele una **nota del 1 al 10** a este VOD.\n{GRADE_SCALE}",
-                                view=CoachGradeView(self), mention_author=False,
-                                allowed_mentions=discord.AllowedMentions(users=[message.author], roles=False, everyone=False))
-        except Exception as exc:
-            print(f"coaching: no pude pedir la nota del VOD: {exc!r}")
+            nxt = await self._next_pending_line(vod_msgs[0], getattr(getattr(message, "guild", None), "id", None))
+            if nxt:
+                try:
+                    await message.reply(f"✅ Review completa · nota **{grade}/10**.{nxt}", mention_author=False, allowed_mentions=NO_MENTIONS)
+                except Exception:
+                    pass
 
-    async def pay_grades(self, vod_msgs: List[int], actor_id: int) -> Dict[int, int]:
-        """Por cada video con nota, 1 tirada de Wujupón para el jugador que lo subió. Una sola vez por VOD
-        (request_key coachgrade:<mensaje>): cambiar la nota no vuelve a pagar. Devuelve {jugador: tiradas dadas ahora}."""
+    async def on_confirm(self, interaction: discord.Interaction, done: bool):
+        ref = getattr(getattr(interaction, "message", None), "reference", None)
+        mid = getattr(ref, "message_id", None)
+        row = await self.run(cdb.get_grade_prompt, mid) if mid else None
+        if row is None:
+            return await _say(interaction, "❌ No encuentro la review de este mensaje.")
+        if interaction.user.id != int(row["coach_id"]) and not is_staff_or_council(interaction.user):
+            return await _say(interaction, "🔒 Solo el coach que está haciendo la review (o el Staff) puede responder esto.")
+        channel_id = getattr(getattr(interaction, "channel", None), "id", None)
+        if channel_id is not None:
+            self._confirm_prompts.pop((channel_id, int(row["coach_id"])), None)
+        if not done:
+            try:
+                return await interaction.response.edit_message(content="✍️ Dale, seguí con la review. Te vuelvo a preguntar en tu próximo mensaje.",
+                                                               view=None, allowed_mentions=NO_MENTIONS)
+            except Exception:
+                return await _say(interaction, "✍️ Dale, seguí con la review.")
+        vods = row["vod_msgs"]
+        vrow = await self.run(cdb.get_msg, vods[0]) if vods else None
+        if vrow is None:
+            return await interaction.response.edit_message(content="❌ Ese VOD ya no existe (lo borraron).", view=None)
+        if vods[0] not in await self.run(cdb.pending_msgs, int(vrow["thread_id"])):
+            return await interaction.response.edit_message(content="ℹ️ Ese VOD ya tenía su review cerrada.", view=None)
+        coach_msg = None
+        try:                                                         # ✅ en el último mensaje de la review
+            coach_msg = await interaction.channel.fetch_message(int(mid))
+        except Exception:
+            pass
+        await self.finish_review(int(row["coach_id"]), int(mid), vods, message=coach_msg)
+        text = f"✅ Review completa. <@{row['coach_id']}>, ahora ponele una **nota del 1 al 10** a este VOD.\n{GRADE_SCALE}"
+        try:
+            await interaction.response.edit_message(content=text, view=CoachGradeView(self), allowed_mentions=NO_MENTIONS)
+        except Exception:
+            await _say(interaction, text)
+
+    async def pay_grades(self, vod_msgs: List[int], coach_id: int) -> Dict[int, int]:
+        """Por cada video con nota, 1 tirada de Wujupón para el coach que hizo la review. Una sola vez por VOD
+        (request_key coachgrade:<mensaje>): cambiar la nota no vuelve a pagar. Devuelve {coach: tiradas dadas ahora}."""
         cog = self.bot.get_cog("WujuponCog")
         if cog is None:
             return {}
@@ -362,9 +440,9 @@ class CoachingCog(commands.Cog):
                 row = await self.run(cdb.get_msg, mid)
                 if row is None or not int(row["vods"]):
                     continue
-                uid, n = int(row["user_id"]), int(row["vods"])
+                uid, n = int(coach_id), int(row["vods"])
                 before = await cog.run(wdb.get_spins, uid)
-                after = await cog.run(wdb.gift_spins, actor_id=actor_id, user_id=uid, count=n, request_key=f"coachgrade:{mid}",
+                after = await cog.run(wdb.gift_spins, actor_id=uid, user_id=uid, count=n, request_key=f"coachgrade:{mid}",
                                       reason=f"VOD con nota de coaching ({n} video(s))")
                 if after > before:
                     out[uid] = out.get(uid, 0) + (after - before)
@@ -383,10 +461,11 @@ class CoachingCog(commands.Cog):
         n = await self.run(cdb.set_grades, row["vod_msgs"], interaction.user.id, grade)
         if not n:
             return await _say(interaction, "❌ Ese VOD ya no existe (lo borraron).")
-        paid = await self.pay_grades(row["vod_msgs"], interaction.user.id)
+        paid = await self.pay_grades(row["vod_msgs"], int(row["coach_id"]))      # cobra quien hizo la review (aunque la nota la ponga el Staff)
         text = f"⭐ Nota del VOD: **{grade}/10** · {GRADE_HINTS.get(grade, 'No llegó a lo esperado')} (puesta por <@{interaction.user.id}>). Podés cambiarla con el menú."
         if paid:
             text += "\n" + " · ".join(f"🎰 <@{uid}> +{n} tirada(s) de Wujupón" for uid, n in paid.items())
+        text += await self._next_pending_line(row["vod_msgs"][0], getattr(interaction, "guild_id", None))
         try:
             await interaction.response.edit_message(content=text, allowed_mentions=NO_MENTIONS)
         except Exception:
