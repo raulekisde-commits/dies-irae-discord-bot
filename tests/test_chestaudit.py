@@ -67,6 +67,15 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(len(ca.merge_logs([a, b])), 2)
         self.assertEqual(len(ca.merge_logs([a, a])), 2)
 
+    def test_dedupe_con_segundos_de_diferencia(self):
+        a = loot(L("00:50:01", "Ana", "T6_OFF_SPIKEDSHIELD_MORGANA@2", "Master's Facebreaker"),
+                 L("00:50:09", "Ana", "T6_OFF_SPIKEDSHIELD_MORGANA@2", "Master's Facebreaker"))
+        b = loot(L("00:50:05", "Ana", "T6_OFF_SPIKEDSHIELD_MORGANA@2", "Master's Facebreaker"),   # el 1.º, 4 s tarde
+                 L("00:50:14", "Ana", "T6_OFF_SPIKEDSHIELD_MORGANA@2", "Master's Facebreaker"))   # el 2.º, 5 s tarde
+        self.assertEqual(len(ca.merge_logs([a, b])), 2)
+        c = loot(L("00:50:30", "Ana", "T6_OFF_SPIKEDSHIELD_MORGANA@2", "Master's Facebreaker"))   # otro loot real
+        self.assertEqual(len(ca.merge_logs([a, c])), 3)
+
     def test_faltante_y_ventana_y_retiros(self):
         ev = loot(L("00:33:00", "Ana", "T8_HEAD_LEATHER_SET3", "Elder's Assassin Hood", 1),
                   L("00:33:01", "Ana", "T7_POTION_REVIVE@1", "Major Gigantify Potion", 5),
@@ -173,6 +182,21 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(sorted((m["item"], m["qty"]) for m in bob.missing), [("Beef Stew", 4), ("Major Gigantify Potion", 26)])
         self.assertEqual((cam.missing, [m["qty"] for m in cam.tolerated]), ([], [20]))
         self.assertIn("tolerado", ca.report_text(r, "CTA"))
+
+    def test_capas_embotelladas_y_materiales(self):
+        ev = loot(L("00:33:00", "Ana", "T6_CAPE", "Master's Cape", 2),
+                  L("00:33:01", "Ana", "T8_CAPEITEM_FW_MARTLOCK@1", "Elder's Martlock Cape", 2),   # 4 capas: toleradas
+                  L("00:33:02", "Ana", "UNIQUE_SIPHONED_ENERGY", "Siphoned Energy", 50),           # 50: tolerado
+                  L("00:33:03", "Ana", "T6_RUNE", "Rune", 30),                                     # ignorados
+                  L("00:33:04", "Ana", "T8_SOUL", "Soul", 10),
+                  L("00:33:05", "Ana", "T7_RELIC", "Relic", 5),
+                  L("00:33:06", "Bob", "T7_CAPEITEM_HERETIC", "Grandmaster's Heretic Cape", 5),    # 5 capas: cuentan
+                  L("00:33:07", "Bob", "UNIQUE_SIPHONED_ENERGY", "Siphoned Energy", 51))           # 51: cuenta
+        r = ca.audit([ev], chest(C("00:55:00", "Otro", "Elder's Longbow")))
+        ana, bob = r["players"]["ana"], r["players"]["bob"]
+        self.assertEqual((ana.looted, ana.missing, len(ana.tolerated)), (54, [], 3))
+        self.assertEqual(sorted((m["item"], m["qty"]) for m in bob.missing),
+                         [("Grandmaster's Heretic Cape", 5), ("Siphoned Energy", 51)])
 
 
 class PersistTests(unittest.TestCase):

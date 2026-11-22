@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from dbutil import connect, write_tx, utcnow_iso
 
 AUDIT_GUILDS = tuple(g.strip() for g in os.getenv("CHEST_AUDIT_GUILDS", "Smogg,Smogged").split(",") if g.strip())
-DEDUPE_SECONDS = 2.0                       # mismo evento en dos combatlogs distintos
+DEDUPE_SECONDS = 10.0                      # mismo evento en dos combatlogs distintos (cada PC lo registra con unos segundos de diferencia)
 DEATH_GAP_SECONDS = 120.0                  # dos loots del mismo cuerpo separados por más de esto = otra muerte
 ALIVE_SECONDS = 60.0                       # si la «víctima» lootea algo en este lapso después, no murió (no se toma como muerte)
 CHEST_WINDOW = timedelta(hours=1)          # depósitos válidos: [último registro − 1 h, último registro]
@@ -213,18 +213,18 @@ def parse_loot_log(text: str) -> List[LootEvent]:
 
 
 def merge_logs(files: Iterable[List[LootEvent]]) -> List[LootEvent]:
-    """Combina varios combatlogs. Un evento que ya vino en OTRO archivo (misma persona, ítem, cantidad y cuerpo, ±2 s)
+    """Combina varios combatlogs. Un evento que ya vino en OTRO archivo (misma persona, ítem, cantidad y cuerpo, ±DEDUPE_SECONDS)
     no se duplica; dentro de un mismo archivo nunca se descarta nada (dos loots iguales seguidos son reales)."""
     merged: List[LootEvent] = []
     by_key: Dict[tuple, List[LootEvent]] = {}
     for fi, events in enumerate(files):
         for e in events:
             k = (norm(e.by_name), e.item_id.upper(), e.qty, norm(e.from_name))
-            hit = None
-            for c in by_key.get(k, ()):
-                if fi not in c.sources and abs((c.ts - e.ts).total_seconds()) <= DEDUPE_SECONDS:
-                    hit = c
-                    break
+            hit, best = None, None
+            for c in by_key.get(k, ()):                        # el más cercano en tiempo que todavía no vino de este archivo
+                d = abs((c.ts - e.ts).total_seconds())
+                if fi not in c.sources and d <= DEDUPE_SECONDS and (best is None or d < best):
+                    hit, best = c, d
             if hit is not None:
                 hit.sources.add(fi)
                 continue
@@ -421,6 +421,10 @@ GIGANTIFY = "major gigantify potion"
 GIGANTIFY_TOLERANCE = 25                   # Major Gigantify Potion: solo cuenta si faltan más de 25
 FOOD_TOLERANCE = 3                         # comidas (todas juntas): solo cuentan si faltan más de 3
 MOUNT_TOLERANCE = 3                        # monturas T4-T6 (todas juntas): solo cuentan si faltan 4 o más
+CAPE_TOLERANCE = 4                         # capas (todas juntas, comunes y de facción): solo cuentan si faltan 5 o más
+SIPHONED = "siphoned energy"
+SIPHONED_TOLERANCE = 50                    # Siphoned Energy (embotelladas): solo cuenta si faltan más de 50
+ARTIFACT_MATS = ("RUNE", "SOUL", "RELIC")  # runas, almas y reliquias: no cuentan nunca
 
 
 def is_trash(item_id: str) -> bool:
@@ -438,6 +442,17 @@ def tier_of(item_id: str) -> Optional[int]:
     return int(head[1:]) if head[:1] == "T" and head[1:].isdigit() else None
 
 
+def is_cape(item_id: str) -> bool:
+    """Capas: T4_CAPE, T8_CAPEITEM_FW_MARTLOCK@2, T6_CAPEITEM_HERETIC…"""
+    return "_CAPE" in str(item_id or "").upper().split("@", 1)[0]
+
+
+def is_artifact_mat(item_id: str) -> bool:
+    """Runas, almas y reliquias (T4_RUNE, T6_SOUL, T8_RELIC…)."""
+    base = str(item_id or "").upper().split("@", 1)[0]
+    return tier_of(base) is not None and base.split("_", 1)[-1] in ARTIFACT_MATS
+
+
 def is_mount(item_id: str) -> bool:
     """Monturas: T6_MOUNT_DIREWOLF, T5_MOUNT_COUGAR_KEEPER@1, UNIQUE_MOUNT_BAT_PERSONAL…"""
     return "_MOUNT" in str(item_id or "").upper()
@@ -450,9 +465,9 @@ def is_low_mount(item_id: str) -> bool:
 
 def ignored(item_id: str) -> bool:
     """Ítems que no cuentan para nada: Trash, mementos de kill (FURNITUREITEM_KILLTROPHY), juguetes/tesoros (TREASURE_*:
-    Silver Mirror, Ritual Candles…), monturas T3 o menos, Siege Hammer que no sean T8 y bolsos que no sean 8.1 a 8.4."""
+    Silver Mirror, Ritual Candles…), runas/almas/reliquias, monturas T3 o menos, Siege Hammer que no sean T8 y bolsos que no sean 8.1 a 8.4."""
     iid = str(item_id or "").upper()
-    if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid or iid.startswith("TREASURE_"):
+    if is_trash(iid) or "FURNITUREITEM_KILLTROPHY" in iid or iid.startswith("TREASURE_") or is_artifact_mat(iid):
         return True
     if is_mount(iid) and (tier_of(iid) or 99) <= 3:
         return True
@@ -464,7 +479,8 @@ def ignored(item_id: str) -> bool:
 
 
 def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """(faltantes que cuentan, tolerados). Gigantify ≤ 25, comidas ≤ 3 y monturas T4-T6 ≤ 3 (cada grupo sumado) se toleran."""
+    """(faltantes que cuentan, tolerados). Gigantify ≤ 25, comidas ≤ 3, monturas T4-T6 ≤ 3, capas ≤ 4 y
+    Siphoned Energy ≤ 50 (cada grupo sumado) se toleran."""
     gig = [m for m in items if norm(m["item"]) == GIGANTIFY]
     food = [m for m in items if m.get("food")]
     tol = []
@@ -475,6 +491,12 @@ def split_tolerated(items: List[dict]) -> Tuple[List[dict], List[dict]]:
     mounts = [m for m in items if is_low_mount(m.get("item_id"))]
     if mounts and sum(m["qty"] for m in mounts) <= MOUNT_TOLERANCE:
         tol += mounts
+    capes = [m for m in items if is_cape(m.get("item_id"))]
+    if capes and sum(m["qty"] for m in capes) <= CAPE_TOLERANCE:
+        tol += capes
+    energy = [m for m in items if norm(m["item"]) == SIPHONED]
+    if energy and sum(m["qty"] for m in energy) <= SIPHONED_TOLERANCE:
+        tol += energy
     return [m for m in items if m not in tol], tol
 
 
