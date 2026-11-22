@@ -105,7 +105,14 @@ class CoachingDiscordTests(DiscordBase):
 
         async def reply(text=None, **kw):
             replies.append((text, kw))
-        m.add_reaction, m.reply, m.replies = add_reaction, reply, replies
+            sent = SimpleNamespace(content=text, deleted=False)
+
+            async def delete():
+                sent.deleted = True
+            sent.delete = delete
+            m.sent_objs.append(sent)
+            return sent
+        m.add_reaction, m.reply, m.replies, m.sent_objs = add_reaction, reply, replies, []
         return m
 
     def test_one_post_per_person_and_only_members_or_observacion(self):
@@ -223,6 +230,23 @@ class CoachingDiscordTests(DiscordBase):
         m.reference = SimpleNamespace(message_id=reply_to) if reply_to else None
         return m
 
+    def confirm(self, user, th, reply_id, done=True):
+        """Aprieta «Sí, está completa» / «Todavía no» en la pregunta que el bot hizo sobre el mensaje reply_id."""
+        i = self.inter(user, channel=th, message=SimpleNamespace(reference=SimpleNamespace(message_id=reply_id)))
+        run(self.cog.on_confirm(i, done))
+        return i
+
+    def review(self, user, th, mid, reply_to=None, text=None):
+        """Un mensaje de review del coach + confirmar que está completa."""
+        m = self.reply_msg(user, th, mid, reply_to=reply_to, text=text)
+        run(self.cog.process_message(m))
+
+        async def fetch_message(_id):
+            return m
+        th.fetch_message = fetch_message
+        i = self.confirm(user, th, mid) if m.replies and isinstance(m.replies[-1][1].get("view"), co.CoachConfirmView) else None
+        return m, i
+
     def vods(self, n):
         th = self.made[0]
         for k in range(n):
@@ -234,18 +258,47 @@ class CoachingDiscordTests(DiscordBase):
         th = self.vods(3)
         self.assertEqual(len(self.tasks_ch.sent), 3)
         run(self.cog.process_message(self.reply_msg(self.novato, th, 4200)))                    # el dueño comenta: no completa
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
         run(self.cog.process_message(self.reply_msg(self.alice, th, 4201)))                     # un miembro cualquiera: no completa
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4202, reply_to=4101)))      # coach responde a UN vod
+        self.review(self.coach, th, 4202, reply_to=4101)                                        # coach responde a UN vod
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["open", "done", "open"])
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").done_by, self.coach.id)
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").reward_spins for k in range(3)], [0, 0, 0])  # la devolución no paga
-        m = self.reply_msg(self.council, th, 4203)                                              # respuesta general: cierra las que quedan
-        run(self.cog.process_message(m))
-        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["done", "done", "done"])
+        m, i = self.review(self.council, th, 4203)                                              # respuesta general: el más viejo pendiente
+        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["done", "done", "open"])
         self.assertIn("✅", m.reactions)
+        self.review(self.council, th, 4204)
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [])
+
+    def test_review_en_varios_mensajes_pregunta_si_esta_completa(self):
+        self.open_post(self.novato)
+        th = self.vods(2)
+        m1 = self.reply_msg(self.coach, th, 4210, text="primera parte")
+        run(self.cog.process_message(m1))
+        self.assertIsInstance(m1.replies[0][1]["view"], co.CoachConfirmView)                   # «¿esta es la review completa?»
+        self.assertIn("review completa", m1.replies[0][0])
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")             # todavía no cierra
+        self.assertIn("Solo el coach", self.confirm(self.alice, th, 4210).text)
+        i = self.confirm(self.coach, th, 4210, done=False)                                      # «Todavía no»
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        m2 = self.reply_msg(self.coach, th, 4211, text="segunda parte")
+        run(self.cog.process_message(m2))
+        m3 = self.reply_msg(self.coach, th, 4212, text="tercera parte")                         # sin contestar la pregunta: se mueve
+        run(self.cog.process_message(m3))
+        self.assertTrue(m2.replies)                                                             # a m2 también le preguntó…
+        self.assertTrue(m2.sent_objs[0].deleted)                                                # …pero al llegar m3 esa pregunta se borra
+        self.assertFalse(m3.sent_objs[0].deleted)
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        i = self.confirm(self.coach, th, 4212)                                                  # «Sí, está completa»
+        self.assertEqual([edb.find_by_source(self.db, f"coach:{k}").status for k in (4100, 4101)], ["done", "open"])
+        self.assertIsInstance(i.response.edits[-1]["view"], co.CoachGradeView)               # ahora pide la nota
+        g = self.grade_pick(self.coach, 4212, 7)
+        self.assertEqual(cdb.player_avg(self.db, self.novato.id), (7.0, 1))
+        self.assertIn("El que sigue", g.response.edits[-1]["content"])                        # avisa que queda otro VOD
+        self.assertIn("/4101", g.response.edits[-1]["content"])
+        self.assertIn("ya tenía su review", self.confirm(self.coach, th, 4210).response.edits[-1]["content"])
+        run(self.cog.process_message(self.reply_msg(self.coach, th, 4213, reply_to=4100)))     # comenta un VOD ya cerrado: no pregunta
+        self.assertEqual(cdb.pending_msgs(self.db, th.id), [4101])
 
     def paid(self, mids):
         """Tiradas que cobraron esas tareas (Wujupón no está cargado en estos tests: se mira reward_spins de las cerradas)."""
@@ -263,32 +316,30 @@ class CoachingDiscordTests(DiscordBase):
         self.bot.cogs["WujuponCog"] = WujuponCog()
         return wdb
 
-    def test_la_devolucion_no_paga_y_cada_video_con_nota_da_una_tirada_al_jugador(self):
+    def test_cada_video_con_nota_da_una_tirada_al_coach(self):
         wdb = self.wujupon()
         self.open_post(self.novato)
         th = self.vods(2)
         run(self.cog.process_message(self.video_msg(self.novato, th, "healer https://youtu.be/a1 https://youtu.be/a2", 4120)))   # 2 videos
-        m = self.reply_msg(self.coach, th, 4250, reply_to=4100)
-        run(self.cog.process_message(m))
-        self.assertEqual(self.paid([4100, 4101, 4120]), 0)                                      # el coach no cobra por devolver
-        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 0)                             # sin nota todavía
+        self.review(self.coach, th, 4250, reply_to=4100)
+        self.assertEqual(self.paid([4100, 4101, 4120]), 0)                                      # la tarea no paga por sí sola
+        self.assertEqual(wdb.get_spins(self.db, self.coach.id), 0)                              # sin nota todavía
         i = self.grade_pick(self.coach, 4250, 7)
-        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 1)
-        self.assertIn("+1 tirada", i.response.sent[-1][1].get("content", "") if i.response.sent else i.text)
-        self.grade_pick(self.coach, 4250, 9)                                                    # cambiar la nota no vuelve a pagar
-        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 1)
-        self.assertEqual(wdb.get_spins(self.db, self.coach.id), 0)
+        self.assertEqual(wdb.get_spins(self.db, self.coach.id), 1)
+        self.assertIn("+1 tirada", i.response.edits[-1]["content"])
+        self.grade_pick(self.council, 4250, 9)                                                  # cambiarla (aunque sea el Staff) no vuelve a pagar
+        self.assertEqual(wdb.get_spins(self.db, self.coach.id), 1)
+        self.assertEqual((wdb.get_spins(self.db, self.novato.id), wdb.get_spins(self.db, self.council.id)), (0, 0))   # ni el jugador ni el Staff
         m2 = self.reply_msg(self.coach, th, 4251, reply_to=4120, text=self.LONG_REPLY + " 8/10")  # nota escrita: VOD con 2 videos
         run(self.cog.process_message(m2))
         self.assertIn("🎰", m2.reactions)
-        self.assertEqual(wdb.get_spins(self.db, self.novato.id), 3)
+        self.assertEqual(wdb.get_spins(self.db, self.coach.id), 3)
 
     def test_devolucion_corta_ya_no_se_revisa_ni_penaliza(self):
         self.open_post(self.novato)
         th = self.vods(1)
         before = len(self.tasks_ch.sent)
-        m = self.reply_msg(self.coach, th, 4400, text="buen vod")                             # corta: completa igual, sin aviso al Staff
-        run(self.cog.process_message(m))
+        m, _ = self.review(self.coach, th, 4400, text="buen vod")                             # corta: completa igual, sin aviso al Staff
         t = edb.find_by_source(self.db, "coach:4100")
         self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
         self.assertEqual(len(self.tasks_ch.sent), before)
@@ -302,19 +353,17 @@ class CoachingDiscordTests(DiscordBase):
     def test_nota_del_coach_y_promedios(self):
         self.open_post(self.novato)
         th = self.vods(2)
-        m = self.reply_msg(self.coach, th, 4900, reply_to=4100)                                 # sin nota escrita: el bot la pide
-        run(self.cog.process_message(m))
-        self.assertEqual(len(m.replies), 1)
-        self.assertIn("nota del 1 al 10", m.replies[0][0])
-        self.assertIsInstance(m.replies[0][1]["view"], co.CoachGradeView)
+        m, i = self.review(self.coach, th, 4900, reply_to=4100)                                 # sin nota escrita: el bot la pide
+        self.assertIn("nota del 1 al 10", i.response.edits[-1]["content"])
+        self.assertIsInstance(i.response.edits[-1]["view"], co.CoachGradeView)
         self.assertIn("Solo el coach", self.grade_pick(self.alice, 4900, 3).text)              # otro no puede
         self.assertEqual(cdb.player_avg(self.db, self.novato.id), (None, 0))
         self.grade_pick(self.coach, 4900, 7)
         self.grade_pick(self.coach, 4900, 8)                                                   # la puede cambiar
         self.assertEqual(cdb.player_avg(self.db, self.novato.id), (8.0, 1))
         m2 = self.reply_msg(self.council, th, 4901, reply_to=4101, text=self.LONG_REPLY + " Nota: 10")   # nota escrita: sin menú
-        run(self.cog.process_message(m2))
-        self.assertEqual(m2.replies, [])
+        run(self.cog.process_message(m2))                                                      # con nota escrita no pregunta nada
+        self.assertFalse(any(isinstance(kw.get("view"), (co.CoachConfirmView, co.CoachGradeView)) for _, kw in m2.replies))
         self.assertIn("⭐", m2.reactions)
         self.assertEqual(cdb.player_avg(self.db, self.novato.id), (9.0, 2))
         self.assertEqual(cdb.coach_avgs(self.db), [(self.coach.id, 8.0, 1), (self.council.id, 10.0, 1)] if self.coach.id < self.council.id
@@ -344,7 +393,7 @@ class CoachingDiscordTests(DiscordBase):
     def test_devolucion_corta_del_staff_no_se_revisa(self):
         self.open_post(self.novato)
         th = self.vods(1)
-        run(self.cog.process_message(self.reply_msg(self.council, th, 4600, text="bien")))
+        self.review(self.council, th, 4600, text="bien")
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "done")
 
     def test_vod_tasks_close_only_when_a_coach_replies_and_top_coach(self):
@@ -354,7 +403,8 @@ class CoachingDiscordTests(DiscordBase):
         self.assertNotIn("task:done", [c.custom_id for c in self.tasks_ch.sent[0].view.children])   # sin botón «Tarea terminada»
         self.assertIn("se cierra sola", self.inter_done(opi, self.tasks_ch.sent[0]))                 # ni con permiso se cierra a mano
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        run(self.cog.process_message(self.reply_msg(self.coach, th, 4300)))                          # el coach contesta: se cierran
+        self.review(self.coach, th, 4300)                                                           # el coach contesta: una review por VOD
+        self.review(self.coach, th, 4301)
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, self.coach.id)
         self.assertEqual(edb.top_coaches(self.db), [(self.coach.id, 2)])
         i = self.inter(self.alice)
