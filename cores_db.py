@@ -218,3 +218,14 @@ def top(db_path: str, kind: str) -> List[Tuple[int, int, Dict[str, int]]]:
     out = [(u, sum(c.values()), c) for u, c in per.items()]
     out.sort(key=lambda t: (-t[1], -t[2].get("dorado", 0), -t[2].get("morado", 0)))
     return out
+
+
+def pending_panels(db_path: str) -> List[Tuple[int, int]]:
+    """[(channel_id, message_id)] de los reportes pendientes con panel publicado."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT channel_id, message_id FROM orb_reports WHERE status='pending' "
+                            "AND channel_id IS NOT NULL AND message_id IS NOT NULL").fetchall()
+        return [(int(r["channel_id"]), int(r["message_id"])) for r in rows]
+    finally:
+        conn.close()
