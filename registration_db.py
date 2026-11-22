@@ -7,6 +7,7 @@ Reglas:
   * No hay verificación de propiedad del personaje (la API pública de Albion no la permite): ver registration.py.
 """
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -75,6 +76,16 @@ CREATE TABLE IF NOT EXISTS guild_transfers (              -- /miembros cambiar-g
     actor_id   INTEGER,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS guild_periods (               -- tiempo en cada guild (Smogg / Smogged) POR PERSONAJE DE ALBION: no se borra
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,         -- aunque la persona se desvincule o se vaya del Discord
+    char_key   TEXT NOT NULL,                             -- char_id de Albion, o 'name:<nombre en minúsculas>' si no hay ID
+    char_name  TEXT NOT NULL,
+    discord_id INTEGER,                                   -- cuenta de Discord que tenía el personaje en ese tramo (referencia)
+    guild_name TEXT NOT NULL,
+    start_at   TEXT NOT NULL,
+    end_at     TEXT                                       -- NULL = tramo actual
+);
+CREATE INDEX IF NOT EXISTS ix_guild_periods_char ON guild_periods(char_key);
 CREATE TABLE IF NOT EXISTS albion_link_audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     at         TEXT NOT NULL,
@@ -147,12 +158,24 @@ class Registration:
     updated_at: str
 
 
+MAIN_GUILD = os.getenv("ALBION_GUILD_NAME", "Smogg")
+SEASON_NUMBER = int(os.getenv("ALBION_SEASON", "35"))
+SEASON_START = os.getenv("ALBION_SEASON_START", "2026-11-21T11:35:00Z")   # inicio de la season actual (UTC)
+
+
 def init_schema(db_path: str) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
         if "extra_role_ids" not in {r["name"] for r in conn.execute("PRAGMA table_info(recruit_pending)")}:
             conn.execute("ALTER TABLE recruit_pending ADD COLUMN extra_role_ids TEXT")
+        # registros previos a guild_periods: un tramo desde que se registraron, en la guild que tienen hoy
+        for r in conn.execute("SELECT * FROM albion_links").fetchall():
+            key = char_key(r["char_id"], r["char_name"])
+            if not conn.execute("SELECT 1 FROM guild_periods WHERE char_key=?", (key,)).fetchone():
+                conn.execute("INSERT INTO guild_periods(char_key, char_name, discord_id, guild_name, start_at) VALUES (?,?,?,?,?)",
+                             (key, r["char_name"], r["discord_id"], r["guild_name"] or MAIN_GUILD, r["registered_at"]))
+        conn.commit()
     finally:
         conn.close()
 
@@ -370,6 +393,7 @@ def accept(db_path: str, request_id: int, user_id: int) -> Registration:
                 if conn.execute("SELECT 1 FROM albion_links WHERE discord_id=?", (user_id,)).fetchone():
                     raise RegError("Esa cuenta ya tiene un personaje vinculado: una cuenta de Discord solo puede tener uno. No se guardó nada.")
                 raise RegError("Ese personaje acaba de quedar vinculado a otra cuenta. No se guardó nada.")
+            _period_switch(conn, r.char_id, r.char_name, user_id, r.guild_name, now)
             conn.execute("UPDATE albion_link_requests SET status='completed', updated_at=? WHERE id=?", (_iso(_now()), request_id))
             _audit(conn, user_id, "registered", user_id, request_id, f"personaje={r.char_name} iniciado_por={r.initiator_id}")
             return _reg(conn.execute("SELECT * FROM albion_links WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -416,6 +440,7 @@ def unlink(db_path: str, discord_id: int, actor_id: Optional[int], char_name: Op
             for r in rows:
                 conn.execute("DELETE FROM albion_links WHERE id=?", (r["id"],))
                 _audit(conn, actor_id, "unlinked", discord_id, None, f"personaje={r['char_name']} {reason}".strip())
+                _period_close(conn, char_key(r["char_id"], r["char_name"]), utcnow_iso())   # el tramo queda guardado
             return [_reg(r) for r in rows]
     finally:
         conn.close()
@@ -447,6 +472,7 @@ def admin_link(db_path: str, discord_id: int, char_name: str, actor_id: int, *, 
                     "VALUES (?,?,?,?,?, ?, ?, ?, ?)", (discord_id, char_id, char_name, region, guild_name, method, actor_id, now, now))
             except sqlite3.IntegrityError:
                 raise RegError("Ese personaje ya está vinculado a otra cuenta.")
+            _period_switch(conn, char_id, char_name, discord_id, guild_name, now)
             conn.execute("UPDATE albion_link_requests SET status='cancelled', updated_at=? WHERE lower(char_name)=lower(?) AND status='pending_target'",
                          (_iso(_now()), char_name))
             _audit(conn, actor_id, "recruit_linked" if method == "recruitment" else "admin_linked", discord_id, None,
@@ -481,6 +507,11 @@ def fill_registration(db_path: str, reg_id: int, char_id: str, region: Optional[
                              (char_id, region, guild_name, utcnow_iso(), reg_id))
             except sqlite3.IntegrityError:
                 raise RegError("Ese personaje ya está vinculado a otra cuenta.")
+            old_key = char_key(None, row["char_name"])   # los tramos guardados por nombre pasan al ID de Albion
+            conn.execute("UPDATE guild_periods SET char_key=? WHERE char_key=?", (char_key(char_id, row["char_name"]), old_key))
+            if guild_name:                               # se completó un dato que faltaba: corrige el tramo actual, no es un pase
+                conn.execute("UPDATE guild_periods SET guild_name=? WHERE char_key=? AND end_at IS NULL",
+                             (guild_name, char_key(char_id, row["char_name"])))
             _audit(conn, actor_id, "admin_completed", int(row["discord_id"]), None, f"personaje={row['char_name']} id={char_id}")
             return True
     finally:
@@ -615,6 +646,8 @@ def set_guild(db_path: str, discord_id: int, guild_name: str, actor_id: int) -> 
                 raise RegError("Esa persona no tiene personaje registrado.")
             now = _iso(_now())
             conn.execute("UPDATE albion_links SET guild_name=?, updated_at=? WHERE discord_id=?", (guild_name, now, discord_id))
+            for r in rows:
+                _period_switch(conn, r["char_id"], r["char_name"], discord_id, guild_name, now)
             conn.execute("INSERT INTO guild_transfers(discord_id, target, actor_id, created_at) VALUES (?,?,?,?) "
                          "ON CONFLICT(discord_id) DO UPDATE SET target=excluded.target, actor_id=excluded.actor_id, created_at=excluded.created_at",
                          (discord_id, guild_name, actor_id, now))
@@ -643,3 +676,60 @@ def end_transfer(db_path: str, discord_id: int) -> None:
             conn.execute("DELETE FROM guild_transfers WHERE discord_id=?", (discord_id,))
     finally:
         conn.close()
+
+
+# ---------- tiempo en cada guild (antigüedad y season), por personaje de Albion ----------
+def char_key(char_id: Optional[str], char_name: str) -> str:
+    return char_id or f"name:{(char_name or '').strip().lower()}"
+
+
+def _period_close(conn, key: str, at: str) -> None:
+    conn.execute("UPDATE guild_periods SET end_at=? WHERE char_key=? AND end_at IS NULL", (at, key))
+
+
+def _period_switch(conn, char_id: Optional[str], char_name: str, discord_id: Optional[int], guild_name: Optional[str], at: str) -> None:
+    """Cierra el tramo abierto del personaje y abre uno en `guild_name` (si ya está en esa guild, no hace nada)."""
+    key, guild_name = char_key(char_id, char_name), guild_name or MAIN_GUILD
+    cur = conn.execute("SELECT guild_name FROM guild_periods WHERE char_key=? AND end_at IS NULL", (key,)).fetchone()
+    if cur is not None and cur["guild_name"].casefold() == guild_name.casefold():
+        return
+    _period_close(conn, key, at)
+    conn.execute("INSERT INTO guild_periods(char_key, char_name, discord_id, guild_name, start_at) VALUES (?,?,?,?,?)",
+                 (key, char_name, discord_id, guild_name, at))
+
+
+def _parse(text: str) -> datetime:
+    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def season_start() -> datetime:
+    return _parse(SEASON_START)
+
+
+def guild_seconds(db_path: str, discord_id: int, since: Optional[datetime] = None, now: Optional[datetime] = None) -> Dict[str, int]:
+    """{guild: segundos} de los personajes que hoy tiene registrados la persona, sumando todos sus tramos
+    (también los de antes de desvincularse o irse del Discord). Con `since`, solo lo que cae desde esa fecha."""
+    now = now or _now()
+    out: Dict[str, int] = {}
+    conn = connect(db_path)
+    try:
+        keys = [char_key(r["char_id"], r["char_name"]) for r in conn.execute("SELECT char_id, char_name FROM albion_links WHERE discord_id=?", (discord_id,))]
+        for key in keys:
+            for r in conn.execute("SELECT guild_name, start_at, end_at FROM guild_periods WHERE char_key=?", (key,)):
+                a, b = _parse(r["start_at"]), (_parse(r["end_at"]) if r["end_at"] else now)
+                if since is not None:
+                    a = max(a, since)
+                secs = int((min(b, now) - a).total_seconds())
+                if secs > 0:
+                    out[r["guild_name"]] = out.get(r["guild_name"], 0) + secs
+    finally:
+        conn.close()
+    return out
+
+
+def fmt_span(seconds: int) -> str:
+    """'1d 8h', '5h', '0h'."""
+    h = max(0, int(seconds)) // 3600
+    d, h = divmod(h, 24)
+    return f"{d}d {h}h" if d else f"{h}h"

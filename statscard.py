@@ -419,7 +419,10 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
     main = data.get("main")
     HH, CH, MH, BH, G = 176, 150, 236, 318, 20               # BH: +56 para la fila de loot por CTA
     OH = 132 + 56                                                   # franja de cores y vortex (+56: foco donado)
-    H = M + HH + G + CH + G + MH + G + BH + G + OH + 70
+    gt = list(data.get("guild_time") or [])                          # [(guild, horas totales, horas en la season)]
+    alters = [str(a) for a in (data.get("alters") or [])]
+    TH = (64 + 48 * len(gt) + (40 if alters else 0)) if gt else 0    # franja de season (grande), antigüedad (chica) y alters
+    H = M + HH + G + CH + G + MH + G + BH + G + OH + (G + TH if TH else 0) + 70
     img = _background(H)
     inner_x0, inner_x1 = M, W - M
 
@@ -711,6 +714,37 @@ def render(data: dict, avatar: Optional[Image.Image] = None) -> bytes:
         d.text((rx1 - fw_ - 12, fy4 + 11), f"en {fn_} " + ("donación" if fn_ == 1 else "donaciones"), font=pf(15, "Medium"),
                fill=MUTED, anchor="ra")
 
+    # ---- I. season actual (grande) y antigüedad total (chica), por guild; alters abajo ----
+    if TH:
+        y += OH + G
+        _panel(img, (inner_x0, y, inner_x1, y + TH), radius=14)
+        _vrule(img, mid, y + 18, y + 64 + 48 * len(gt) - 18)
+        d = ImageDraw.Draw(img)
+
+        def span(h: int) -> str:
+            dd, hh = divmod(max(0, int(h)), 24)
+            return f"{dd}d {hh}h" if dd else f"{hh}h"
+        _tracked(d, lx0, y + 22, f"Season {data.get('season_n') or ''}".strip(), pf(15, "Bold"), GOLD, 3)
+        _tracked(d, rx0, y + 22, "Antigüedad", pf(13, "Bold"), MUTED, 2.4)
+        for i, (gname, h_total, h_season) in enumerate(gt):
+            gy = y + 62 + 48 * i
+            guild_pill(img, lx0, gy, gname)
+            guild_pill(img, rx0, gy + 2, gname, h=22)
+            d = ImageDraw.Draw(img)
+            v = int(h_season or 0)
+            d.text((lx1, gy - 10), span(v), font=pf(34, "Bold"), fill=TEXT if v else DIM, anchor="ra")
+            t = int(h_total or 0)
+            d.text((rx1, gy + 1), span(t), font=pf(18, "Medium"), fill=MUTED if t else DIM, anchor="ra")
+        if alters:
+            ay = y + 64 + 48 * len(gt)
+            d.line((lx0, ay - 6, rx1, ay - 6), fill=(42, 43, 50), width=1)
+            _tracked(d, lx0, ay + 8, "Alters", pf(12, "Bold"), MUTED, 2)
+            txt, max_w = " · ".join(alters), rx1 - lx0 - 80
+            f_ = _fit(d, txt, 16, max_w, "Medium")
+            while len(txt) > 1 and d.textlength(txt, font=f_) > max_w:
+                txt = txt[:-2] + "…"
+            d.text((lx0 + 80, ay + 4), txt, font=f_, fill=MUTED)
+        y += TH - OH
     # ---- pie ----
     y += OH + 16
     _gold_rule(img, inner_x0 + 200, inner_x1 - 200, y + 4)
