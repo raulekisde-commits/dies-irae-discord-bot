@@ -12,6 +12,7 @@
   /miembros fuera-guild      Registrados cuyo personaje ya no está en la guild, con listas para expulsar.
   /miembros historial      Guilds por las que pasó un personaje y con quién comparte kills (API de Albion en vivo, no guarda nada).
   /miembros canal-avisos     Canal donde queda registrado cuando alguien sale de la guild (Smogg o Smogged): el bot le saca los roles solo.
+  /miembros kick             Le saca todos los roles de Discord a una persona y desvincula su cuenta de Albion (con confirmación; no la expulsa).
 
 Los cuatro reportes que ya existían (sin-albion, sin-discord, guild-sin-discord, fuera-de-guild) siguen en registration.py
 y se llaman desde acá; ya no son comandos sueltos."""
@@ -567,6 +568,76 @@ class GuildCheckCog(commands.Cog):
                    f"\nℹ️ Mientras se cambia de guild en el juego no se lo toma como salida. Si en {rdb.TRANSFER_HOURS} h no aparece en "
                    f"**{esc(target)}**, el bot vuelve a usar la guild real de su personaje.")
 
+    # ---------- kick: todos los roles + desvincular la cuenta de Albion (sigue en el Discord) ----------
+    @staticmethod
+    def kick_problem(actor, target, guild) -> Optional[str]:
+        """Motivo por el que `actor` NO puede usar /miembros kick con `target`, o None si puede."""
+        if not can_admin_registro(actor):
+            return "🔒 Solo el Staff, el Council o los administradores pueden usar este comando."
+        if target.id == actor.id:
+            return "❌ No podés usarlo con vos mismo."
+        if getattr(target, "bot", False):
+            return "❌ No se puede usar con un bot."
+        if target.id == getattr(guild, "owner_id", None):
+            return "❌ No se puede usar con el dueño del servidor."
+        actor_top = bool(getattr(getattr(actor, "guild_permissions", None), "administrator", False)) or actor.id == getattr(guild, "owner_id", None)
+        if can_admin_registro(target) and not actor_top:
+            return "🔒 Solo un administrador puede usarlo con alguien del Staff o del Council."
+        pt = getattr(getattr(target, "top_role", None), "position", None)
+        pa = getattr(getattr(actor, "top_role", None), "position", None)
+        if actor.id != getattr(guild, "owner_id", None) and pt is not None and pa is not None and pt >= pa:
+            return "❌ Esa persona tiene un rol igual o más alto que el tuyo."
+        return None
+
+    async def do_kick(self, interaction, persona: discord.Member, motivo: Optional[str] = None):
+        guild, actor = interaction.guild, interaction.user
+        problem = self.kick_problem(actor, persona, guild)
+        if problem:
+            return await _say(interaction, problem)
+        import registration_db as rdb
+        esc = discord.utils.escape_markdown
+        regs = await asyncio.to_thread(rdb.get_registrations, self.db_path, persona.id)
+        roles = self._removable_roles(guild, persona)
+        if not regs and not roles:
+            return await _say(interaction, f"ℹ️ <@{persona.id}> no tiene roles para sacar ni cuenta de Albion vinculada.")
+        why = (motivo or "sin motivo")[:200]
+
+        async def yes(i: discord.Interaction):
+            again = self.kick_problem(actor, persona, guild)
+            if again:
+                return await i.response.edit_message(content=again, view=None)
+            notes = []
+            removed = await asyncio.to_thread(rdb.unlink, self.db_path, persona.id, actor.id, None, f"/miembros kick. Motivo: {why}")
+            notes.append("🔓 Cuenta de Albion desvinculada: " + ", ".join(f"**{esc(r.char_name)}**" for r in removed) if removed
+                         else "ℹ️ No tenía cuenta de Albion vinculada.")
+            now_roles = self._removable_roles(guild, persona)
+            if now_roles:
+                try:
+                    await persona.remove_roles(*now_roles, reason=f"/miembros kick por {actor} ({actor.id}): {why}")
+                    notes.append(f"🎭 Se le sacaron **{len(now_roles)}** rol(es): " + " ".join(f"<@&{r.id}>" for r in now_roles))
+                except discord.Forbidden:
+                    notes.append("⚠️ No pude sacarle los roles (revisá que mi rol esté por encima).")
+                except Exception as exc:
+                    notes.append(f"⚠️ No pude sacarle los roles ({type(exc).__name__}).")
+            else:
+                notes.append("ℹ️ No tenía roles que yo pueda sacar.")
+            await self.run(gdb.clear_alerts, [persona.id])
+            await i.response.edit_message(content=f"👢 <@{persona.id}>\n" + "\n".join(notes), view=None, allowed_mentions=NO_MENTIONS)
+            reg = self.reg()
+            if reg is not None:
+                await reg.audit_log(f"👢 <@{actor.id}> usó /miembros kick con <@{persona.id}>: " +
+                                    (", ".join(f"**{esc(r.char_name)}**" for r in removed) if removed else "sin cuenta de Albion") +
+                                    f", {len(now_roles)} rol(es) sacados — {esc(why)}")
+
+        what = []
+        if roles:
+            what.append(f"sacarle **{len(roles)}** rol(es)")
+        if regs:
+            what.append("desvincular " + ", ".join(f"**{esc(r.char_name)}**" for r in regs))
+        await interaction.response.send_message(
+            f"⚠️ ¿{' y '.join(what).capitalize()} a <@{persona.id}> ({esc(persona.display_name)})? Sigue en el Discord.",
+            view=YesNoView(actor.id, yes, "Sí, sacar todo"), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
     # ---------- canal de avisos ----------
     async def do_canal_avisos(self, interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         if interaction.guild is None or not can_manage(interaction.user):
@@ -827,6 +898,11 @@ class GuildCheckCog(commands.Cog):
     @app_commands.choices(guild=[app_commands.Choice(name=g, value=g) for g in GUILD_CHOICES])
     async def cambiar_guild_cmd(self, interaction: discord.Interaction, persona: discord.Member, guild: app_commands.Choice[str]):
         await self.do_cambiar_guild(interaction, persona, getattr(guild, "value", guild))
+
+    @miembros_g.command(name="kick", description="(Staff) Le saca todos los roles de Discord y desvincula su cuenta de Albion")
+    @app_commands.describe(persona="A quién", motivo="Motivo (queda en la auditoría)")
+    async def kick_cmd(self, interaction: discord.Interaction, persona: discord.Member, motivo: Optional[str] = None):
+        await self.do_kick(interaction, persona, motivo)
 
     @miembros_g.command(name="limpiar-registros", description="(Staff) Libera el personaje de quienes siguen en el Discord sin rol Miembro")
     async def limpiar_registros_cmd(self, interaction: discord.Interaction):
