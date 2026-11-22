@@ -169,6 +169,7 @@ _MIGRATIONS = {
                     ("gratis_hasta", "TEXT"),           # pack: días gratis hasta esta fecha (exclusive)
                     ("pago_ok", "INTEGER NOT NULL DEFAULT 0"),      # etapa: el Council confirmó el pago inicial
                     ("colocado", "INTEGER NOT NULL DEFAULT 1")),    # etapa: HO colocado (la renta corre desde ahí); 0 = esperando
+    "rent_cargos": (("detalle", "TEXT"),),              # extra: motivo que escribió el Council
 }
 
 
@@ -881,10 +882,12 @@ class Cargo:
     lote: Optional[str]
     monto: int
     pagado: bool
+    detalle: Optional[str] = None
 
 
 def _cargo(r) -> Cargo:
-    return Cargo(int(r["id"]), int(r["renta_id"]), r["concepto"], r["periodo"], r["lote"], int(r["monto"]), bool(r["pagado"]))
+    return Cargo(int(r["id"]), int(r["renta_id"]), r["concepto"], r["periodo"], r["lote"], int(r["monto"]), bool(r["pagado"]),
+                 r["detalle"] if "detalle" in r.keys() else None)
 
 
 def _insert_cargo(conn, renta_id: int, concepto: str, periodo: str, monto: int, lote: Optional[str] = None) -> bool:
@@ -1059,6 +1062,73 @@ def marcar_pagado_canal(db_path: str, canal_id: int, actor_id: int) -> int:
                              "(SELECT id FROM rent_rentas WHERE canal_id = ? AND activa = 1)", (utcnow_iso(), actor_id, canal_id))
                 conn.execute("UPDATE rent_rentas SET pago_ok = 1 WHERE canal_id = ? AND activa = 1", (canal_id,))
             return total
+    finally:
+        conn.close()
+
+
+def set_precio_renta(db_path: str, renta_id: int, precio: int) -> Optional[int]:
+    """Cambia el precio semanal de una renta activa (rige desde el próximo cobro). Devuelve el precio anterior, o None si no está activa."""
+    if precio <= 0:
+        raise RentaError("El precio semanal tiene que ser mayor a 0.")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            r = conn.execute("SELECT precio FROM rent_rentas WHERE id = ? AND activa = 1", (renta_id,)).fetchone()
+            if r is None:
+                return None
+            conn.execute("UPDATE rent_rentas SET precio = ? WHERE id = ?", (int(precio), renta_id))
+            return int(r["precio"])
+    finally:
+        conn.close()
+
+
+def confirmar_semana_canal(db_path: str, canal_id: int, hoy: date, actor_id: int) -> int:
+    """Marca pagados los cargos impagos de ESTA semana (cobro del domingo `week_start(hoy)` y cargos sueltos creados desde ese domingo).
+    La deuda de semanas anteriores queda pendiente. Devuelve el total marcado (0 = no había nada)."""
+    sunday = week_start(hoy)
+    cond = ("pagado = 0 AND (lote = ? OR (lote IS NULL AND created_at >= ?)) AND renta_id IN "
+            "(SELECT id FROM rent_rentas WHERE canal_id = ? AND activa = 1)")
+    args = (sunday.isoformat(), _sunday_iso_start(sunday), canal_id)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            total = int(conn.execute(f"SELECT COALESCE(SUM(monto), 0) FROM rent_cargos WHERE {cond}", args).fetchone()[0])
+            if total:
+                conn.execute(f"UPDATE rent_cargos SET pagado = 1, paid_at = ?, paid_by = ? WHERE {cond}", (utcnow_iso(), actor_id) + args)
+            return total
+    finally:
+        conn.close()
+
+
+def agregar_extra(db_path: str, canal_id: int, detalle: str, monto: int, actor_id: int, renta_id: Optional[int] = None) -> Cargo:
+    """Registra un pago extra (ya cobrado: queda pagado). Va a la renta indicada o a la primera renta activa del canal."""
+    detalle = (detalle or "").strip()
+    if not detalle:
+        raise RentaError("Falta el concepto del extra.")
+    if monto <= 0:
+        raise RentaError("El monto tiene que ser mayor a 0.")
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            q = "SELECT id FROM rent_rentas WHERE canal_id = ? AND activa = 1" + (" AND id = ?" if renta_id else "") + " ORDER BY id LIMIT 1"
+            r = conn.execute(q, (canal_id, renta_id) if renta_id else (canal_id,)).fetchone()
+            if r is None:
+                raise RentaError("Este canal no tiene rentas activas.")
+            now = utcnow_iso()
+            cur = conn.execute("INSERT INTO rent_cargos(renta_id, concepto, periodo, monto, pagado, created_at, paid_at, paid_by, detalle) "
+                               "VALUES(?, 'extra', ?, ?, 1, ?, ?, ?, ?)", (int(r["id"]), now, int(monto), now, now, actor_id, detalle[:100]))
+            return _cargo(conn.execute("SELECT * FROM rent_cargos WHERE id = ?", (cur.lastrowid,)).fetchone())
+    finally:
+        conn.close()
+
+
+def extras_canal(db_path: str, canal_id: int) -> List[Cargo]:
+    """Extras de las rentas activas del canal, del más reciente al más viejo."""
+    conn = connect(db_path)
+    try:
+        return [_cargo(r) for r in conn.execute(
+            "SELECT c.* FROM rent_cargos c JOIN rent_rentas r ON r.id = c.renta_id WHERE r.canal_id = ? AND r.activa = 1 "
+            "AND c.concepto = 'extra' ORDER BY c.id DESC", (canal_id,))]
     finally:
         conn.close()
 
