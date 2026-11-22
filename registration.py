@@ -663,6 +663,30 @@ class RegistrationCog(commands.Cog):
             return Lookup("ambiguous", options=exact)
         return Lookup("ok", character=exact[0])
 
+    async def lookup_by_id(self, char_id: str) -> Lookup:
+        """Personaje por su ID de Albion (no cambia aunque se renombre): primero la lista de la guild (nombre actual), si no la API."""
+        char_id = (char_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{10,40}", char_id):
+            return Lookup("none", detail="ID inválido.")
+        hit = next((c for c in self.roster.values() if c.char_id == char_id), None)
+        if hit is not None:
+            return Lookup("ok", character=hit)
+        errors = []
+        for region, base in GAMEINFO_BASES:
+            try:
+                data = await asyncio.wait_for(self.fetch_json(f"{base}/api/gameinfo/players/{char_id}"), HTTP_TIMEOUT + 5)
+            except Exception as exc:
+                errors.append(f"{region}: {type(exc).__name__} {exc}".strip())
+                continue
+            c = _character(data, region) if isinstance(data, dict) else None
+            if c is not None and c.char_id == char_id:
+                if self.required_guild and not self.is_own_guild(c.guild):
+                    return Lookup("wrong_guild", character=c, detail=self.guild_label)
+                return Lookup("ok", character=c)
+        if errors and len(errors) == len(GAMEINFO_BASES) and not all("HTTP 404" in e for e in errors):
+            return Lookup("error", detail=" | ".join(errors)[:400])
+        return Lookup("none")
+
     def character_embed(self, c: Character, *, title: str = "🧾 Personaje encontrado") -> discord.Embed:
         e = discord.Embed(title=title, color=GOLD)
         e.add_field(name="Nombre exacto", value=f"**{discord.utils.escape_markdown(c.name)}**", inline=True)
@@ -875,20 +899,31 @@ class RegistrationCog(commands.Cog):
         await interaction.response.send_message(f"¿Desvincular a {usuario.mention} de {label}?", view=YesNoView(interaction.user.id, yes, "Sí, desvincular"),
                                                 ephemeral=True, allowed_mentions=NO_MENTIONS)
 
-    @app_commands.command(name="admin_vincular", description="(Staff, excepcional) Vincula a mano un personaje sin que la persona lo acepte")
-    @app_commands.describe(usuario="Miembro", personaje="Nombre exacto del personaje en Albion")
+    @app_commands.command(name="admin_vincular", description="(Staff, excepcional) Vincula a mano un personaje (por nombre o ID); pisa el registro anterior")
+    @app_commands.describe(usuario="Miembro", personaje="Nombre exacto del personaje en Albion",
+                           id_albion="ID del personaje en Albion (sirve aunque se haya cambiado el nombre); si lo ponés, no hace falta el nombre")
     @app_commands.guild_only()
-    async def admin_vincular(self, interaction: discord.Interaction, usuario: discord.Member, personaje: str):
+    async def admin_vincular(self, interaction: discord.Interaction, usuario: discord.Member, personaje: Optional[str] = None,
+                             id_albion: Optional[str] = None):
         if not can_admin_registro(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         if usuario.bot:
             return await _say(interaction, "❌ No se puede vincular a un bot.")
+        if not (personaje or "").strip() and not (id_albion or "").strip():
+            return await _say(interaction, "❌ Poné el nombre del personaje o su ID de Albion.")
         await interaction.response.defer(ephemeral=True)
-        look = await self.lookup_character(personaje, live=True)
-        char = look.character if look.kind in ("ok", "wrong_guild") else None
         note = ""
+        if (id_albion or "").strip():                 # por ID: tiene que existir, porque sin la API no se sabe el nombre
+            look = await self.lookup_by_id(id_albion)
+            if look.kind == "error":
+                return await _say(interaction, "❌ La API de Albion no respondió. Probá de nuevo en un rato.")
+            if look.kind == "none":
+                return await _say(interaction, f"❌ No encontré ningún personaje con el ID `{discord.utils.escape_markdown(id_albion.strip())}`.")
+        else:
+            look = await self.lookup_character(personaje, live=True)
+        char = look.character if look.kind in ("ok", "wrong_guild") else None
         if look.kind == "ambiguous":
-            return await _say(interaction, "❌ Hay varios personajes con ese nombre en distintos servidores de Albion.")
+            return await _say(interaction, "❌ Hay varios personajes con ese nombre en distintos servidores de Albion. Usá `id_albion`.")
         if look.kind == "error":
             note = "\n⚠️ La API de Albion no respondió: se guardó solo el nombre, sin ID."
         elif look.kind == "none":
@@ -896,10 +931,18 @@ class RegistrationCog(commands.Cog):
         elif look.kind == "wrong_guild":
             note = f"\n⚠️ El personaje no figura en la guild **{look.detail}**."
         try:
-            reg = await self.run(rdb.admin_link, usuario.id, char.name if char else _clean_name(personaje), interaction.user.id,
-                                 char_id=char.char_id if char else None, region=char.region if char else None, guild_name=char.guild if char else None)
+            reg, mode, previous = await self.run(rdb.admin_relink, usuario.id, char.name if char else _clean_name(personaje), interaction.user.id,
+                                                 char_id=char.char_id if char else None, region=char.region if char else None,
+                                                 guild_name=char.guild if char else None)
         except rdb.RegError as exc:
             return await _say(interaction, f"❌ {exc}")
+        esc = discord.utils.escape_markdown
+        if mode == "updated":
+            note = (f"\n🔄 Ya estaba registrado con ese personaje: se actualizó" +
+                    (f" el nombre (**{esc(previous)}** → **{esc(reg.char_name)}**)" if previous != reg.char_name else " su ID y guild") +
+                    " sin perder la fecha de registro." + note)
+        elif mode == "replaced":
+            note = f"\n🔁 Tenía vinculado a **{esc(previous)}**: se reemplazó." + note
         nick_msg = await self.apply_nickname(usuario, reg.char_name)
         await self.apply_guild_role(usuario)
         role_msg = ""
@@ -915,7 +958,8 @@ class RegistrationCog(commands.Cog):
         await interaction.followup.send(
             f"⚠️ {usuario.mention} quedó vinculado a **{discord.utils.escape_markdown(reg.char_name)}** como **vínculo administrativo** "
             f"(la persona no lo aceptó).{note}\n{nick_msg}{role_msg}", ephemeral=True, allowed_mentions=NO_MENTIONS)
-        await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**")
+        await self.audit_log(f"⚠️ <@{interaction.user.id}> vinculó **a mano** a <@{usuario.id}> con **{discord.utils.escape_markdown(reg.char_name)}**"
+                             + (f" (antes: **{discord.utils.escape_markdown(previous)}**)" if previous and previous != reg.char_name else ""))
 
     # ---------- reclutamiento: registro al aceptar y roles recién cuando entra a la guild ----------
     async def accept_recruit(self, member: discord.Member, nick: str, role_id: int, role_name: str, recruiter, extra_role_ids=(),

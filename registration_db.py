@@ -482,6 +482,59 @@ def admin_link(db_path: str, discord_id: int, char_name: str, actor_id: int, *, 
         conn.close()
 
 
+def admin_relink(db_path: str, discord_id: int, char_name: str, actor_id: int, *, char_id: Optional[str] = None,
+                 region: Optional[str] = None, guild_name: Optional[str] = None) -> tuple:
+    """/admin_vincular: vincula pisando el registro que ya tuviera la persona. Devuelve (registro, modo, nombre anterior):
+    'new' = no tenía registro; 'updated' = mismo personaje (mismo ID o nombre): se actualizan nombre, ID, servidor y guild
+    sin perder la fecha de registro; 'replaced' = tenía otro personaje: se desvincula y se vincula el nuevo.
+    Si el personaje es de OTRA cuenta de Discord, no se toca nada (RegError)."""
+    char_name = (char_name or "").strip()
+    if not char_name or len(char_name) > 40:
+        raise RegError("Nombre de personaje inválido.")
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            other = conn.execute("SELECT char_name FROM albion_links WHERE discord_id<>? AND (lower(char_name)=lower(?) OR (? IS NOT NULL AND char_id=?))",
+                                 (discord_id, char_name, char_id, char_id)).fetchone()
+            if other is not None:
+                raise RegError(f"Ese personaje ya está vinculado a otra cuenta (**{other['char_name']}**). Desvinculalo primero con `/admin_desvincular`.")
+            mine = conn.execute("SELECT * FROM albion_links WHERE discord_id=?", (discord_id,)).fetchone()
+            now = utcnow_iso()
+            same = mine is not None and ((char_id and mine["char_id"] == char_id) or                       # mismo ID (aunque se haya renombrado)
+                                         (mine["char_name"].casefold() == char_name.casefold() and          # mismo nombre, salvo que los IDs digan
+                                          not (char_id and mine["char_id"] and mine["char_id"] != char_id)))  # que son personajes distintos
+            if same:
+                old_key, new_key = char_key(mine["char_id"], mine["char_name"]), char_key(char_id or mine["char_id"], char_name)
+                conn.execute("UPDATE albion_links SET char_name=?, char_id=COALESCE(?, char_id), region=COALESCE(?, region), "
+                             "guild_name=COALESCE(?, guild_name), updated_at=? WHERE id=?", (char_name, char_id, region, guild_name, now, mine["id"]))
+                if old_key != new_key:                    # tramos guardados por nombre (o con el nombre viejo) pasan a la clave nueva
+                    conn.execute("UPDATE guild_periods SET char_key=? WHERE char_key=?", (new_key, old_key))
+                conn.execute("UPDATE guild_periods SET char_name=? WHERE char_key=?", (char_name, new_key))
+                if guild_name:
+                    _period_switch(conn, char_id or mine["char_id"], char_name, discord_id, guild_name, now)
+                _audit(conn, actor_id, "admin_updated", discord_id, None, f"personaje={mine['char_name']} -> {char_name} id={char_id or mine['char_id']}")
+                return _reg(conn.execute("SELECT * FROM albion_links WHERE id=?", (mine["id"],)).fetchone()), "updated", mine["char_name"]
+            previous = None
+            if mine is not None:                          # tenía otro personaje: se lo saca (su tiempo en la guild queda guardado)
+                previous = mine["char_name"]
+                conn.execute("DELETE FROM albion_links WHERE id=?", (mine["id"],))
+                _period_close(conn, char_key(mine["char_id"], mine["char_name"]), now)
+                _audit(conn, actor_id, "unlinked", discord_id, None, f"personaje={previous} (reemplazado con /admin_vincular por {char_name})")
+            try:
+                cur = conn.execute(
+                    "INSERT INTO albion_links(discord_id, char_id, char_name, region, guild_name, method, linked_by, registered_at, updated_at) "
+                    "VALUES (?,?,?,?,?, 'admin_override', ?, ?, ?)", (discord_id, char_id, char_name, region, guild_name, actor_id, now, now))
+            except sqlite3.IntegrityError:
+                raise RegError("Ese personaje ya está vinculado a otra cuenta.")
+            _period_switch(conn, char_id, char_name, discord_id, guild_name, now)
+            conn.execute("UPDATE albion_link_requests SET status='cancelled', updated_at=? WHERE lower(char_name)=lower(?) AND status='pending_target'",
+                         (_iso(_now()), char_name))
+            _audit(conn, actor_id, "admin_linked", discord_id, None, f"personaje={char_name} (sin que la persona lo aceptara)")
+            return _reg(conn.execute("SELECT * FROM albion_links WHERE id=?", (cur.lastrowid,)).fetchone()), ("replaced" if previous else "new"), previous
+    finally:
+        conn.close()
+
+
 def incomplete_registrations(db_path: str) -> List[Registration]:
     """Registros guardados sin ID de personaje (p. ej. vínculos hechos mientras la API de Albion no respondía)."""
     conn = connect(db_path)
