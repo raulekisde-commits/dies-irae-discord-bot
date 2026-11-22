@@ -78,6 +78,8 @@ T: Dict[str, Dict[str, str]] = {
         "acc_title": "🔑 Acceso a HO", "acc_price": "Precio semanal: **{no}** no renters · **{si}** renters",
         "acc_you": "Tu precio: **{p}** ({who})", "acc_renter": "sos renter", "acc_no_renter": "no sos renter",
         "acc_maps": "Mapas", "acc_none": "Por ahora no hay HO con acceso disponible.", "acc_ask": "Para pedirlo, consultá al Council.",
+        "c_extra": "Extra", "l_extras_paid": "Extras pagados", "n_extra": "➕ Extra registrado: **{detalle}** — **{amount}** (pagado).",
+        "n_price": "✏️ Nuevo precio semanal ({what}): **{amount}**. Rige desde el próximo cobro.",
     },
     "pt": {
         "panel_title": "🏰 Aluguéis no Albion",
@@ -126,6 +128,8 @@ T: Dict[str, Dict[str, str]] = {
         "acc_title": "🔑 Acesso à HO", "acc_price": "Preço semanal: **{no}** não locatários · **{si}** locatários",
         "acc_you": "Seu preço: **{p}** ({who})", "acc_renter": "você é locatário", "acc_no_renter": "você não é locatário",
         "acc_maps": "Mapas", "acc_none": "No momento não há HO com acesso disponível.", "acc_ask": "Para pedir, fale com o Council.",
+        "c_extra": "Extra", "l_extras_paid": "Extras pagos", "n_extra": "➕ Extra registrado: **{detalle}** — **{amount}** (pago).",
+        "n_price": "✏️ Novo preço semanal ({what}): **{amount}**. Vale a partir da próxima cobrança.",
     },
     "en": {
         "panel_title": "🏰 Albion rentals",
@@ -174,6 +178,8 @@ T: Dict[str, Dict[str, str]] = {
         "acc_title": "🔑 HO access", "acc_price": "Weekly price: **{no}** non-renters · **{si}** renters",
         "acc_you": "Your price: **{p}** ({who})", "acc_renter": "you are a renter", "acc_no_renter": "you are not a renter",
         "acc_maps": "Maps", "acc_none": "There is no HO with access available right now.", "acc_ask": "To request it, ask the Council.",
+        "c_extra": "Extra", "l_extras_paid": "Paid extras", "n_extra": "➕ Extra recorded: **{detalle}** — **{amount}** (paid).",
+        "n_price": "✏️ New weekly price ({what}): **{amount}**. Applies from the next charge.",
     },
 }
 LANG_NAMES = {"es": "Español", "pt": "Português", "en": "English"}
@@ -308,6 +314,26 @@ class PaidView(discord.ui.View):
         await self.cog.on_paid(interaction)
 
 
+class ClientPanelView(discord.ui.View):
+    """Botones del panel fijado del canal del cliente. Solo el Council."""
+
+    def __init__(self, cog: "RentasCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Editar monto semanal", style=discord.ButtonStyle.primary, emoji="✏️", custom_id="rent:cp:precio")
+    async def precio(self, interaction: discord.Interaction, button):
+        await self.cog.on_panel_precio(interaction)
+
+    @discord.ui.button(label="Confirmar pago de esta semana", style=discord.ButtonStyle.success, emoji="💰", custom_id="rent:cp:semana")
+    async def semana(self, interaction: discord.Interaction, button):
+        await self.cog.on_panel_semana(interaction)
+
+    @discord.ui.button(label="Agregar extra", style=discord.ButtonStyle.secondary, emoji="➕", custom_id="rent:cp:extra")
+    async def extra(self, interaction: discord.Interaction, button):
+        await self.cog.on_panel_extra(interaction)
+
+
 # ============================================================
 # Modales
 # ============================================================
@@ -421,6 +447,50 @@ class RejectModal(discord.ui.Modal):
         await _reply(interaction, "❌ No se pudo rechazar. Probá de nuevo.")
 
 
+class PrecioModal(discord.ui.Modal):
+    """Editar el precio semanal de una renta del canal (si hay varias, se elige cuál)."""
+
+    def __init__(self, cog: "RentasCog", canal: rdb.Canal, rentas_: List[rdb.Renta], mapas: Dict[int, str]):
+        super().__init__(title="Editar monto semanal")
+        self.cog, self.canal, self.rentas = cog, canal, rentas_
+        self.renta_sel = None
+        if len(rentas_) > 1:
+            self.renta_sel = discord.ui.Select(options=[discord.SelectOption(
+                label=f"#{r.id} · {TIPO_ES[r.tipo]} · {mapas.get(r.mapa_id, '?')}"[:100], value=str(r.id),
+                description=f"Actual: {rdb.fmt_silver(r.precio)}/semana") for r in rentas_[:SELECT_LIMIT]])
+            self.add_item(_label("Renta", self.renta_sel))
+        self.precio = discord.ui.TextInput(label="Nuevo precio semanal", max_length=20, placeholder="Ej: 100M",
+                                           default=rdb.fmt_silver(rentas_[0].precio) if len(rentas_) == 1 else None)
+        self.add_item(self.precio)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        rid = int(self.renta_sel.values[0]) if self.renta_sel is not None and self.renta_sel.values else self.rentas[0].id
+        await self.cog.on_precio_submitted(interaction, self.canal, rid, str(self.precio.value))
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await _reply(interaction, "❌ No se pudo cambiar el precio.")
+
+
+class ExtraModal(discord.ui.Modal):
+    """Pago extra ya cobrado (queda registrado como pagado)."""
+
+    def __init__(self, cog: "RentasCog", canal: rdb.Canal):
+        super().__init__(title="Agregar extra (ya pagado)")
+        self.cog, self.canal = cog, canal
+        self.detalle = discord.ui.TextInput(label="Concepto", max_length=100, placeholder="Ej: Reparación de muros")
+        self.add_item(self.detalle)
+        self.monto = discord.ui.TextInput(label="Monto pagado", max_length=20, placeholder="Ej: 10M")
+        self.add_item(self.monto)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.on_extra_submitted(interaction, self.canal, str(self.detalle.value), str(self.monto.value))
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await _reply(interaction, "❌ No se pudo registrar el extra.")
+
+
 class InfoModal(discord.ui.Modal):
     def __init__(self, cog: "RentasCog", lang: str, current: Optional[str]):
         super().__init__(title=f"Información / tarifas — {LANG_NAMES[lang]}"[:45])
@@ -460,6 +530,7 @@ class RentasCog(commands.Cog):
         self.bot.add_view(TicketView(self))
         self.bot.add_view(PaidView(self))
         self.bot.add_view(StageView(self))
+        self.bot.add_view(ClientPanelView(self))
         if not self.scheduler.is_running():
             self.scheduler.start()
 
@@ -985,6 +1056,12 @@ class RentasCog(commands.Cog):
             if fixed:
                 lines.append(f"**{t(lang, 'l_fixed')}:** " + " · ".join(fixed))
             emb.add_field(name=f"{t(lang, 'tipo_' + r.tipo)} · {mapas.get(r.mapa_id, '?')}", value="\n".join(lines), inline=False)
+        extras = await self.run(rdb.extras_canal, canal.id)
+        if extras:
+            lines = [f"• {c.detalle or t(lang, 'c_extra')}: {rdb.fmt_silver(c.monto)} ({c.periodo[8:10]}/{c.periodo[5:7]})" for c in extras[:5]]
+            if len(extras) > 5:
+                lines.append(f"… +{len(extras) - 5}")
+            emb.add_field(name=f"{t(lang, 'l_extras_paid')} · {rdb.fmt_silver(sum(c.monto for c in extras))}", value="\n".join(lines), inline=False)
         emb.add_field(name=t(lang, "l_state"), value=t(lang, "st_debt" if deuda else "st_ok"), inline=True)
         emb.add_field(name=t(lang, "l_debt"), value=rdb.fmt_silver(deuda), inline=True)
         return emb
@@ -1001,11 +1078,11 @@ class RentasCog(commands.Cog):
             if canal.panel_message_id:
                 try:
                     msg = await ch.fetch_message(canal.panel_message_id)
-                    await msg.edit(embed=emb)
+                    await msg.edit(embed=emb, view=ClientPanelView(self))
                     return
                 except discord.NotFound:
                     pass
-            msg = await ch.send(embed=emb, allowed_mentions=NO_MENTIONS)
+            msg = await ch.send(embed=emb, view=ClientPanelView(self), allowed_mentions=NO_MENTIONS)
             await self.run(rdb.set_canal_panel, canal.id, msg.id)
             try:
                 await msg.pin()
@@ -1073,6 +1150,84 @@ class RentasCog(commands.Cog):
             traceback.print_exc()
             await _reply(interaction, "❌ No pude registrar el pago.")
 
+    # ---------- botones del panel del cliente ----------
+    async def _panel_canal(self, interaction: discord.Interaction) -> Optional[rdb.Canal]:
+        if not await self._council(interaction):
+            return None
+        canal = await self.run(rdb.canal_by_channel, interaction.channel.id)
+        if canal is None or canal.archivado:
+            await _reply(interaction, "❌ Este no es un canal de cliente activo.")
+            return None
+        return canal
+
+    async def on_panel_precio(self, interaction: discord.Interaction):
+        try:
+            canal = await self._panel_canal(interaction)
+            if canal is None:
+                return
+            rentas_ = await self.run(rdb.rentas_canal, canal.id)
+            if not rentas_:
+                return await _reply(interaction, "❌ Este canal no tiene rentas activas.")
+            await interaction.response.send_modal(PrecioModal(self, canal, rentas_, await self.run(rdb.mapa_names)))
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude abrir el formulario.")
+
+    async def on_precio_submitted(self, interaction: discord.Interaction, canal: rdb.Canal, renta_id: int, precio_txt: str):
+        try:
+            precio = rdb.parse_silver(precio_txt)
+            old = await self.run(rdb.set_precio_renta, renta_id, precio)
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        if old is None:
+            return await _reply(interaction, "❌ Esa renta ya no está activa.")
+        r = await self.run(rdb.get_renta, renta_id)
+        await interaction.channel.send(t(canal.idioma, "n_price", what=t(canal.idioma, "tipo_" + r.tipo), amount=rdb.fmt_silver(precio)),
+                                       allowed_mentions=NO_MENTIONS)
+        await self.refresh_panel(canal.id)
+        await _reply(interaction, f"✅ Renta #{renta_id}: {rdb.fmt_silver(old)} → {rdb.fmt_silver(precio)}/semana (rige desde el próximo cobro).")
+        await self.log("rentas", f"✏️ {interaction.user.mention} cambió el precio de la renta #{renta_id} ({canal.titular_nombre}): "
+                                 f"{rdb.fmt_silver(old)} → {rdb.fmt_silver(precio)}/semana")
+
+    async def on_panel_semana(self, interaction: discord.Interaction):
+        try:
+            canal = await self._panel_canal(interaction)
+            if canal is None:
+                return
+            total = await self.run(rdb.confirmar_semana_canal, canal.id, rdb.today_utc(), interaction.user.id)
+            if not total:
+                return await _reply(interaction, "ℹ️ No hay nada pendiente de esta semana.")
+            await interaction.channel.send(t(canal.idioma, "n_paid", amount=rdb.fmt_silver(total)), allowed_mentions=NO_MENTIONS)
+            await self.refresh_panel(canal.id)
+            deuda = await self.run(rdb.deuda_canal, canal.id)
+            await _reply(interaction, f"✅ Semana confirmada: {rdb.fmt_silver(total)}."
+                                      + (f" Queda deuda anterior: {rdb.fmt_silver(deuda)}." if deuda else ""))
+            await self.log("pagos", f"💰 {interaction.user.mention} confirmó el pago de esta semana en <#{canal.channel_id}> "
+                                    f"({canal.titular_nombre}): **{rdb.fmt_silver(total)}**")
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude registrar el pago.")
+
+    async def on_panel_extra(self, interaction: discord.Interaction):
+        try:
+            canal = await self._panel_canal(interaction)
+            if canal is not None:
+                await interaction.response.send_modal(ExtraModal(self, canal))
+        except Exception:
+            traceback.print_exc()
+            await _reply(interaction, "❌ No pude abrir el formulario.")
+
+    async def on_extra_submitted(self, interaction: discord.Interaction, canal: rdb.Canal, detalle: str, monto_txt: str):
+        try:
+            c = await self.run(rdb.agregar_extra, canal.id, detalle, rdb.parse_silver(monto_txt), interaction.user.id)
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        await interaction.channel.send(t(canal.idioma, "n_extra", detalle=c.detalle, amount=rdb.fmt_silver(c.monto)), allowed_mentions=NO_MENTIONS)
+        await self.refresh_panel(canal.id)
+        await _reply(interaction, f"✅ Extra registrado como pagado: {c.detalle} — {rdb.fmt_silver(c.monto)}.")
+        await self.log("pagos", f"➕ {interaction.user.mention} registró un extra pagado en <#{canal.channel_id}> ({canal.titular_nombre}): "
+                                f"{c.detalle} — **{rdb.fmt_silver(c.monto)}**")
+
     # ---------- cobro semanal ----------
     @tasks.loop(minutes=1)
     async def scheduler(self):
@@ -1084,6 +1239,9 @@ class RentasCog(commands.Cog):
     @scheduler.before_loop
     async def _before_scheduler(self):
         await self.bot.wait_until_ready()
+        if await self.run(rdb.mark_job, "paneles:botones_v1"):        # una vez: suma los botones a los paneles ya fijados
+            for canal in await self.run(rdb.active_canales):
+                await self.refresh_panel(canal.id)
 
     async def tick(self, now: datetime) -> List[str]:
         """Corre lo que toque: cobro del último domingo (si no se hizo) y recordatorio de los domingos a las 23:00 UTC."""

@@ -421,5 +421,29 @@ class Discord(Base):
         self.assertEqual(asyncio.run(cog.tick(datetime(2026, 11, 22, 23, 0, tzinfo=timezone.utc))), ["aviso"])
 
 
+class PanelCliente(Base):
+    def test_precio_semana_extra(self):
+        canal, rid = self.alta(modalidad="vencido")
+        self.assertEqual(rdb.set_precio_renta(self.db, rid, 14_000_000), 7_000_000)
+        self.assertEqual(rdb.get_renta(self.db, rid).precio, 14_000_000)
+        with self.assertRaises(rdb.RentaError):
+            rdb.set_precio_renta(self.db, rid, 0)
+        rdb.run_weekly(self.db, SUN)                                    # vencido: 4 días (mié-sáb) al nuevo precio
+        self.assertEqual(rdb.deuda_canal(self.db, canal.id), 8_000_000)
+        self.assertEqual(rdb.confirmar_semana_canal(self.db, canal.id, WED, COUNCIL), 0)      # semana anterior: no es «esta»
+        self.assertEqual(rdb.confirmar_semana_canal(self.db, canal.id, SUN, COUNCIL), 8_000_000)
+        self.assertEqual(rdb.deuda_canal(self.db, canal.id), 0)
+        c = rdb.agregar_extra(self.db, canal.id, "Muros", 5_000_000, COUNCIL)
+        self.assertTrue(c.pagado)
+        rdb.agregar_extra(self.db, canal.id, "Muros", 5_000_000, COUNCIL)
+        self.assertEqual([x.detalle for x in rdb.extras_canal(self.db, canal.id)], ["Muros", "Muros"])
+        self.assertEqual(rdb.deuda_canal(self.db, canal.id), 0)
+        with self.assertRaises(rdb.RentaError):
+            rdb.agregar_extra(self.db, canal.id, " ", 1, COUNCIL)
+        cog = rentas.RentasCog(discord_stub.Bot(), self.db, 1, COUNCIL)
+        self.assertIn("Extras pagados · 10M", str(asyncio.run(cog.client_embed(canal)).fields))
+        self.assertEqual([b.custom_id for b in rentas.ClientPanelView(cog).children], ["rent:cp:precio", "rent:cp:semana", "rent:cp:extra"])
+
+
 if __name__ == "__main__":
     unittest.main()
