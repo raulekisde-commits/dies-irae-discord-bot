@@ -61,6 +61,18 @@ class T(unittest.TestCase):
         self.assertEqual(by[(1, 1)]["role_ids"], [111])
         self.assertEqual((by[(1, 4)]["role_name"], by[(1, 4)]["role_ids"]), ("Chariot", [888]))     # battlemount -> rol battle mount
 
+    def test_arma_alternativa_de_la_build(self):
+        payload = {"comp": {"title": "X", "parties": [["b-alt", "b-alt"]]},
+                   "builds": {"b-alt": {"name": "Flex", "playstyle": "dps", "weapon": {"src": "/item-icons/MAIN_MACE__t8.png"},
+                                        "draft": {"mainHand": {"itemId": "MAIN_MACE", "swaps": [{"itemId": "MAIN_HOLYSTAFF", "itemName": "Holy Staff"}, {"itemId": "MAIN_MACE"}, {"itemId": "2H_BOW__T8", "itemName": "Bow"}]}}}}}
+        text = '5:["$","$L2d",null,{"payload":' + json.dumps(payload) + '}]\n'
+        p = cw.parse_comp_html('<html><script>self.__next_f.push([1,"%s"])</script></html>' % json.dumps(text)[1:-1])
+        self.assertEqual(p["weapon_alts"], {"b-alt": [["MAIN_HOLYSTAFF", "Holy Staff"], ["2H_BOW", "Bow"]]})
+        defs, _ = cw.build_slot_defs(p, {}, lambda w: ar.role_for(self.db, 1, w), lambda l: ar.discord_role_for(self.db, 1, l), lambda w: {"2H_BOW": "Arco"}.get(w))
+        self.assertEqual(defs[0]["role_ids"], [111])                       # el permiso sigue siendo el del arma principal
+        self.assertEqual(defs[0]["role_name"], "Flex / Holy Staff / Arco")
+        self.assertEqual(json.loads(json.dumps(p))["weapon_alts"], p["weapon_alts"])      # se guarda en compoweb_parsed
+
     def test_id_del_link(self):
         self.assertEqual(cw.comp_id_from("https://www.albionzvz.com/comps/4C88EF6B-92ED-46B9-BDFA-8F68F55F5267?x=1"), "4c88ef6b-92ed-46b9-bdfa-8f68f55f5267")
         self.assertIsNone(cw.comp_id_from("hola"))
