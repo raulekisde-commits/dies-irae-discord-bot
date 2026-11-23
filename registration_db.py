@@ -840,3 +840,28 @@ def old_names(db_path: str, discord_id: int) -> List[str]:
         return out
     finally:
         conn.close()
+
+
+def rename_character(db_path: str, char_id: str, new_name: str) -> Optional[tuple]:
+    """El personaje con ese ID se renombró en Albion: actualiza el registro y deja el nombre viejo como anterior.
+    Devuelve (discord_id, nombre viejo) o None si no había nada que cambiar (o el nombre nuevo lo tiene otra cuenta)."""
+    new_name = (new_name or "").strip()
+    if not char_id or not new_name:
+        return None
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            r = conn.execute("SELECT * FROM albion_links WHERE char_id=?", (char_id,)).fetchone()
+            if r is None or r["char_name"] == new_name:
+                return None
+            if conn.execute("SELECT 1 FROM albion_links WHERE lower(char_name)=lower(?) AND id<>?", (new_name, r["id"])).fetchone():
+                return None
+            now = utcnow_iso()
+            conn.execute("UPDATE albion_links SET char_name=?, updated_at=? WHERE id=?", (new_name, now, r["id"]))
+            conn.execute("UPDATE guild_periods SET char_name=? WHERE char_key=?", (new_name, char_id))
+            if r["char_name"].casefold() != new_name.casefold():
+                _add_old_name(conn, char_id, r["char_name"], new_name, None, now)
+            _audit(conn, None, "renamed", int(r["discord_id"]), None, f"personaje={r['char_name']} -> {new_name} id={char_id}")
+            return int(r["discord_id"]), r["char_name"]
+    finally:
+        conn.close()

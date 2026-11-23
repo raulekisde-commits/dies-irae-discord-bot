@@ -368,7 +368,34 @@ class RegistrationCog(commands.Cog):
         self._fresh_guilds = fresh
         self.roster_at = time.time()
         await self._save_roster()
+        try:
+            await self.sync_renames()
+        except Exception:
+            traceback.print_exc()
         return True
+
+    async def sync_renames(self) -> int:
+        """Registrados cuyo personaje (por ID) figura en la lista de la guild con otro nombre: se renombraron en Albion.
+        Se actualiza el registro (el nombre viejo queda como anterior) y el apodo de Discord pasa al nombre nuevo."""
+        by_id = {c.char_id: c for c in self.roster.values() if c.char_id}
+        regs = await self.run(rdb.all_registrations)
+        guild = self.bot.get_guild(self.guild_id)
+        n = 0
+        for r in regs:
+            c = by_id.get(r.char_id) if r.char_id else None
+            if c is None or c.name == r.char_name:
+                continue
+            res = await self.run(rdb.rename_character, r.char_id, c.name)
+            if res is None:
+                continue
+            n += 1
+            uid, old = res
+            member = guild.get_member(uid) if guild else None
+            nick = await self.apply_nickname(member, c.name) if member is not None else "ℹ️ No está en el Discord."
+            esc = discord.utils.escape_markdown
+            await self.audit_log(f"🏷️ <@{uid}> se renombró en Albion: **{esc(old)}** → **{esc(c.name)}**. "
+                                 f"Sus killboards viejos le siguen contando. {nick}")
+        return n
 
     def main_guild_count(self) -> int:
         """Miembros solo de la guild principal (para el contador 'Smogg N/300')."""
