@@ -901,10 +901,11 @@ class RegistrationCog(commands.Cog):
 
     @app_commands.command(name="admin_vincular", description="(Staff, excepcional) Vincula a mano un personaje (por nombre o ID); pisa el registro anterior")
     @app_commands.describe(usuario="Miembro", personaje="Nombre exacto del personaje en Albion",
-                           id_albion="ID del personaje en Albion (sirve aunque se haya cambiado el nombre); si lo ponés, no hace falta el nombre")
+                           id_albion="ID del personaje en Albion (sirve aunque se haya cambiado el nombre); si lo ponés, no hace falta el nombre",
+                           nombre_anterior="Nombre que tenía antes de renombrarse: sus killboards y asistencias viejas le siguen contando")
     @app_commands.guild_only()
     async def admin_vincular(self, interaction: discord.Interaction, usuario: discord.Member, personaje: Optional[str] = None,
-                             id_albion: Optional[str] = None):
+                             id_albion: Optional[str] = None, nombre_anterior: Optional[str] = None):
         if not can_admin_registro(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
         if usuario.bot:
@@ -943,6 +944,12 @@ class RegistrationCog(commands.Cog):
                     " sin perder la fecha de registro." + note)
         elif mode == "replaced":
             note = f"\n🔁 Tenía vinculado a **{esc(previous)}**: se reemplazó." + note
+        if (nombre_anterior or "").strip():
+            try:
+                await self.run(rdb.add_old_name, usuario.id, nombre_anterior, interaction.user.id)
+                note += f"\n🏷️ Nombre anterior **{esc(nombre_anterior.strip())}** anotado: sus killboards y asistencias viejas le cuentan."
+            except rdb.RegError as exc:
+                note += f"\n⚠️ No anoté el nombre anterior: {exc}"
         nick_msg = await self.apply_nickname(usuario, reg.char_name)
         await self.apply_guild_role(usuario)
         role_msg = ""

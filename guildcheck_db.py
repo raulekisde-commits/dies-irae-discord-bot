@@ -166,13 +166,17 @@ def snapshot(db_path: str) -> Tuple[Dict[str, Tuple[str, datetime]], Optional[da
 
 
 def chars_by_user(db_path: str) -> Dict[int, Set[str]]:
-    """{discord_id: {name_norm}} con los personajes registrados y los alters de /alter."""
+    """{discord_id: {name_norm}} con los personajes registrados, sus nombres anteriores y los alters de /alter."""
     out: Dict[int, Set[str]] = {}
     conn = connect(db_path)
     try:
         if _has_table(conn, "albion_links"):
             for r in conn.execute("SELECT discord_id, char_name FROM albion_links"):
                 out.setdefault(int(r["discord_id"]), set()).add(norm(r["char_name"]))
+        if _has_table(conn, "albion_links") and _has_table(conn, "albion_name_history"):   # nombres anteriores (renombrados)
+            for r in conn.execute("SELECT l.discord_id, h.old_name FROM albion_links l JOIN albion_name_history h "
+                                  "ON h.char_key = COALESCE(NULLIF(l.char_id, ''), 'name:' || lower(trim(l.char_name)))"):
+                out.setdefault(int(r["discord_id"]), set()).add(norm(r["old_name"]))
         if _has_table(conn, "alters"):
             for r in conn.execute("SELECT user_id, alter_name FROM alters"):
                 out.setdefault(int(r["user_id"]), set()).add(norm(r["alter_name"]))

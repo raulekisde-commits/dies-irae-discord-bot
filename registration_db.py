@@ -86,6 +86,15 @@ CREATE TABLE IF NOT EXISTS guild_periods (               -- tiempo en cada guild
     end_at     TEXT                                       -- NULL = tramo actual
 );
 CREATE INDEX IF NOT EXISTS ix_guild_periods_char ON guild_periods(char_key);
+CREATE TABLE IF NOT EXISTS albion_name_history (         -- nombres anteriores de un personaje renombrado (killboards viejos, asistencia)
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    char_key   TEXT NOT NULL,                             -- misma clave que guild_periods (ID de Albion, o 'name:<nombre>')
+    old_name   TEXT NOT NULL,
+    new_name   TEXT,
+    actor_id   INTEGER,
+    changed_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_albion_name_history ON albion_name_history(char_key, lower(old_name));
 CREATE TABLE IF NOT EXISTS albion_link_audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     at         TEXT NOT NULL,
@@ -512,6 +521,8 @@ def admin_relink(db_path: str, discord_id: int, char_name: str, actor_id: int, *
                 conn.execute("UPDATE guild_periods SET char_name=? WHERE char_key=?", (char_name, new_key))
                 if guild_name:
                     _period_switch(conn, char_id or mine["char_id"], char_name, discord_id, guild_name, now)
+                if mine["char_name"].casefold() != char_name.casefold():          # se renombró: el nombre viejo sigue contando
+                    _add_old_name(conn, new_key, mine["char_name"], char_name, actor_id, now)
                 _audit(conn, actor_id, "admin_updated", discord_id, None, f"personaje={mine['char_name']} -> {char_name} id={char_id or mine['char_id']}")
                 return _reg(conn.execute("SELECT * FROM albion_links WHERE id=?", (mine["id"],)).fetchone()), "updated", mine["char_name"]
             previous = None
@@ -786,3 +797,46 @@ def fmt_span(seconds: int) -> str:
     h = max(0, int(seconds)) // 3600
     d, h = divmod(h, 24)
     return f"{d}d {h}h" if d else f"{h}h"
+
+
+# ---------- nombres anteriores (personajes renombrados) ----------
+def _add_old_name(conn, key: str, old_name: str, new_name: Optional[str], actor_id: Optional[int], at: str) -> None:
+    old_name = (old_name or "").strip()
+    if old_name and (not new_name or old_name.casefold() != new_name.casefold()):
+        conn.execute("INSERT OR IGNORE INTO albion_name_history(char_key, old_name, new_name, actor_id, changed_at) VALUES (?,?,?,?,?)",
+                     (key, old_name, new_name, actor_id, at))
+
+
+def add_old_name(db_path: str, discord_id: int, old_name: str, actor_id: int) -> str:
+    """Anota a mano un nombre anterior del personaje registrado de la persona. Devuelve el nombre actual."""
+    old_name = (old_name or "").strip()
+    if not old_name or len(old_name) > 40:
+        raise RegError("Nombre anterior inválido.")
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            mine = conn.execute("SELECT * FROM albion_links WHERE discord_id=?", (discord_id,)).fetchone()
+            if mine is None:
+                raise RegError("Esa persona no tiene personaje registrado.")
+            other = conn.execute("SELECT 1 FROM albion_links WHERE lower(char_name)=lower(?) AND discord_id<>?", (old_name, discord_id)).fetchone()
+            if other is not None:
+                raise RegError(f"**{old_name}** es el personaje registrado de otra cuenta: no puede ser un nombre anterior.")
+            if old_name.casefold() != mine["char_name"].casefold():
+                _add_old_name(conn, char_key(mine["char_id"], mine["char_name"]), old_name, mine["char_name"], actor_id, utcnow_iso())
+                _audit(conn, actor_id, "old_name_added", discord_id, None, f"personaje={mine['char_name']} antes={old_name}")
+            return mine["char_name"]
+    finally:
+        conn.close()
+
+
+def old_names(db_path: str, discord_id: int) -> List[str]:
+    """Nombres anteriores de los personajes que hoy tiene registrados la persona."""
+    conn = connect(db_path)
+    try:
+        keys = [char_key(r["char_id"], r["char_name"]) for r in conn.execute("SELECT char_id, char_name FROM albion_links WHERE discord_id=?", (discord_id,))]
+        out: List[str] = []
+        for key in keys:
+            out += [r["old_name"] for r in conn.execute("SELECT old_name FROM albion_name_history WHERE char_key=? ORDER BY id", (key,))]
+        return out
+    finally:
+        conn.close()
