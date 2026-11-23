@@ -3841,7 +3841,7 @@ def cta_db_init():
         db_ensure_column(conn, "cta_compositions", "track", "INTEGER NOT NULL DEFAULT 0")
         db_ensure_column(conn, "cta_compositions", "ava", "INTEGER NOT NULL DEFAULT 0")     # 1 = el split de esta composición es un split-ava
         db_ensure_column(conn, "cta_compositions", "content", "INTEGER NOT NULL DEFAULT 0") # 1 = composición para /content
-        db_ensure_column(conn, "cta_runs", "kind", "TEXT NOT NULL DEFAULT 'cta'")           # 'cta' | 'content' (/content: sin Bomb ni tareas de combatlog)
+        db_ensure_column(conn, "cta_runs", "kind", "TEXT NOT NULL DEFAULT 'cta'")           # 'cta' | 'content' (/content: sin Bomb ni tareas de combatlog)  · 'combatlog' (/cta-admin combatlog)
         db_ensure_column(conn, "cta_runs", "track", "INTEGER NOT NULL DEFAULT 0")
         db_ensure_column(conn, "cta_runs", "tab", "TEXT")
         db_ensure_column(conn, "cta_runs", "city", "TEXT")
@@ -4658,9 +4658,12 @@ def cta_combatlog_embed(run: dict, *, private: bool = False) -> discord.Embed:
     desc = ("Acá llegan los archivos de combatlog que se suben con el botón del panel público (en el hilo de este mensaje)."
             if private else
             "Activá el combatlog en el juego y tocá **📤 Subir combatlog** para mandar el archivo.\n"
-            "🔒 El archivo lo ve **solo la administración**: no queda en el hilo.\n"
-            "Con que se suba uno, la tarea del Staff se da por hecha.")
+            "🔒 El archivo lo ve **solo la administración**: no queda en el hilo."
+            + ("" if run.get("kind") == "combatlog" else "\nCon que se suba uno, la tarea del Staff se da por hecha."))
     emb = discord.Embed(title=f"🧾 Combatlog — {title}", color=discord.Color(0xE67E22), description=desc)
+    if run.get("kind") == "combatlog":                      # /cta-admin combatlog: no hay hilo de CTA
+        emb.set_footer(text=f"Combatlog #{run_id}")
+        return emb
     emb.add_field(name="🔗 CTA", value=f"[Hilo de la CTA]({cta_url})", inline=False)
     emb.set_footer(text=f"CTA #{run_id}")
     return emb
@@ -7586,6 +7589,30 @@ cta_admin_group = app_commands.Group(name="cta-admin", description="Consultar y 
 bot.tree.add_command(cta_admin_group, guild=GUILD_OBJ)
 
 
+@cta_admin_group.command(name="combatlog", description="(Staff/Council) Crear un panel de combatlog nuevo, sin CTA")
+@app_commands.describe(titulo="Nombre del contenido (ej. ZvZ 22/11)")
+async def combatlog_command(interaction: discord.Interaction, titulo: str):
+    """Panel de combatlog suelto: registra un run mínimo (kind/status 'combatlog') para reutilizar botones, subida y auditoría."""
+    if not interaction.guild or not is_staff_or_council(interaction.user):
+        return await interaction.response.send_message("❌ Solo Staff o Council.", ephemeral=True)
+    titulo = titulo.strip()[:80]
+    if not titulo:
+        return await interaction.response.send_message("❌ Indicá un título.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:     # status 'combatlog': no entra en las consultas de CTA abiertas/cerradas
+        cur = conn.execute("INSERT INTO cta_runs(guild_id,composition_name,snapshot_json,channel_id,created_by,created_at,closes_at,status,closed_at,title,kind) "
+                           "VALUES (?,?,'{}',?,?,?,?,'combatlog',?,?,'combatlog')",
+                           (interaction.guild.id, "Combatlog", bs.get("combatlog") or COMBATLOG_CHANNEL_ID, interaction.user.id, now, now, now, titulo))
+        run_id = cur.lastrowid
+        conn.commit()
+    link = await cta_create_combatlog_panel(cta_run_get(run_id))
+    if not link:
+        db_execute("UPDATE cta_runs SET status='error' WHERE id=?", (run_id,))
+        return await interaction.followup.send("❌ No pude crear el panel (revisá los canales de combatlog en /config).", ephemeral=True)
+    await interaction.followup.send(f"✅ Panel de combatlog **{discord.utils.escape_markdown(titulo)}** creado: {link}", ephemeral=True)
+
+
 @cta_admin_group.command(name="activas", description="Consultar las CTA activas")
 async def cta_activas(interaction: discord.Interaction):
     rows = db_fetchall("SELECT id, composition_name, closes_at, channel_id, thread_id FROM cta_runs WHERE guild_id=? AND status='open' ORDER BY closes_at", (interaction.guild_id,))
@@ -7912,6 +7939,7 @@ HELP_SECTIONS = [
         ("/compo ver-armaduras nombre", "Miembros", "Cuántas armaduras de placas (pecho) hay en cada party de una composición importada de AlbionZvZ, por ejemplo P1: Royal Armor 3, Judicator Armor 3. Cuenta la build principal de cada posición."),
         ("/cta nombre [tiempo] [titulo] [programar]", "Staff, Caller, Council", "Publica una CTA en el canal de CTA. Cada posición pide uno de los 11 roles de juego. Dura 40 min por defecto (mínimo 10). El título por defecto es la fecha y hora UTC redondeada del cierre (ej: CTA 31/10 22 UTC). `programar` (HH:MM UTC) la publica más tarde con @everyone y @here. Al cerrar la inscripción se arma el hilo del split y se crea el panel del combatlog con su tarea; al cerrar la CTA se crea la tarea del split. El rol Bomb se anota escribiendo `bomb` en el hilo de la CTA (y se desanota con `- bomb`); van al split y cuentan como anotados, en una lista aparte del panel. El rol Combat Looter se anota con `cl` (y se desanota con `- cl`) y entra al split como looter. Staff, Caller y Council pueden anotar o sacar a otros con «@persona bomb», «@persona cl», «@persona - bomb» o «@persona - cl». Al cerrar o cancelar la CTA se borra su hilo."),
         ("/content nombre [tiempo]", "Content Creator, Council", "Publica una CTA de content en el canal donde se usa el comando: igual que /cta pero sin Bomb ni tareas de combatlog, y su split es split-ava. Solo acepta composiciones creadas con `/compo crear content:True`. Quien la lanza puede terminarla o cancelarla con los botones. En el hilo, el Content Creator anota o saca gente con «@persona 21» / «@persona -21»."),
+        ("/cta-admin combatlog titulo", "Staff, Council", "Crea un panel de combatlog suelto (sin CTA) en el canal de combatlog, con su hilo y la copia privada: los botones Subir combatlog, Subir chestlog y Auditar funcionan igual que en el de una CTA."),
         ("/compo ava nombre activar", "Council / Admin", "Marca si el split que sale de esa composición es un split-ava."),
         ("/compo content nombre activar", "Council / Admin", "true/false: marca si la composición se puede publicar con /content."),
         ("/config", "Administrador", "Panel para cambiar, sin tocar código, los canales del bot (logs, CTA, content, tareas, splits…) y qué roles pueden usar cada comando de economía/casino. Los cambios valen al instante y quedan avisados en el canal de logs."),
