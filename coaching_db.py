@@ -147,10 +147,9 @@ def extract_vods(content: str, attachments=()) -> List[Tuple[str, str]]:
     return list(out.items())
 
 
-ROLE_WORDS = {
-    "Tank": ("tank", "tanque"), "Healer": ("healer", "heal", "curador", "sanador"), "Support": ("support", "supp", "soporte"),
-    "DPS": ("dps", "damage"), "Battle Mount": ("battle mount", "battlemount", "bm"), "Clump Maker": ("clump", "clump maker", "clumpmaker"),
-    "Shaper": ("shaper",), "Galatinas": ("galatina", "galatinas"), "Bloodletter": ("bloodletter",), "Pierce": ("pierce",),
+ROLE_WORDS = {                                       # los 4 roles de coaching (mismos nombres que el menú de coaching.py)
+    "Dps": ("dps", "damage"), "Tank": ("tank", "tanque"), "Supp": ("support", "supp", "soporte"),
+    "Healer": ("healer", "heal", "curador", "sanador"),
 }
 
 
@@ -433,6 +432,22 @@ def add_grade_prompt(db_path: str, reply_msg_id: int, coach_id: int, vod_msgs: L
         with write_tx(conn):
             conn.execute("INSERT OR REPLACE INTO coaching_grade_prompts(reply_msg_id,coach_id,vod_msgs,created_at) VALUES (?,?,?,?)",
                          (reply_msg_id, coach_id, ",".join(str(int(m)) for m in vod_msgs), utcnow_iso()))
+    finally:
+        conn.close()
+
+
+def last_review_target(db_path: str, coach_id: int, pending: List[int]) -> Optional[int]:
+    """VOD (de `pending`) de la última review que empezó el coach respondiendo al video: sus mensajes siguientes la continúan."""
+    if not pending:
+        return None
+    ok = set(int(m) for m in pending)
+    conn = connect(db_path)
+    try:
+        for r in conn.execute("SELECT vod_msgs FROM coaching_grade_prompts WHERE coach_id=? ORDER BY reply_msg_id DESC LIMIT 50", (coach_id,)):
+            for x in str(r["vod_msgs"]).split(","):
+                if x and int(x) in ok:
+                    return int(x)
+        return None
     finally:
         conn.close()
 
