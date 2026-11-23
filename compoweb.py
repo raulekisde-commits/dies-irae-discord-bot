@@ -132,12 +132,15 @@ def _parse_payload(payload: dict) -> dict:
                for i, p in enumerate(comp.get("parties") or [], start=1)]
     if not parties:
         raise WebError("La compo no tiene grupos.")
-    weapons = {}
+    weapons, alts = {}, {}
     for bid, b in builds.items():                                     # id de build -> arma principal (del ícono del arma)
         m = _SRC_RE.search(((b or {}).get("weapon") or {}).get("src") or "")
         if m:
             weapons[bid] = m.group(1)
-    return {"title": comp.get("title") or "", "parties": parties, "weapons": weapons,
+        a = weapon_alts_of(b, weapons.get(bid, ""))
+        if a:
+            alts[bid] = a
+    return {"title": comp.get("title") or "", "parties": parties, "weapons": weapons, "weapon_alts": alts,
             "builds": {bid: {"name": (b or {}).get("name") or "Build", "playstyle": ((b or {}).get("playstyle") or "").lower()} for bid, b in builds.items()}}
 
 
@@ -200,6 +203,24 @@ def weapon_of(build: Optional[dict]) -> str:
     return str(mh.get("itemId") or "")
 
 
+def _base_item(iid: str) -> str:
+    return re.sub(r"__T\d+(?:_E\d)?$", "", str(iid or ""), flags=re.I)
+
+
+def weapon_alts_of(build: Optional[dict], primary: str = "") -> List[List[str]]:
+    """Armas alternativas de la build (las «permutas» del arma principal en AlbionZvZ) como [[id, nombre]], sin repetir la principal.
+    Solo cambian el nombre de la posición: el permiso sigue siendo el rol del arma principal (una posición pide un único rol)."""
+    b = (build or {}).get("build") or build or {}
+    mh = (b.get("draft") or b).get("mainHand") or {}
+    main = _base_item(primary or mh.get("itemId"))
+    out = []
+    for sw in mh.get("swaps") or []:
+        w = _base_item((sw or {}).get("itemId"))
+        if w and w != main and w not in [x[0] for x in out]:
+            out.append([w, str((sw or {}).get("itemName") or "")])
+    return out
+
+
 # ---------------------------------------------------------------- de la web a posiciones del bot
 def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_role_for, name_for=None, role_icon_for=None) -> Tuple[List[dict], dict]:
     """Arma las posiciones: el ROL sale del arma real de cada build, y el NOMBRE es el que le puso quien armó la compo.
@@ -223,13 +244,16 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
                     meta = parsed["builds"].get(bid, {"name": "Build", "playstyle": ""})
                     weapon = weapons.get(bid) or weapon_of(builds.get(bid))
                     label = ""
+                    names.append(meta["name"])                        # en el panel va el nombre que le puso quien armó la compo
                     if weapon:
-                        names.append(meta["name"])                    # en el panel va el nombre que le puso quien armó la compo
                         label = role_for(weapon) or ""
                         if not label:
                             notes["sin_regla"].add(weapon)
+                        for alt_id, alt_item in parsed.get("weapon_alts", {}).get(bid) or weapon_alts_of(builds.get(bid), weapon):
+                            alt_name = (name_for(alt_id) if name_for else None) or alt_item      # arma alternativa (permuta del arma en la web): se muestra en la posición
+                            if alt_name and alt_name.lower() not in meta["name"].lower():
+                                names.append(alt_name)
                     else:
-                        names.append(meta["name"])
                         notes["sin_datos"].add(meta["name"])
                 rid = discord_role_for(label) if label else None
                 if label and not rid:

@@ -11,7 +11,13 @@ KINDS = ("core", "vortex")
 RARITIES = ("verde", "azul", "morado", "dorado")
 RARITY_LABEL = {"verde": "Verde", "azul": "Azul", "morado": "Morado", "dorado": "Dorado"}
 RARITY_EMOJI = {"verde": "🟢", "azul": "🔵", "morado": "🟣", "dorado": "🟡"}
-RARITY_SPINS = {"verde": 1, "azul": 2, "morado": 3, "dorado": 5}
+RARITY_SPINS = {"verde": 1, "azul": 2, "morado": 3, "dorado": 5}               # /core
+KIND_RARITY_SPINS = {"core": RARITY_SPINS, "vortex": {"verde": 3, "azul": 6, "morado": 10, "dorado": 15}}
+
+
+def spins_for(kind: str, rarity: str) -> int:
+    """Tiradas de Wujupón que da un orbe según tipo y rareza."""
+    return KIND_RARITY_SPINS.get(kind, RARITY_SPINS)[rarity]
 KIND_LABEL = {"core": "Core", "vortex": "Vortex"}
 
 SCHEMA = """

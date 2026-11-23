@@ -116,8 +116,12 @@ class CoresDiscord(DiscordBase):
         _i, msg = self.report(self.alice, "verde", kind="vortex")
         run(self.cog.edit_rarity(self.inter(self.council, message=msg), msg, "dorado"))
         run(self.cog.approve(self.inter(self.council, message=msg), msg))
-        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 5)
+        self.assertEqual(wdb.get_spins(self.db, self.alice.id), 15)                     # vortex dorado = 15
         self.assertEqual(odb.user_stats(self.db, self.alice.id)["vortex"]["dorado"], 1)
+
+    def test_tiradas_por_tipo(self):
+        self.assertEqual([odb.spins_for("vortex", r) for r in odb.RARITIES], [3, 6, 10, 15])
+        self.assertEqual([odb.spins_for("core", r) for r in odb.RARITIES], [1, 2, 3, 5])
 
     def test_repartir(self):
         _i, msg = self.report(self.alice, "verde")

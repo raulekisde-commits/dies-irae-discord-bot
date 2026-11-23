@@ -2,7 +2,7 @@
 
 - El comando pide los tres datos (repartir, rareza y foto); la respuesta al miembro es privada.
 - El panel se publica en el canal «cores» (configurable con /canal) con la foto reenviada y los botones.
-- Aprobar: 1/2/3/5 tiradas de Wujupón (Verde/Azul/Morado/Dorado) a quien lo reportó. Si pidió repartirlo, se reparte
+- Aprobar: core 1/2/3/5 · vortex 3/6/10/15 tiradas de Wujupón (Verde/Azul/Morado/Dorado) a quien lo reportó. Si pidió repartirlo, se reparte
   directamente entre quien lo reportó y los compañeros que puso: a cada uno le toca la parte entera y el sobrante se sortea.
   Si hay más personas que tiradas, se sortean todas.
 - Todos los avisos van al canal general etiquetando a las personas.
@@ -62,7 +62,7 @@ def build_embed(report: dict, image_url: Optional[str] = None, awards: Optional[
     mates = odb.mates_of(report)
     if mates:
         emb.add_field(name=f"Repartir con ({len(mates)})", value=" ".join(f"<@{u}>" for u in mates)[:1000], inline=False)
-    emb.add_field(name="Tiradas", value=f"🎰 {odb.RARITY_SPINS[report['rarity']]}", inline=True)
+    emb.add_field(name="Tiradas", value=f"🎰 {odb.spins_for(report['kind'], report['rarity'])}", inline=True)
     emb.add_field(name="Estado", value=STATUS_TEXT.get(st, st) + (f" por <@{actor_id}>" if actor_id else ""), inline=True)
     if awards:
         emb.add_field(name="Tiradas entregadas", value="\n".join(f"<@{u}> → **{n}**" for u, n in awards.items())[:1000], inline=False)
@@ -75,7 +75,7 @@ def build_embed(report: dict, image_url: Optional[str] = None, awards: Optional[
 
 
 def share_text(report: dict, awards: Dict[int, int], participants: List[int]) -> str:
-    total = odb.RARITY_SPINS[report["rarity"]]
+    total = odb.spins_for(report["kind"], report["rarity"])
     n = len(participants)
     lines = [f"🎲 **Reparto del {orb_name(report)}** de <@{report['user_id']}>: **{total}** tirada(s) de Wujupón entre **{n}** persona(s)."]
     kind = odb.KIND_LABEL[report["kind"]].lower()
@@ -444,7 +444,7 @@ class CoresCog(commands.Cog):
         if report["share"]:                            # pidió repartirlo: se reparte con los que puso, sin elegir a nadie más
             return await self.share(interaction, message, [])
         await interaction.response.defer(ephemeral=True)
-        n = odb.RARITY_SPINS[report["rarity"]]
+        n = odb.spins_for(report["kind"], report["rarity"])
         done = await self._decide(interaction, message, "approved", {int(report["user_id"]): n})
         if done is None:
             return
@@ -473,7 +473,7 @@ class CoresCog(commands.Cog):
             return await _say(interaction, "ℹ️ El reporte ya no está pendiente.")
         report = await self.run(odb.get, report["id"])
         await self._refresh(message, report)
-        await _say(interaction, f"✏️ Ahora es **{orb_name(report)}** ({odb.RARITY_SPINS[rarity]} tirada(s)).")
+        await _say(interaction, f"✏️ Ahora es **{orb_name(report)}** ({odb.spins_for(report['kind'], rarity)} tirada(s)).")
 
     async def share(self, interaction: discord.Interaction, message, picked):
         report = await self.pending_or_say(interaction, message)
@@ -485,7 +485,7 @@ class CoresCog(commands.Cog):
                                            + " ".join(getattr(u, "mention", str(u)) for u in bad))
         participants = list(dict.fromkeys([int(report["user_id"])] + odb.mates_of(report) + [int(u.id) for u in picked]))
         await interaction.response.defer(ephemeral=True)
-        awards = odb.allocate(odb.RARITY_SPINS[report["rarity"]], participants)
+        awards = odb.allocate(odb.spins_for(report["kind"], report["rarity"]), participants)
         done = await self._decide(interaction, message, "shared", awards)
         if done is None:
             return

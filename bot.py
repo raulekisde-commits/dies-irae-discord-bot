@@ -3829,6 +3829,7 @@ def cta_db_init():
         );
         CREATE INDEX IF NOT EXISTS idx_cta_runs_status ON cta_runs(guild_id, status, closes_at);
         CREATE INDEX IF NOT EXISTS idx_cta_signups_cta ON cta_signups(cta_id);
+        CREATE INDEX IF NOT EXISTS idx_cta_runs_thread ON cta_runs(thread_id);
         """)
         # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -4438,6 +4439,11 @@ def cta_instructions_text(run: dict, total: int) -> str:
 cta_board_tasks: dict = {}
 cta_board_dirty: set = set()
 cta_board_locks: dict = {}
+cta_board_sent: dict = {}          # {id de mensaje: firma de lo último que se le mandó}: no se re-edita un mensaje que no cambió
+
+
+def cta_board_signature(embeds, *extra) -> str:
+    return json.dumps([None if embeds is None else [e.to_dict() for e in embeds], *extra], sort_keys=True, default=str)
 
 
 async def cta_get_thread(run: dict):
@@ -4495,6 +4501,10 @@ async def cta_refresh_board(run_id: int):
         new_ids = []
         for i, embeds in enumerate(groups):
             msg_id = None
+            sig = cta_board_signature(embeds)
+            if i < len(ids) and cta_board_sent.get(ids[i]) == sig:
+                new_ids.append(ids[i])
+                continue
             if i < len(ids):
                 try:
                     if embeds is None:
@@ -4508,8 +4518,10 @@ async def cta_refresh_board(run_id: int):
                 sent = (await channel.send(CTA_EMPTY_MSG, allowed_mentions=CTA_NO_PINGS) if embeds is None
                         else await channel.send(embeds=embeds, allowed_mentions=CTA_NO_PINGS))
                 msg_id = sent.id
+            cta_board_sent[msg_id] = sig
             new_ids.append(msg_id)
         for old_id in ids[len(groups):]:
+            cta_board_sent.pop(old_id, None)
             try:
                 await channel.get_partial_message(old_id).delete()
             except Exception:
@@ -4533,11 +4545,17 @@ async def cta_refresh_panel(bot_obj, run_id: int):
         except Exception:
             return
     thread_url = f"https://discord.com/channels/{run['guild_id']}/{run['thread_id']}" if run.get("thread_id") else None
+    mid = int(run["message_id"])
+    embeds = cta_panel_groups(run)[0]
+    closed, final = run["status"] != "open", run.get("final_state") is not None
+    sig = cta_board_signature(embeds, closed, final, thread_url)
+    if cta_board_sent.get(mid) == sig:            # sin cambios: no gastar una edición
+        return
     try:
-        msg = await channel.fetch_message(int(run["message_id"]))
-        await msg.edit(embeds=cta_panel_groups(run)[0],
-                       view=CTAPanelView(run_id=int(run_id), closed=run["status"] != "open", thread_url=thread_url, final=run.get("final_state") is not None),
+        await channel.get_partial_message(mid).edit(embeds=embeds,
+                       view=CTAPanelView(run_id=int(run_id), closed=closed, thread_url=thread_url, final=final),
                        allowed_mentions=CTA_NO_PINGS)
+        cta_board_sent[mid] = sig
     except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
         print(f"CTA #{run_id}: no se pudo actualizar el panel: {exc}")
 
@@ -4555,7 +4573,7 @@ async def _cta_board_worker(run_id: int, delay: float):
             break
 
 
-def cta_request_board_refresh(run_id: int, delay: float = 1.5):
+def cta_request_board_refresh(run_id: int, delay: float = 3.0):
     """Pide actualizar tablero y panel. Agrupa varias inscripciones seguidas en una sola edición."""
     task = cta_board_tasks.get(run_id)
     if task is not None and not task.done():
@@ -5685,6 +5703,14 @@ async def cta_ack_ok(message: discord.Message, fallback_text: str):
         await cta_reply_short(message, fallback_text, 8)
 
 
+async def cta_ack_fail(message: discord.Message, fallback_text: str):
+    """Rechazo simple (posición ocupada o inexistente) con una reacción ❌, para no llenar el hilo en plena inscripción."""
+    try:
+        await message.add_reaction("❌")
+    except discord.HTTPException:
+        await cta_reply_short(message, fallback_text, 8)
+
+
 CTA_ADD_TIME_RE = re.compile(r"^!agregartiempo\b\s*(.*)$", re.I | re.S)
 CTA_VOICE_RE = re.compile(r"^!voice\s*$", re.I)
 CTA_LOCK_RE = re.compile(r"^!(un)?lock\b\s*(.*)$", re.I | re.S)
@@ -6078,7 +6104,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if action == "leave" and number is not None:   # «-21»: sacarte de la posición 21
         slot = cta_slot_by_number(snapshot["slots"], number)
         if slot is None:
-            await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {len(snapshot['slots'])}.")
+            await cta_ack_fail(message, f"La posición {number} no existe. Elegí un número del 1 al {len(snapshot['slots'])}.")
             return True
         organizer = cta_is_organizer(member)
         code, other = cta_release_slot(run_id, cta_slot_key(slot), only_user=None if organizer else member.id)
@@ -6113,7 +6139,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     total = len(snapshot["slots"])
     slot = cta_slot_by_number(snapshot["slots"], number)
     if slot is None:
-        await cta_reply_short(message, f"La posición {number} no existe. Elegí un número del 1 al {total}.")
+        await cta_ack_fail(message, f"La posición {number} no existe. Elegí un número del 1 al {total}.")
         return True
     if snapshot.get("lock_p34") or snapshot.get("dps_last"):
         taken = {s["slot_key"]: s["user_id"] for s in cta_get_signups(run_id)}
@@ -6147,7 +6173,7 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     elif code == "same":
         await cta_reply_short(message, f"Ya estás anotado en la posición {number}.", 8)
     elif code == "occupied":
-        await cta_reply_short(message, f"La posición {number} ya está ocupada por <@{extra}>. Elegí otra.")
+        await cta_ack_fail(message, f"La posición {number} ya está ocupada por <@{extra}>. Elegí otra.")
     elif code == "locked":
         await cta_reply_short(message, "Un organizador te asignó tu plaza. Pedile a él que la cambie.")
     elif code == "moved":
