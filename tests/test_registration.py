@@ -233,6 +233,24 @@ class RegistrationDiscordTests(DiscordBase):
 
         self.cog.fetch_json = fake
 
+    def test_renombrado_en_albion_actualiza_registro_y_apodo(self):
+        self.cog.albion_guild_id = "GID"
+        rdb.admin_link(self.db, self.bob.id, "GooglyMoogly3625", 1, char_id="yUGuXXcDRsaSsVrrqApWMA", guild_name="Smogg")
+        self.bob.nick = "GooglyMoogly3625"
+        members = [{"Id": "yUGuXXcDRsaSsVrrqApWMA", "Name": "killgringos", "GuildName": "Smogg", "AllianceName": "", "KillFame": 1, "DeathFame": 1}]
+
+        async def roster(url, params=None):
+            if "/guilds/GID/members" in url and "ams" not in url and "sgp" not in url:
+                return members
+            raise RuntimeError("HTTP 404")
+        self.cog.fetch_json = roster
+        self.assertTrue(run(self.cog.refresh_roster()))
+        self.assertEqual(rdb.get_registration(self.db, self.bob.id).char_name, "killgringos")
+        self.assertEqual(rdb.old_names(self.db, self.bob.id), ["GooglyMoogly3625"])
+        self.assertEqual(self.bob.nick, "killgringos")
+        self.assertTrue(any("se renombró" in m.content for m in self.logs.sent))
+        self.assertEqual(run(self.cog.sync_renames()), 0)                       # ya está al día: no repite
+
     def test_roster_cache_avoids_the_search_api(self):
         self.cog.albion_guild_id = "GID"
         members = [{"Id": "id-cazador", "Name": "Cazador", "GuildName": "Smogg", "AllianceName": "", "KillFame": 5, "DeathFame": 1}]
