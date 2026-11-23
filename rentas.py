@@ -57,7 +57,7 @@ T: Dict[str, Dict[str, str]] = {
         "n_week": "💰 Cobro semanal — {date}", "n_initial": "💰 Pago inicial", "n_prev": "Deuda anterior: **{amount}**",
         "n_total": "**Total a pagar: {amount}**", "n_rem": "⏰ Recordatorio: pago pendiente",
         "n_rem_desc": "Tenés **{amount}** sin pagar.", "n_paid": "✅ Pago registrado: **{amount}**. ¡Gracias!",
-        "c_prorrateo": "Días hasta el domingo", "c_semana": "Semana", "c_nivel3": "Subir a nivel 3", "c_ponemos": "Lo ponemos nosotros", "c_defensa_ant": "Defensa del HO (50% adelantado)",
+        "c_ajuste": "Ajuste del pago", "c_prorrateo": "Días hasta el domingo", "c_semana": "Semana", "c_nivel3": "Subir a nivel 3", "c_ponemos": "Lo ponemos nosotros", "c_defensa_ant": "Defensa del HO (50% adelantado)",
         "c_defensa_resto": "Defensa del HO (50% restante)", "c_pack_ant": "Pack HO (50% adelantado)", "c_pack_resto": "Pack HO (50% restante)",
         "l_free": "Gratis hasta", "l_stage": "Estado", "st_approved": "Aprobado", "st_paid": "Pago confirmado",
         "st_placed": "HO colocado", "st_waiting": "⏳ Esperando que se coloque el HO (la renta semanal todavía no corre)",
@@ -107,7 +107,7 @@ T: Dict[str, Dict[str, str]] = {
         "n_week": "💰 Cobrança semanal — {date}", "n_initial": "💰 Pagamento inicial", "n_prev": "Dívida anterior: **{amount}**",
         "n_total": "**Total a pagar: {amount}**", "n_rem": "⏰ Lembrete: pagamento pendente",
         "n_rem_desc": "Você tem **{amount}** em aberto.", "n_paid": "✅ Pagamento registrado: **{amount}**. Obrigado!",
-        "c_prorrateo": "Dias até domingo", "c_semana": "Semana", "c_nivel3": "Subir para nível 3", "c_ponemos": "Nós colocamos", "c_defensa_ant": "Defesa da HO (50% adiantado)",
+        "c_ajuste": "Ajuste do pagamento", "c_prorrateo": "Dias até domingo", "c_semana": "Semana", "c_nivel3": "Subir para nível 3", "c_ponemos": "Nós colocamos", "c_defensa_ant": "Defesa da HO (50% adiantado)",
         "c_defensa_resto": "Defesa da HO (50% restante)", "c_pack_ant": "Pack HO (50% adiantado)", "c_pack_resto": "Pack HO (50% restante)",
         "l_free": "Grátis até", "l_stage": "Situação", "st_approved": "Aprovado", "st_paid": "Pagamento confirmado",
         "st_placed": "HO colocada", "st_waiting": "⏳ Aguardando a colocação da HO (o aluguel semanal ainda não corre)",
@@ -157,7 +157,7 @@ T: Dict[str, Dict[str, str]] = {
         "n_week": "💰 Weekly charge — {date}", "n_initial": "💰 Initial payment", "n_prev": "Previous debt: **{amount}**",
         "n_total": "**Total due: {amount}**", "n_rem": "⏰ Reminder: payment pending",
         "n_rem_desc": "You have **{amount}** unpaid.", "n_paid": "✅ Payment recorded: **{amount}**. Thanks!",
-        "c_prorrateo": "Days until Sunday", "c_semana": "Week", "c_nivel3": "Level 3 upgrade", "c_ponemos": "We place it", "c_defensa_ant": "HO defense (50% upfront)",
+        "c_ajuste": "Payment adjustment", "c_prorrateo": "Days until Sunday", "c_semana": "Week", "c_nivel3": "Level 3 upgrade", "c_ponemos": "We place it", "c_defensa_ant": "HO defense (50% upfront)",
         "c_defensa_resto": "HO defense (remaining 50%)", "c_pack_ant": "HO pack (50% upfront)", "c_pack_resto": "HO pack (remaining 50%)",
         "l_free": "Free until", "l_stage": "Status", "st_approved": "Approved", "st_paid": "Payment confirmed",
         "st_placed": "HO placed", "st_waiting": "⏳ Waiting for the HO to be placed (weekly rent not running yet)",
@@ -1497,6 +1497,28 @@ class RentasCog(commands.Cog):
         await _reply(interaction, ("✅ Tarifas actualizadas.\n" if vals else "") + txt)
         if vals:
             await self.log("rentas", f"💲 {interaction.user.mention} actualizó las tarifas: {txt}")
+
+    @renta.command(name="pago-semana", description="(Council) Confirma el pago de esta semana con el monto que pagó el cliente (si es otro)")
+    @app_commands.describe(monto="Lo que pagó, ej. 80M o 80.000.000")
+    async def pago_semana(self, interaction: discord.Interaction, monto: str):
+        canal = await self._panel_canal(interaction)
+        if canal is None:
+            return
+        try:
+            total, pagado = await self.run(rdb.confirmar_semana_monto, canal.id, rdb.today_utc(), rdb.parse_silver(monto), interaction.user.id)
+        except rdb.RentaError as exc:
+            return await _reply(interaction, f"❌ {exc}")
+        if not total:
+            return await _reply(interaction, "ℹ️ No hay nada pendiente de esta semana.")
+        await interaction.channel.send(t(canal.idioma, "n_paid", amount=rdb.fmt_silver(pagado)), allowed_mentions=NO_MENTIONS)
+        await self.refresh_panel(canal.id)
+        deuda = await self.run(rdb.deuda_canal, canal.id)
+        diff = pagado - total
+        dtxt = "" if not diff else f" ({'+' if diff > 0 else '−'}{rdb.fmt_silver(abs(diff))} respecto de lo cargado, {rdb.fmt_silver(total)})"
+        await _reply(interaction, f"✅ Semana confirmada con **{rdb.fmt_silver(pagado)}**{dtxt}."
+                                  + (f" Queda deuda anterior: {rdb.fmt_silver(deuda)}." if deuda else ""))
+        await self.log("pagos", f"💰 {interaction.user.mention} confirmó el pago de esta semana en <#{canal.channel_id}> "
+                                f"({canal.titular_nombre}) con otro monto: **{rdb.fmt_silver(pagado)}** (cargado: {rdb.fmt_silver(total)})")
 
     @renta.command(name="cobrar-resto", description="(Council) Carga el 50% restante de defensa / pack de este canal")
     async def cobrar_resto(self, interaction: discord.Interaction):

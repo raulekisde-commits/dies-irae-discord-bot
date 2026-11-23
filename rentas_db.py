@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS rent_rentas (
 CREATE TABLE IF NOT EXISTS rent_cargos (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     renta_id   INTEGER NOT NULL,
-    concepto   TEXT NOT NULL,                   -- prorrateo | semana | nivel3 | ponemos | baja
+    concepto   TEXT NOT NULL,                   -- prorrateo | semana | nivel3 | ponemos | baja | extra | ajuste (pagó otro monto)
     periodo    TEXT NOT NULL,                   -- semana cobrada (domingo) o fecha del cargo
     lote       TEXT,                            -- domingo del cobro semanal que lo generó (NULL = cargo al aprobar/baja)
     monto      INTEGER NOT NULL,
@@ -1096,6 +1096,36 @@ def confirmar_semana_canal(db_path: str, canal_id: int, hoy: date, actor_id: int
             if total:
                 conn.execute(f"UPDATE rent_cargos SET pagado = 1, paid_at = ?, paid_by = ? WHERE {cond}", (utcnow_iso(), actor_id) + args)
             return total
+    finally:
+        conn.close()
+
+
+def confirmar_semana_monto(db_path: str, canal_id: int, hoy: date, monto: int, actor_id: int) -> tuple:
+    """Como confirmar_semana_canal, pero el cliente pagó `monto` en vez de lo cargado: marca pagado lo de ESTA semana y deja un
+    cargo 'ajuste' (pagado, del mismo lote) por la diferencia, así lo cobrado suma exactamente `monto`. La deuda de semanas
+    anteriores no se toca. Devuelve (total cargado de la semana, monto pagado); (0, 0) si no había nada pendiente."""
+    if monto <= 0:
+        raise RentaError("El monto tiene que ser mayor a 0.")
+    sunday = week_start(hoy)
+    cond = ("pagado = 0 AND (lote = ? OR (lote IS NULL AND created_at >= ?)) AND renta_id IN "
+            "(SELECT id FROM rent_rentas WHERE canal_id = ? AND activa = 1)")
+    args = (sunday.isoformat(), _sunday_iso_start(sunday), canal_id)
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            rows = conn.execute(f"SELECT renta_id, monto FROM rent_cargos WHERE {cond} ORDER BY id", args).fetchall()
+            total = sum(int(r["monto"]) for r in rows)
+            if not rows:
+                return 0, 0
+            now = utcnow_iso()
+            conn.execute(f"UPDATE rent_cargos SET pagado = 1, paid_at = ?, paid_by = ? WHERE {cond}", (now, actor_id) + args)
+            diff = int(monto) - total
+            if diff:
+                conn.execute("INSERT INTO rent_cargos(renta_id, concepto, periodo, lote, monto, pagado, created_at, paid_at, paid_by, detalle) "
+                             "VALUES(?, 'ajuste', ?, ?, ?, 1, ?, ?, ?, ?)",
+                             (int(rows[0]["renta_id"]), now, sunday.isoformat(), diff, now, now, actor_id,
+                              f"Pagó {int(monto)} de {total}"[:100]))
+            return total, int(monto)
     finally:
         conn.close()
 

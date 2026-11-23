@@ -444,6 +444,20 @@ class PanelCliente(Base):
         self.assertIn("Extras pagados · 10M", str(asyncio.run(cog.client_embed(canal)).fields))
         self.assertEqual([b.custom_id for b in rentas.ClientPanelView(cog).children], ["rent:cp:precio", "rent:cp:semana", "rent:cp:extra"])
 
+    def test_pago_semana_con_otro_monto(self):
+        canal, rid = self.alta(modalidad="vencido")
+        rdb.run_weekly(self.db, SUN)                                    # cargado: 4M
+        cargado = rdb.deuda_canal(self.db, canal.id)
+        antes = rdb.resumen(self.db, SUN)
+        with self.assertRaises(rdb.RentaError):
+            rdb.confirmar_semana_monto(self.db, canal.id, SUN, 0, COUNCIL)
+        self.assertEqual(rdb.confirmar_semana_monto(self.db, canal.id, SUN, 3_000_000, COUNCIL), (cargado, 3_000_000))
+        self.assertEqual(rdb.deuda_canal(self.db, canal.id), 0)                    # la semana queda saldada
+        despues = rdb.resumen(self.db, SUN)
+        self.assertEqual(despues.ultimo_pagado - antes.ultimo_pagado, 3_000_000)    # lo cobrado es lo que pagó
+        self.assertEqual(despues.ultimo_generado, 3_000_000)
+        self.assertEqual(rdb.confirmar_semana_monto(self.db, canal.id, SUN, 1, COUNCIL), (0, 0))   # ya no hay nada pendiente
+
 
 if __name__ == "__main__":
     unittest.main()
