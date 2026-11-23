@@ -32,7 +32,9 @@ class PureTests(unittest.TestCase):
         self.assertEqual(cdb.guess_role("Voy de healer en la cta https://youtu.be/x"), "Healer")
         self.assertIsNone(cdb.guess_role("tank y healer"))
         self.assertIsNone(cdb.guess_role("https://youtu.be/tank"))
-        self.assertEqual(cdb.guess_role("battle mount"), "Battle Mount")
+        self.assertIsNone(cdb.guess_role("battle mount"))                                       # solo los 4 roles de coaching
+        self.assertEqual(cdb.guess_role("voy de supp"), "Supp")
+        self.assertEqual(cdb.guess_role("dps"), "Dps")
 
     def test_week_start_is_monday_utc(self):
         d = datetime(2026, 11, 4, 15, 0, tzinfo=timezone.utc)                               # miércoles
@@ -68,7 +70,9 @@ class CoachingDiscordTests(DiscordBase):
         self.guild.roles.append(self.r_miembro)
         self.alice.roles.append(self.r_miembro)
         self.novato = discord.Member(700000000000000001, "Novato", roles=[self.r_obs], guild=self.guild)
-        self.coach = discord.Member(700000000000000002, "Coach", roles=[self.r_coach], guild=self.guild)
+        self.r_ch = {k: discord.Role(rid, f"Coach {k}", self.guild) for k, (rid, _) in co.COACH_ROLES.items()}
+        self.guild.roles += [r for k, r in self.r_ch.items() if k != "Dps"]
+        self.coach = discord.Member(700000000000000002, "Coach", roles=[self.r_ch["Healer"]], guild=self.guild)   # coach de healer
         self.guild.members += [self.novato, self.coach]
         self.forum = discord.ForumChannel(co.FORUM_CHANNEL_ID, self.guild, "vods")
         made = []
@@ -83,9 +87,16 @@ class CoachingDiscordTests(DiscordBase):
         self.forum.create_thread = create_thread
         self.made = made
         self.bot.channels[co.FORUM_CHANNEL_ID] = self.forum
-        self.tasks_ch = discord.TextChannel(co.COACHING_TASKS_CHANNEL_ID, self.guild, "tareas")
-        self.guild._channels[co.COACHING_TASKS_CHANNEL_ID] = self.tasks_ch
-        self.bot.channels[co.COACHING_TASKS_CHANNEL_ID] = self.tasks_ch
+        self.old_tasks_ch = discord.TextChannel(co.COACHING_TASKS_CHANNEL_ID, self.guild, "tareas")
+        self.guild._channels[co.COACHING_TASKS_CHANNEL_ID] = self.old_tasks_ch
+        self.bot.channels[co.COACHING_TASKS_CHANNEL_ID] = self.old_tasks_ch
+        self.coach_ch = {}
+        for k, (_, cid) in co.COACH_ROLES.items():                                          # un canal de pendientes por rol
+            ch = discord.TextChannel(cid, self.guild, f"coach-{k.lower()}")
+            self.guild._channels[cid] = ch
+            self.bot.channels[cid] = ch
+            self.coach_ch[k] = ch
+        self.tasks_ch = self.coach_ch["Healer"]
         self.ecog = run(enc.setup_encargos(self.bot, self.db, 1))
         self.ecog.ticker.cancel()
         self.cog = run(co.setup_coaching(self.bot, self.db, GUILD_ID))
@@ -125,41 +136,58 @@ class CoachingDiscordTests(DiscordBase):
         self.open_post(self.alice)                                                          # un miembro también tiene el suyo
         self.assertEqual(len(self.made), 2)
 
-    def test_vod_creates_task_for_coaching_and_asks_role(self):
+    def test_vod_task_waits_for_role_and_goes_to_role_channel(self):
         self.open_post(self.novato)
         th = self.made[0]
         m = self.video_msg(self.novato, th, "mi vod https://youtu.be/abc", 5001)
         run(self.cog.process_message(m))
-        panel = self.tasks_ch.sent[0]
-        self.assertIn(f"<@&{co.COACHING_ROLE_ID}>", panel.content)
-        self.assertIn(f"<@&{co.OPINOLOGO_ROLE_ID}>", panel.content)
-        self.assertEqual(co.COACHING_TASKS_CHANNEL_ID, 1566710577173102602)
-        self.assertNotIn(f"<@&{enc.STAFF_ROLE_ID}>", panel.content)
-        self.assertIn("sin indicar", panel.embeds[0].description)
-        self.assertIn("Observación", panel.embeds[0].description)
+        self.assertEqual([c.sent for c in self.coach_ch.values()], [[], [], [], []])         # sin rol: todavía no hay tarea
         self.assertEqual(len(m.replies), 1)                                                  # el bot pregunta el rol
-        # elegir el rol actualiza la tarea
+        self.assertEqual([o.value for o in m.replies[0][1]["view"].children[0].options], ["Dps", "Tank", "Supp", "Healer"])
+        self.assertIn("quien subió", self.pick_by(self.bob, 5001))
         ref = SimpleNamespace(message_id=5001)
         i = self.inter(self.novato, message=SimpleNamespace(reference=ref))
-        i.data = {"values": ["Healer"]}
-        run(self.cog.on_role_pick(i, "Healer"))
+        run(self.cog.on_role_pick(i, "Pierce"))                                              # menú viejo: rol que ya no existe
+        self.assertEqual(self.tasks_ch.sent, [])
+        i = self.inter(self.novato, message=SimpleNamespace(reference=ref))
+        run(self.cog.on_role_pick(i, "Healer"))                                              # elegir el rol crea la tarea en su canal
+        panel = self.tasks_ch.sent[0]
+        self.assertIn(f"<@&{co.COACH_ROLES['Healer'][0]}>", panel.content)
+        self.assertNotIn(f"<@&{co.OPINOLOGO_ROLE_ID}>", panel.content)
+        self.assertNotIn(f"<@&{enc.STAFF_ROLE_ID}>", panel.content)
         self.assertIn("Healer", panel.embeds[0].description)
-        self.assertIn("quien subió", self.pick_by(self.bob, 5001))
-        # el rol escrito en el mensaje evita la pregunta
-        m2 = self.video_msg(self.novato, th, "voy de tank https://youtu.be/def", 5002)
+        self.assertIn("Observación", panel.embeds[0].description)
+        self.assertEqual(edb.find_by_source(self.db, "coach:5001").for_role, co.COACH_ROLES["Healer"][0])
+        m2 = self.video_msg(self.novato, th, "voy de tank https://youtu.be/def", 5002)    # el rol escrito evita la pregunta
         run(self.cog.process_message(m2))
         self.assertEqual(m2.replies, [])
-        self.assertIn("Tank", self.tasks_ch.sent[1].embeds[0].description)
+        self.assertIn("Tank", self.coach_ch["Tank"].sent[0].embeds[0].description)
+        self.assertEqual(len(self.tasks_ch.sent), 1)
+        self.assertEqual(co.COACH_ROLES["Dps"], (1566691393726980167, 1574275341214556284))
+        self.assertEqual(co.COACH_ROLES["Healer"], (1574277110342746232, 1574276898538922035))
+
+    def test_solo_el_coach_del_rol_y_solo_respondiendo_al_video(self):
+        self.open_post(self.novato)
+        th = self.vods(1)                                                                    # VOD de healer
+        tank = discord.Member(700000000000000030, "CoachTank", roles=[self.r_ch["Tank"]], guild=self.guild)
+        run(self.cog.process_message(self.reply_msg(tank, th, 4500, reply_to=4100)))         # coach de otro rol: no cuenta
+        run(self.cog.process_message(self.reply_msg(self.council, th, 4501, reply_to=4100)))  # Council: tampoco
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        m, i = self.review(self.coach, th, 4502)                                             # sin reply al video: no cuenta
+        self.assertEqual((m.replies, i), ([], None))
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
+        self.review(self.coach, th, 4503, reply_to=4100)
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "done")
 
     def pick_by(self, user, mid):
         i = self.inter(user, message=SimpleNamespace(reference=SimpleNamespace(message_id=mid)))
-        run(self.cog.on_role_pick(i, "DPS"))
+        run(self.cog.on_role_pick(i, "Dps"))
         return i.text
 
     def test_member_vod_is_labeled_and_not_counted_for_quota(self):
         self.open_post(self.alice)
         th = self.made[0]
-        run(self.cog.process_message(self.video_msg(self.alice, th, "tank https://youtu.be/q", 6001)))
+        run(self.cog.process_message(self.video_msg(self.alice, th, "healer https://youtu.be/q", 6001)))
         self.assertIn("Miembro", self.tasks_ch.sent[0].embeds[0].description)
         self.assertIn("no cuenta", self.tasks_ch.sent[0].embeds[0].description)
         i = self.inter(self.alice)
@@ -264,16 +292,17 @@ class CoachingDiscordTests(DiscordBase):
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["open", "done", "open"])
         self.assertEqual(edb.find_by_source(self.db, "coach:4101").done_by, self.coach.id)
         self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").reward_spins for k in range(3)], [0, 0, 0])  # la devolución no paga
-        m, i = self.review(self.council, th, 4203)                                              # respuesta general: el más viejo pendiente
-        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["done", "done", "open"])
+        m, _ = self.review(self.coach, th, 4203)                                                # sin reply al video: no cuenta
+        self.assertEqual([edb.find_by_source(self.db, f"coach:{4100 + k}").status for k in range(3)], ["open", "done", "open"])
+        m, _ = self.review(self.coach, th, 4204, reply_to=4100)
         self.assertIn("✅", m.reactions)
-        self.review(self.council, th, 4204)
+        self.review(self.coach, th, 4205, reply_to=4102)
         self.assertEqual(cdb.pending_msgs(self.db, th.id), [])
 
     def test_review_en_varios_mensajes_pregunta_si_esta_completa(self):
         self.open_post(self.novato)
         th = self.vods(2)
-        m1 = self.reply_msg(self.coach, th, 4210, text="primera parte")
+        m1 = self.reply_msg(self.coach, th, 4210, reply_to=4100, text="primera parte")       # la review empieza con reply al video
         run(self.cog.process_message(m1))
         self.assertIsInstance(m1.replies[0][1]["view"], co.CoachConfirmView)                   # «¿esta es la review completa?»
         self.assertIn("review completa", m1.replies[0][0])
@@ -281,7 +310,7 @@ class CoachingDiscordTests(DiscordBase):
         self.assertIn("Solo el coach", self.confirm(self.alice, th, 4210).text)
         i = self.confirm(self.coach, th, 4210, done=False)                                      # «Todavía no»
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        m2 = self.reply_msg(self.coach, th, 4211, text="segunda parte")
+        m2 = self.reply_msg(self.coach, th, 4211, text="segunda parte")                       # los siguientes (sin reply) la continúan
         run(self.cog.process_message(m2))
         m3 = self.reply_msg(self.coach, th, 4212, text="tercera parte")                         # sin contestar la pregunta: se mueve
         run(self.cog.process_message(m3))
@@ -339,7 +368,7 @@ class CoachingDiscordTests(DiscordBase):
         self.open_post(self.novato)
         th = self.vods(1)
         before = len(self.tasks_ch.sent)
-        m, _ = self.review(self.coach, th, 4400, text="buen vod")                             # corta: completa igual, sin aviso al Staff
+        m, _ = self.review(self.coach, th, 4400, reply_to=4100, text="buen vod")                             # corta: completa igual, sin aviso al Staff
         t = edb.find_by_source(self.db, "coach:4100")
         self.assertEqual((t.status, t.done_by), ("done", self.coach.id))
         self.assertEqual(len(self.tasks_ch.sent), before)
@@ -361,13 +390,12 @@ class CoachingDiscordTests(DiscordBase):
         self.grade_pick(self.coach, 4900, 7)
         self.grade_pick(self.coach, 4900, 8)                                                   # la puede cambiar
         self.assertEqual(cdb.player_avg(self.db, self.novato.id), (8.0, 1))
-        m2 = self.reply_msg(self.council, th, 4901, reply_to=4101, text=self.LONG_REPLY + " Nota: 10")   # nota escrita: sin menú
+        m2 = self.reply_msg(self.coach, th, 4901, reply_to=4101, text=self.LONG_REPLY + " Nota: 10")   # nota escrita: sin menú
         run(self.cog.process_message(m2))                                                      # con nota escrita no pregunta nada
         self.assertFalse(any(isinstance(kw.get("view"), (co.CoachConfirmView, co.CoachGradeView)) for _, kw in m2.replies))
         self.assertIn("⭐", m2.reactions)
         self.assertEqual(cdb.player_avg(self.db, self.novato.id), (9.0, 2))
-        self.assertEqual(cdb.coach_avgs(self.db), [(self.coach.id, 8.0, 1), (self.council.id, 10.0, 1)] if self.coach.id < self.council.id
-                         else [(self.council.id, 10.0, 1), (self.coach.id, 8.0, 1)])
+        self.assertEqual(cdb.coach_avgs(self.db), [(self.coach.id, 9.0, 2)])
         i = self.inter(self.novato)                                                            # sus propias notas
         run(self.cog.coaching_notas.callback(self.cog, i, None))
         self.assertIn("9.0/10", i.text)
@@ -377,7 +405,7 @@ class CoachingDiscordTests(DiscordBase):
         i = self.inter(self.coach)
         run(self.cog.coaching_notas_coaches.callback(self.cog, i, None))
         body = "\n".join(str(getattr(e, "description", "")) for _, kw in i.response.sent + getattr(i, "followups", []) for e in [kw.get("embed")] if e)
-        self.assertIn("8.0/10", body)
+        self.assertIn("9.0/10", body)
         self.assertEqual(cdb.players_between(self.db, 8, 9), [(self.novato.id, 9.0, 2)])
         self.assertEqual(cdb.players_between(self.db, 9.5, 10), [])
         i = self.inter(self.coach)
@@ -393,8 +421,8 @@ class CoachingDiscordTests(DiscordBase):
     def test_devolucion_corta_del_staff_no_se_revisa(self):
         self.open_post(self.novato)
         th = self.vods(1)
-        self.review(self.council, th, 4600, text="bien")
-        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "done")
+        self.review(self.council, th, 4600, reply_to=4100, text="bien")                      # el Staff/Council ya no da devoluciones
+        self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
 
     def test_vod_tasks_close_only_when_a_coach_replies_and_top_coach(self):
         self.open_post(self.novato)
@@ -403,8 +431,8 @@ class CoachingDiscordTests(DiscordBase):
         self.assertNotIn("task:done", [c.custom_id for c in self.tasks_ch.sent[0].view.children])   # sin botón «Tarea terminada»
         self.assertIn("se cierra sola", self.inter_done(opi, self.tasks_ch.sent[0]))                 # ni con permiso se cierra a mano
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").status, "open")
-        self.review(self.coach, th, 4300)                                                           # el coach contesta: una review por VOD
-        self.review(self.coach, th, 4301)
+        self.review(self.coach, th, 4300, reply_to=4100)                                            # el coach contesta: una review por VOD
+        self.review(self.coach, th, 4301, reply_to=4101)
         self.assertEqual(edb.find_by_source(self.db, "coach:4100").done_by, self.coach.id)
         self.assertEqual(edb.top_coaches(self.db), [(self.coach.id, 2)])
         i = self.inter(self.alice)
@@ -526,7 +554,7 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.track_desde_cta.callback(self.cog, i, self.r_obs, None, None))
         self.assertIn("Ya hay un track activo", i.text)
         i = self.inter(self.coach, channel=cta_th)
-        run(self.cog.track_desde_cta.callback(self.cog, i, self.r_coach, None, "agregar"))       # el anotado tardío (posiciones)
+        run(self.cog.track_desde_cta.callback(self.cog, i, self.r_ch["Healer"], None, "agregar"))       # el anotado tardío (posiciones)
         self.assertIn("agregué **1**", i.text)
         self.assertEqual({r["user_id"] for r in cdb.track_members(self.db)}, {self.novato.id, self.coach.id})
 

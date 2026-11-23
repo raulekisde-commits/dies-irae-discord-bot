@@ -25,7 +25,29 @@ MIEMBRO_ROLE_ID = int(os.getenv("MIEMBRO_ROLE_ID", "1257896455860129822"))
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "1257896709246423083"))
 OPINOLOGO_ROLE_ID = int(os.getenv("OPINOLOGO_ROLE_ID", "1559747434651852880"))
 COACHING_TASKS_CHANNEL_ID = int(os.getenv("COACHING_TASKS_CHANNEL_ID", "1566710577173102602"))     # canal donde salen las tareas de devolución
-ROLE_LABELS = [n for n in cu.PLAYED_ROLES.values() if n != "Bomb"]
+# Coaching dividido en 4 roles: rol de juego del VOD -> (rol de coach que lo revisa, canal donde sale la tarea pendiente)
+COACH_ROLES = {
+    "Dps": (int(os.getenv("COACH_DPS_ROLE_ID", "1566691393726980167")), int(os.getenv("COACH_DPS_CHANNEL_ID", "1574275341214556284"))),
+    "Tank": (int(os.getenv("COACH_TANK_ROLE_ID", "1574277143788265492")), int(os.getenv("COACH_TANK_CHANNEL_ID", "1574275411469139999"))),
+    "Supp": (int(os.getenv("COACH_SUPP_ROLE_ID", "1574277132694323281")), int(os.getenv("COACH_SUPP_CHANNEL_ID", "1574275557972254804"))),
+    "Healer": (int(os.getenv("COACH_HEALER_ROLE_ID", "1574277110342746232")), int(os.getenv("COACH_HEALER_CHANNEL_ID", "1574276898538922035"))),
+}
+COACH_ROLE_IDS = {rid for rid, _ in COACH_ROLES.values()}
+ROLE_LABELS = list(COACH_ROLES)
+_LABEL_ALIASES = {"dps": "Dps", "tank": "Tank", "supp": "Supp", "support": "Supp", "healer": "Healer"}
+
+
+def coach_label(label: Optional[str]) -> Optional[str]:
+    """Normaliza el rol guardado del VOD a uno de los 4 de coaching (los VODs viejos pueden decir «DPS» o «Support»). None si no es ninguno."""
+    return _LABEL_ALIASES.get((label or "").strip().casefold())
+
+
+def can_review(member, label: Optional[str]) -> bool:
+    """Solo el coach de ese rol da la devolución. VODs viejos con un rol que ya no existe: cualquiera de los 4 coaches."""
+    key = coach_label(label)
+    if key is None:
+        return bool(label) and bool(COACH_ROLE_IDS & _roles(member))
+    return COACH_ROLES[key][0] in _roles(member)
 STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
 # Revisión única al subir el cambio: devoluciones ya cobradas desde esta hora (UTC) que tienen una «X» en el texto
 RETRO_FLAG = "retro_x_review_2026_11"
@@ -42,7 +64,7 @@ def _roles(m) -> set:
 
 def can_report(m) -> bool:
     """Ven el reporte del coaching: Council/administradores, Staff, Coaching y Opinólogo."""
-    return can_manage(m) or bool({STAFF_ROLE_ID, COACHING_ROLE_ID, OPINOLOGO_ROLE_ID} & _roles(m))
+    return can_manage(m) or bool(({STAFF_ROLE_ID, COACHING_ROLE_ID, OPINOLOGO_ROLE_ID} | COACH_ROLE_IDS) & _roles(m))
 
 
 def is_obs(m) -> bool:
@@ -288,25 +310,21 @@ class CoachingCog(commands.Cog):
             return
         obs = is_obs(message.author)
         role = cdb.guess_role(message.content)
+        existed = await self.run(cdb.get_msg, message.id) is not None
         new = await self.run(cdb.add_vods, message_id=message.id, thread_id=message.channel.id, user_id=message.author.id, is_obs=obs,
                              vods=vods, created_at=message.created_at, role_label=role)
         if not new:
             return
         row = await self.run(cdb.get_msg, message.id)
+        if role and not row.get("role_label"):
+            await self.run(cdb.set_role, message.id, role)
         role = row.get("role_label") or role
         text = task_text(message.author.id, bool(row["is_obs"]), role, int(row["vods"]))
-        enc = self.bot.get_cog("EncargosCog")
-        fresh = True
-        if enc is not None:
-            try:
-                if await enc.update_text_by_source(f"coach:{message.id}", text):          # mensaje editado con más videos
-                    fresh = False
-                else:
-                    await enc.create(text=text, created_by=message.author.id, source=f"coach:{message.id}", link=message.jump_url,
-                                     ping_roles=[COACHING_ROLE_ID, OPINOLOGO_ROLE_ID], ping_staff=False,
-                                     channel_id=COACHING_TASKS_CHANNEL_ID, reward_spins=0)   # la tirada la cobra el jugador al recibir nota
-            except Exception as exc:
-                print(f"coaching: no pude crear la tarea del VOD {message.id}: {exc!r}")
+        fresh = not existed
+        try:
+            await self._upsert_task(message.id, message.author.id, text, role, message.jump_url)
+        except Exception as exc:
+            print(f"coaching: no pude crear la tarea del VOD {message.id}: {exc!r}")
         try:
             await message.add_reaction("🎥")
         except Exception:
@@ -323,11 +341,27 @@ class CoachingCog(commands.Cog):
             except Exception as exc:
                 print(f"coaching: no pude preguntar el rol: {exc!r}")
 
+    async def _upsert_task(self, mid: int, uid: int, text: str, role: Optional[str], link: str) -> bool:
+        """Actualiza la tarea del VOD si ya existe (devuelve True). Si no existe y el VOD ya tiene rol, la crea en el canal de ese
+        rol de coach, etiquetando solo a ese coach. Sin rol no se crea: se crea cuando el jugador lo elige."""
+        enc = self.bot.get_cog("EncargosCog")
+        if enc is None:
+            return False
+        if await enc.update_text_by_source(f"coach:{mid}", text):          # mensaje editado con más videos / rol elegido
+            return True
+        key = coach_label(role)
+        if key is None:
+            return False
+        coach_role, channel_id = COACH_ROLES[key]
+        await enc.create(text=text, created_by=uid, source=f"coach:{mid}", link=link, ping_roles=[coach_role], ping_staff=False,
+                         for_role=coach_role, channel_id=channel_id, reward_spins=0)   # la tirada la cobra el coach al poner nota
+        return False
+
     async def complete_on_reply(self, message: discord.Message):
         """Un coach/opinólogo/staff/council responde en el post. La review puede ir en varios mensajes: a cada uno el bot le pregunta
         si la review está completa. Recién con «Sí» se cierra la tarea de ESE VOD (al que responde o el más viejo pendiente) y se
         pide la nota. Si en el texto ya puso la nota («Nota: 7», «8/10»), se toma como completa sin preguntar."""
-        if not can_take(message.author):
+        if not ({COACHING_ROLE_ID} | COACH_ROLE_IDS) & _roles(message.author):
             return
         if self.bot.get_cog("EncargosCog") is None:
             return
@@ -335,9 +369,15 @@ class CoachingCog(commands.Cog):
         ref = getattr(getattr(message, "reference", None), "message_id", None)
         if ref is not None and ref not in pending and await self.run(cdb.get_msg, ref) is not None:
             return                                                   # sigue comentando un VOD que ya tiene su review cerrada
-        target = ref if ref in pending else (pending[0] if pending else None)
+        if ref in pending:                                           # la review empieza respondiendo (reply) al mensaje del video
+            target = ref
+        else:                                                        # sin reply: solo cuenta si continúa una review que ya empezó
+            target = await self.run(cdb.last_review_target, message.author.id, pending)
         if target is None:
             return
+        vod = await self.run(cdb.get_msg, target)
+        if vod is None or not can_review(message.author, vod.get("role_label")):
+            return                                                   # VOD de otro rol (o todavía sin rol): no es de este coach
         await self.run(cdb.add_grade_prompt, message.id, message.author.id, [target])
         key = (message.channel.id, message.author.id)
         old = self._confirm_prompts.pop(key, None)                   # la pregunta queda solo en el último mensaje de la review
@@ -634,13 +674,19 @@ class CoachingCog(commands.Cog):
             return await _say(interaction, "❌ No encuentro el VOD de este mensaje.")
         if interaction.user.id != int(row["user_id"]) and not can_report(interaction.user):
             return await _say(interaction, "🔒 Solo quien subió el VOD (o el staff) puede elegir el rol.")
-        await self.run(cdb.set_role, mid, label)
-        enc = self.bot.get_cog("EncargosCog")
-        if enc is not None:
+        if coach_label(label) is None:                               # menú viejo con un rol que ya no se usa
             try:
-                await enc.update_text_by_source(f"coach:{mid}", task_text(int(row["user_id"]), bool(row["is_obs"]), label, int(row["vods"])))
-            except Exception as exc:
-                print(f"coaching: no pude actualizar el rol en la tarea: {exc!r}")
+                return await interaction.response.edit_message(content="🎭 Ese rol ya no se usa. Elegí uno de estos:", view=CoachRoleView(self))
+            except Exception:
+                return await _say(interaction, "🎭 Ese rol ya no se usa: elegí Dps, Tank, Supp o Healer.")
+        label = coach_label(label)
+        await self.run(cdb.set_role, mid, label)
+        try:
+            link = f"https://discord.com/channels/{getattr(interaction, 'guild_id', None) or self.guild_id}/{int(row['thread_id'])}/{mid}"
+            await self._upsert_task(mid, int(row["user_id"]), task_text(int(row["user_id"]), bool(row["is_obs"]), label, int(row["vods"])),
+                                    label, link)
+        except Exception as exc:
+            print(f"coaching: no pude crear/actualizar la tarea con el rol: {exc!r}")
         try:
             await interaction.response.edit_message(content=f"🎭 Rol del VOD: **{label}**", view=None)
         except Exception:
