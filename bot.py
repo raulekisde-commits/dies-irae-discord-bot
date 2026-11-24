@@ -3833,6 +3833,9 @@ def cta_db_init():
         """)
         # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        # Migración aditiva: opción elegida en una posición con varias (vale solo mientras siga en esa posición: choice_slot).
+        db_ensure_column(conn, "cta_signups", "choice", "TEXT")
+        db_ensure_column(conn, "cta_signups", "choice_slot", "TEXT")
         db_ensure_column(conn, "cta_runs", "panel_extra_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         db_ensure_column(conn, "cta_compositions", "builds_url", "TEXT")
         db_ensure_column(conn, "cta_compositions", "legacy_first", "INTEGER NOT NULL DEFAULT 0")
@@ -3997,11 +4000,33 @@ def cta_run_title(run: dict) -> str:
     return (run.get("title") or f"{cta_word(run)} {run['composition_name']} #{run['id']}")
 
 
+def cta_option_roles(slot: dict) -> list:
+    """Roles distintos que piden las opciones de la posición (el de la principal primero)."""
+    out = []
+    for r in [cu.required_role(slot.get("role_ids"))] + [o.get("role_id") for o in slot.get("options") or []]:
+        if r and int(r) not in out:
+            out.append(int(r))
+    return out
+
+
+def cta_can_play_role(member: discord.Member, role_id: Optional[int], free=()) -> bool:
+    """Puede jugar una opción: sin rol, con el rol, con Flex o si ese rol se liberó con «!libre»."""
+    return (not role_id or cu.access_missing_role([r.id for r in member.roles], [role_id], FLEX_ROLE_ID) is None
+            or int(role_id) in set(free or ()))
+
+
 def cta_access_error(member: discord.Member, slot: dict, guild: discord.Guild, run_id: Optional[int] = None) -> Optional[str]:
     """Cada posición pide un único rol de juego. Flex ignora el permiso (la posición igual cuenta con su rol).
     Con run_id: si ese rol se liberó con «!libre» en la CTA, cualquiera puede anotarse."""
     if run_id is not None and cta_is_content(int(run_id)):    # /content: cualquiera se anota, sin importar el rol
         return None
+    roles = cta_option_roles(slot)
+    if len(roles) > 1:                                        # posición con varias opciones de distinto rol: alcanza con uno
+        free = cu.role_free(DB_PATH, int(run_id)) if run_id is not None else set()
+        if any(cta_can_play_role(member, r, free) for r in roles):
+            return None
+        names = " o ".join((guild.get_role(r).mention if guild.get_role(r) else f"rol eliminado ({r})") for r in roles)
+        return f"No podés anotarte en esta posición: necesitás uno de estos roles: {names}."
     missing = cu.access_missing_role([r.id for r in member.roles], slot.get("role_ids", []), FLEX_ROLE_ID)
     if missing is None or (run_id is not None and missing in cu.role_free(DB_PATH, int(run_id))):
         return None
@@ -4025,7 +4050,19 @@ def cta_clean_builds_url(text: Optional[str]) -> Optional[str]:
     return t.replace("(", "%28").replace(")", "%29")
 
 
+def cta_comp_slot_options(comp_id: int) -> dict:
+    """{'P1-3': [{name, weapon, role_id}]} guardado al importar/actualizar la compo desde la web. {} si no hay."""
+    if compoweb is None:
+        return {}
+    try:
+        parsed = compoweb.load_parsed(DB_PATH, int(comp_id))
+    except Exception:
+        return {}
+    return (parsed or {}).get("slot_options") or {}
+
+
 def cta_snapshot_from_comp(comp: dict):
+    slot_opts = cta_comp_slot_options(comp["id"])
     party_rows = db_fetchall("SELECT party_no, access_mode, role_ids_json, access_match FROM cta_party_access WHERE composition_id=?", (comp["id"],))
     party_access = {int(r["party_no"]): {"mode": r["access_mode"], "role_ids": json.loads(r["role_ids_json"] or "[]"), "match": r["access_match"]} for r in party_rows}
     slots = []
@@ -4035,7 +4072,8 @@ def cta_snapshot_from_comp(comp: dict):
             "role_name": s["role_name"], "emoji": s["emoji"],
             "access_mode": s.get("access_mode", "any"), "role_ids": s.get("role_ids", []),
             "access_match": s.get("access_match", "any"),
-            "party_access": party_access.get(int(s["party_no"]), {"mode": "any", "role_ids": [], "match": "any"})
+            "party_access": party_access.get(int(s["party_no"]), {"mode": "any", "role_ids": [], "match": "any"}),
+            "options": slot_opts.get(f"P{int(s['party_no'])}-{int(s['position_no'])}") or []
         })
     return {"name": comp["name"], "slots": slots, "party_access": party_access, "builds_url": comp.get("builds_url") or None,
             "legacy_first": bool(comp.get("legacy_first")), "ava": bool(comp.get("ava"))}
@@ -4249,7 +4287,24 @@ def cta_slot_restricted(slot: dict) -> bool:
     return cu.required_role(slot.get("role_ids")) is not None
 
 
-def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = False, color=None, locks: bool = True) -> list:
+def cta_signup_choices(run_id: int) -> dict:
+    """{slot_key: opción elegida} de quienes eligieron qué juegan en una posición con varias opciones."""
+    try:
+        rows = db_fetchall("SELECT slot_key, choice FROM cta_signups WHERE cta_id=? AND choice IS NOT NULL AND choice_slot=slot_key", (run_id,))
+    except sqlite3.Error:
+        return {}
+    return {r["slot_key"]: r["choice"] for r in rows}
+
+
+def cta_set_choice(run_id: int, user_id: int, slot_key: str, choice: str) -> bool:
+    """Guarda la opción elegida. False si ya no está anotado en esa posición."""
+    with db_immediate() as conn:
+        return conn.execute("UPDATE cta_signups SET choice=?, choice_slot=? WHERE cta_id=? AND user_id=? AND slot_key=?",
+                            (choice, slot_key, run_id, user_id, slot_key)).rowcount == 1
+
+
+def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = False, color=None, locks: bool = True,
+                    choices: Optional[dict] = None) -> list:
     """Genera una lista de 'specs' (título + descripción) por party, con numeración global.
 
     Si `assigned` es un dict slot_key -> user_id se muestra quién ocupa cada posición."""
@@ -4270,6 +4325,8 @@ def cta_party_specs(slots, assigned: Optional[dict] = None, show_roles: bool = F
             if assigned is not None:
                 uid = assigned.get(cta_slot_key(s))
                 who = f"<@{uid}>" if uid else "*libre*"
+                if uid and (choices or {}).get(cta_slot_key(s)):
+                    who += f" · {choices[cta_slot_key(s)]}"
                 lines.append(f"**{n}.** {cta_slot_label(s)} — {who}{mark}")
             else:
                 lines.append(f"**{n}.** {cta_slot_label(s)}{mark}{extra}")
@@ -4353,7 +4410,8 @@ def cta_board_specs(run: dict) -> list:
     count_line = f"👥 **Anotados: {occupied}/{total}**" if not extras else f"👥 **Anotados: {occupied + len(bombs) + len(cls)}** · posiciones {occupied}/{total}{extras}"
     header = {"title": f"⚔️ SMOGG · {cta_run_title(run)} · {run['composition_name']}",
               "description": f"{status}\n{count_line}{builds_line}{legacy_line}", "color": color}
-    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color, locks=run.get("kind") != "content")
+    specs = [header] + cta_party_specs(snapshot["slots"], assigned=assigned, color=color, locks=run.get("kind") != "content",
+                                       choices=cta_signup_choices(int(run["id"])))
     if bombs:                                         # aparte, solo para mostrar: cuentan como anotados pero no ocupan posición
         specs += cta_bomb_group_specs(int(run["guild_id"]), bombs, cu.bomb_choices(DB_PATH, int(run["id"])))
     if cls:                                           # Combat Looters: también aparte, van al split como looters
@@ -5744,6 +5802,67 @@ async def cta_flex_notice(message: discord.Message, run: dict, member: discord.M
         pass
 
 
+def cta_option_slot(slot: dict, option: dict) -> dict:
+    """La posición vista como la opción elegida (su rol y su nombre): para el aviso de Flex y las stats."""
+    rid = option.get("role_id") or cu.required_role(slot.get("role_ids"))
+    return {**slot, "role_ids": [rid] if rid else [], "role_name": option.get("name") or slot.get("role_name")}
+
+
+class CTAOptionView(discord.ui.View):
+    """«¿Cuál vas a jugar?» al anotarse en una posición con varias opciones. Solo responde la persona anotada."""
+
+    def __init__(self, run: dict, member_id: int, slot: dict, number: int, options: list):
+        super().__init__(timeout=600)
+        self.run, self.member_id, self.slot, self.number, self.message = run, member_id, slot, number, None
+        for o in options[:25]:
+            b = discord.ui.Button(label=str(o["name"])[:80], style=discord.ButtonStyle.primary)
+            b.callback = self._make_cb(o)
+            self.add_item(b)
+
+    def _make_cb(self, option: dict):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.member_id:
+                return await interaction.response.send_message("Esta pregunta es para quien se anotó.", ephemeral=True)
+            key = cta_slot_key(self.slot)
+            if not await asyncio.to_thread(cta_set_choice, int(self.run["id"]), self.member_id, key, option["name"]):
+                return await interaction.response.edit_message(content="Ya no estás anotado en esa posición.", view=None)
+            cta_request_board_refresh(int(self.run["id"]))
+            self.stop()
+            await interaction.response.edit_message(content=f"✅ {interaction.user.mention} va de **{option['name']}** en la posición {self.number}.",
+                                                    view=None, allowed_mentions=CTA_NO_PINGS)
+            if interaction.message is not None:
+                await cta_flex_notice(interaction.message, self.run, interaction.user, cta_option_slot(self.slot, option))
+        return cb
+
+    async def on_timeout(self):
+        if self.message is not None:
+            try:
+                await self.message.edit(content=f"⌛ No elegiste qué jugar en la posición {self.number}. Anotate de nuevo si querés elegir.", view=None)
+            except discord.HTTPException:
+                pass
+
+
+async def cta_ask_option(message: discord.Message, run: dict, member: discord.Member, slot: dict, number: int):
+    """Posición con varias opciones (armas alternativas, cada una con su rol): pregunta cuál va a jugar.
+    Si con sus roles puede jugar una sola, la elige sola. Sin opciones: solo el aviso de Flex de siempre."""
+    options = slot.get("options") or []
+    if len(options) < 2:
+        return await cta_flex_notice(message, run, member, slot)
+    free = cu.role_free(DB_PATH, int(run["id"])) if run.get("kind") != "content" else None
+    usable = options if free is None else [o for o in options if cta_can_play_role(member, o.get("role_id"), free)]
+    usable = usable or options                     # entró con una carta de Wujupón (anotación libre): elige entre todas
+    if len(usable) == 1:
+        await asyncio.to_thread(cta_set_choice, int(run["id"]), member.id, cta_slot_key(slot), usable[0]["name"])
+        cta_request_board_refresh(int(run["id"]))
+        return await cta_flex_notice(message, run, member, cta_option_slot(slot, usable[0]))
+    view = CTAOptionView(run, member.id, slot, number, usable)
+    try:
+        view.message = await message.reply(f"{member.mention} ¿Qué vas a jugar en la posición {number}?", view=view,
+                                           mention_author=False, allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False))
+    except discord.HTTPException:
+        pass
+
+
 async def cta_flex_list(message: discord.Message, run: dict, arg: str):
     """«!flex @Rol» (o el nombre; varios separados por coma) en el hilo: anotados en posiciones de ese rol que no es su main.
     «!flex» solo: todos los anotados fuera de su main, agrupados por el rol que juegan."""
@@ -6171,7 +6290,10 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
     if code == "closed":
         await cta_reply_short(message, "🔒 Las inscripciones de esta CTA ya están cerradas.", 8)
     elif code == "same":
-        await cta_reply_short(message, f"Ya estás anotado en la posición {number}.", 8)
+        if len(slot.get("options") or []) > 1:     # volver a poner el número en una posición con opciones: cambiar lo que juega
+            await cta_ask_option(message, run, member, slot, number)
+        else:
+            await cta_reply_short(message, f"Ya estás anotado en la posición {number}.", 8)
     elif code == "occupied":
         await cta_ack_fail(message, f"La posición {number} ya está ocupada por <@{extra}>. Elegí otra.")
     elif code == "locked":
@@ -6181,12 +6303,12 @@ async def cta_handle_thread_message(message: discord.Message) -> bool:
         cta_audit(int(run["guild_id"]), member.id, "move_signup", run_id, f"{extra}->{cta_slot_key(slot)}")
         cta_request_board_refresh(run_id)
         await cta_reply_short(message, f"Pasaste de la posición {old_no} a la {number} · {role_label}.", 10)
-        await cta_flex_notice(message, run, member, slot)
+        await cta_ask_option(message, run, member, slot, number)
     else:
         cta_audit(int(run["guild_id"]), member.id, "signup", run_id, cta_slot_key(slot))
         cta_request_board_refresh(run_id)
         await cta_ack_ok(message, f"Quedaste anotado en la posición {number} · {role_label}.")
-        await cta_flex_notice(message, run, member, slot)
+        await cta_ask_option(message, run, member, slot, number)
     return True
 
 
@@ -7041,6 +7163,7 @@ def cta_web_load(guild_id: int, web_id: str, force: bool):
     role_icon = (lambda rid: compoweb.icon_of_role(guild.get_role(int(rid)))) if guild is not None else None      # la posición lleva el ícono de su rol de permiso
     defs, notes = compoweb.build_slot_defs(parsed, builds, lambda w: _armas.role_for(DB_PATH, guild_id, w),
                                            lambda l: _armas.discord_role_for(DB_PATH, guild_id, l), lambda w: names.get(w), role_icon)
+    parsed["slot_options"] = compoweb.slot_options_map(defs)      # posiciones con 2+ opciones (arma principal y alternativas, cada una con su rol)
     return parsed, defs, notes, failed, len(parsed.get("weapons", {}))
 
 
@@ -7201,6 +7324,11 @@ async def cta_expected_weapons(run_id: int) -> dict:
         w = _armas.normalize_id(weapons.get(bid, ""))
         if w:
             for p in positions:
+                by_pos.setdefault(p, set()).add(w)
+    for p, opts in (parsed.get("slot_options") or {}).items():      # las armas alternativas de la posición también valen
+        for o in opts:
+            w = _armas.normalize_id(o.get("weapon") or "")
+            if w:
                 by_pos.setdefault(p, set()).add(w)
     out = {}
     for r in await asyncio.to_thread(cu.positions, DB_PATH, run_id):

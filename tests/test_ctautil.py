@@ -118,6 +118,23 @@ class PositionsTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_opcion_elegida_cuenta_su_rol(self):
+        T, H = self.TANK, self.HEAL
+        slots = [{"party_no": 1, "position_no": 1, "role_name": "Flex / Holy", "role_ids": [str(T)],
+                  "options": [{"name": "Flex", "weapon": "MAIN_MACE", "role_id": T}, {"name": "Holy", "weapon": "MAIN_HOLYSTAFF", "role_id": H}]},
+                 {"party_no": 1, "position_no": 2, "role_name": "Flex / Holy", "role_ids": [str(T)],
+                  "options": [{"name": "Flex", "weapon": "MAIN_MACE", "role_id": T}, {"name": "Holy", "weapon": "MAIN_HOLYSTAFF", "role_id": H}]}]
+        c = connect(self.db)
+        c.execute("ALTER TABLE cta_signups ADD COLUMN choice TEXT")
+        c.execute("ALTER TABLE cta_signups ADD COLUMN choice_slot TEXT")
+        c.execute("INSERT INTO cta_runs(id, snapshot_json, status) VALUES (2, ?, 'closed')", (json.dumps({"slots": slots}),))
+        c.execute("INSERT INTO cta_signups(cta_id, slot_key, user_id, choice, choice_slot) VALUES (2,'1:1',20,'Holy','1:1')")
+        c.execute("INSERT INTO cta_signups(cta_id, slot_key, user_id, choice, choice_slot) VALUES (2,'1:2',21,'Holy','1:1')")   # se movió: no vale
+        c.close()
+        self.assertEqual(cu.snapshot_positions(self.db, 2), 2)
+        got = {r["user_id"]: (r["role_id"], r["role_name"]) for r in cu.positions(self.db, 2)}
+        self.assertEqual(got, {20: (H, "Holy"), 21: (T, "Flex / Holy")})
+
     def test_role_free(self):
         H, T = self.HEAL, self.TANK
         self.assertEqual(cu.role_free(self.db, 1), [])

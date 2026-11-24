@@ -73,6 +73,22 @@ class T(unittest.TestCase):
         self.assertEqual(defs[0]["role_name"], "Flex / Holy Staff / Arco")
         self.assertEqual(json.loads(json.dumps(p))["weapon_alts"], p["weapon_alts"])      # se guarda en compoweb_parsed
 
+    def test_opciones_de_la_posicion_con_su_rol(self):
+        payload = {"comp": {"title": "X", "parties": [["b-alt", "b-solo"]]},
+                   "builds": {"b-alt": {"name": "Flex", "playstyle": "dps", "weapon": {"src": "/item-icons/MAIN_MACE__t8.png"},
+                                        "draft": {"mainHand": {"itemId": "MAIN_MACE", "swaps": [{"itemId": "MAIN_HOLYSTAFF", "itemName": "Holy Staff"}]}}},
+                              "b-solo": {"name": "Solo", "playstyle": "dps", "weapon": {"src": "/item-icons/MAIN_MACE__t8.png"}}}}
+        text = '5:["$","$L2d",null,{"payload":' + json.dumps(payload) + '}]\n'
+        p = cw.parse_comp_html('<html><script>self.__next_f.push([1,"%s"])</script></html>' % json.dumps(text)[1:-1])
+        roles = {"MAIN_MACE": "tank", "MAIN_HOLYSTAFF": "healer"}
+        drole = {"tank": 111, "healer": 222}
+        defs, _ = cw.build_slot_defs(p, {}, lambda w: roles.get(cw._base_item(w)), lambda l: drole.get(l))
+        self.assertEqual(defs[0]["role_ids"], [111])                       # el permiso guardado sigue siendo uno (el principal)
+        self.assertEqual(defs[0]["options"], [{"name": "Flex", "weapon": "MAIN_MACE", "role_id": 111},
+                                              {"name": "Holy Staff", "weapon": "MAIN_HOLYSTAFF", "role_id": 222}])
+        self.assertEqual(defs[1]["options"], [])                           # una sola opción: no se pregunta
+        self.assertEqual(list(cw.slot_options_map(defs)), ["P1-1"])
+
     def test_id_del_link(self):
         self.assertEqual(cw.comp_id_from("https://www.albionzvz.com/comps/4C88EF6B-92ED-46B9-BDFA-8F68F55F5267?x=1"), "4c88ef6b-92ed-46b9-bdfa-8f68f55f5267")
         self.assertIsNone(cw.comp_id_from("hola"))
