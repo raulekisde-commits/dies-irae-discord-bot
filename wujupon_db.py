@@ -357,7 +357,7 @@ CREATE TABLE IF NOT EXISTS wjp_prizes (
 CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS wjp_spins (
     user_id    INTEGER PRIMARY KEY,
-    spins      INTEGER NOT NULL DEFAULT 0 CHECK (spins >= 0),
+    spins      INTEGER NOT NULL DEFAULT 0,             -- puede quedar negativo (deuda, ver take_spins_debt)
     updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS wjp_ops (              -- compras y regalos de tiradas (idempotencia)
@@ -561,6 +561,18 @@ def validate_catalog(catalog=CATALOG) -> None:
         raise ValueError(f"Las probabilidades suman {total}/{TOTAL_WEIGHT}")
 
 
+def _migrate_spins_allow_negative(conn) -> None:
+    """Las bases viejas tienen CHECK (spins >= 0) en wjp_spins: se rehace la tabla sin ese CHECK, conservando los datos."""
+    r = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='wjp_spins'").fetchone()
+    if r is None or "CHECK" not in (r["sql"] or "").upper():
+        return
+    with write_tx(conn):
+        conn.execute("CREATE TABLE wjp_spins_new (user_id INTEGER PRIMARY KEY, spins INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO wjp_spins_new(user_id, spins, updated_at) SELECT user_id, spins, updated_at FROM wjp_spins")
+        conn.execute("DROP TABLE wjp_spins")
+        conn.execute("ALTER TABLE wjp_spins_new RENAME TO wjp_spins")
+
+
 def init_schema(db_path: str) -> None:
     if db_path in _ready:
         return
@@ -576,6 +588,7 @@ def init_schema(db_path: str) -> None:
                          ("desc_edited", "INTEGER NOT NULL DEFAULT 0"), ("forced", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE wjp_prizes ADD COLUMN {col} {ddl}")
+        _migrate_spins_allow_negative(conn)
         with write_tx(conn):
             conn.execute("CREATE TABLE IF NOT EXISTS wjp_settings (key TEXT PRIMARY KEY, value TEXT)")
             v = conn.execute("SELECT value FROM wjp_settings WHERE key = 'catalog_version'").fetchone()
@@ -938,11 +951,11 @@ def _spins(conn, user_id: int) -> int:
     return int(r["spins"]) if r else 0
 
 
-def _add_spins(conn, user_id: int, delta: int) -> int:
+def _add_spins(conn, user_id: int, delta: int, allow_negative: bool = False) -> int:
     now = utcnow_iso()
     conn.execute("INSERT OR IGNORE INTO wjp_spins(user_id, spins, updated_at) VALUES (?,0,?)", (user_id, now))
     after = _spins(conn, user_id) + delta
-    if after < 0:
+    if after < 0 and not allow_negative:
         raise WujuponError("No tiene tantas tiradas.")
     conn.execute("UPDATE wjp_spins SET spins = ?, updated_at = ? WHERE user_id = ?", (after, now, user_id))
     return after
@@ -1151,6 +1164,29 @@ def gift_spins(db_path: str, *, actor_id: int, user_id: int, count: int, request
             conn.execute("INSERT INTO wjp_ops(request_key, kind, user_id, actor_id, spins, cost, reason, created_at) "
                          "VALUES (?,?,?,?,?,0,?,?)", (request_key, "gift", user_id, actor_id, count, reason, utcnow_iso()))
             _log(conn, actor_id, "gift_spins" if count > 0 else "remove_spins", user_id, request_key, f"{count} · {reason}")
+            return after
+    finally:
+        conn.close()
+
+
+def take_spins_debt(db_path: str, *, actor_id: int, user_id: int, count: int, request_key: str, reason: str,
+                    only_if_key: Optional[str] = None) -> Optional[int]:
+    """Quita `count` tiradas aunque no las tenga: el saldo puede quedar negativo (deuda; no puede tirar hasta salir de ella).
+    Una vez por request_key. Con only_if_key, solo si esa operación (la que le dio la tirada) existe.
+    Devuelve las tiradas resultantes, o None si no correspondía."""
+    if count <= 0 or count > 1000:
+        raise WujuponError("La cantidad de tiradas tiene que estar entre 1 y 1000.")
+    conn = _open(db_path)
+    try:
+        with write_tx(conn):
+            if only_if_key and not conn.execute("SELECT 1 FROM wjp_ops WHERE request_key = ?", (only_if_key,)).fetchone():
+                return None
+            if conn.execute("SELECT 1 FROM wjp_ops WHERE request_key = ?", (request_key,)).fetchone():
+                return None
+            after = _add_spins(conn, user_id, -count, allow_negative=True)
+            conn.execute("INSERT INTO wjp_ops(request_key, kind, user_id, actor_id, spins, cost, reason, created_at) "
+                         "VALUES (?,?,?,?,?,0,?,?)", (request_key, "gift", user_id, actor_id, -count, reason, utcnow_iso()))
+            _log(conn, actor_id, "remove_spins", user_id, request_key, f"-{count} (puede quedar negativo) · {reason}")
             return after
     finally:
         conn.close()

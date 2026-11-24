@@ -1441,13 +1441,173 @@ async def before_timer_posts_cleanup():
     await bot.wait_until_ready()
 
 
+TIMER_LOG_CHANNEL_ID = 1574815266293022771     # log de timers agregados y de conflictos
+TIMERADD_NODE_TIERS = ("8.4",)                 # /timeradd: los materiales solo se cargan en 8.4
+TIMER_DUP_TOLERANCE_MINUTES = 2                # mismo objetivo/tier/mapa a ±2 min = el mismo timer (duplicado)
+TIMER_CONFIRM_TIMEOUT = 120
+_TIMER_DURATION_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+
+def parse_duration_hhmm(s: str) -> Optional[timedelta]:
+    """'1:15' -> 1h15m que faltan desde ahora. Minutos 0-59, horas 0-48, mayor a 0. Si no, None."""
+    match = _TIMER_DURATION_RE.match(s or "")
+    if not match:
+        return None
+    h, m = int(match.group(1)), int(match.group(2))
+    if m > 59 or h > 48 or (h == 0 and m == 0):
+        return None
+    return timedelta(hours=h, minutes=m)
+
+
+def timer_same_target(guild_id: int, material: str, mapa: str, tier: Optional[str]) -> list:
+    """Timers activos del mismo objetivo, tier y mapa (sin distinguir mayúsculas)."""
+    wanted = (mapa or "").strip().casefold()
+    return [dict(e) for e in db_fetchall(
+        "SELECT * FROM timer_entries WHERE guild_id=? AND material=? AND tier IS ? ORDER BY spawn_at, id",
+        (guild_id, material, tier)) if e["mapa"].strip().casefold() == wanted]
+
+
+def _timer_label(material: str, tier: Optional[str], mapa: str, spawn: datetime) -> str:
+    tier_text = TIER_LABELS_SPECIAL.get(tier, tier) if tier else ""
+    name = TIMER_MATERIAL_NAMES.get(material, str(material).title())
+    return f"{' '.join(x for x in (tier_text, name) if x)} · {mapa} · {spawn.strftime('%H:%M')} UTC (<t:{int(spawn.timestamp())}:R>)"
+
+
+async def timer_log(guild: discord.Guild, text: str):
+    try:
+        ch = guild.get_channel(TIMER_LOG_CHANNEL_ID) or await guild.fetch_channel(TIMER_LOG_CHANNEL_ID)
+        await ch.send(text[:2000], allowed_mentions=discord.AllowedMentions.none())
+    except Exception as exc:
+        print(f"timers: no pude escribir el log: {exc}")
+
+
+async def timer_gift_spin(user_id: int, entry_id: int, label: str) -> Optional[int]:
+    """1 tirada de Wujupón por timer agregado. Devuelve el total nuevo o None si falló."""
+    wcog = bot.get_cog("WujuponCog")
+    if wcog is None:
+        return None
+    try:
+        import wujupon_db as _wdb
+        return await wcog.run(_wdb.gift_spins, actor_id=bot.user.id if bot.user else 0, user_id=user_id, count=1,
+                              request_key=f"timeradd:{entry_id}", reason=f"Timer agregado: {label}"[:300])
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+async def timer_revoke_spin(entry: dict, by_user_id: int) -> Optional[int]:
+    """Le saca la tirada al que cargó un timer que resultó mal (puede quedar en negativo). None si no había recibido tirada."""
+    wcog = bot.get_cog("WujuponCog")
+    if wcog is None or not entry.get("created_by"):
+        return None
+    try:
+        import wujupon_db as _wdb
+        return await wcog.run(_wdb.take_spins_debt, actor_id=bot.user.id if bot.user else 0, user_id=int(entry["created_by"]), count=1,
+                              request_key=f"timeradd-revert:{entry['id']}", only_if_key=f"timeradd:{entry['id']}",
+                              reason=f"Timer mal cargado (lo corrigió {by_user_id})"[:300])
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+async def timer_save_and_announce(interaction: discord.Interaction, mat: str, tr: Optional[str], mapa: str,
+                                  target_utc: datetime, replaced: Optional[list] = None) -> str:
+    """Guarda el timer (borrando antes los que reemplaza), actualiza el panel, da 1 tirada y deja log. Devuelve el texto para el usuario."""
+    guild = interaction.guild
+    if replaced:
+        ids = tuple(e["id"] for e in replaced)
+        db_execute(f"DELETE FROM timer_entries WHERE id IN ({','.join('?' * len(ids))})", ids)
+    entry_id = timer_add_entry(guild.id, mat, tr, mapa, target_utc, interaction.user.id)
+    label = _timer_label(mat, tr, mapa, target_utc)
+    category = timer_category(mat)
+
+    after = await timer_gift_spin(interaction.user.id, entry_id, label)
+    spin_txt = f"🎰 +1 tirada de Wujupón (ahora tiene {after})." if after is not None else "⚠️ No pude dar la tirada de Wujupón."
+    log = f"⏱ {interaction.user.mention} agregó un timer: **{label}**\n{spin_txt}"
+    if replaced:
+        olds = "\n".join(f"• {_timer_label(e['material'], e.get('tier'), e['mapa'], _timer_parse_dt(e['spawn_at']))} — <@{e['created_by']}>"
+                         for e in replaced)
+        log += f"\n♻️ Reemplazó (lo verificó de nuevo):\n{olds}"
+        for e in replaced:
+            left = await timer_revoke_spin(e, interaction.user.id)
+            if left is not None:
+                log += f"\n🎰 -1 tirada a <@{e['created_by']}> por el timer mal cargado (ahora tiene {left})."
+    await timer_log(guild, log)
+
+    try:
+        await timer_panel_refresh(guild, {category})
+    except discord.Forbidden:
+        return "⚠️ Guardé el timer, pero no tengo permisos para escribir en el canal de timers."
+    except Exception as exc:
+        print(f"timers: no pude actualizar los paneles: {exc}")
+        return "⚠️ Guardé el timer, pero no pude actualizar los paneles. Revisá el canal de timers."
+    return f"✅ Timer agregado al panel **{TIMER_CATEGORY_TITLES[category]}**: {label}\n{spin_txt}"
+
+
+class TimerConflictView(discord.ui.View):
+    """Otro miembro cargó el mismo objetivo/tier/mapa con otra hora: se le pide al segundo que lo verifique.
+    Si confirma, se le cree a él y se reemplaza el timer anterior."""
+
+    def __init__(self, guild_id: int, author_id: int, mat: str, tr: Optional[str], mapa: str, target_utc: datetime, conflicts: list):
+        super().__init__(timeout=TIMER_CONFIRM_TIMEOUT)
+        self.guild_id = guild_id
+        self.author_id, self.mat, self.tr, self.mapa, self.target_utc = author_id, mat, tr, mapa, target_utc
+        self.conflict_ids = {e["id"] for e in conflicts}
+        self.done = False
+        self.interaction: Optional[discord.Interaction] = None
+
+    def _log_text(self, user: discord.abc.User, outcome: str) -> str:
+        olds = ", ".join(f"<@{e['created_by']}> → {_timer_parse_dt(e['spawn_at']).strftime('%H:%M')} UTC"
+                         for e in self._current_conflicts())
+        return (f"⚠️ Conflicto de timer: {user.mention} cargó **{_timer_label(self.mat, self.tr, self.mapa, self.target_utc)}**"
+                f" pero ya estaba: {olds or '(ya no está)'}\n{outcome}")
+
+    def _current_conflicts(self) -> list:
+        return [e for e in timer_same_target(self.guild_id, self.mat, self.mapa, self.tr) if e["id"] in self.conflict_ids]
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+    async def _finish(self, interaction: discord.Interaction, content: str):
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content=content, view=None)
+
+    @discord.ui.button(label="✅ Lo verifiqué, mi timer es correcto", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Si mientras tanto alguien cargó este mismo timer, no se duplica.
+        tol = timedelta(minutes=TIMER_DUP_TOLERANCE_MINUTES)
+        if any(abs(_timer_parse_dt(e["spawn_at"]) - self.target_utc) <= tol
+               for e in timer_same_target(self.guild_id, self.mat, self.mapa, self.tr)):
+            return await self._finish(interaction, "⚠️ Mientras tanto alguien ya cargó ese mismo timer. No lo subí de nuevo.")
+        replaced = self._current_conflicts()
+        await self._finish(interaction, "⏳ Guardando…")
+        msg = await timer_save_and_announce(interaction, self.mat, self.tr, self.mapa, self.target_utc, replaced)
+        await interaction.edit_original_response(content=msg)
+
+    @discord.ui.button(label="❌ Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await timer_log(interaction.guild, self._log_text(interaction.user, "❌ Lo canceló; quedó el timer anterior."))
+        await self._finish(interaction, "❌ Cancelado. Quedó el timer que ya estaba cargado.")
+
+    async def on_timeout(self):
+        if self.done or self.interaction is None:
+            return
+        await timer_log(self.interaction.guild, self._log_text(self.interaction.user, "⌛ No respondió; quedó el timer anterior."))
+        try:
+            await self.interaction.edit_original_response(content="⌛ Se venció el tiempo. No subí el timer.", view=None)
+        except Exception:
+            pass
+
+
 # ================== SLASH COMMANDS TIMERS ==================
-@bot.tree.command(name="timeradd", description="Agregar un timer (miembros registrados)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="timeradd", description="Agregar un timer", guild=discord.Object(id=GUILD_ID))
+@app_commands.rename(material="objetivo")
 @app_commands.describe(
-    material="Material",
+    material="Objetivo",
     mapa="Nombre del mapa",
-    tiempo="Horario UTC en que sale (HH:MM) ej 16:10",
-    tier="Tier (obligatorio salvo para Dragon)",
+    tiempo="Cuánto falta desde AHORA hasta que salga, en HH:MM (ej 1:15 = 1 hora 15 min)",
+    tier="Tier (materiales solo 8.4; obligatorio salvo para Dragon)",
 )
 @app_commands.choices(
     material=[
@@ -1460,10 +1620,6 @@ async def before_timer_posts_cleanup():
         app_commands.Choice(name="Dragon", value="dragon"),
     ],
     tier=[
-        app_commands.Choice(name="4.4", value="4.4"),
-        app_commands.Choice(name="5.4", value="5.4"),
-        app_commands.Choice(name="6.4", value="6.4"),
-        app_commands.Choice(name="7.4", value="7.4"),
         app_commands.Choice(name="8.4", value="8.4"),
         app_commands.Choice(name="Common (Verde)", value="common"),
         app_commands.Choice(name="Rare (Azul)", value="rare"),
@@ -1481,69 +1637,62 @@ async def timeradd_slash(
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
 
-    if not is_timers_member(interaction.user):
-        return await respond_ephemeral(interaction, "❌ Solo los miembros registrados pueden cargar timers.")
-
     mapa = mapa.strip()
     if not mapa:
         return await respond_ephemeral(interaction, "❌ El nombre del mapa no puede estar vacío.")
+    if len(mapa) > TIMER_MAPA_MAX:
+        return await respond_ephemeral(interaction, f"❌ El nombre del mapa es muy largo (máximo {TIMER_MAPA_MAX} caracteres).")
 
     mat = material.value
     tr: Optional[str] = tier.value if tier is not None else None
 
-    # Validación material/tier (Dragon no lleva tier; si lo mandan se ignora)
+    # Validación objetivo/tier (Dragon no lleva tier; si lo mandan se ignora)
     if mat in MATERIALS_NO_TIER:
         tr = None
     elif tr is None:
-        return await respond_ephemeral(
-            interaction,
-            "❌ Falta el **tier**. Solo **Dragon** se puede publicar sin tier."
-        )
+        return await respond_ephemeral(interaction, "❌ Falta el **tier**. Solo **Dragon** se puede publicar sin tier.")
     elif mat in MATERIALS_SPECIAL:
         if tr not in TIERS_SPECIAL:
-            return await respond_ephemeral(
-                interaction,
-                "❌ Para **Vortex/Core** el tier tiene que ser: Common/Rare/Epic/Legendary."
-            )
-    else:
-        if tr not in TIERS_NORMAL:
-            return await respond_ephemeral(
-                interaction,
-                "❌ Para **Fibra/Cuero/Mineral/Madera** el tier tiene que ser: 4.4/5.4/6.4/7.4/8.4."
-            )
+            return await respond_ephemeral(interaction, "❌ Para **Vortex/Core** el tier tiene que ser: Common/Rare/Epic/Legendary.")
+    elif tr not in TIMERADD_NODE_TIERS:
+        return await respond_ephemeral(interaction, "❌ Para **Fibra/Cuero/Mineral/Madera** solo se pueden cargar timers **8.4**.")
 
-    clock = parse_clock_hhmm(tiempo)
-    if clock is None:
+    delta = parse_duration_hhmm(tiempo)
+    if delta is None:
         return await respond_ephemeral(
             interaction,
-            "❌ Tiempo inválido. Usá el horario UTC en formato `HH:MM` (00:00 a 23:59), ej: `16:10`."
+            "❌ Tiempo inválido. Poné **cuánto falta desde ahora** en `HH:MM` (máx 48:00), ej: `1:15` = 1 hora 15 minutos."
         )
+    target_utc = (datetime.now(timezone.utc) + delta).replace(second=0, microsecond=0)
 
-    target_utc = next_utc_occurrence(*clock)
-
-    if len(mapa) > TIMER_MAPA_MAX:
-        return await respond_ephemeral(interaction, f"❌ El nombre del mapa es muy largo (máximo {TIMER_MAPA_MAX} caracteres).")
-
-    await interaction.response.defer(ephemeral=True)
-
-    # Sin duplicados: mismo material, mapa, tier y hora UTC que uno ya cargado (se revisa y se guarda sin pausas en medio).
-    dup = timer_find_entries(interaction.guild.id, mat, mapa, clock, tr)
+    # Duplicado: mismo objetivo/tier/mapa a ±TIMER_DUP_TOLERANCE_MINUTES.
+    same = timer_same_target(interaction.guild.id, mat, mapa, tr)
+    tol = timedelta(minutes=TIMER_DUP_TOLERANCE_MINUTES)
+    dup = [e for e in same if abs(_timer_parse_dt(e["spawn_at"]) - target_utc) <= tol]
     if dup:
         who = dup[0].get("created_by")
-        return await interaction.followup.send(
-            f"⚠️ Ese timer ya está cargado ({mat}{' ' + tr if tr else ''} · {mapa} · {clock[0]:02d}:{clock[1]:02d} UTC)"
-            + (f" por <@{who}>" if who else "") + ". No lo subí de nuevo.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-    timer_add_entry(interaction.guild.id, mat, tr, mapa, target_utc, interaction.user.id)
-    category = timer_category(mat)
-    try:
-        await timer_panel_refresh(interaction.guild, {category})      # edita el panel de esa categoría (lo crea si falta)
-    except discord.Forbidden:
-        return await interaction.followup.send("⚠️ Guardé el timer, pero no tengo permisos para escribir en el canal de timers.", ephemeral=True)
-    except Exception as exc:
-        print(f"timers: no pude actualizar los paneles: {exc}")
-        return await interaction.followup.send("⚠️ Guardé el timer, pero no pude actualizar los paneles. Revisá el canal de timers.", ephemeral=True)
+        return await respond_ephemeral(
+            interaction,
+            f"⚠️ Ese timer ya está cargado ({_timer_label(mat, tr, mapa, _timer_parse_dt(dup[0]['spawn_at']))})"
+            + (f" por <@{who}>" if who else "") + ". No lo subí de nuevo.")
 
-    await interaction.followup.send(f"✅ Timer agregado al panel **{TIMER_CATEGORY_TITLES[category]}**.", ephemeral=True)
+    # Conflicto: el mismo objetivo/tier/mapa con otra hora -> se le pide al segundo que lo verifique.
+    if same:
+        olds = "\n".join(f"• <@{e['created_by']}> lo cargó para las **{_timer_parse_dt(e['spawn_at']).strftime('%H:%M')} UTC** "
+                         f"(<t:{int(_timer_parse_dt(e['spawn_at']).timestamp())}:R>)" for e in same)
+        view = TimerConflictView(interaction.guild.id, interaction.user.id, mat, tr, mapa, target_utc, same)
+        await interaction.response.send_message(
+            f"⚠️ Ojo: otra persona ya cargó **{_timer_label(mat, tr, mapa, target_utc).split(' · ')[0]} · {mapa}** con otro horario:\n{olds}\n\n"
+            f"Vos lo estás cargando para las **{target_utc.strftime('%H:%M')} UTC** (<t:{int(target_utc.timestamp())}:R>). "
+            f"Uno de los dos lo puso mal: **volvé a verificar el timer en el juego**. "
+            f"Si confirmás, se reemplaza el anterior por el tuyo.",
+            view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        view.interaction = interaction
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    msg = await timer_save_and_announce(interaction, mat, tr, mapa, target_utc)
+    await interaction.followup.send(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.tree.command(name="deltimer", description="Eliminar un timer cargado con /timeradd (completá sus mismos datos)", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(
