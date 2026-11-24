@@ -8225,7 +8225,7 @@ HELP_SECTIONS = [
         ("/top tipo:wujupon", "Miembros", "Quién más ganó con Wujupón: Wuju neto (premios − cartas malas) + silver entregado."),
         ("/top tipo:rolsec", "Miembros", "Los que menos juegan su rol main: % de sus CTA cerradas en las que jugaron el main (mínimo 5 CTA) y qué rol juegan más."),
         ("/eco embo importar-historico archivo", "Admin", "Carga al balance de embo todos los movimientos del archivo a los jugadores registrados con ese nick y lista los no encontrados (sin duplicar si se sube dos veces)."),
-        ("/eco embo cargar-dia archivo [fecha]", "Staff", "Carga las embotelladas del log de la guild: sin fecha, todos los días anteriores a hoy (UTC) sin repetir lo ya cargado; con fecha, solo ese día. Lista los no encontrados y cierra los encargos diarios."),
+        ("/eco embo cargar-dia archivo smogged [fecha]", "Staff", "Carga las embotelladas de los logs de Smogg y Smogged (los dos juntos): sin fecha, todos los días anteriores a hoy (UTC) sin repetir lo ya cargado; con fecha, solo ese día. Lista los no encontrados y cierra los encargos diarios."),
         ("/verhistorial [usuario] [completo]", "Todos / Staff", "Tus últimos 20 movimientos de Wuju Coins por DM. Con `completo:true` te llega TODO el historial como archivo CSV, solo visible para vos en el canal. El staff puede ver los de otra persona."),
         ("/timeradd material mapa tiempo [tier]", "Miembros registrados", "Agrega un timer (hora UTC en que sale; si ya hay uno igual con el mismo material, mapa, tier y hora, no lo duplica) al panel que corresponde: Nodos, Vortex y Cores o Dragones. Los paneles se ordenan solos por hora y etiquetan a quien puso el timer. Cada línea muestra en cuánto sale (timestamp de Discord) y la hora UTC fija."),
     ]),

@@ -546,27 +546,164 @@ class GuildCheckCog(commands.Cog):
         except rdb.RegError as exc:
             return await _say(interaction, f"❌ {exc}")
         esc = discord.utils.escape_markdown
-        notes = []
-        for gname, _gid in reg.extra_guilds:                      # rol de la guild hermana: se pone o se saca según el destino
-            role = await reg.guild_role(interaction.guild, gname)
-            if role is None:
-                notes.append(f"⚠️ No pude encontrar ni crear el rol **{esc(gname)}**.")
-                continue
-            try:
-                if gname.casefold() == target.casefold() and role not in persona.roles:
-                    await persona.add_roles(role, reason=f"/miembros cambiar-guild a {target} por {interaction.user}")
-                    notes.append(f"✅ Le di el rol {role.mention}.")
-                elif gname.casefold() != target.casefold() and role in persona.roles:
-                    await persona.remove_roles(role, reason=f"/miembros cambiar-guild a {target} por {interaction.user}")
-                    notes.append(f"✅ Le saqué el rol {role.mention}.")
-            except discord.Forbidden:
-                notes.append(f"⚠️ No pude cambiar el rol {role.mention} (revisá que mi rol esté por encima).")
+        notes = await self._apply_guild_roles(reg, interaction.guild, persona, target,
+                                              f"/miembros cambiar-guild a {target} por {interaction.user}")
         await self.run(gdb.clear_alerts, [persona.id])
         chars = ", ".join(f"**{esc(r.char_name)}**" for r in regs)
         await reg.audit_log(f"🔀 <@{interaction.user.id}> pasó a <@{persona.id}> ({chars}) a la guild **{esc(target)}**.")
         await _say(interaction, f"🔀 <@{persona.id}> ({chars}) ahora figura en **{esc(target)}**.\n" + "\n".join(notes) +
                    f"\nℹ️ Mientras se cambia de guild en el juego no se lo toma como salida. Si en {rdb.TRANSFER_HOURS} h no aparece en "
                    f"**{esc(target)}**, el bot vuelve a usar la guild real de su personaje.")
+
+    @staticmethod
+    async def _apply_guild_roles(reg, guild: discord.Guild, persona: discord.Member, target: str, reason: str) -> List[str]:
+        """Pone el rol de la guild hermana de destino y saca el de las otras. Devuelve las notas de lo hecho."""
+        esc = discord.utils.escape_markdown
+        notes = []
+        for gname, _gid in reg.extra_guilds:                      # rol de la guild hermana: se pone o se saca según el destino
+            role = await reg.guild_role(guild, gname)
+            if role is None:
+                notes.append(f"⚠️ No pude encontrar ni crear el rol **{esc(gname)}**.")
+                continue
+            try:
+                if gname.casefold() == target.casefold() and role not in persona.roles:
+                    await persona.add_roles(role, reason=reason)
+                    notes.append(f"✅ Le di el rol {role.mention}.")
+                elif gname.casefold() != target.casefold() and role in persona.roles:
+                    await persona.remove_roles(role, reason=reason)
+                    notes.append(f"✅ Le saqué el rol {role.mention}.")
+            except discord.Forbidden:
+                notes.append(f"⚠️ No pude cambiar el rol {role.mention} (revisá que mi rol esté por encima).")
+        return notes
+
+    # ---------- actualizar miembros: guild de cada uno según los export de Smogg y Smogged ----------
+    @staticmethod
+    def plan_guild_sync(regs, rosters: dict, main_guild: str) -> dict:
+        """regs: registros (discord_id, char_name, guild_name). rosters: {guild: set(nombres casefold)}.
+        Devuelve {"change": [(uid, destino, actual, [chars])], "same": [(uid, guild)], "missing": [(uid, [chars])],
+        "conflict": [(uid, {guild: [chars]})]}."""
+        by_uid: dict = {}
+        for r in regs:
+            by_uid.setdefault(r.discord_id, []).append(r)
+        out = {"change": [], "same": [], "missing": [], "conflict": []}
+        for uid, rs in by_uid.items():
+            chars = [r.char_name for r in rs]
+            found = {g: [c for c in chars if c.casefold() in names] for g, names in rosters.items()}
+            found = {g: cs for g, cs in found.items() if cs}
+            if not found:
+                out["missing"].append((uid, chars))
+            elif len(found) > 1:
+                out["conflict"].append((uid, found))
+            else:
+                target = next(iter(found))
+                current = next((r.guild_name for r in rs if r.guild_name), None) or main_guild
+                if any((r.guild_name or main_guild).casefold() != target.casefold() for r in rs):
+                    out["change"].append((uid, target, current, chars))
+                else:
+                    out["same"].append((uid, target))
+        return out
+
+    async def do_actualizar(self, interaction, archivos: dict):
+        """archivos: {nombre de guild: discord.Attachment} con el export de cada guild."""
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        reg = await self._need_reg(interaction)
+        if reg is None:
+            return
+        await interaction.response.defer(ephemeral=True)
+        from registration import parse_guild_export
+        import registration_db as rdb
+        esc = discord.utils.escape_markdown
+        rosters = {}
+        for gname, att in archivos.items():
+            if (getattr(att, "size", 0) or 0) > MAX_EXPORT_BYTES:
+                return await _say(interaction, f"❌ El archivo de **{esc(gname)}** es demasiado grande (máx. 2 MB).")
+            try:
+                names = parse_guild_export(await att.read())
+            except Exception:
+                traceback.print_exc()
+                names = []
+            if not names:
+                return await _say(interaction, f"❌ No pude leer el archivo de **{esc(gname)}**. Tiene que ser el export de la guild "
+                                               "(Character Name / Last Seen / Roles).")
+            rosters[gname] = {n.casefold() for n in names}
+        dup = set.intersection(*rosters.values()) if len(rosters) > 1 else set()
+        if len(dup) > max(5, 0.5 * min(len(v) for v in rosters.values())):
+            return await _say(interaction, "❌ Los dos archivos tienen casi los mismos personajes: ¿subiste dos veces el mismo export?")
+        main = reg.guilds[0][0] or "Smogg"
+        plan = self.plan_guild_sync(await self.run(rdb.all_registrations), rosters, main)
+        guild, actor = interaction.guild, interaction.user
+        role_fix = []                                              # ya figuran bien en el registro pero el rol no coincide
+        for uid, target in plan["same"]:
+            m = guild.get_member(uid)
+            if m is None:
+                continue
+            for gname, _gid in reg.extra_guilds:
+                role = await reg.guild_role(guild, gname, create=False)
+                if role is not None and (role in m.roles) != (gname.casefold() == target.casefold()):
+                    role_fix.append((uid, target))
+                    break
+        counts = " · ".join(f"{esc(g)}: **{len(n)}**" for g, n in rosters.items())
+        head = [f"🔄 **Actualizar miembros** — personajes en los archivos: {counts}",
+                f"• Ya estaban bien: **{len(plan['same']) - len(role_fix)}**",
+                f"• Cambian de guild: **{len(plan['change'])}**" + (f" · solo corregir rol: **{len(role_fix)}**" if role_fix else "")]
+        lines = head[:]
+        if plan["change"]:
+            lines.append("\n**🔀 Cambian de guild**")
+            lines += [f"• <@{uid}> ({', '.join(esc(c) for c in chars)}): {esc(cur)} → **{esc(t)}**" for uid, t, cur, chars in plan["change"]]
+        if role_fix:
+            lines.append("\n**🎭 Solo corregir el rol**")
+            lines += [f"• <@{uid}> → {esc(t)}" for uid, t in role_fix]
+        if plan["conflict"]:
+            lines.append("\n**⚠️ Con personajes en las dos guilds (no se tocan)**")
+            lines += [f"• <@{uid}>: " + " · ".join(f"{esc(g)}: {', '.join(esc(c) for c in cs)}" for g, cs in f.items())
+                      for uid, f in plan["conflict"]]
+        if plan["missing"]:
+            lines.append(f"\n**❓ No están en ninguno de los dos archivos ({len(plan['missing'])})** — no se tocan "
+                         "(para sacarlos usá `/miembros fuera-guild`)")
+            lines += [f"• <@{uid}> ({', '.join(esc(c) for c in chars)})" for uid, chars in plan["missing"]]
+        lines.append("\nℹ️ Los alters no se tocan.")
+        todo = len(plan["change"]) + len(role_fix)
+        chunks = _chunks(lines)
+        if not todo:
+            for chunk in chunks:
+                await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+            return
+
+        async def yes(i: discord.Interaction):
+            await i.response.edit_message(content="⏳ Actualizando…", view=None)
+            done, notes = 0, []
+            for uid, target, _cur, _chars in plan["change"]:
+                try:
+                    await asyncio.to_thread(rdb.sync_guild, self.db_path, uid, target, actor.id)
+                    done += 1
+                except rdb.RegError as exc:
+                    notes.append(f"❌ <@{uid}>: {exc}")
+                    continue
+                m = guild.get_member(uid)
+                if m is not None:
+                    notes += [f"<@{uid}>: {n}" for n in await self._apply_guild_roles(
+                        reg, guild, m, target, f"/miembros actualizar por {actor}") if n.startswith("⚠️")]
+            for uid, target in role_fix:
+                m = guild.get_member(uid)
+                if m is not None:
+                    notes += [f"<@{uid}>: {n}" for n in await self._apply_guild_roles(
+                        reg, guild, m, target, f"/miembros actualizar por {actor}") if n.startswith("⚠️")]
+            if plan["change"]:
+                await self.run(gdb.clear_alerts, [uid for uid, *_ in plan["change"]])
+            for chunk in _chunks([f"✅ Listo: **{done}** cambiaron de guild, **{len(role_fix)}** con el rol corregido."] + notes):
+                await i.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+            audit = [f"🔄 <@{actor.id}> actualizó los miembros con los export ({counts}): {done} cambiaron de guild, "
+                     f"{len(role_fix)} con el rol corregido."]
+            audit += [f"• <@{uid}> → **{esc(t)}**" for uid, t, _c, _ch in plan["change"]]
+            for chunk in _chunks(audit):
+                await reg.audit_log(chunk.rstrip("\n"))
+
+        await interaction.followup.send(chunks[0] + ("\n…y la lista sigue abajo." if len(chunks) > 1 else ""),
+                                        view=YesNoView(actor.id, yes, f"Aplicar {todo} cambio(s)"),
+                                        ephemeral=True, allowed_mentions=NO_MENTIONS)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     # ---------- kick: todos los roles + desvincular la cuenta de Albion (sigue en el Discord) ----------
     @staticmethod
@@ -898,6 +1035,15 @@ class GuildCheckCog(commands.Cog):
     @app_commands.choices(guild=[app_commands.Choice(name=g, value=g) for g in GUILD_CHOICES])
     async def cambiar_guild_cmd(self, interaction: discord.Interaction, persona: discord.Member, guild: app_commands.Choice[str]):
         await self.do_cambiar_guild(interaction, persona, getattr(guild, "value", guild))
+
+    @miembros_g.command(name="actualizar", description="(Staff) Con los export de Smogg y Smogged, actualiza en qué guild está cada miembro")
+    @app_commands.describe(smogg="Export de la guild Smogg (Character Name / Last Seen / Roles)",
+                           smogged="Export de la guild Smogged (Character Name / Last Seen / Roles)")
+    async def actualizar_cmd(self, interaction: discord.Interaction, smogg: discord.Attachment, smogged: discord.Attachment):
+        reg = self.reg()
+        names = [n for n, _i in reg.guilds] if reg is not None else GUILD_CHOICES
+        await self.do_actualizar(interaction, {(names[0] if names else "Smogg"): smogg,
+                                               (names[1] if len(names) > 1 else "Smogged"): smogged})
 
     @miembros_g.command(name="kick", description="(Staff) Le saca todos los roles de Discord y desvincula su cuenta de Albion")
     @app_commands.describe(persona="A quién", motivo="Motivo (queda en la auditoría)")
