@@ -15,7 +15,7 @@ import coaching_db as cdb
 import ctautil as cu
 import encargos_db as edb
 from encargos import can_take, is_staff_or_council
-from guildshop import can_manage
+from guildshop import COUNCIL_ROLE_ID, can_manage
 
 NO_MENTIONS = discord.AllowedMentions.none()
 OBSERVACION_ROLE_ID = int(os.getenv("OBSERVACION_ROLE_ID", "1559680220800360519"))
@@ -176,20 +176,55 @@ def rate_panel_text(role: Optional[str]) -> str:
 
 
 class CoachRateView(discord.ui.View):
-    """Panel persistente debajo del VOD (responde al mensaje del video): el coach del rol lo puntúa con el botón."""
-    def __init__(self, cog: "CoachingCog"):
+    """Panel persistente debajo del VOD (responde al mensaje del video): el coach del rol lo puntúa con el botón.
+    Ya puntuado (graded=True), el jugador puede pedir una segunda opinión."""
+    def __init__(self, cog: "CoachingCog", graded: bool = False):
         super().__init__(timeout=None)
         self.cog = cog
+        if not graded:
+            self.remove_item(self.appeal)
 
     @discord.ui.button(label="Puntuar", style=discord.ButtonStyle.success, custom_id="coach:rate", emoji="⭐")
     async def rate(self, interaction: discord.Interaction, button):
         await self.cog.on_rate_click(interaction)
 
+    @discord.ui.button(label="Pedir segunda opinión", style=discord.ButtonStyle.secondary, custom_id="coach:appeal", emoji="🔁")
+    async def appeal(self, interaction: discord.Interaction, button):
+        await self.cog.on_appeal_click(interaction)
+
+
+class CoachAppealView(discord.ui.View):
+    """Pedido de segunda opinión (responde al VOD): otro coach del rol propone una nota nueva."""
+    def __init__(self, cog: "CoachingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Proponer nueva nota", style=discord.ButtonStyle.primary, custom_id="coach:appeal_propose", emoji="📝")
+    async def propose(self, interaction: discord.Interaction, button):
+        await self.cog.on_appeal_propose_click(interaction)
+
+
+class CoachAppealDecisionView(discord.ui.View):
+    """El Council autoriza o rechaza la nota propuesta en la segunda opinión."""
+    def __init__(self, cog: "CoachingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Autorizar cambio", style=discord.ButtonStyle.success, custom_id="coach:appeal_ok", emoji="✅")
+    async def ok(self, interaction: discord.Interaction, button):
+        await self.cog.on_appeal_decide(interaction, True)
+
+    @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger, custom_id="coach:appeal_no", emoji="❌")
+    async def no(self, interaction: discord.Interaction, button):
+        await self.cog.on_appeal_decide(interaction, False)
+
 
 class CoachRateModal(discord.ui.Modal):
     """Formulario del coach: nota (1 a 10) y devolución escrita (obligatoria)."""
+    TITLE = "Puntuar VOD"
+
     def __init__(self, cog: "CoachingCog", vod_mid: int, grade: Optional[int] = None):
-        super().__init__(title="Puntuar VOD", timeout=900)
+        super().__init__(title=self.TITLE, timeout=900)
         self.cog, self.vod_mid = cog, vod_mid
         self.nota = discord.ui.TextInput(label="Nota (1 a 10)", placeholder="7 = cumplió su papel · 8-9 más de lo esperado · 10 core",
                                          default=str(grade) if grade else None, min_length=1, max_length=2)
@@ -200,6 +235,14 @@ class CoachRateModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.on_rate_submit(interaction, self.vod_mid, str(self.nota.value or ""), str(self.comentario.value or ""))
+
+
+class CoachAppealModal(CoachRateModal):
+    """Mismo formulario, para la nota que propone el segundo coach (no se aplica hasta que la autorice el Council)."""
+    TITLE = "Segunda opinión"
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.on_appeal_propose_submit(interaction, self.vod_mid, str(self.nota.value or ""), str(self.comentario.value or ""))
 
 
 class CoachingCog(commands.Cog):
@@ -215,7 +258,9 @@ class CoachingCog(commands.Cog):
         self.bot.add_view(CoachReviewView(self))
         self.bot.add_view(CoachGradeView(self))
         self.bot.add_view(CoachConfirmView(self))
-        self.bot.add_view(CoachRateView(self))
+        self.bot.add_view(CoachRateView(self, graded=True))
+        self.bot.add_view(CoachAppealView(self))
+        self.bot.add_view(CoachAppealDecisionView(self))
         if hasattr(self.bot, "wait_until_ready"):
             asyncio.get_running_loop().create_task(self._rate_panels_when_ready())
 
@@ -451,6 +496,9 @@ class CoachingCog(commands.Cog):
             await _say(interaction, f"🔒 Solo el coach de **{coach_label(role) or role or '?'}** puede puntuar este VOD.")
             return None
         g = await self.run(cdb.get_grade, mid)
+        if g and await self.run(cdb.appeal_get, vod_msg_id=mid):
+            await _say(interaction, "🔒 Este VOD tiene una segunda opinión: la nota solo cambia si el Council autoriza la propuesta.")
+            return None
         if g and int(g["coach_id"]) != interaction.user.id:
             await _say(interaction, f"🔒 Este VOD ya lo puntuó <@{g['coach_id']}>: solo él puede cambiar la nota.")
             return None
@@ -493,9 +541,151 @@ class CoachingCog(commands.Cog):
                             color=discord.Color.gold())
         emb.set_footer(text=f"Devolución de {getattr(interaction.user, 'display_name', coach_id)}")
         try:
-            await interaction.response.edit_message(content=text[:2000], embed=emb, view=CoachRateView(self), allowed_mentions=NO_MENTIONS)
+            await interaction.response.edit_message(content=text[:2000], embed=emb, view=CoachRateView(self, graded=True),
+                                                    allowed_mentions=NO_MENTIONS)
         except Exception:
             await _say(interaction, text[:2000], embed=emb)
+
+    # ---------- segunda opinión ----------
+    @staticmethod
+    def _parse_rating(nota: str, comentario: str):
+        try:
+            grade = int(nota.strip())
+        except ValueError:
+            return None, "❌ La nota tiene que ser un número del 1 al 10."
+        if not 1 <= grade <= 10:
+            return None, "❌ La nota tiene que ser un número del 1 al 10."
+        if len(comentario.strip()) < 10:
+            return None, "❌ Escribí la devolución (mínimo 10 caracteres)."
+        return grade, None
+
+    async def on_appeal_click(self, interaction: discord.Interaction):
+        """El jugador pide una segunda opinión sobre la nota (una vez por VOD): se etiqueta al coach del rol en el post."""
+        panel = getattr(interaction, "message", None)
+        mid = getattr(getattr(panel, "reference", None), "message_id", None)
+        row = await self.run(cdb.get_msg, mid) if mid else None
+        if row is None:
+            return await _say(interaction, "❌ Ese VOD ya no existe (lo borraron).")
+        if interaction.user.id != int(row["user_id"]):
+            return await _say(interaction, "🔒 Solo quien subió el VOD puede pedir una segunda opinión.")
+        g = await self.run(cdb.get_grade, mid)
+        if g is None:
+            return await _say(interaction, "ℹ️ Este VOD todavía no tiene nota.")
+        if not await self.run(cdb.appeal_claim, mid, int(row["thread_id"]), getattr(panel, "id", None), interaction.user.id):
+            return await _say(interaction, "ℹ️ Ya pediste una segunda opinión para este VOD (es una sola por VOD).")
+        label = coach_label(row.get("role_label")) or row.get("role_label")
+        coach_role = COACH_ROLES[label][0] if label in COACH_ROLES else None
+        tag = f"<@&{coach_role}> " if coach_role else ""
+        body = (f"{tag}🔁 <@{row['user_id']}> pide una **segunda opinión** sobre este VOD (rol **{label}**). Nota actual: **{g['grade']}/10** "
+                f"puesta por <@{g['coach_id']}>.\nOtro coach de {label} puede proponer una nota nueva; solo se cambia si la autoriza el Council.")
+        try:
+            vod = await interaction.channel.fetch_message(int(mid))
+            sent = await vod.reply(body, view=CoachAppealView(self), mention_author=False,
+                                   allowed_mentions=discord.AllowedMentions(users=False, roles=[discord.Object(id=coach_role)] if coach_role else False,
+                                                                            everyone=False))
+            await self.run(cdb.appeal_set_msg, mid, sent.id)
+        except Exception as exc:
+            print(f"coaching: no pude pedir la segunda opinión del VOD {mid}: {exc!r}")
+            return await _say(interaction, "❌ No pude publicar el pedido en el post. Avisale a un coach.")
+        await _say(interaction, "✅ Listo: pedí la segunda opinión y etiqueté a los coaches de tu rol.")
+
+    async def _appeal_target(self, interaction: discord.Interaction):
+        """Pedido de segunda opinión del mensaje (el pedido responde al VOD) si quien aprieta es otro coach del rol."""
+        mid = getattr(getattr(getattr(interaction, "message", None), "reference", None), "message_id", None)
+        ap = await self.run(cdb.appeal_get, vod_msg_id=mid) if mid else None
+        row = await self.run(cdb.get_msg, mid) if mid else None
+        if ap is None or row is None:
+            await _say(interaction, "❌ No encuentro este pedido de segunda opinión (¿borraron el VOD?).")
+            return None
+        if ap["status"] != "open":
+            await _say(interaction, "ℹ️ Esta segunda opinión ya se cerró.")
+            return None
+        role = row.get("role_label")
+        if not can_review(interaction.user, role):
+            await _say(interaction, f"🔒 Solo un coach de **{coach_label(role) or role}** puede dar la segunda opinión.")
+            return None
+        g = await self.run(cdb.get_grade, mid)
+        if g and int(g["coach_id"]) == interaction.user.id:
+            await _say(interaction, "🔒 La segunda opinión la tiene que dar otro coach, no el que puso la nota.")
+            return None
+        return row, g, ap
+
+    async def on_appeal_propose_click(self, interaction: discord.Interaction):
+        res = await self._appeal_target(interaction)
+        if res is None:
+            return
+        row = res[0]
+        await interaction.response.send_modal(CoachAppealModal(self, int(row["message_id"])))
+
+    async def on_appeal_propose_submit(self, interaction: discord.Interaction, vod_mid: int, nota: str, comentario: str):
+        grade, err = self._parse_rating(nota, comentario)
+        if err:
+            return await _say(interaction, err)
+        res = await self._appeal_target(interaction)
+        if res is None:
+            return
+        row, g, ap = res
+        label = coach_label(row.get("role_label")) or row.get("role_label")
+        emb = discord.Embed(title=f"📝 Nota propuesta: {grade}/10 · {GRADE_HINTS.get(grade, 'No llegó a lo esperado')}",
+                            description=comentario.strip()[:4000], color=discord.Color.orange())
+        emb.set_footer(text=f"Segunda opinión de {getattr(interaction.user, 'display_name', interaction.user.id)}")
+        body = (f"<@&{COUNCIL_ROLE_ID}> 🔁 Segunda opinión de <@{interaction.user.id}> (coach de {label}) para el VOD de <@{row['user_id']}>: "
+                f"propone **{grade}/10** (nota actual **{g['grade'] if g else '?'}/10**). **¿Autorizan el cambio?**")
+        try:
+            sent = await interaction.channel.send(body, embed=emb, view=CoachAppealDecisionView(self),
+                                                  allowed_mentions=discord.AllowedMentions(users=False, roles=[discord.Object(id=COUNCIL_ROLE_ID)],
+                                                                                           everyone=False))
+        except Exception as exc:
+            print(f"coaching: no pude publicar la propuesta de segunda opinión del VOD {vod_mid}: {exc!r}")
+            return await _say(interaction, "❌ No pude publicar la propuesta en el post.")
+        if not await self.run(cdb.appeal_propose, vod_mid, interaction.user.id, grade, comentario.strip(), sent.id):
+            return await _say(interaction, "ℹ️ Esta segunda opinión ya se cerró.")
+        await _say(interaction, "✅ Propuesta enviada: el Council tiene que autorizar el cambio de nota.")
+
+    async def on_appeal_decide(self, interaction: discord.Interaction, approve: bool):
+        if not can_manage(interaction.user):
+            return await _say(interaction, "🔒 Solo el Council puede autorizar o rechazar el cambio de nota.")
+        msg = getattr(interaction, "message", None)
+        ap = await self.run(cdb.appeal_get, proposal_msg_id=msg.id) if msg else None
+        if ap is None or not await self.run(cdb.appeal_decide, msg.id, approve, interaction.user.id):
+            try:
+                return await interaction.response.edit_message(view=None)
+            except Exception:
+                return await _say(interaction, "ℹ️ Esta propuesta ya no está vigente.")
+        vod_mid, who = int(ap["vod_msg_id"]), f"<@{interaction.user.id}>"
+        if not approve:
+            result = f"❌ {who} **rechazó** el cambio. La nota sigue igual; otro coach puede proponer una nueva."
+        else:
+            old = await self.run(cdb.get_grade, vod_mid)
+            grade, coach_id = int(ap["proposed_grade"]), int(ap["proposed_by"])
+            await self.run(cdb.set_grades, [vod_mid], coach_id, grade)              # no paga: la tirada del VOD ya se dio
+            result = f"✅ {who} **autorizó** el cambio: la nota pasa de **{old['grade'] if old else '?'}/10** a **{grade}/10**."
+            await self._appeal_update_panel(ap, grade, coach_id, interaction.user.id, old)
+        content = ((getattr(msg, "content", "") or "") + "\n\n" + result)[:2000]
+        try:
+            await interaction.response.edit_message(content=content, view=None, allowed_mentions=NO_MENTIONS)
+        except Exception:
+            await _say(interaction, result)
+
+    async def _appeal_update_panel(self, ap: dict, grade: int, coach_id: int, council_id: int, old: Optional[dict]):
+        """Refleja la nota nueva en el panel del VOD y cierra el pedido de segunda opinión."""
+        th = await self._channel(int(ap["thread_id"]))
+        if th is None:
+            return
+        emb = discord.Embed(title=f"⭐ {grade}/10 · {GRADE_HINTS.get(grade, 'No llegó a lo esperado')}",
+                            description=(ap.get("proposed_comment") or "")[:4000], color=discord.Color.gold())
+        emb.set_footer(text="Nota cambiada por segunda opinión")
+        text = (f"✅ **VOD puntuado** · nota **{grade}/10** (segunda opinión de <@{coach_id}>, autorizada por <@{council_id}>; "
+                f"antes {old['grade'] if old else '?'}/10 de <@{old['coach_id'] if old else '?'}>)")
+        for mid, kw in ((ap.get("panel_msg_id"), {"content": text, "embed": emb, "view": None}),
+                        (ap.get("appeal_msg_id"), {"view": None})):
+            if not mid:
+                continue
+            try:
+                m = await th.fetch_message(int(mid))
+                await m.edit(allowed_mentions=NO_MENTIONS, **kw)
+            except Exception as exc:
+                print(f"coaching: no pude actualizar el mensaje {mid} de la segunda opinión: {exc!r}")
 
     async def _rate_panels_when_ready(self):
         try:
