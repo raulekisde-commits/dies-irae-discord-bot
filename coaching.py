@@ -51,6 +51,7 @@ def can_review(member, label: Optional[str]) -> bool:
 STAFF_PING = discord.AllowedMentions(users=False, roles=[discord.Object(id=STAFF_ROLE_ID)], everyone=False)
 # Revisión única al subir el cambio: devoluciones ya cobradas desde esta hora (UTC) que tienen una «X» en el texto
 RETRO_FLAG = "retro_x_review_2026_11"
+RATE_PANELS_FLAG = "rate_panels_2026_11"          # una sola vez: panel «Puntuar» en los VODs pendientes subidos antes del cambio
 RETRO_SINCE = datetime(2026, 11, 16, 1, 13, tzinfo=timezone.utc)
 X_RE = re.compile(r"(?<!\w)[xX❌✖❎](?!\w)")
 GRADE_SCALE = ("**Escala:** 1-6 · no llegó a lo esperado · **7** · cumplió su papel · **8-9** · hizo más de lo esperado · "
@@ -169,6 +170,38 @@ class CoachGradeView(discord.ui.View):
         await self.cog.on_grade_pick(interaction, int(interaction.data["values"][0]))
 
 
+def rate_panel_text(role: Optional[str]) -> str:
+    return (f"⭐ **VOD para puntuar** · rol **{role}**\nEl coach de {role} lo puntúa con el botón (nota del 1 al 10 + devolución). "
+            "Al puntuarlo queda listo y el coach cobra su tirada de Wujupón.")
+
+
+class CoachRateView(discord.ui.View):
+    """Panel persistente debajo del VOD (responde al mensaje del video): el coach del rol lo puntúa con el botón."""
+    def __init__(self, cog: "CoachingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Puntuar", style=discord.ButtonStyle.success, custom_id="coach:rate", emoji="⭐")
+    async def rate(self, interaction: discord.Interaction, button):
+        await self.cog.on_rate_click(interaction)
+
+
+class CoachRateModal(discord.ui.Modal):
+    """Formulario del coach: nota (1 a 10) y devolución escrita (obligatoria)."""
+    def __init__(self, cog: "CoachingCog", vod_mid: int, grade: Optional[int] = None):
+        super().__init__(title="Puntuar VOD", timeout=900)
+        self.cog, self.vod_mid = cog, vod_mid
+        self.nota = discord.ui.TextInput(label="Nota (1 a 10)", placeholder="7 = cumplió su papel · 8-9 más de lo esperado · 10 core",
+                                         default=str(grade) if grade else None, min_length=1, max_length=2)
+        self.comentario = discord.ui.TextInput(label="Devolución", style=discord.TextStyle.paragraph, min_length=10, max_length=1500,
+                                               placeholder="Qué hizo bien, qué tiene que mejorar…")
+        self.add_item(self.nota)
+        self.add_item(self.comentario)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.on_rate_submit(interaction, self.vod_mid, str(self.nota.value or ""), str(self.comentario.value or ""))
+
+
 class CoachingCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: str, guild_id: int):
         self.bot, self.db_path, self.guild_id = bot, db_path, guild_id
@@ -182,6 +215,9 @@ class CoachingCog(commands.Cog):
         self.bot.add_view(CoachReviewView(self))
         self.bot.add_view(CoachGradeView(self))
         self.bot.add_view(CoachConfirmView(self))
+        self.bot.add_view(CoachRateView(self))
+        if hasattr(self.bot, "wait_until_ready"):
+            asyncio.get_running_loop().create_task(self._rate_panels_when_ready())
 
     async def run(self, fn, *a, **kw):
         return await asyncio.to_thread(fn, self.db_path, *a, **kw)
@@ -302,9 +338,7 @@ class CoachingCog(commands.Cog):
         if post is None:
             return
         if int(post["user_id"]) != message.author.id:          # solo cuentan los videos que sube el dueño del post
-            if not edited:
-                await self.complete_on_reply(message)            # pero si responde alguien del equipo, la devolución queda dada
-            return
+            return                                               # la devolución se da con el botón «Puntuar» del panel del VOD
         vods = cdb.extract_vods(message.content, getattr(message, "attachments", []))
         if not vods:
             return
@@ -334,7 +368,13 @@ class CoachingCog(commands.Cog):
                 await message.add_reaction("📌")                  # VOD de la CTA del track: queda marcado como enviado
         except Exception as exc:
             print(f"coaching: no pude marcar el track de {message.author.id}: {exc!r}")
-        if fresh and not role:
+        if fresh and coach_label(role):
+            try:
+                await message.reply(rate_panel_text(coach_label(role)), view=CoachRateView(self), mention_author=False,
+                                    allowed_mentions=NO_MENTIONS)
+            except Exception as exc:
+                print(f"coaching: no pude poner el panel de puntuar: {exc!r}")
+        elif fresh and not role:
             try:
                 await message.reply("🎭 ¿Con qué rol jugás en este VOD? Elegilo para que el coach lo sepa.", view=CoachRoleView(self),
                                     mention_author=False, allowed_mentions=NO_MENTIONS)
@@ -396,6 +436,91 @@ class CoachingCog(commands.Cog):
                 allowed_mentions=discord.AllowedMentions(users=[message.author], roles=False, everyone=False))
         except Exception as exc:
             print(f"coaching: no pude preguntar si la review está completa: {exc!r}")
+
+    # ---------- botón «Puntuar» ----------
+    async def _rate_target(self, interaction: discord.Interaction):
+        """VOD del panel (el panel responde al mensaje del video) si quien aprieta puede puntuarlo; si no, avisa y devuelve None."""
+        ref = getattr(getattr(interaction, "message", None), "reference", None)
+        mid = getattr(ref, "message_id", None)
+        row = await self.run(cdb.get_msg, mid) if mid else None
+        if row is None:
+            await _say(interaction, "❌ Ese VOD ya no existe (lo borraron).")
+            return None
+        role = row.get("role_label")
+        if not can_review(interaction.user, role):
+            await _say(interaction, f"🔒 Solo el coach de **{coach_label(role) or role or '?'}** puede puntuar este VOD.")
+            return None
+        g = await self.run(cdb.get_grade, mid)
+        if g and int(g["coach_id"]) != interaction.user.id:
+            await _say(interaction, f"🔒 Este VOD ya lo puntuó <@{g['coach_id']}>: solo él puede cambiar la nota.")
+            return None
+        return row, g
+
+    async def on_rate_click(self, interaction: discord.Interaction):
+        res = await self._rate_target(interaction)
+        if res is None:
+            return
+        row, g = res
+        await interaction.response.send_modal(CoachRateModal(self, int(row["message_id"]), int(g["grade"]) if g else None))
+
+    async def on_rate_submit(self, interaction: discord.Interaction, vod_mid: int, nota: str, comentario: str):
+        try:
+            grade = int(nota.strip())
+        except ValueError:
+            grade = 0
+        if not 1 <= grade <= 10:
+            return await _say(interaction, "❌ La nota tiene que ser un número del 1 al 10.")
+        comentario = comentario.strip()
+        if len(comentario) < 10:
+            return await _say(interaction, "❌ Escribí la devolución (mínimo 10 caracteres).")
+        res = await self._rate_target(interaction)
+        if res is None:
+            return
+        row, g = res
+        coach_id = interaction.user.id
+        if not int(row.get("done") or 0):                           # primera vez: el VOD queda listo y se cierra su tarea
+            await self._complete([vod_mid], coach_id)
+            await self.run(cdb.mark_done, vod_mid)
+        await self.run(cdb.set_grades, [vod_mid], coach_id, grade)
+        paid = await self.pay_grades([vod_mid], coach_id)          # una sola vez por VOD: cambiar la nota no vuelve a pagar
+        role = coach_label(row.get("role_label")) or row.get("role_label")
+        text = (f"✅ **VOD puntuado** por <@{coach_id}> · rol **{role}** · nota **{grade}/10**"
+                + (" (cambiada)" if g else "") + "\nEl coach puede cambiar la nota con el botón.")
+        if paid:
+            text += "\n" + " · ".join(f"🎰 <@{uid}> +{n} tirada(s) de Wujupón" for uid, n in paid.items())
+        text += await self._next_pending_line(vod_mid, getattr(interaction, "guild_id", None))
+        emb = discord.Embed(title=f"⭐ {grade}/10 · {GRADE_HINTS.get(grade, 'No llegó a lo esperado')}", description=comentario[:4000],
+                            color=discord.Color.gold())
+        emb.set_footer(text=f"Devolución de {getattr(interaction.user, 'display_name', coach_id)}")
+        try:
+            await interaction.response.edit_message(content=text[:2000], embed=emb, view=CoachRateView(self), allowed_mentions=NO_MENTIONS)
+        except Exception:
+            await _say(interaction, text[:2000], embed=emb)
+
+    async def _rate_panels_when_ready(self):
+        try:
+            await self.bot.wait_until_ready()
+            await self.post_missing_rate_panels()
+        except Exception:
+            traceback.print_exc()
+
+    async def post_missing_rate_panels(self) -> int:
+        """Una sola vez: panel «Puntuar» en los VODs pendientes (con rol) que se subieron antes de este cambio. Devuelve cuántos puso."""
+        if not await self.run(cdb.take_flag, RATE_PANELS_FLAG):
+            return 0
+        n = 0
+        for mid, thread_id, role in await self.run(cdb.pending_with_role):
+            label = coach_label(role) or role
+            th = await self._channel(thread_id)
+            try:
+                msg = await th.fetch_message(mid)
+                await msg.reply(rate_panel_text(label), view=CoachRateView(self), mention_author=False, allowed_mentions=NO_MENTIONS)
+                n += 1
+            except Exception as exc:
+                print(f"coaching: no pude poner el panel de puntuar en el VOD {mid}: {exc!r}")
+            await asyncio.sleep(self.CREATE_DELAY)
+        print(f"coaching: paneles de puntuar en VODs viejos: {n}")
+        return n
 
     async def _next_pending_line(self, vod_mid: int, guild_id: Optional[int]) -> str:
         row = await self.run(cdb.get_msg, vod_mid)
@@ -688,7 +813,8 @@ class CoachingCog(commands.Cog):
         except Exception as exc:
             print(f"coaching: no pude crear/actualizar la tarea con el rol: {exc!r}")
         try:
-            await interaction.response.edit_message(content=f"🎭 Rol del VOD: **{label}**", view=None)
+            await interaction.response.edit_message(content=f"🎭 Rol del VOD: **{label}**\n" + rate_panel_text(label),
+                                                    view=CoachRateView(self), allowed_mentions=NO_MENTIONS)   # el mismo mensaje pasa a ser el panel
         except Exception:
             await _say(interaction, f"✅ Rol: {label}")
 
