@@ -465,6 +465,26 @@ def get_grade_prompt(db_path: str, reply_msg_id: int) -> Optional[dict]:
         conn.close()
 
 
+def get_grade(db_path: str, vod_msg_id: int) -> Optional[dict]:
+    """Nota de un VOD (coach_id, grade) o None si todavía no tiene."""
+    conn = connect(db_path)
+    try:
+        r = conn.execute("SELECT * FROM coaching_grades WHERE vod_msg_id=?", (int(vod_msg_id),)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def pending_with_role(db_path: str) -> List[Tuple[int, int, str]]:
+    """(mensaje, post, rol) de los VODs sin puntuar que ya tienen rol, del más viejo al más nuevo."""
+    conn = connect(db_path)
+    try:
+        return [(int(r["message_id"]), int(r["thread_id"]), r["role_label"]) for r in conn.execute(
+            "SELECT message_id, thread_id, role_label FROM coaching_msgs WHERE done=0 AND role_label IS NOT NULL ORDER BY message_id")]
+    finally:
+        conn.close()
+
+
 def set_grades(db_path: str, vod_msgs: List[int], coach_id: int, grade: int) -> int:
     """Pone (o cambia) la nota de esos VODs. Solo los que siguen existiendo. Devuelve cuántos quedaron con nota."""
     grade = int(grade)
