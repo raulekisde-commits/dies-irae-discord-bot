@@ -311,7 +311,12 @@ class EfectosCog(commands.Cog):
         if action == "shield":
             await _say(interaction, f"🛡️ Escudo activo hasta <t:{int(res.effect.until)}:t>: nadie te puede usar cartas y las malas no te afectan.")
             return await self.announce(f"🛡️ <@{interaction.user.id}> activó un escudo hasta <t:{int(res.effect.until)}:t>.")
-        await _say(interaction, "🧹 Listo, se limpió: " + ", ".join(edb.KIND_LABELS[e.kind] for e in res.ended) + ".")
+        lines = []
+        if res.ended:
+            lines.append("🧹 Listo, se limpió: " + ", ".join(edb.KIND_LABELS[e.kind] for e in res.ended) + ".")
+        for e in res.reduced:
+            lines.append(f"🧹 Le sacaste **{edb.duration_text(value * 60)}** a {edb.KIND_LABELS[e.kind]}: " + edb.effect_text(e).split(" — ", 1)[1] + ".")
+        await _say(interaction, "\n".join(lines))
 
     async def use_on_target(self, interaction: discord.Interaction, card_id: int, target):
         if target is None:
