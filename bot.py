@@ -1443,6 +1443,7 @@ async def before_timer_posts_cleanup():
 
 TIMER_LOG_CHANNEL_ID = 1574815266293022771     # log de timers agregados y de conflictos
 TIMERADD_NODE_TIERS = ("8.4",)                 # /timeradd: los materiales solo se cargan en 8.4
+TIMERADD_SPECIAL_TIERS = {"vortex": ("epic", "legendary"), "core": ("legendary",)}   # vortex violeta/dorado, core solo dorado
 TIMER_DUP_TOLERANCE_MINUTES = 2                # mismo objetivo/tier/mapa a ±2 min = el mismo timer (duplicado)
 TIMER_CONFIRM_TIMEOUT = 120
 _TIMER_DURATION_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
@@ -1607,7 +1608,7 @@ class TimerConflictView(discord.ui.View):
     material="Objetivo",
     mapa="Nombre del mapa",
     tiempo="Cuánto falta desde AHORA hasta que salga, en HH:MM (ej 1:15 = 1 hora 15 min)",
-    tier="Tier (materiales solo 8.4; obligatorio salvo para Dragon)",
+    tier="Tier: materiales 8.4 · Vortex violeta/dorado · Core dorado (Dragon sin tier)",
 )
 @app_commands.choices(
     material=[
@@ -1621,8 +1622,6 @@ class TimerConflictView(discord.ui.View):
     ],
     tier=[
         app_commands.Choice(name="8.4", value="8.4"),
-        app_commands.Choice(name="Common (Verde)", value="common"),
-        app_commands.Choice(name="Rare (Azul)", value="rare"),
         app_commands.Choice(name="Epic (Violeta)", value="epic"),
         app_commands.Choice(name="Legendary (Amarillo)", value="legendary"),
     ],
@@ -1652,8 +1651,11 @@ async def timeradd_slash(
     elif tr is None:
         return await respond_ephemeral(interaction, "❌ Falta el **tier**. Solo **Dragon** se puede publicar sin tier.")
     elif mat in MATERIALS_SPECIAL:
-        if tr not in TIERS_SPECIAL:
-            return await respond_ephemeral(interaction, "❌ Para **Vortex/Core** el tier tiene que ser: Common/Rare/Epic/Legendary.")
+        if tr not in TIMERADD_SPECIAL_TIERS.get(mat, ()):
+            return await respond_ephemeral(
+                interaction,
+                "❌ Para **Vortex** solo se puede **Epic (Violeta)** o **Legendary (Dorado)**." if mat == "vortex"
+                else "❌ Para **Core** solo se puede **Legendary (Dorado)**.")
     elif tr not in TIMERADD_NODE_TIERS:
         return await respond_ephemeral(interaction, "❌ Para **Fibra/Cuero/Mineral/Madera** solo se pueden cargar timers **8.4**.")
 
