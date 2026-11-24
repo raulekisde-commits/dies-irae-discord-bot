@@ -215,6 +215,88 @@ class CoachingDiscordTests(DiscordBase):
         self.rate(self.coach, 4101, "7")
         self.assertEqual(edb.top_coaches(self.db), [(self.coach.id, 2)])
 
+    def test_segunda_opinion_la_autoriza_el_council(self):
+        wdb = self.wujupon()
+        self.open_post(self.novato)
+        th = self.vods(1)
+        vod = self.video_msg(self.novato, th, "healer https://youtu.be/w0", 4100)
+        sent = []
+
+        async def fetch_message(mid):
+            if mid == 4100:
+                return vod
+            return next(m for m in sent if m.id == mid)
+
+        async def th_send(content=None, **kw):
+            m = SimpleNamespace(id=9900 + len(sent), content=content, kw=kw, reference=None, edits=[])
+
+            async def edit(**e):
+                m.edits.append(e)
+            m.edit = edit
+            sent.append(m)
+            return m
+        th.fetch_message, th.send = fetch_message, th_send
+
+        async def vod_reply(text=None, **kw):
+            m = await th_send(text, **kw)
+            m.reference = SimpleNamespace(message_id=4100)
+            return m
+        vod.reply = vod_reply
+        panel = SimpleNamespace(id=9800, reference=SimpleNamespace(message_id=4100))
+        i = self.inter(self.novato, message=panel, channel=th)
+        run(self.cog.on_appeal_click(i))
+        self.assertIn("todavía no tiene nota", i.text)
+        _, s = self.rate(self.coach, 4100, "5")
+        self.assertIsInstance(s.response.edits[-1]["view"], co.CoachRateView)
+        self.assertIn("coach:appeal", [c.custom_id for c in s.response.edits[-1]["view"].children])   # ya puntuado: botón de réplica
+        i = self.inter(self.alice, message=panel, channel=th)
+        run(self.cog.on_appeal_click(i))
+        self.assertIn("Solo quien subió", i.text)
+        i = self.inter(self.novato, message=panel, channel=th)
+        run(self.cog.on_appeal_click(i))
+        self.assertIn("etiqueté", i.text)
+        appeal = sent[0]
+        self.assertIn(f"<@&{co.COACH_ROLES['Healer'][0]}>", appeal.content)                     # tagea al coach de su rol
+        self.assertIsInstance(appeal.kw["view"], co.CoachAppealView)
+        i = self.inter(self.novato, message=panel, channel=th)
+        run(self.cog.on_appeal_click(i))
+        self.assertIn("una sola por VOD", i.text)
+        self.assertIn("segunda opinión", self.rate(self.coach, 4100, "6")[0].text)              # el primer coach ya no la cambia
+        def propose(user, grade="8"):
+            c = self.inter(user, message=appeal, channel=th)
+            run(self.cog.on_appeal_propose_click(c))
+            if not c.response.modals:
+                return c, None
+            sb = self.inter(user, message=appeal, channel=th)
+            run(self.cog.on_appeal_propose_submit(sb, 4100, grade, "jugó mejor de lo que dice la nota"))
+            return c, sb
+        self.assertIn("otro coach", propose(self.coach)[0].text)                                # el mismo coach no
+        tank = discord.Member(700000000000000030, "CoachTank", roles=[self.r_ch["Tank"]], guild=self.guild)
+        self.assertIn("Solo un coach de **Healer**", propose(tank)[0].text)
+        otro = discord.Member(700000000000000031, "Otro healer", roles=[self.r_ch["Healer"]], guild=self.guild)
+        _, sb = propose(otro, "8")
+        self.assertIn("Council tiene que autorizar", sb.text)
+        prop = sent[1]
+        self.assertIn(f"<@&{co.COUNCIL_ROLE_ID}>", prop.content)
+        self.assertEqual(cdb.get_grade(self.db, 4100)["grade"], 5)                              # todavía no cambia
+        d = self.inter(otro, message=prop, channel=th)
+        run(self.cog.on_appeal_decide(d, True))
+        self.assertIn("Solo el Council", d.text)
+        d = self.inter(self.council, message=prop, channel=th)
+        run(self.cog.on_appeal_decide(d, False))                                                # rechazo: puede proponer otra
+        self.assertIn("rechazó", d.response.edits[-1]["content"])
+        _, sb = propose(otro, "9")
+        prop2 = sent[2]
+        d = self.inter(self.council, message=prop, channel=th)                                  # la propuesta vieja ya no vale
+        run(self.cog.on_appeal_decide(d, True))
+        self.assertEqual(cdb.get_grade(self.db, 4100)["grade"], 5)
+        d = self.inter(self.council, message=prop2, channel=th)
+        run(self.cog.on_appeal_decide(d, True))
+        self.assertIn("de **5/10** a **9/10**", d.response.edits[-1]["content"])
+        self.assertEqual((cdb.get_grade(self.db, 4100)["grade"], cdb.get_grade(self.db, 4100)["coach_id"]), (9, otro.id))
+        self.assertEqual(wdb.get_spins(self.db, self.coach.id) + wdb.get_spins(self.db, otro.id), 1)   # no vuelve a pagar
+        self.assertIn("Segunda opinión ya se cerró".lower(), propose(otro, "3")[0].text.lower())
+
     def test_vod_con_varios_videos_paga_una_tirada_por_video(self):
         wdb = self.wujupon()
         self.open_post(self.novato)

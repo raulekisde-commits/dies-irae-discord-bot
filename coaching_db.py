@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS coaching_track_members (
     message_id INTEGER,
     done_at    TEXT
 );
+CREATE TABLE IF NOT EXISTS coaching_appeals (
+    vod_msg_id       INTEGER PRIMARY KEY,
+    thread_id        INTEGER NOT NULL,
+    panel_msg_id     INTEGER,
+    appeal_msg_id    INTEGER,
+    requested_by     INTEGER NOT NULL,
+    created_at       TEXT NOT NULL,
+    proposed_by      INTEGER,
+    proposed_grade   INTEGER,
+    proposed_comment TEXT,
+    proposal_msg_id  INTEGER,
+    status           TEXT NOT NULL DEFAULT 'open',
+    decided_by       INTEGER,
+    decided_at       TEXT
+);
 """
 
 
@@ -481,6 +496,69 @@ def pending_with_role(db_path: str) -> List[Tuple[int, int, str]]:
     try:
         return [(int(r["message_id"]), int(r["thread_id"]), r["role_label"]) for r in conn.execute(
             "SELECT message_id, thread_id, role_label FROM coaching_msgs WHERE done=0 AND role_label IS NOT NULL ORDER BY message_id")]
+    finally:
+        conn.close()
+
+
+# ---------- segunda opinión (una por VOD; el cambio de nota lo autoriza el Council) ----------
+def appeal_claim(db_path: str, vod_msg_id: int, thread_id: int, panel_msg_id: Optional[int], requested_by: int) -> bool:
+    """Registra el pedido de segunda opinión. False si ese VOD ya tenía uno."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("INSERT OR IGNORE INTO coaching_appeals(vod_msg_id,thread_id,panel_msg_id,requested_by,created_at) "
+                                "VALUES (?,?,?,?,?)", (int(vod_msg_id), int(thread_id), panel_msg_id, int(requested_by), utcnow_iso())).rowcount == 1
+    finally:
+        conn.close()
+
+
+def appeal_set_msg(db_path: str, vod_msg_id: int, appeal_msg_id: int) -> None:
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            conn.execute("UPDATE coaching_appeals SET appeal_msg_id=? WHERE vod_msg_id=?", (int(appeal_msg_id), int(vod_msg_id)))
+    finally:
+        conn.close()
+
+
+def appeal_get(db_path: str, *, vod_msg_id: Optional[int] = None, appeal_msg_id: Optional[int] = None,
+               proposal_msg_id: Optional[int] = None) -> Optional[dict]:
+    col, val = (("vod_msg_id", vod_msg_id) if vod_msg_id is not None else ("appeal_msg_id", appeal_msg_id)
+                if appeal_msg_id is not None else ("proposal_msg_id", proposal_msg_id))
+    if val is None:
+        return None
+    conn = connect(db_path)
+    try:
+        r = conn.execute(f"SELECT * FROM coaching_appeals WHERE {col}=?", (int(val),)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def appeal_propose(db_path: str, vod_msg_id: int, coach_id: int, grade: int, comment: str, proposal_msg_id: int) -> bool:
+    """Guarda la nota propuesta por el segundo coach (reemplaza una propuesta anterior sin decidir). False si ya se cerró."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            return conn.execute("UPDATE coaching_appeals SET proposed_by=?, proposed_grade=?, proposed_comment=?, proposal_msg_id=? "
+                                "WHERE vod_msg_id=? AND status='open'",
+                                (int(coach_id), int(grade), comment, int(proposal_msg_id), int(vod_msg_id))).rowcount == 1
+    finally:
+        conn.close()
+
+
+def appeal_decide(db_path: str, proposal_msg_id: int, approve: bool, decided_by: int) -> bool:
+    """El Council autoriza (cierra la segunda opinión) o rechaza (se puede proponer otra) esa propuesta. False si ya no está vigente."""
+    conn = connect(db_path)
+    try:
+        with write_tx(conn):
+            if approve:
+                sql = ("UPDATE coaching_appeals SET status='approved', decided_by=?, decided_at=? "
+                       "WHERE proposal_msg_id=? AND status='open'")
+                return conn.execute(sql, (int(decided_by), utcnow_iso(), int(proposal_msg_id))).rowcount == 1
+            sql = ("UPDATE coaching_appeals SET proposed_by=NULL, proposed_grade=NULL, proposed_comment=NULL, proposal_msg_id=NULL "
+                   "WHERE proposal_msg_id=? AND status='open'")
+            return conn.execute(sql, (int(proposal_msg_id),)).rowcount == 1
     finally:
         conn.close()
 
