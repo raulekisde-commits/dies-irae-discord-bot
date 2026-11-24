@@ -232,8 +232,10 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
     defs: List[dict] = []
     for pn, party in enumerate(parsed["parties"], start=1):
         for pos, slot in enumerate(party["slots"], start=1):
-            names, role_ids, label_seen = [], [], ""
+            names, role_ids, label_seen, options = [], [], "", []
             for bid in slot or []:
+                alts = []                                             # (nombre, arma, rol de combate) de las armas alternativas de esta build
+                weapon = ""
                 if bid == FILL_BATTLEMOUNT_ID:
                     names.append("Battlemount")
                     label = "battle mount"
@@ -253,6 +255,7 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
                             alt_name = (name_for(alt_id) if name_for else None) or alt_item      # arma alternativa (permuta del arma en la web): se muestra en la posición
                             if alt_name and alt_name.lower() not in meta["name"].lower():
                                 names.append(alt_name)
+                                alts.append((alt_name, alt_id, role_for(alt_id) or ""))
                     else:
                         notes["sin_datos"].add(meta["name"])
                 rid = discord_role_for(label) if label else None
@@ -261,14 +264,31 @@ def build_slot_defs(parsed: dict, builds: Dict[str, dict], role_for, discord_rol
                 if rid and rid not in role_ids:
                     role_ids.append(rid)
                 label_seen = label_seen or label
+                options.append({"name": names[-1 - len(alts)], "weapon": _base_item(weapon), "role_id": rid})
+                for alt_name, alt_id, alt_label in alts:              # cada alternativa con SU rol (si el arma no tiene regla, el de la principal)
+                    alt_rid = discord_role_for(alt_label) if alt_label else None
+                    if alt_label and not alt_rid:
+                        notes["sin_discord"].add(alt_label)
+                    options.append({"name": alt_name, "weapon": _base_item(alt_id), "role_id": alt_rid or rid})
             name = (" / ".join(dict.fromkeys(names)) or "Libre")[:ROLE_NAME_MAX]
             icon = next((i for i in ((role_icon_for(r) if role_icon_for else "") for r in role_ids) if i), "")
+            opts, seen = [], set()
+            for o in options:                                         # sin repetir nombres (queda el primero)
+                if o["name"].casefold() not in seen:
+                    seen.add(o["name"].casefold())
+                    opts.append(o)
             defs.append({"party_no": pn, "position_no": pos, "role_name": name, "emoji": icon or LABEL_EMOJI.get(label_seen, ""),
-                         "role_ids": role_ids, "access_mode": "roles" if role_ids else "any"})
+                         "role_ids": role_ids, "access_mode": "roles" if role_ids else "any",
+                         "options": opts if len(opts) > 1 else []})
     return defs, {k: sorted(v) for k, v in notes.items()}
 
 
 # ---------------------------------------------------------------- base de datos del bot
+def slot_options_map(defs: List[dict]) -> Dict[str, List[dict]]:
+    """{'P1-3': [{name, weapon, role_id}, ...]} de las posiciones con más de una opción (se guarda con la compo, en compoweb_parsed)."""
+    return {f"P{d['party_no']}-{d['position_no']}": d["options"] for d in defs if d.get("options")}
+
+
 def link_for(db_path: str, composition_id: int) -> Optional[dict]:
     conn = connect(db_path)
     try:

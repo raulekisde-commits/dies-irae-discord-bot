@@ -611,9 +611,13 @@ def slot_key(slot) -> str:
     return f"{int(slot['party_no'])}:{int(slot['position_no'])}"
 
 
-def _row_position(slot) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+def _row_position(slot, choice: Optional[str] = None) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """(posición, rol, nombre). Si eligió una de las opciones de la posición, cuenta el rol y el nombre de esa opción."""
     if slot is None:
         return None, None, None
+    opt = next((o for o in slot.get("options") or [] if choice and o.get("name") == choice), None)
+    if opt is not None:
+        return slot_key(slot), int(opt["role_id"]) if opt.get("role_id") else required_role(slot.get("role_ids")), opt["name"]
     return slot_key(slot), required_role(slot.get("role_ids")), slot.get("role_name")
 
 
@@ -631,8 +635,11 @@ def snapshot_positions(db_path: str, cta_id: int) -> int:
                 return 0
             slots = {slot_key(s): s for s in json.loads(run["snapshot_json"])["slots"]}
             n = 0
-            for r in conn.execute("SELECT user_id, slot_key FROM cta_signups WHERE cta_id=?", (cta_id,)).fetchall():
-                key, rid, name = _row_position(slots.get(r["slot_key"]))
+            cols = {c["name"] for c in conn.execute("PRAGMA table_info(cta_signups)")}
+            sel = "user_id, slot_key, choice, choice_slot" if {"choice", "choice_slot"} <= cols else "user_id, slot_key, NULL AS choice, NULL AS choice_slot"
+            for r in conn.execute(f"SELECT {sel} FROM cta_signups WHERE cta_id=?", (cta_id,)).fetchall():
+                choice = r["choice"] if r["choice_slot"] == r["slot_key"] else None
+                key, rid, name = _row_position(slots.get(r["slot_key"]), choice)
                 n += conn.execute("INSERT OR IGNORE INTO cta_positions(cta_id, user_id, slot_key, role_id, role_name, late) VALUES (?,?,?,?,?,0)",
                                   (cta_id, r["user_id"], key or r["slot_key"], rid, name)).rowcount
             return n
