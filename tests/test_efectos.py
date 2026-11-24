@@ -177,6 +177,26 @@ class EfectosTests(DiscordBase):
         self.assertIn("nada que limpiar", i.text)
         self.assertEqual(wdb.get_card(self.db, cid).status, "available")
 
+    def test_limpiezas_parciales(self):
+        self.use("mute_chat_60", self.bob)                                      # 6 h
+        cid, i = self.use("clean_chat_2h", user=self.bob)                        # saca 2 h: quedan 4 h
+        self.assertIn("Le sacaste", i.text)
+        until = edb.active_until(self.db, self.bob.id, "mute_chat")
+        self.assertAlmostEqual(until - time.time(), 4 * 3600, delta=60)
+        self.assertIn(self.r_chat, self.bob.roles)
+        cid, i = self.use("clean_chat_6h", user=self.bob)                        # le quedaba menos: se termina
+        self.assertIn("se limpió", i.text)
+        self.assertNotIn(self.r_chat, self.bob.roles)
+        self.assertIsNone(edb.active_until(self.db, self.bob.id, "mute_chat"))
+        cid, i = self.use("clean_voice_15", user=self.bob)
+        self.assertIn("nada que limpiar", i.text)
+        self.assertEqual(wdb.get_card(self.db, cid).status, "available")
+        casino_db.set_open(self.db, GUILD_ID, True, 1)
+        self.use("casino_block_24h", self.bob)
+        self.use("clean_casino_6h", user=self.bob)
+        until = edb.active_until(self.db, self.bob.id, "casino_block")
+        self.assertAlmostEqual(until - time.time(), 18 * 3600, delta=60)
+
     # ---------------- casino ----------------
     def test_abrir_y_cerrar_casino(self):
         casino_db.set_open(self.db, GUILD_ID, True, 1)

@@ -27,8 +27,10 @@ CLEANS = {                                  # carta de limpieza → efectos que 
     "clean_chat": ("mute_chat",),
     "clean_voice": ("mute_voice",),
     "clean_freeze": ("freeze_balance",),
+    "clean_casino": ("casino_block",),
     "clean_all": ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon"),
 }
+# Con minutos (handler «efx:clean_chat:360»), la limpieza saca hasta ese tiempo: si al efecto le queda más, sigue con el resto.
 STACKABLE = ("mute_chat", "mute_voice", "casino_block")   # su tiempo se acumula
 TARGETED = ("mute_chat", "mute_voice", "freeze_balance", "freeze_wujupon", "casino_block", "purge", "voice_kick")
 
@@ -203,6 +205,25 @@ def _end(conn, user_id: int, kinds, actor_id: Optional[int]) -> List[Effect]:
     return [_effect(r) for r in rows]
 
 
+def _reduce(conn, user_id: int, kinds, seconds: float, actor_id: int) -> Tuple[List[Effect], List[Effect]]:
+    """Le saca hasta `seconds` a cada efecto activo de `kinds`. Devuelve (terminados, reducidos)."""
+    now = _now()
+    ended, reduced = [], []
+    for kind in kinds:
+        e = _active(conn, user_id, kind, now)
+        if e is None:
+            continue
+        if e.paused_left is not None and e.paused_left > seconds:          # bloqueo de casino pausado
+            conn.execute("UPDATE wjp_effects SET paused_left = ? WHERE id = ?", (e.paused_left - seconds, e.id))
+        elif e.paused_left is None and e.until is not None and e.until - now > seconds:
+            conn.execute("UPDATE wjp_effects SET until = ? WHERE id = ?", (e.until - seconds, e.id))
+        else:                                                               # le quedaba menos (o no vencía): se termina
+            ended += _end(conn, user_id, (kind,), actor_id)
+            continue
+        reduced.append(_effect(conn.execute("SELECT * FROM wjp_effects WHERE id = ?", (e.id,)).fetchone()))
+    return ended, reduced
+
+
 def _consume(conn, card_id: int, owner_id: int, from_status: str = "available") -> bool:
     return conn.execute("UPDATE wjp_cards SET status = 'consumed', updated_at = ? WHERE id = ? AND user_id = ? AND status = ?",
                         (utcnow_iso(), card_id, owner_id, from_status)).rowcount == 1
@@ -228,6 +249,7 @@ class UseResult:
     message: str = ""
     effect: Optional[Effect] = None
     ended: Tuple[Effect, ...] = ()
+    reduced: Tuple[Effect, ...] = ()     # limpiezas parciales: efectos que siguen, con menos tiempo
 
 
 def use_card(db_path: str, *, card_id: int, owner_id: int, prize_key: str, action: str, minutes: Optional[float],
@@ -257,13 +279,17 @@ def use_card(db_path: str, *, card_id: int, owner_id: int, prize_key: str, actio
                 _log(conn, owner_id, "efx_purge", target_id, f"card:{card_id}", "")
                 return UseResult("ok", ended=tuple(ended))
             if action in CLEANS:
-                ended = _end(conn, owner_id, CLEANS[action], owner_id)
-                if not ended:
+                if minutes:
+                    ended, reduced = _reduce(conn, owner_id, CLEANS[action], float(minutes) * 60, owner_id)
+                else:
+                    ended, reduced = _end(conn, owner_id, CLEANS[action], owner_id), []
+                if not ended and not reduced:
                     return UseResult("no_effect", "No tenés nada que limpiar. Tu carta no se gastó.")
                 _consume(conn, card_id, owner_id)
-                _record(conn, card_id, owner_id, prize_key, "Limpió: " + ", ".join(e.kind for e in ended))
-                _log(conn, owner_id, "efx_clean", owner_id, f"card:{card_id}", ",".join(e.kind for e in ended))
-                return UseResult("ok", ended=tuple(ended))
+                kinds = ", ".join(e.kind for e in ended + reduced)
+                _record(conn, card_id, owner_id, prize_key, "Limpió: " + kinds + (f" (hasta {minutes:g} min)" if minutes else ""))
+                _log(conn, owner_id, "efx_clean", owner_id, f"card:{card_id}", kinds + (f" -{minutes:g} min" if minutes else ""))
+                return UseResult("ok", ended=tuple(ended), reduced=tuple(reduced))
             if action == "voice_kick":
                 # sin efecto que dure: la capa de Discord desconecta (y devuelve la carta con undo_use si no puede)
                 _consume(conn, card_id, owner_id)

@@ -451,7 +451,7 @@ class CatalogoV2Tests(DbBase):
         wdb._ready.discard(self.db)
         wdb.init_schema(self.db)
         p = wdb.get_prize(self.db, "party_switch")
-        self.assertEqual((p.name, p.weight), ("Staff a tu elección en la CTA", 950))
+        self.assertEqual((p.name, p.weight), ("Staff a tu elección en la CTA", 800))
         # una edición posterior del Council se mantiene en los reinicios siguientes
         wdb.edit_prize(self.db, "party_switch", actor_id=1, name="Flex", description="Mía")
         wdb._ready.discard(self.db)
@@ -523,7 +523,7 @@ class CatalogoV2Tests(DbBase):
     def test_cambios_v10_las_caras_con_menos_chance(self):
         p = {x.key: x.weight for x in wdb.list_prizes(self.db)}
         self.assertEqual([p[k] for k in ("wuju_15m", "weapon_83", "embo_1000", "weapon_73")], [100, 100, 200, 100])
-        self.assertEqual([p[k] for k in ("mute_chat_60", "mute_voice_60", "purge_shield", "bad_cd_24h")], [250, 300, 350, 250])
+        self.assertEqual([p[k] for k in ("mute_chat_60", "mute_voice_60", "purge_shield", "bad_cd_24h")], [250, 300, 300, 250])
 
     def test_v16_costo_por_tirada_200k(self):
         p = {x.key: x for x in wdb.list_prizes(self.db)}
@@ -531,6 +531,13 @@ class CatalogoV2Tests(DbBase):
         exp = wdb.expected_cost(list(p.values()))
         total = exp["wuju"] + exp["silver"] + exp["embo"] * wdb.EMBO_SILVER_VALUE + exp["val"]
         self.assertLess(total, 200_000)
+
+    def test_v18_limpiezas_por_tier(self):
+        p = {x.key: x for x in wdb.list_prizes(self.db)}
+        self.assertEqual([p[k].weight for k in ("clean_chat", "clean_voice", "clean_freeze", "clean_all")], [0, 0, 0, 0])
+        self.assertEqual([(p[k].rarity, p[k].effect) for k in ("clean_chat_15", "clean_casino_6h", "clean_freeze_2h", "clean_voice_6h")],
+                         [("common", ("clean_chat", 15.0)), ("rare", ("clean_casino", 360.0)), ("epic", ("clean_freeze", 120.0)),
+                          ("legendary", ("clean_voice", 360.0))])
 
     def test_v15_chance_de_embo_doble(self):
         p = {x.key: x.weight for x in wdb.list_prizes(self.db)}
@@ -927,7 +934,7 @@ class WujuponDiscordTests(DiscordBase):
         i = self.inter(self.council)
         run(self.cog.odds_card.callback(self.cog, i, "party_switch", "10", leg))
         self.assertIn("Legendaria", i.text)
-        self.assertIn("109,05 %", i.text)                            # avisa que ya no suma 100 %
+        self.assertIn("109,2 %", i.text)                            # avisa que ya no suma 100 %
         p = wdb.get_prize(self.db, "party_switch")
         self.assertEqual((p.weight, p.rarity), (10000, "legendary"))
 
