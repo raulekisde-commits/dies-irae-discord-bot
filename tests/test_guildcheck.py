@@ -257,6 +257,8 @@ class GuildCheckTests(DiscordBase):
         rdb.set_flag(self.db, "registro:rol_guild:smogged", str(role.id))
         self.bob.roles.append(role)                                                  # tiene el rol pero sigue en Smogg
         rdb.admin_link(self.db, self.outsider.id, "Perdido", 1, char_id="id-p")
+        self.outsider.roles.append(self.r_member)
+        rdb.admin_link(self.db, self.staff.id, "Jefazo", 1, char_id="id-j")         # Staff fuera de las guilds: no se toca
 
         def f(text):
             async def read():
@@ -273,8 +275,11 @@ class GuildCheckTests(DiscordBase):
         self.assertIn("Cambian de guild: **1**", text)
         self.assertIn(f"<@{self.alice.id}> (Kingnian): Smogg → **Smogged**", text)
         self.assertIn("solo corregir rol: **1**", text)
+        self.assertIn("se les sacan los roles: **1**", text)
+        self.assertIn("Jefazo) · Staff/Council/admin", text)
         self.assertIn(f"<@{self.outsider.id}> (Perdido)", text)
         self.assertEqual(rdb.get_registration(self.db, self.alice.id).guild_name, None)   # sin confirmar no cambia nada
+        self.assertIn(self.r_member, self.outsider.roles)
         j = self.inter(self.staff)
         run(kw["view"]._yes(j))
         self.assertEqual(rdb.get_registration(self.db, self.alice.id).guild_name, "Smogged")
@@ -282,6 +287,10 @@ class GuildCheckTests(DiscordBase):
         self.assertNotIn(role, self.bob.roles)
         self.assertEqual(rdb.active_transfers(self.db), {})                         # no queda como pase pendiente
         self.assertIsNone(rdb.get_registration(self.db, self.outsider.id).guild_name)
+        self.assertEqual(self.outsider.roles, [])                                   # sin roles, pero sigue registrado
+        self.assertIsNotNone(rdb.get_registration(self.db, self.outsider.id))
+        self.assertEqual(gdb.get_alert(self.db, self.outsider.id)["status"], "roles_removed")
+        self.assertTrue(self.staff.roles)
 
     def test_sin_aviso_si_la_api_dice_que_sigue_en_la_guild_o_si_es_invitado(self):
         self._leave_setup(["Kingnian"], current_guild="Smogg")
