@@ -145,6 +145,25 @@ class GuildCheckTests(DiscordBase):
         self.assertIn("🎥 1 VOD", out)
         self.assertNotIn(f"<@{a}>", out)                                            # Alice fue a todas: no está abajo
 
+    def test_poca_asistencia_lista_primero_smogg_y_despues_smogged(self):
+        now = datetime.now(timezone.utc)
+        conn = connect(self.db)
+        try:
+            conn.execute("UPDATE albion_links SET registered_at=?", ((now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),))
+            conn.commit()
+        finally:
+            conn.close()
+        rdb.set_guild(self.db, self.alice.id, "Smogged", 1)                         # Alice en Smogged, Bob en Smogg
+        for n in range(10):
+            self._cta(100 + n, now - timedelta(days=20 - 2 * n), [], kb=["Otro"])  # nadie fue: los dos abajo
+        cdb.init_schema(self.db)
+        i = self.inter(self.staff)
+        run(self.cog.do_poca_asistencia(i))
+        out = i.text
+        self.assertLess(out.index("🏰 Smogg (1)"), out.index(f"<@{self.bob.id}>"))
+        self.assertLess(out.index(f"<@{self.bob.id}>"), out.index("🏰 Smogged (1)"))
+        self.assertLess(out.index("🏰 Smogged (1)"), out.index(f"<@{self.alice.id}>"))
+
     def test_comando_asistencias(self):
         start, _ = gdb.week_bounds(0)
         self._cta(1, start + timedelta(minutes=1), [self.alice.id], voice=[self.alice.id])
