@@ -1290,7 +1290,8 @@ def timer_entry_line(entry: dict) -> str:
     icon = MATERIAL_ICONS.get(material, DEFAULT_MATERIAL_ICON)
     when = f"<t:{int(spawn.timestamp())}:R> {spawn.strftime('%H:%M')} UTC"
     who = f" - <@{entry['created_by']}>" if entry.get("created_by") else ""
-    return f"{icon} {label} - {entry['mapa']} - {when}{who}"
+    tid = f"`#{entry['id']}` " if entry.get("id") else ""       # ID para borrarlo con /deltimer id
+    return f"{tid}{icon} {label} - {entry['mapa']} - {when}{who}"
 
 
 def _timer_parse_dt(value: str) -> datetime:
@@ -1550,7 +1551,7 @@ async def timer_save_and_announce(interaction: discord.Interaction, mat: str, tr
     except Exception as exc:
         print(f"timers: no pude actualizar los paneles: {exc}")
         return "⚠️ Guardé el timer, pero no pude actualizar los paneles. Revisá el canal de timers."
-    return f"✅ Timer agregado al panel **{TIMER_CATEGORY_TITLES[category]}**: {label}\n{spin_txt}"
+    return f"✅ Timer `#{entry_id}` agregado al panel **{TIMER_CATEGORY_TITLES[category]}**: {label}\n{spin_txt}"
 
 
 class TimerConflictView(discord.ui.View):
@@ -1715,8 +1716,10 @@ async def timeradd_slash(
     msg = await timer_save_and_announce(interaction, mat, tr, mapa, target_utc)
     await interaction.followup.send(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.tree.command(name="deltimer", description="Eliminar un timer cargado con /timeradd (completá sus mismos datos)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="deltimer", description="Eliminar un timer del panel por su ID (o completando sus mismos datos)", guild=discord.Object(id=GUILD_ID))
+@app_commands.rename(timer_id="id")
 @app_commands.describe(
+    timer_id="ID del timer (el número #N que aparece en el panel). Con esto alcanza",
     material="Material del timer",
     mapa="Nombre del mapa (el mismo que pusiste)",
     tiempo="Horario UTC del timer (HH:MM) ej 16:10",
@@ -1746,27 +1749,38 @@ async def timeradd_slash(
 )
 async def deltimer_slash(
     interaction: discord.Interaction,
-    material: app_commands.Choice[str],
-    mapa: str,
-    tiempo: str,
+    timer_id: Optional[app_commands.Range[int, 1]] = None,
+    material: Optional[app_commands.Choice[str]] = None,
+    mapa: Optional[str] = None,
+    tiempo: Optional[str] = None,
     tier: Optional[app_commands.Choice[str]] = None,
 ):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return await respond_ephemeral(interaction, "❌ Solo disponible en el servidor.")
     if not (is_timers_member(interaction.user) or is_staff_member(interaction.user)):
         return await respond_ephemeral(interaction, "❌ Solo los miembros registrados o el Staff pueden usar este comando.")
-    clock = parse_clock_hhmm(tiempo)
-    if clock is None:
-        return await respond_ephemeral(interaction, "❌ Tiempo inválido. Usá el horario UTC en formato `HH:MM` (00:00 a 23:59), ej: `16:10`.")
 
-    mat = material.value
-    tr = None if mat in MATERIALS_NO_TIER else (tier.value if tier is not None else None)
-    matches = timer_find_entries(interaction.guild.id, mat, mapa, clock, tr)
-    if not matches:
-        return await respond_ephemeral(
-            interaction,
-            "❌ No encontré un timer con esos datos. Tienen que coincidir el material, el mapa y la hora UTC "
-            "tal como aparecen en el panel.")
+    if timer_id is not None:                                   # por ID: alcanza con el número del panel
+        row = db_fetchall("SELECT * FROM timer_entries WHERE guild_id=? AND id=?", (interaction.guild.id, int(timer_id)))
+        if not row:
+            return await respond_ephemeral(interaction, f"❌ No hay ningún timer `#{timer_id}` en el panel (puede que ya se haya borrado).")
+        matches = [dict(row[0])]
+        mat = matches[0]["material"]
+    else:
+        if material is None or not mapa or not tiempo:
+            return await respond_ephemeral(
+                interaction, "❌ Poné el **id** del timer (el `#N` del panel), o completá **material**, **mapa** y **tiempo**.")
+        clock = parse_clock_hhmm(tiempo)
+        if clock is None:
+            return await respond_ephemeral(interaction, "❌ Tiempo inválido. Usá el horario UTC en formato `HH:MM` (00:00 a 23:59), ej: `16:10`.")
+        mat = material.value
+        tr = None if mat in MATERIALS_NO_TIER else (tier.value if tier is not None else None)
+        matches = timer_find_entries(interaction.guild.id, mat, mapa, clock, tr)
+        if not matches:
+            return await respond_ephemeral(
+                interaction,
+                "❌ No encontré un timer con esos datos. Tienen que coincidir el material, el mapa y la hora UTC "
+                "tal como aparecen en el panel.")
     db_execute(f"DELETE FROM timer_entries WHERE id IN ({','.join('?' * len(matches))})", tuple(e["id"] for e in matches))
     category = timer_category(mat)
     await interaction.response.defer(ephemeral=True)
@@ -1775,8 +1789,25 @@ async def deltimer_slash(
     except Exception as exc:
         print(f"timers: no pude actualizar el panel: {exc}")
         return await interaction.followup.send("⚠️ Eliminé el timer, pero no pude actualizar el panel.", ephemeral=True)
-    plural = "" if len(matches) == 1 else f" ({len(matches)} timers iguales)"
-    await interaction.followup.send(f"🗑️ Timer eliminado del panel **{TIMER_CATEGORY_TITLES[category]}**{plural}.", ephemeral=True)
+    plural = f" `#{matches[0]['id']}`" if len(matches) == 1 else f"s ({len(matches)} timers iguales)"
+    await interaction.followup.send(f"🗑️ Timer{plural} eliminado del panel **{TIMER_CATEGORY_TITLES[category]}**.", ephemeral=True)
+
+
+@deltimer_slash.autocomplete("timer_id")
+async def deltimer_id_autocomplete(interaction: discord.Interaction, current):
+    if interaction.guild is None:
+        return []
+    rows = [dict(r) for r in db_fetchall("SELECT * FROM timer_entries WHERE guild_id=? ORDER BY spawn_at, id", (interaction.guild.id,))]
+    cur = str(current or "").strip().lstrip("#")
+    out = []
+    for e in rows:
+        if cur and not str(e["id"]).startswith(cur):
+            continue
+        spawn = _timer_parse_dt(e["spawn_at"])
+        tier_text = TIER_LABELS_SPECIAL.get(e.get("tier"), e.get("tier")) if e.get("tier") else ""
+        name = " ".join(x for x in (tier_text, TIMER_MATERIAL_NAMES.get(e["material"], str(e["material"]).title())) if x)
+        out.append(app_commands.Choice(name=f"#{e['id']} · {name} · {e['mapa']} · {spawn.strftime('%H:%M')} UTC"[:100], value=int(e["id"])))
+    return out[:25]
 
 
 @deltimer_slash.autocomplete("mapa")
@@ -8172,7 +8203,7 @@ HELP_SECTIONS = [
     ]),
     ("💰 Economía y timers", [
         ("/tabsell nombre_tab …", "Council / Admin", "Calcula el precio de venta de un tab y arma el panel."),
-        ("/deltimer material mapa tiempo [tier]", "Miembros registrados, Staff", "Elimina un timer del panel completando los mismos datos con que lo cargaste."),
+        ("/deltimer id | material mapa tiempo [tier]", "Miembros registrados, Staff", "Elimina un timer del panel con su ID (el #N del panel) o completando los mismos datos con que lo cargaste."),
         ("/casino apuestas crear enunciado opciones", "Admin / rol autorizado", "Crea una apuesta con Wuju Coins: panel público + hilo. Opciones separadas por coma."),
         ("/casino apuestas apostar · !apostar opción cantidad", "Todos (dentro del hilo)", "Apuesta Wuju Coins a una opción de una apuesta abierta. Se descuentan al instante."),
         ("/casino apuestas cerrar · /casino apuestas resolver opcion · /casino apuestas cancelar", "Quien creó la apuesta", "Cierra las apuestas, define la opción ganadora (reparte el pozo) o cancela y devuelve todo."),

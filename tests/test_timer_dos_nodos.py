@@ -135,5 +135,75 @@ class TimerPermanenciaTests(unittest.TestCase):
         self.assertEqual(self.purge(1, now + timedelta(minutes=36)), {"dragones"})   # dragón a los 61 min: se va
 
 
+class TimerIdTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("CREATE TABLE timer_entries (id INTEGER PRIMARY KEY, guild_id INTEGER, category TEXT, material TEXT, "
+                          "tier TEXT, mapa TEXT, spawn_at TEXT, created_by INTEGER)")
+        spawn = datetime(2026, 11, 25, 18, 0, tzinfo=timezone.utc).isoformat()
+        for gid in (1, 1, 2):
+            self.conn.execute("INSERT INTO timer_entries(guild_id, category, material, tier, mapa, spawn_at, created_by) "
+                              "VALUES (?, 'nodos', 'fibra', '8.4', 'Mapa', ?, 7)", (gid, spawn))
+        self.refreshed, self.replies = [], []
+
+        async def refresh(guild, cats):
+            self.refreshed.append(cats)
+
+        async def respond(interaction, text):
+            self.replies.append(text)
+
+        ns = {"discord": discord, "app_commands": discord.app_commands, "Optional": __import__("typing").Optional,
+              "datetime": datetime, "timezone": timezone,
+              "db_fetchall": lambda sql, p=(): self.conn.execute(sql, p).fetchall(),
+              "db_execute": lambda sql, p=(): self.conn.execute(sql, p),
+              "respond_ephemeral": respond, "is_timers_member": lambda m: True, "is_staff_member": lambda m: False,
+              "timer_category": lambda m: "nodos", "timer_panel_refresh": refresh, "TIMER_CATEGORY_TITLES": {"nodos": "🌿 Nodos"},
+              "MATERIAL_ICONS": {}, "DEFAULT_MATERIAL_ICON": "•", "TIER_LABELS_SPECIAL": {},
+              "TIMER_MATERIAL_NAMES": {"fibra": "Fibra"}, "_timer_parse_dt": lambda v: datetime.fromisoformat(v)}
+        for fn in ("deltimer_slash", "timer_entry_line"):
+            kind = ast.AsyncFunctionDef if fn == "deltimer_slash" else ast.FunctionDef
+            exec(_class_source(fn, kind), ns)
+        self.ns = ns
+
+    def _inter(self, guild_id=1):
+        inter = FakeInteraction(9)
+        inter.guild = type("G", (), {"id": guild_id})()
+        inter.user = discord.Member(9, "m")
+        sent = inter.texts
+
+        class Resp:
+            async def defer(self, ephemeral=True):
+                pass
+
+        class Follow:
+            async def send(self, text, ephemeral=True):
+                sent.append(text)
+
+        inter.response, inter.followup = Resp(), Follow()
+        return inter
+
+    def test_linea_del_panel_muestra_el_id(self):
+        e = dict(self.conn.execute("SELECT * FROM timer_entries WHERE id=2").fetchone())
+        self.assertTrue(self.ns["timer_entry_line"](e).startswith("`#2` "))
+
+    def test_borrar_solo_con_el_id(self):
+        inter = self._inter()
+        asyncio.run(self.ns["deltimer_slash"](inter, 2))
+        self.assertEqual([r["id"] for r in self.conn.execute("SELECT id FROM timer_entries")], [1, 3])
+        self.assertIn("`#2`", inter.texts[-1])
+        self.assertEqual(self.refreshed, [{"nodos"}])
+
+    def test_id_de_otro_servidor_o_inexistente_no_borra(self):
+        asyncio.run(self.ns["deltimer_slash"](self._inter(), 3))          # el #3 es de otro servidor
+        asyncio.run(self.ns["deltimer_slash"](self._inter(), 99))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM timer_entries").fetchone()[0], 3)
+        self.assertTrue(all("No hay ningún timer" in r for r in self.replies))
+
+    def test_sin_id_ni_datos_pide_completar(self):
+        asyncio.run(self.ns["deltimer_slash"](self._inter()))
+        self.assertIn("Poné el **id**", self.replies[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

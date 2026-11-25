@@ -263,7 +263,7 @@ INFO_STAFF.update({
                       "• Cada aceptación y rechazo queda en el canal de logs con quién lo hizo.\n\n"
                       "Solo los reclutadores pueden usar Aceptar, Rechazar y Cerrar. Quien apretó Aceptar es quien confirma los roles."),
     "timers": ("• **Cargar**: lo hacen los miembros registrados con `/timeradd`.\n"
-               "• **Eliminar**: solo **Staff**, con `/deltimer` (completando los mismos datos con que se cargó) o con el botón **Eliminar** del panel. Los miembros no pueden borrar.\n"
+               "• **Eliminar**: solo **Staff**, con `/deltimer id` (el `#N` que aparece en el panel; o completando los mismos datos con que se cargó) o con el botón **Eliminar** del panel. Los miembros no pueden borrar.\n"
                "• Antes de guardar, el bot revisa duplicados (mismo material, mapa, tier y hora UTC) y no sube el repetido.\n"
                "• Al agregar o borrar, el panel de esa categoría se actualiza solo; si falta, se vuelve a crear.\n"
                "• Si el bot no puede escribir en el canal de timers, avisa que guardó el timer pero no pudo actualizar los paneles: revisá sus permisos.\n"
