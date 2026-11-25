@@ -721,6 +721,26 @@ def set_guild(db_path: str, discord_id: int, guild_name: str, actor_id: int) -> 
         conn.close()
 
 
+def sync_guild(db_path: str, discord_id: int, guild_name: str, actor_id: int) -> List[Registration]:
+    """Como set_guild pero sin anotar un pase pendiente: la guild sale del export real (/miembros actualizar).
+    Si había un pase en curso, se cierra. Devuelve los registros."""
+    conn = connect(db_path)
+    try:
+        with _tx(conn):
+            rows = conn.execute("SELECT * FROM albion_links WHERE discord_id=?", (discord_id,)).fetchall()
+            if not rows:
+                raise RegError("Esa persona no tiene personaje registrado.")
+            now = _iso(_now())
+            conn.execute("UPDATE albion_links SET guild_name=?, updated_at=? WHERE discord_id=?", (guild_name, now, discord_id))
+            for r in rows:
+                _period_switch(conn, r["char_id"], r["char_name"], discord_id, guild_name, now)
+            conn.execute("DELETE FROM guild_transfers WHERE discord_id=?", (discord_id,))
+            _audit(conn, actor_id, "guild_sync", discord_id, None, f"a {guild_name} (export)")
+            return [_reg(r) for r in conn.execute("SELECT * FROM albion_links WHERE discord_id=? ORDER BY id", (discord_id,))]
+    finally:
+        conn.close()
+
+
 def active_transfers(db_path: str) -> Dict[int, str]:
     """{discord_id: guild de destino} de los pases de las últimas TRANSFER_HOURS (los vencidos se borran)."""
     cutoff = _iso(_now() - timedelta(hours=TRANSFER_HOURS))

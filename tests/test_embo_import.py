@@ -20,6 +20,9 @@ DIARIO = ('"Date"\t"Player"\t"Reason"\t"Amount"\n'
           '"2026-11-05 06:44:20"\t"Cozmiic"\t"Withdrawal"\t"-10"\n')
 
 
+VACIO = '"Date"\t"Player"\t"Reason"\t"Amount"\n'                        # log de Smogged sin movimientos
+
+
 def archivo(text, enc="utf-8"):
     data = text.encode(enc)
 
@@ -77,8 +80,8 @@ class EmboImportTests(DiscordBase):
 
     def test_cargar_dia_solo_toma_ese_dia_y_no_duplica_con_el_historico(self):
         self.call("embo_import_history", self.admin, archivo(HISTORICO))                # ya cargó SraGendarme 16:06:09
-        self.assertIn("Solo el Staff", self.call("embo_load_day", self.alice, archivo(DIARIO), "04/11/2026"))
-        text = self.call("embo_load_day", self.stf, archivo(DIARIO, "utf-16"), "04/11/2026")
+        self.assertIn("Solo el Staff", self.call("embo_load_day", self.alice, archivo(DIARIO), archivo(VACIO), "04/11/2026"))
+        text = self.call("embo_load_day", self.stf, archivo(DIARIO, "utf-16"), archivo(VACIO), "04/11/2026")
         self.assertIn("04/11/2026", text)
         self.assertIn("Movimientos de ese día: **3**", text)
         self.assertIn("cargados ahora: **1**", text)                                     # solo Nakesito es nuevo
@@ -87,7 +90,7 @@ class EmboImportTests(DiscordBase):
         self.assertIn("AnDre04", text); self.assertNotIn("CreddyJ", text); self.assertNotIn("Cozmiic", text)
         self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 10)
         self.assertEqual(embo_db.get_balance(self.db, self.council.id), 11)
-        self.assertIn("Fecha inválida", self.call("embo_load_day", self.stf, archivo(DIARIO), "ayer"))
+        self.assertIn("Fecha inválida", self.call("embo_load_day", self.stf, archivo(DIARIO), archivo(VACIO), "ayer"))
 
     def test_cargar_sin_fecha_toma_todos_los_dias_anteriores_sin_pisar(self):
         from datetime import datetime, timedelta, timezone
@@ -100,15 +103,15 @@ class EmboImportTests(DiscordBase):
                f'"{d(2)} 11:00:00"\t"ElNikitooo"\t"Withdrawal"\t"-2"\n')
         dm = lambda n: f"{d(n)[8:10]}/{d(n)[5:7]}"
         first = '"Date"\t"Player"\t"Reason"\t"Amount"\n' + f'"{d(2)} 09:00:00"\t"SraGendarme"\t"Deposit"\t"1"\n'
-        self.call("embo_load_day", self.stf, archivo(first), None)                        # anteayer ya cargado (otro archivo)
-        text = self.call("embo_load_day", self.stf, archivo(log), None)
+        self.call("embo_load_day", self.stf, archivo(first), archivo(VACIO), None)                        # anteayer ya cargado (otro archivo)
+        text = self.call("embo_load_day", self.stf, archivo(log), archivo(VACIO), None)
         self.assertIn("cargados ahora: **1**", text)                                      # solo ayer
         self.assertIn(f"Días que faltaban (cargados ahora): **{dm(1)}**", text)
         self.assertIn(f"Ya estaban cargados (salteados): **{dm(2)}**", text)
         self.assertIn("Filas de hoy ignoradas: **1**", text)
         self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 6)                 # 1 + 5 (no suma 3 ni 7)
         self.assertEqual(embo_db.get_balance(self.db, self.bob.id), 0)
-        text = self.call("embo_load_day", self.stf, archivo(log), None)                  # mismo log otra vez: no carga nada
+        text = self.call("embo_load_day", self.stf, archivo(log), archivo(VACIO), None)                  # mismo log otra vez: no carga nada
         self.assertIn("cargados ahora: **0**", text)
         self.assertIn(f"Ya estaban cargados (salteados): **{dm(2)}, {dm(1)}**", text)
         self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 6)
@@ -133,7 +136,7 @@ class EmboImportTests(DiscordBase):
         conn.close()
         self.assertEqual(self.ecog._oldest_open_embo_day(), day)                         # sin fecha: toma el día del encargo
         line = f'"{day} 10:00:00"\t"SraGendarme"\t"Deposit"\t"5"\n'
-        self.call("embo_load_day", self.stf, archivo('"Date"\t"Player"\t"Reason"\t"Amount"\n' + line), None)
+        self.call("embo_load_day", self.stf, archivo('"Date"\t"Player"\t"Reason"\t"Amount"\n' + line), archivo(VACIO), None)
         self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 5)
         self.assertEqual(edb.find_by_source(self.db, f"embo:dia:{day}").status, "done")
 
@@ -200,3 +203,12 @@ class EmboIconoYTopTests(DiscordBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_cargar_dia_suma_el_log_de_smogged(self):
+        smogg = VACIO + '"2026-11-04 10:00:00"\t"SraGendarme"\t"Deposit"\t"4"\n'
+        smogged = VACIO + '"2026-11-04 10:00:00"\t"ElNikitooo"\t"Deposit"\t"6"\n'
+        text = self.call("embo_load_day", self.stf, archivo(smogg), archivo(smogged, "utf-16"), "04/11/2026")
+        self.assertIn("cargados ahora: **2**", text)
+        self.assertEqual(embo_db.get_balance(self.db, self.alice.id), 4)
+        self.assertEqual(embo_db.get_balance(self.db, self.bob.id), 6)
+        self.assertIn("Log de Smogged", self.call("embo_load_day", self.stf, archivo(smogg), archivo("a\tb\n1\t2\n"), "04/11/2026"))

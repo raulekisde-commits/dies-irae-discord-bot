@@ -250,6 +250,39 @@ class GuildCheckTests(DiscordBase):
         run(self.cog.do_cambiar_guild(i, self.outsider, "Smogged"))                  # sin registro
         self.assertIn("no tiene personaje registrado", i.text)
 
+    def test_actualizar_miembros_con_los_dos_export(self):
+        self.reg.extra_guilds = [("Smogged", "SGID")]
+        role = discord.Role(9200, "Smogged", self.guild)
+        self.guild.roles.append(role)
+        rdb.set_flag(self.db, "registro:rol_guild:smogged", str(role.id))
+        self.bob.roles.append(role)                                                  # tiene el rol pero sigue en Smogg
+        rdb.admin_link(self.db, self.outsider.id, "Perdido", 1, char_id="id-p")
+
+        def f(text):
+            async def read():
+                return text.encode("utf-16")
+            return types.SimpleNamespace(size=100, read=read)
+        smogg = '"Character Name"\t"Last Seen"\t"Roles"\n"zabonin"\t"Online"\t"Member"\n'
+        smogged = '"Character Name"\t"Last Seen"\t"Roles"\n"Kingnian"\t"Online"\t"Member"\n'
+        i = self.inter(self.alice)
+        run(self.cog.do_actualizar(i, {"Smogg": f(smogg), "Smogged": f(smogged)}))
+        self.assertIn("🔒", i.text)
+        i = self.inter(self.staff)
+        run(self.cog.do_actualizar(i, {"Smogg": f(smogg), "Smogged": f(smogged)}))
+        text, kw = i.response.sent[0]
+        self.assertIn("Cambian de guild: **1**", text)
+        self.assertIn(f"<@{self.alice.id}> (Kingnian): Smogg → **Smogged**", text)
+        self.assertIn("solo corregir rol: **1**", text)
+        self.assertIn(f"<@{self.outsider.id}> (Perdido)", text)
+        self.assertEqual(rdb.get_registration(self.db, self.alice.id).guild_name, None)   # sin confirmar no cambia nada
+        j = self.inter(self.staff)
+        run(kw["view"]._yes(j))
+        self.assertEqual(rdb.get_registration(self.db, self.alice.id).guild_name, "Smogged")
+        self.assertIn(role, self.alice.roles)
+        self.assertNotIn(role, self.bob.roles)
+        self.assertEqual(rdb.active_transfers(self.db), {})                         # no queda como pase pendiente
+        self.assertIsNone(rdb.get_registration(self.db, self.outsider.id).guild_name)
+
     def test_sin_aviso_si_la_api_dice_que_sigue_en_la_guild_o_si_es_invitado(self):
         self._leave_setup(["Kingnian"], current_guild="Smogg")
         self.assertEqual(run(self.cog.check_leavers()), 0)
@@ -344,7 +377,7 @@ class GuildCheckTests(DiscordBase):
 
     def test_grupo_y_comandos_viejos_fuera(self):
         names = set(gc.GuildCheckCog.miembros_g.commands)
-        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild", "historial", "kick"})
+        self.assertEqual(names, {"panel", "sin-vincular", "fuera-discord", "inactivos", "kick-lista", "fuera-guild", "canal-avisos", "asistencias", "poca-asistencia", "antiguedad", "limpiar-registros", "cambiar-guild", "actualizar", "historial", "kick"})
         self.assertFalse(hasattr(self.reg.sin_albion, "callback"))
 
 
