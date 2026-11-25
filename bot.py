@@ -1261,6 +1261,11 @@ TIMER_CATEGORY_TITLES = {"nodos": "🌿 Nodos", "vortex": "🌀 Vortex y Cores",
 TIMER_MATERIAL_NAMES = {"fibra": "Fibra", "cuero": "Cuero", "mineral": "Mineral", "madera": "Madera",
                         "vortex": "Vortex", "core": "Core", "dragon": "Dragón"}
 TIMER_KEEP_MINUTES = 20          # un timer se borra del panel 20 minutos después de la hora en que salió
+TIMER_KEEP_MINUTES_BY_CATEGORY = {"dragones": 60}   # los dragones quedan 1 hora en el panel
+
+
+def timer_keep_minutes(category: str) -> int:
+    return TIMER_KEEP_MINUTES_BY_CATEGORY.get(category, TIMER_KEEP_MINUTES)
 TIMER_PANEL_MAX_LINES = 30
 TIMER_MAPA_MAX = 60
 _timer_panel_lock = asyncio.Lock()
@@ -1301,7 +1306,7 @@ def timer_build_embed(category: str, entries: list) -> discord.Embed:
     embed = discord.Embed(title=TIMER_CATEGORY_TITLES[category],
                           description="\n".join(lines) if lines else "📭 No hay timers por ahora.",
                           color=discord.Color.blurple())
-    embed.set_footer(text=f"Ordenado por hora de aparición · horario UTC · se borran {TIMER_KEEP_MINUTES} min después de salir")
+    embed.set_footer(text=f"Ordenado por hora de aparición · horario UTC · se borran {timer_keep_minutes(category)} min después de salir")
     return embed
 
 
@@ -1322,13 +1327,16 @@ def timer_list_entries(guild_id: int, category: str) -> list:
 
 
 def timer_purge_expired(guild_id: int, now: Optional[datetime] = None) -> set:
-    """Borra los timers que salieron hace más de TIMER_KEEP_MINUTES. Devuelve las categorías afectadas."""
+    """Borra los timers que salieron hace más de su tiempo de permanencia (20 min; dragones 1 h). Devuelve las categorías afectadas."""
     now = now or datetime.now(timezone.utc)
-    limit = (now - timedelta(minutes=TIMER_KEEP_MINUTES)).isoformat()
-    rows = db_fetchall("SELECT DISTINCT category FROM timer_entries WHERE guild_id=? AND spawn_at<?", (guild_id, limit))
-    if rows:
-        db_execute("DELETE FROM timer_entries WHERE guild_id=? AND spawn_at<?", (guild_id, limit))
-    return {r["category"] for r in rows}
+    changed = set()
+    for row in db_fetchall("SELECT DISTINCT category FROM timer_entries WHERE guild_id=?", (guild_id,)):
+        category = row["category"]
+        limit = (now - timedelta(minutes=timer_keep_minutes(category))).isoformat()
+        if db_fetchall("SELECT 1 FROM timer_entries WHERE guild_id=? AND category=? AND spawn_at<? LIMIT 1", (guild_id, category, limit)):
+            db_execute("DELETE FROM timer_entries WHERE guild_id=? AND category=? AND spawn_at<?", (guild_id, category, limit))
+            changed.add(category)
+    return changed
 
 
 def timer_find_entries(guild_id: int, material: str, mapa: str, clock: tuple, tier: Optional[str] = None) -> list:

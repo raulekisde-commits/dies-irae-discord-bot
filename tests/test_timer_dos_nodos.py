@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import os
+import sqlite3
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -15,10 +16,16 @@ import discord  # noqa: E402
 ROOT = os.path.dirname(HERE)
 
 
-def _class_source(name):
+def _class_source(name, kind=ast.ClassDef):
     src = open(os.path.join(ROOT, "bot.py"), encoding="utf-8").read()
-    node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ClassDef) and n.name == name)
+    node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, kind) and n.name == name)
     return ast.get_source_segment(src, node)
+
+
+def _bot_constant(name):
+    src = open(os.path.join(ROOT, "bot.py"), encoding="utf-8").read()
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == name)
+    return ast.literal_eval(node.value)
 
 
 class FakeResponse:
@@ -88,6 +95,44 @@ class TimerDosNodosTests(unittest.TestCase):
         v = self._view(self.spawn + timedelta(minutes=40))
         self._press(v, "✅", FakeInteraction(9))
         self.assertEqual([e["id"] for e in self.saved[0][4]], [1])
+
+
+class TimerPermanenciaTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("CREATE TABLE timer_entries (id INTEGER PRIMARY KEY, guild_id INTEGER, category TEXT, spawn_at TEXT)")
+
+        def fetchall(sql, params=()):
+            return self.conn.execute(sql, params).fetchall()
+
+        def execute(sql, params=()):
+            self.conn.execute(sql, params)
+
+        ns = {"Optional": __import__("typing").Optional, "datetime": datetime, "timedelta": timedelta, "timezone": timezone,
+              "db_fetchall": fetchall, "db_execute": execute,
+              "TIMER_KEEP_MINUTES": _bot_constant("TIMER_KEEP_MINUTES"),
+              "TIMER_KEEP_MINUTES_BY_CATEGORY": _bot_constant("TIMER_KEEP_MINUTES_BY_CATEGORY")}
+        exec(_class_source("timer_keep_minutes", ast.FunctionDef), ns)
+        exec(_class_source("timer_purge_expired", ast.FunctionDef), ns)
+        self.purge = ns["timer_purge_expired"]
+
+    def _add(self, category, minutes_ago, now):
+        self.conn.execute("INSERT INTO timer_entries(guild_id, category, spawn_at) VALUES (1, ?, ?)",
+                          (category, (now - timedelta(minutes=minutes_ago)).isoformat()))
+
+    def test_dragones_quedan_una_hora_y_el_resto_20_min(self):
+        now = datetime(2026, 11, 25, 18, 0, tzinfo=timezone.utc)
+        self._add("nodos", 25, now)          # se borra (más de 20 min)
+        self._add("nodos", 10, now)          # queda
+        self._add("dragones", 25, now)       # queda (menos de 1 h)
+        self._add("dragones", 61, now)       # se borra
+        self.assertEqual(self.purge(1, now), {"nodos", "dragones"})
+        left = sorted((r["category"], r["spawn_at"]) for r in self.conn.execute("SELECT * FROM timer_entries"))
+        self.assertEqual([c for c, _ in left], ["dragones", "nodos"])
+        self.assertEqual(self.purge(1, now + timedelta(minutes=5)), set())           # nodo de 15 min y dragón de 30 min siguen
+        self.assertEqual(self.purge(1, now + timedelta(minutes=11)), {"nodos"})      # nodo a los 21 min: se va; el dragón (36 min) queda
+        self.assertEqual(self.purge(1, now + timedelta(minutes=36)), {"dragones"})   # dragón a los 61 min: se va
 
 
 if __name__ == "__main__":
