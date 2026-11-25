@@ -242,6 +242,12 @@ class GuildCheckTests(DiscordBase):
         self.assertIn(self.r_member, self.bob.roles)
         self.assertTrue(self.staff.roles)
 
+    def test_salida_no_toca_reclutas_pendientes(self):
+        self._leave_setup(["Kingnian"], current_guild="")                           # recién aceptado: la API todavía no lo ve en Smogg
+        rdb.add_pending_recruit(self.db, self.bob.id, "zabonin", None, self.r_member.id, "Miembro", 1)
+        self.assertEqual(run(self.cog.check_leavers()), 0)
+        self.assertIn(self.r_member, self.bob.roles)
+
     def test_cambiar_guild(self):
         self.reg.extra_guilds = [("Smogged", "SGID")]
         created = []

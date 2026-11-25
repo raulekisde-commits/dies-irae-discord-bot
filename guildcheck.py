@@ -975,9 +975,14 @@ class GuildCheckCog(commands.Cog):
         await self.run(gdb.clear_alerts, alerted & inside)                       # volvió a la guild: si se va de nuevo, se avisa de nuevo
         guests = await asyncio.to_thread(self._guest_ids, guild.id)
         moving = await reg.transfer_targets()                                   # /miembros cambiar-guild en curso: no es una salida
+        try:                                                                    # reclutas aceptados que todavía no figuran en la guild: no es una salida
+            pending = {p.discord_id for p in await asyncio.to_thread(rdb.list_pending_recruits, self.db_path)}
+        except Exception:
+            traceback.print_exc()
+            return 0
         sent, checked = 0, 0
         for uid, rs in by_user.items():
-            if uid in inside or uid in alerted or uid in guests or uid in moving:
+            if uid in inside or uid in alerted or uid in guests or uid in moving or uid in pending:
                 continue
             member = guild.get_member(uid)
             if member is None or getattr(member, "bot", False) or _is_admin(member) or can_admin_registro(member):
