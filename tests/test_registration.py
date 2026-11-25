@@ -304,6 +304,43 @@ class RegistrationDiscordTests(DiscordBase):
         run(self.cog.canal_miembros(i, None, True))
         self.assertIsNone(run(self.cog.update_member_count_channel()))
 
+    def test_canal_miembros_de_guild_hermana(self):
+        self.cog.albion_guild_id = "GID"
+        self.cog.extra_guilds = [("Smogged", "SGID")]
+        main = [{"Id": f"i{n}", "Name": f"P{n}", "GuildName": "Smogg"} for n in range(3)]
+        sister = [{"Id": f"s{n}", "Name": f"S{n}", "GuildName": "Smogged"} for n in range(2)]
+
+        async def roster(url, params=None):
+            if "ams" in url or "sgp" in url:
+                raise RuntimeError("HTTP 503")
+            if "/guilds/GID/members" in url:
+                return main
+            if "/guilds/SGID/members" in url:
+                return sister
+            raise RuntimeError("HTTP 503")
+
+        self.cog.fetch_json = roster
+        vc = discord.VoiceChannel(PANEL_CH + 9, self.guild, "contador")
+        vs = discord.VoiceChannel(PANEL_CH + 10, self.guild, "contador-smogged")
+        for ch in (vc, vs):
+            self.guild._channels[ch.id] = ch
+            self.bot.channels[ch.id] = ch
+        run(self.cog.canal_miembros(self.inter(self.admin), vc, False))
+        run(self.cog.canal_miembros(self.inter(self.admin), vs, False, "smogged"))
+        self.assertEqual((vc.name, vs.name), ("Smogg 3/300", "Smogged 2/300"))
+        sister.append({"Id": "s9", "Name": "S9", "GuildName": "Smogged"})
+        run(self.cog.refresh_roster())
+        self.assertEqual(run(self.cog.update_member_count_channel()), "Smogg 3/300")
+        self.assertEqual((vc.name, vs.name), ("Smogg 3/300", "Smogged 3/300"))
+        i = self.inter(self.admin)
+        run(self.cog.canal_miembros(i, vs, False, "OtraGuild"))
+        self.assertIn("No conozco la guild", i.text)
+        run(self.cog.canal_miembros(self.inter(self.admin), None, True, "Smogged"))   # apaga solo el de Smogged
+        sister.append({"Id": "s8", "Name": "S8", "GuildName": "Smogged"})
+        run(self.cog.refresh_roster())
+        run(self.cog.update_member_count_channel())
+        self.assertEqual((vc.name, vs.name), ("Smogg 3/300", "Smogged 3/300"))
+
     def test_roster_survives_a_restart(self):
         self.cog.albion_guild_id = "GID"
 
