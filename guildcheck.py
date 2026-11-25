@@ -494,11 +494,32 @@ class GuildCheckCog(commands.Cog):
                  "📝 /cta = CTA a las que se anotó / CTA hechas desde que entró · 🎥 VODs subidos desde que entró.",
                  f"**{len(low)}** de {len(pool) - no_char - len(new)} miembros por debajo"
                  + (f" · 🟡 {sum(1 for x in low if x[0].id in absent)} con /ausencia (revisar)" if any(x[0].id in absent for x in low) else "") + ":", ""]
-        lines += [f"• {who(m, char)} · pedidas **{need}** · vinculado <t:{_ts(since)}:R>\n   {stats(m, since)}{tag(m)}"
-                  for m, since, char, a, need, _n in low] or ["✅ Nadie está por debajo."]
+        # primero Smogg y después Smogged (guild del registro; sin guild = la principal)
+        import registration_db as rdb
+        main_g = GUILD_CHOICES[0]
+        guild_of = {}
+        for r in await self.run(rdb.all_registrations):
+            guild_of.setdefault(r.discord_id, r.guild_name or main_g)
+        order = {g.casefold(): n for n, g in enumerate(GUILD_CHOICES)}
+        gkey = lambda m: guild_of.get(m.id, main_g)
+
+        def by_guild(rows):
+            groups = {}
+            for row in rows:
+                groups.setdefault(gkey(row[0]), []).append(row)
+            return sorted(groups.items(), key=lambda kv: (order.get(kv[0].casefold(), len(order)), kv[0].casefold()))
+
+        if not low:
+            lines.append("✅ Nadie está por debajo.")
+        for g, rows in by_guild(low):
+            lines += [f"**🏰 {esc(g)} ({len(rows)})**"]
+            lines += [f"• {who(m, char)} · pedidas **{need}** · vinculado <t:{_ts(since)}:R>\n   {stats(m, since)}{tag(m)}"
+                      for m, since, char, a, need, _n in rows] + [""]
         if new:
             lines += ["", f"**🆕 Vinculados hace {NEW_LINK_DAYS} días o menos ({len(new)})** · no se evalúan todavía"]
-            lines += [f"• {who(m, char)} · vinculado <t:{_ts(since)}:R>\n   {stats(m, since)}{tag(m)}" for m, since, char, n in new]
+            for g, rows in by_guild(new):
+                lines += [f"__{esc(g)}__"]
+                lines += [f"• {who(m, char)} · vinculado <t:{_ts(since)}:R>\n   {stats(m, since)}{tag(m)}" for m, since, char, n in rows]
         if no_char:
             lines.append(f"\nℹ️ {no_char} miembro(s) sin personaje registrado no se evalúan (ver `/miembros sin-vincular`).")
         for chunk in _chunks(lines):
