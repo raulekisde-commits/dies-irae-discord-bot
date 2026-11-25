@@ -181,10 +181,77 @@ class GuildCheckCog(commands.Cog):
         else:
             await reg.sin_discord(interaction)
 
-    async def do_fuera_guild(self, interaction):
+    async def do_fuera_guild(self, interaction, archivos: Optional[list] = None):
+        """Registrados fuera de Smogg/Smogged (API + export opcionales): opción de expulsarlos y de sacarles los roles.
+        Invitados, invitados premium, Staff/Council/admins, bots y quien tiene un alter adentro no pierden los roles."""
         reg = await self._need_reg(interaction)
-        if reg is not None:
-            await reg.fuera_de_guild(interaction)
+        if reg is None:
+            return
+        if not can_admin_registro(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+        await interaction.response.defer(ephemeral=True)
+        from registration import parse_guild_export
+        names = set()
+        for att in [a for a in (archivos or []) if a is not None]:
+            if (getattr(att, "size", 0) or 0) > MAX_EXPORT_BYTES:
+                return await _say(interaction, "❌ El archivo es demasiado grande (máx. 2 MB).")
+            try:
+                got = parse_guild_export(await att.read())
+            except Exception:
+                traceback.print_exc()
+                got = []
+            if not got:
+                return await _say(interaction, "❌ No pude leer un archivo. Tiene que ser el export de la guild (Character Name / Last Seen / Roles).")
+            names |= {n.casefold() for n in got}
+        strip = await reg.fuera_de_guild(interaction, names)
+        if not strip:
+            return
+        guild, actor = interaction.guild, interaction.user
+        inside = names | {n.casefold() for n in reg.roster}
+        inside_norm = {gdb.norm(n) for n in inside}
+        alters = await self.run(gdb.chars_by_user)
+        moving = await reg.transfer_targets()
+        cands = [(m, chars) for m, chars in strip
+                 if not (alters.get(m.id, set()) & inside_norm) and m.id not in moving
+                 and not (_is_admin(m) or can_admin_registro(m)) and self._removable_roles(guild, m)]
+        if not cands:
+            return
+        esc = discord.utils.escape_markdown
+        lines = [f"🚫 **{len(cands)}** no tienen ningún personaje en Smogg ni Smogged y no son invitados: se les pueden sacar "
+                 "**todos los roles** (el registro no se toca)."]
+        lines += [f"• <@{m.id}> ({', '.join(esc(c) for c in chars)})" for m, chars in cands]
+
+        async def yes(i: discord.Interaction):
+            await i.response.edit_message(content="⏳ Sacando roles…", view=None)
+            done, notes = [], []
+            guests = await asyncio.to_thread(self._guest_ids, guild.id)
+            for m, chars in cands:
+                if m.id in guests or _is_admin(m) or can_admin_registro(m) or guild.get_member(m.id) is None:
+                    continue
+                roles = self._removable_roles(guild, m)
+                if not roles:
+                    continue
+                try:
+                    await m.remove_roles(*roles, reason=f"/miembros fuera-guild por {actor}: no está en Smogg ni Smogged ({', '.join(chars)})")
+                except Exception as exc:
+                    notes.append(f"⚠️ <@{m.id}>: no pude sacarle los roles ({type(exc).__name__}).")
+                    continue
+                done.append(f"• <@{m.id}> ({', '.join(esc(c) for c in chars)}): " + " ".join(f"<@&{r.id}>" for r in roles))
+                await self.run(gdb.add_alert, m.id, chars[0], 0, 0)          # así el aviso automático de salida no lo repite
+                await self.run(gdb.close_alert, 0, "roles_removed", actor.id)
+            for chunk in _chunks([f"✅ Se les sacaron los roles a **{len(done)}** persona(s)."] + notes):
+                await i.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
+            if done:
+                for chunk in _chunks([f"🚫 <@{actor.id}> les sacó los roles a {len(done)} registrados fuera de Smogg/Smogged "
+                                      "(/miembros fuera-guild):"] + done):
+                    await reg.audit_log(chunk.rstrip("\n"))
+
+        chunks = _chunks(lines)
+        await interaction.followup.send(chunks[0] + ("\n…y la lista sigue abajo." if len(chunks) > 1 else ""),
+                                        view=YesNoView(actor.id, yes, f"Sacar roles a {len(cands)}"),
+                                        ephemeral=True, allowed_mentions=NO_MENTIONS)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
     # ---------- inactivos ----------
     async def _load_export(self, interaction, archivo) -> bool:
@@ -614,7 +681,7 @@ class GuildCheckCog(commands.Cog):
         from registration import parse_guild_export
         import registration_db as rdb
         esc = discord.utils.escape_markdown
-        rosters = {}
+        rosters, roster_norm = {}, set()
         for gname, att in archivos.items():
             if (getattr(att, "size", 0) or 0) > MAX_EXPORT_BYTES:
                 return await _say(interaction, f"❌ El archivo de **{esc(gname)}** es demasiado grande (máx. 2 MB).")
@@ -627,6 +694,7 @@ class GuildCheckCog(commands.Cog):
                 return await _say(interaction, f"❌ No pude leer el archivo de **{esc(gname)}**. Tiene que ser el export de la guild "
                                                "(Character Name / Last Seen / Roles).")
             rosters[gname] = {n.casefold() for n in names}
+            roster_norm |= {gdb.norm(n) for n in names}
         dup = set.intersection(*rosters.values()) if len(rosters) > 1 else set()
         if len(dup) > max(5, 0.5 * min(len(v) for v in rosters.values())):
             return await _say(interaction, "❌ Los dos archivos tienen casi los mismos personajes: ¿subiste dos veces el mismo export?")
@@ -643,10 +711,36 @@ class GuildCheckCog(commands.Cog):
                 if role is not None and (role in m.roles) != (gname.casefold() == target.casefold()):
                     role_fix.append((uid, target))
                     break
+        # no están en ninguna guild: se les sacan los roles (como a quien sale de la guild), salvo exentos
+        strip, keep = [], []
+        if plan["missing"]:
+            alters = await self.run(gdb.chars_by_user)                       # incluye alters y nombres anteriores
+            guests = await asyncio.to_thread(self._guest_ids, guild.id)
+            moving = await reg.transfer_targets()
+        for uid, chars in plan["missing"]:
+            m = guild.get_member(uid)
+            why = None
+            if alters.get(uid, set()) & roster_norm:
+                why = "tiene un alter en la guild"
+            elif uid in guests:
+                why = "invitado"
+            elif uid in moving:
+                why = "pase de guild en curso"
+            elif m is None:
+                why = "ya no está en el Discord"
+            elif getattr(m, "bot", False) or _is_admin(m) or can_admin_registro(m):
+                why = "Staff/Council/admin"
+            elif not self._removable_roles(guild, m):
+                why = "no tiene roles para sacar"
+            if why:
+                keep.append((uid, chars, why))
+            else:
+                strip.append((uid, chars))
         counts = " · ".join(f"{esc(g)}: **{len(n)}**" for g, n in rosters.items())
         head = [f"🔄 **Actualizar miembros** — personajes en los archivos: {counts}",
                 f"• Ya estaban bien: **{len(plan['same']) - len(role_fix)}**",
-                f"• Cambian de guild: **{len(plan['change'])}**" + (f" · solo corregir rol: **{len(role_fix)}**" if role_fix else "")]
+                f"• Cambian de guild: **{len(plan['change'])}**" + (f" · solo corregir rol: **{len(role_fix)}**" if role_fix else ""),
+                f"• Fuera de las guilds, se les sacan los roles: **{len(strip)}**"]
         lines = head[:]
         if plan["change"]:
             lines.append("\n**🔀 Cambian de guild**")
@@ -658,12 +752,14 @@ class GuildCheckCog(commands.Cog):
             lines.append("\n**⚠️ Con personajes en las dos guilds (no se tocan)**")
             lines += [f"• <@{uid}>: " + " · ".join(f"{esc(g)}: {', '.join(esc(c) for c in cs)}" for g, cs in f.items())
                       for uid, f in plan["conflict"]]
-        if plan["missing"]:
-            lines.append(f"\n**❓ No están en ninguno de los dos archivos ({len(plan['missing'])})** — no se tocan "
-                         "(para sacarlos usá `/miembros fuera-guild`)")
-            lines += [f"• <@{uid}> ({', '.join(esc(c) for c in chars)})" for uid, chars in plan["missing"]]
+        if strip:
+            lines.append(f"\n**🚫 No están en ninguna guild: se les sacan todos los roles ({len(strip)})** — el registro no se toca")
+            lines += [f"• <@{uid}> ({', '.join(esc(c) for c in chars)})" for uid, chars in strip]
+        if keep:
+            lines.append(f"\n**❓ No están en ninguno de los dos archivos, pero no se tocan ({len(keep)})**")
+            lines += [f"• <@{uid}> ({', '.join(esc(c) for c in chars)}) · {why}" for uid, chars, why in keep]
         lines.append("\nℹ️ Los alters no se tocan.")
-        todo = len(plan["change"]) + len(role_fix)
+        todo = len(plan["change"]) + len(role_fix) + len(strip)
         chunks = _chunks(lines)
         if not todo:
             for chunk in chunks:
@@ -691,11 +787,30 @@ class GuildCheckCog(commands.Cog):
                         reg, guild, m, target, f"/miembros actualizar por {actor}") if n.startswith("⚠️")]
             if plan["change"]:
                 await self.run(gdb.clear_alerts, [uid for uid, *_ in plan["change"]])
-            for chunk in _chunks([f"✅ Listo: **{done}** cambiaron de guild, **{len(role_fix)}** con el rol corregido."] + notes):
+            stripped = []
+            for uid, chars in strip:
+                m = guild.get_member(uid)
+                if m is None or can_admin_registro(m) or _is_admin(m):
+                    continue
+                roles = self._removable_roles(guild, m)
+                if not roles:
+                    continue
+                try:
+                    await m.remove_roles(*roles, reason=f"/miembros actualizar por {actor}: no está en ninguna guild ({', '.join(chars)})")
+                except Exception as exc:
+                    notes.append(f"⚠️ <@{uid}>: no pude sacarle los roles ({type(exc).__name__}).")
+                    continue
+                stripped.append(f"• <@{uid}> ({', '.join(esc(c) for c in chars)}): " + " ".join(f"<@&{r.id}>" for r in roles))
+                await self.run(gdb.add_alert, uid, chars[0], 0, 0)            # así el aviso automático de salida no lo repite
+                await self.run(gdb.close_alert, 0, "roles_removed", actor.id)
+            for chunk in _chunks([f"✅ Listo: **{done}** cambiaron de guild, **{len(role_fix)}** con el rol corregido, "
+                                  f"**{len(stripped)}** sin roles por estar fuera de las guilds."] + notes):
                 await i.followup.send(chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
             audit = [f"🔄 <@{actor.id}> actualizó los miembros con los export ({counts}): {done} cambiaron de guild, "
                      f"{len(role_fix)} con el rol corregido."]
             audit += [f"• <@{uid}> → **{esc(t)}**" for uid, t, _c, _ch in plan["change"]]
+            if stripped:
+                audit += [f"🚫 Se les sacaron los roles por no estar en ninguna guild ({len(stripped)}):"] + stripped
             for chunk in _chunks(audit):
                 await reg.audit_log(chunk.rstrip("\n"))
 
@@ -1054,9 +1169,11 @@ class GuildCheckCog(commands.Cog):
     async def limpiar_registros_cmd(self, interaction: discord.Interaction):
         await self.do_limpiar_registros(interaction)
 
-    @miembros_g.command(name="fuera-guild",description="(Staff) Registrados cuyo personaje ya no está en la guild, con opción de expulsarlos")
-    async def fuera_guild_cmd(self, interaction: discord.Interaction):
-        await self.do_fuera_guild(interaction)
+    @miembros_g.command(name="fuera-guild",description="(Staff) Registrados fuera de Smogg/Smogged: sacarles los roles o expulsarlos")
+    @app_commands.describe(smogg="(Opcional) Export de la guild Smogg", smogged="(Opcional) Export de la guild Smogged")
+    async def fuera_guild_cmd(self, interaction: discord.Interaction, smogg: Optional[discord.Attachment] = None,
+                              smogged: Optional[discord.Attachment] = None):
+        await self.do_fuera_guild(interaction, [smogg, smogged])
 
     @miembros_g.command(name="canal-avisos", description="(Council) Canal donde se avisa cuando alguien sale de la guild de Albion")
     @app_commands.describe(canal="Canal (por defecto, este)", desactivar="Apagar los avisos")

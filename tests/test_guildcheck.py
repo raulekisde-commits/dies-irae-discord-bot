@@ -257,6 +257,8 @@ class GuildCheckTests(DiscordBase):
         rdb.set_flag(self.db, "registro:rol_guild:smogged", str(role.id))
         self.bob.roles.append(role)                                                  # tiene el rol pero sigue en Smogg
         rdb.admin_link(self.db, self.outsider.id, "Perdido", 1, char_id="id-p")
+        self.outsider.roles.append(self.r_member)
+        rdb.admin_link(self.db, self.staff.id, "Jefazo", 1, char_id="id-j")         # Staff fuera de las guilds: no se toca
 
         def f(text):
             async def read():
@@ -273,8 +275,11 @@ class GuildCheckTests(DiscordBase):
         self.assertIn("Cambian de guild: **1**", text)
         self.assertIn(f"<@{self.alice.id}> (Kingnian): Smogg → **Smogged**", text)
         self.assertIn("solo corregir rol: **1**", text)
+        self.assertIn("se les sacan los roles: **1**", text)
+        self.assertIn("Jefazo) · Staff/Council/admin", text)
         self.assertIn(f"<@{self.outsider.id}> (Perdido)", text)
         self.assertEqual(rdb.get_registration(self.db, self.alice.id).guild_name, None)   # sin confirmar no cambia nada
+        self.assertIn(self.r_member, self.outsider.roles)
         j = self.inter(self.staff)
         run(kw["view"]._yes(j))
         self.assertEqual(rdb.get_registration(self.db, self.alice.id).guild_name, "Smogged")
@@ -282,6 +287,55 @@ class GuildCheckTests(DiscordBase):
         self.assertNotIn(role, self.bob.roles)
         self.assertEqual(rdb.active_transfers(self.db), {})                         # no queda como pase pendiente
         self.assertIsNone(rdb.get_registration(self.db, self.outsider.id).guild_name)
+        self.assertEqual(self.outsider.roles, [])                                   # sin roles, pero sigue registrado
+        self.assertIsNotNone(rdb.get_registration(self.db, self.outsider.id))
+        self.assertEqual(gdb.get_alert(self.db, self.outsider.id)["status"], "roles_removed")
+        self.assertTrue(self.staff.roles)
+
+    def test_fuera_guild_saca_roles_menos_a_invitados(self):
+        roster = [{"Id": "id-k", "Name": "Kingnian", "GuildName": "Smogg"}]
+        guilds = {"id-z": "OtraGuild", "id-p": "OtraGuild", "id-x": "Smogg", "id-j": "OtraGuild"}
+
+        async def fake(url, params=None):
+            if "/guilds/GID/members" in url and "ams" not in url and "sgp" not in url:
+                return roster
+            for cid, g in guilds.items():
+                if url.endswith(f"/players/{cid}"):
+                    return {"Id": cid, "Name": "x", "GuildName": g}
+            raise RuntimeError("HTTP 503")
+        self.reg.fetch_json = fake
+        self.reg.roster = {}
+        self.reg.member_role_id = self.r_member.id
+        self.bob.roles.append(self.r_member)                                          # zabonin: fuera → pierde roles
+        rdb.admin_link(self.db, self.outsider.id, "Perdido", 1, char_id="id-p")       # invitado premium: no se toca
+        self.outsider.roles.append(self.r_member)
+        import invitados
+        invitados.ensure_schema(self.db)
+        invitados.add_guest(self.db, GUILD_ID, self.outsider.id, 1, "amigo", kind="premium")
+        rdb.admin_link(self.db, self.staff.id, "Jefazo", 1, char_id="id-j")           # Staff: no se toca
+
+        def f(text):
+            async def read():
+                return text.encode("utf-16")
+            return types.SimpleNamespace(size=100, read=read)
+        i = self.inter(self.alice)
+        run(self.cog.do_fuera_guild(i))
+        self.assertIn("🔒", i.text)
+        i = self.inter(self.staff)
+        run(self.cog.do_fuera_guild(i, [f('"Character Name"\t"Last Seen"\t"Roles"\n"Otro"\t"Online"\t"Member"\n'), None]))
+        msg, kw = [x for x in i.response.sent if "Sacar roles" in str(getattr(x[1].get("view"), "children", ""))
+                   or "todos los roles" in (x[0] or "")][-1]
+        self.assertIn("**1** no tienen ningún personaje", msg)
+        self.assertIn(f"<@{self.bob.id}> (zabonin)", msg)
+        self.assertNotIn(str(self.outsider.id), msg); self.assertNotIn(str(self.staff.id), msg)
+        self.assertIn(self.r_member, self.bob.roles)                                  # sin confirmar no se saca nada
+        run(kw["view"]._yes(self.inter(self.staff)))
+        self.assertEqual(self.bob.roles, [])
+        self.assertIn(self.r_member, self.outsider.roles)
+        self.assertIn(self.r_member, self.alice.roles)                                # Kingnian sigue en la guild
+        self.assertTrue(self.staff.roles)
+        self.assertIsNotNone(rdb.get_registration(self.db, self.bob.id))
+        self.assertEqual(gdb.get_alert(self.db, self.bob.id)["status"], "roles_removed")
 
     def test_sin_aviso_si_la_api_dice_que_sigue_en_la_guild_o_si_es_invitado(self):
         self._leave_setup(["Kingnian"], current_guild="Smogg")
