@@ -1597,19 +1597,27 @@ class RegistrationCog(commands.Cog):
             return None
 
     # /miembros fuera-guild (guildcheck.py)
-    async def fuera_de_guild(self, interaction: discord.Interaction):
+    async def fuera_de_guild(self, interaction: discord.Interaction, extra_names: Optional[set] = None) -> list:
+        """Lista los registrados fuera de la guild y ofrece expulsarlos. `extra_names` (casefold): personajes de los export
+        subidos, que cuentan como dentro de la guild. Devuelve [(miembro, [personajes])] de quienes no tienen NINGÚN personaje
+        en la guild, la API lo confirma y no son invitados (candidatos a sacarles los roles)."""
         if not can_admin_registro(interaction.user):
-            return await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
-        await interaction.response.defer(ephemeral=True)
+            await _say(interaction, "🔒 Solo el Staff, el Council o los administradores pueden usar este comando.")
+            return []
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         res = await self._registration_gaps(interaction)
         if res is None:
-            return
+            return []
         links, *_ = res
         ids = {c.char_id for c in self.roster.values() if c.char_id}
-        out = [r for r in links if not ((r.char_id and r.char_id in ids) or r.char_name.casefold() in self.roster)]
+        extra_names = extra_names or set()
+        out = [r for r in links if not ((r.char_id and r.char_id in ids) or r.char_name.casefold() in self.roster
+                                        or r.char_name.casefold() in extra_names)]
         guild_name = self.guild_label
         if not out:
-            return await interaction.followup.send(f"✅ Los {len(links)} personajes registrados siguen en la guild {guild_name}.", ephemeral=True)
+            await interaction.followup.send(f"✅ Los {len(links)} personajes registrados siguen en la guild {guild_name}.", ephemeral=True)
+            return []
         out.sort(key=lambda r: r.char_name.casefold())
         sem = asyncio.Semaphore(5)
 
@@ -1620,6 +1628,10 @@ class RegistrationCog(commands.Cog):
         current = await asyncio.gather(*(guild_of(r) for r in out))
         head = f"🚪 **{len(out)}** de {len(links)} personajes registrados ya no están en la guild {guild_name}:"
         lines, kickable = [], []
+        out_ids = {id(r) for r in out}
+        inside_users = {r.discord_id for r in links if id(r) not in out_ids}       # tiene otro personaje adentro
+        unsure = {r.discord_id for r, g in zip(out, current) if g is None or (g and self.is_own_guild(g))}
+        strip, seen = [], set()
         for r, g in zip(out, current):
             gremio = "❓ no se pudo consultar" if g is None else (f"gremio **{discord.utils.escape_markdown(g)}**" if g else "sin gremio")
             guest = await asyncio.to_thread(self._guest_info, interaction.guild.id, r.discord_id)
@@ -1630,6 +1642,9 @@ class RegistrationCog(commands.Cog):
             where = "" if member is not None else " · ⚠️ ya no está en el Discord"
             if member is not None and not guest and not getattr(member, "bot", False):
                 kickable.append((member, r.char_name))
+                if r.discord_id not in inside_users and r.discord_id not in unsure and r.discord_id not in seen:
+                    seen.add(r.discord_id)
+                    strip.append((member, [x.char_name for x in out if x.discord_id == r.discord_id]))
             lines.append(f"• <@{r.discord_id}> → **{discord.utils.escape_markdown(r.char_name)}** · {gremio}{where}")
         for n, chunk in enumerate(self._chunks(lines)):
             await interaction.followup.send((head + "\n" if n == 0 else "") + chunk, ephemeral=True, allowed_mentions=NO_MENTIONS)
@@ -1640,6 +1655,7 @@ class RegistrationCog(commands.Cog):
                 f"👢 **{len(kickable)}** no están en la guild y no son invitados ni invitados premium{extra}.\n"
                 "Marcá en las listas a quiénes expulsar del Discord y apretá **Expulsar marcados**.",
                 view=KickOutsidersView(self, interaction.user.id, shown), ephemeral=True, allowed_mentions=NO_MENTIONS)
+        return strip
 
     async def kick_outsiders(self, interaction: discord.Interaction, ids: List[int]):
         """Expulsa a los marcados, revalidando cada uno con las mismas reglas que /expulsar."""
