@@ -446,10 +446,19 @@ class GuildShopCog(commands.Cog):
     async def canal_wujupon_regalos_cmd(self, interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None, desactivar: bool = False):
         await self._canal_delegate(interaction, "WujuponCog", "canal_regalos", "Wujupón", canal, desactivar)
 
-    @canal.command(name="miembros", description="(Council) Canal de voz que muestra 'Smogg N/300' con los miembros de la guild en el juego")
-    @app_commands.describe(canal="Canal de voz a renombrar", desactivar="Dejar de actualizar el nombre")
-    async def canal_miembros_cmd(self, interaction: discord.Interaction, canal: Optional[discord.VoiceChannel] = None, desactivar: bool = False):
-        await self._canal_delegate(interaction, "RegistrationCog", "canal_miembros", "registro", canal, desactivar)
+    @canal.command(name="miembros", description="(Council) Canal de voz que muestra 'Smogg N/300' (o 'Smogged N/300') con los miembros en el juego")
+    @app_commands.describe(canal="Canal de voz a renombrar", desactivar="Dejar de actualizar el nombre",
+                           guild="(Opcional) Guild a contar; por defecto, la principal")
+    async def canal_miembros_cmd(self, interaction: discord.Interaction, canal: Optional[discord.VoiceChannel] = None, desactivar: bool = False,
+                                 guild: Optional[str] = None):
+        await self._canal_delegate(interaction, "RegistrationCog", "canal_miembros", "registro", canal, desactivar, guild)
+
+    @canal_miembros_cmd.autocomplete("guild")
+    async def _canal_miembros_guild_ac(self, interaction: discord.Interaction, current: str):
+        reg = self.bot.get_cog("RegistrationCog")
+        names = [n for n, _i in getattr(reg, "guilds", []) if n] if reg is not None else []
+        cur = (current or "").casefold()
+        return [app_commands.Choice(name=n, value=n) for n in names if cur in n.casefold()][:25]
 
     @canal.command(name="log-foco", description="(Council) Canal donde se registran las donaciones de foco aprobadas")
     @app_commands.describe(canal="Canal de registro (por defecto, este canal)")

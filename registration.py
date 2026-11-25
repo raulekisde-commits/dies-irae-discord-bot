@@ -48,6 +48,7 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 ROSTER_REFRESH_MINUTES = 30            # cada cuánto se vuelve a bajar la lista de miembros de la guild
 ROSTER_MAX_AGE_SECONDS = 24 * 3600      # una lista guardada sirve hasta 24 h aunque la API falle; recién después se vuelve a consultar en vivo
 MEMBER_COUNT_NAME = "Smogg {n}/300"       # nombre del canal contador de /canal miembros (n = miembros de la guild en el juego)
+SISTER_COUNT_NAME = "{guild} {n}/300"     # mismo contador para una guild hermana (ej. "Smogged 120/300")
 ROSTER_MISS_REFRESH_SECONDS = 300       # si alguien no figura, se vuelve a bajar la lista como máximo cada 5 min (una sola consulta)
 
 # Comandos que siempre se pueden usar aunque no estés registrado (son los del propio registro).
@@ -402,6 +403,22 @@ class RegistrationCog(commands.Cog):
         g = (self.required_guild or "").casefold()
         return sum(1 for c in self.roster.values() if (c.guild or "").casefold() == g) if g else len(self.roster)
 
+    def sister_guild_count(self, gname: str) -> int:
+        """Miembros de una guild hermana según la última lista (para el contador 'Smogged N/300')."""
+        g = gname.casefold()
+        return sum(1 for c in self.roster.values() if (c.guild or "").casefold() == g)
+
+    def count_channel_key(self, gname: Optional[str]) -> str:
+        """Clave del canal contador: la de siempre para la principal y una por cada guild hermana."""
+        if not gname or gname.casefold() == (self.required_guild or "").casefold():
+            return rdb.MEMBER_COUNT_CHANNEL_KEY
+        return f"{rdb.MEMBER_COUNT_CHANNEL_KEY}:{gname.casefold()}"
+
+    def count_channel_name(self, gname: Optional[str]) -> str:
+        if self.count_channel_key(gname) == rdb.MEMBER_COUNT_CHANNEL_KEY:
+            return MEMBER_COUNT_NAME.format(n=self.main_guild_count())
+        return SISTER_COUNT_NAME.format(guild=gname, n=self.sister_guild_count(gname))
+
     def roster_fresh(self) -> bool:
         import time
         return bool(self.roster) and (time.time() - self.roster_at) < ROSTER_MAX_AGE_SECONDS
@@ -532,16 +549,23 @@ class RegistrationCog(commands.Cog):
 
     # ---------- canal contador de miembros (/canal miembros) ----------
     async def update_member_count_channel(self) -> Optional[str]:
-        """Renombra el canal configurado a 'Smogg N/300' con la cantidad de la última lista de la guild.
-        Solo lo edita si el nombre cambió (Discord deja renombrar un canal 2 veces cada 10 min). Devuelve el nombre o None."""
+        """Renombra los canales configurados a 'Smogg N/300' (y 'Smogged N/300', etc.) con la cantidad de la última lista.
+        Solo los edita si el nombre cambió (Discord deja renombrar un canal 2 veces cada 10 min). Devuelve el nombre del de la principal o None."""
+        out = await self._update_count_channel(None)
+        for gname, _gid in self.extra_guilds:
+            if gname.casefold() in self._fresh_guilds:                  # sin lista nueva de esa guild no se toca su contador
+                await self._update_count_channel(gname)
+        return out
+
+    async def _update_count_channel(self, gname: Optional[str]) -> Optional[str]:
         try:
-            cid = await self.run(rdb.get_flag, rdb.MEMBER_COUNT_CHANNEL_KEY, "")
+            cid = await self.run(rdb.get_flag, self.count_channel_key(gname), "")
             if not cid or not self.roster:
                 return None
             channel = self.bot.get_channel(int(cid))
             if channel is None:
                 return None
-            name = MEMBER_COUNT_NAME.format(n=self.main_guild_count())
+            name = self.count_channel_name(gname)
             if getattr(channel, "name", None) != name:
                 await channel.edit(name=name, reason="Contador de miembros de la guild")
             return name
@@ -549,11 +573,16 @@ class RegistrationCog(commands.Cog):
             traceback.print_exc()
             return None
 
-    async def canal_miembros(self, interaction: discord.Interaction, canal: Optional[discord.VoiceChannel], desactivar: bool):
+    async def canal_miembros(self, interaction: discord.Interaction, canal: Optional[discord.VoiceChannel], desactivar: bool,
+                             guild: Optional[str] = None):
         if not can_manage(interaction.user):
             return await _say(interaction, "🔒 Solo el Council o los administradores pueden usar este comando.")
+        gname = next((n for n, _i in self.guilds if guild and n and n.casefold() == guild.strip().casefold()), None)
+        if guild and gname is None:
+            return await _say(interaction, f"❌ No conozco la guild **{discord.utils.escape_markdown(guild)}**. Opciones: {self.guild_label}.")
+        key = self.count_channel_key(gname)
         if desactivar:
-            await self.run(rdb.set_flag, rdb.MEMBER_COUNT_CHANNEL_KEY, "")
+            await self.run(rdb.set_flag, key, "")
             return await _say(interaction, "✅ Contador de miembros desactivado: el canal ya no se renombra.")
         if canal is None:
             return await _say(interaction, "❌ Elegí el canal de voz que va a mostrar la cantidad.")
@@ -564,10 +593,11 @@ class RegistrationCog(commands.Cog):
             await self.refresh_roster()
         if not self.roster:
             return await _say(interaction, "❌ No pude bajar la lista de miembros de la guild. Probá de nuevo en unos minutos.")
-        await self.run(rdb.set_flag, rdb.MEMBER_COUNT_CHANNEL_KEY, str(canal.id))
-        await self.run(rdb.audit, interaction.user.id, "member_count_channel_set", None, None, f"canal={canal.id}")
+        await self.run(rdb.set_flag, key, str(canal.id))
+        await self.run(rdb.audit, interaction.user.id, "member_count_channel_set", None, None,
+                       f"canal={canal.id}" + (f" guild={gname}" if key != rdb.MEMBER_COUNT_CHANNEL_KEY else ""))
         try:
-            await canal.edit(name=MEMBER_COUNT_NAME.format(n=self.main_guild_count()), reason="Contador de miembros de la guild")
+            await canal.edit(name=self.count_channel_name(gname), reason="Contador de miembros de la guild")
         except discord.Forbidden:
             return await _say(interaction, f"⚠️ Guardado, pero no tengo permiso para renombrar {canal.mention} (necesito **Gestionar canales**).")
         except discord.HTTPException as exc:
