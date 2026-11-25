@@ -1547,7 +1547,7 @@ async def timer_save_and_announce(interaction: discord.Interaction, mat: str, tr
 
 class TimerConflictView(discord.ui.View):
     """Otro miembro cargó el mismo objetivo/tier/mapa con otra hora: se le pide al segundo que lo verifique.
-    Si confirma, se le cree a él y se reemplaza el timer anterior."""
+    Si confirma, se le cree a él y se reemplaza el timer anterior. Si es otro nodo del mismo mapa, se agregan los dos."""
 
     def __init__(self, guild_id: int, author_id: int, mat: str, tr: Optional[str], mapa: str, target_utc: datetime, conflicts: list):
         super().__init__(timeout=TIMER_CONFIRM_TIMEOUT)
@@ -1584,6 +1584,17 @@ class TimerConflictView(discord.ui.View):
         replaced = self._current_conflicts()
         await self._finish(interaction, "⏳ Guardando…")
         msg = await timer_save_and_announce(interaction, self.mat, self.tr, self.mapa, self.target_utc, replaced)
+        await interaction.edit_original_response(content=msg)
+
+    @discord.ui.button(label="➕ Es otro nodo (dejar los dos)", style=discord.ButtonStyle.primary)
+    async def add_both(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Dos nodos iguales en el mismo mapa: se suma el nuevo sin tocar el anterior (no se le saca la tirada a nadie).
+        tol = timedelta(minutes=TIMER_DUP_TOLERANCE_MINUTES)
+        if any(abs(_timer_parse_dt(e["spawn_at"]) - self.target_utc) <= tol
+               for e in timer_same_target(self.guild_id, self.mat, self.mapa, self.tr)):
+            return await self._finish(interaction, "⚠️ Mientras tanto alguien ya cargó ese mismo timer. No lo subí de nuevo.")
+        await self._finish(interaction, "⏳ Guardando…")
+        msg = await timer_save_and_announce(interaction, self.mat, self.tr, self.mapa, self.target_utc)
         await interaction.edit_original_response(content=msg)
 
     @discord.ui.button(label="❌ Cancelar", style=discord.ButtonStyle.secondary)
@@ -1686,8 +1697,8 @@ async def timeradd_slash(
         await interaction.response.send_message(
             f"⚠️ Ojo: otra persona ya cargó **{_timer_label(mat, tr, mapa, target_utc).split(' · ')[0]} · {mapa}** con otro horario:\n{olds}\n\n"
             f"Vos lo estás cargando para las **{target_utc.strftime('%H:%M')} UTC** (<t:{int(target_utc.timestamp())}:R>). "
-            f"Uno de los dos lo puso mal: **volvé a verificar el timer en el juego**. "
-            f"Si confirmás, se reemplaza el anterior por el tuyo.",
+            f"Si es **el mismo nodo**, uno de los dos lo puso mal: **volvé a verificar el timer en el juego**; si confirmás, "
+            f"se reemplaza el anterior por el tuyo. Si es **otro nodo** en el mismo mapa, tocá **➕ Es otro nodo** y quedan los dos.",
             view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
         view.interaction = interaction
         return
