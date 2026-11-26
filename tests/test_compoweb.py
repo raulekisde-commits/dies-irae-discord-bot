@@ -61,6 +61,16 @@ class T(unittest.TestCase):
         self.assertEqual(by[(1, 1)]["role_ids"], [111])
         self.assertEqual((by[(1, 4)]["role_name"], by[(1, 4)]["role_ids"]), ("Chariot", [888]))     # battlemount -> rol battle mount
 
+    def test_formato_nuevo_con_dos_builds_en_una_posicion(self):
+        payload = {"comp": {"title": "X", "parties": [[["b-mace", "b-heal"], "b-mace", None]]},
+                   "builds": {"b-mace": {"name": "Mace", "playstyle": "dtank", "weapon": {"src": "/item-icons/MAIN_MACE__t8.png"}},
+                              "b-heal": {"name": "Holy", "playstyle": "healer", "weapon": {"src": "/item-icons/MAIN_HOLYSTAFF__t8.png"}}}}
+        text = '5:["$","$L2d",null,{"payload":' + json.dumps(payload) + '}]\n'
+        p = cw.parse_comp_html('<html><script>self.__next_f.push([1,"%s"])</script></html>' % json.dumps(text)[1:-1])
+        self.assertEqual(p["parties"][0]["slots"], [["b-mace", "b-heal"], ["b-mace"], []])
+        defs, _ = cw.build_slot_defs(p, {}, lambda w: ar.role_for(self.db, 1, w), lambda l: ar.discord_role_for(self.db, 1, l))
+        self.assertEqual(defs[0]["role_name"], "Mace / Holy")
+
     def test_arma_alternativa_de_la_build(self):
         payload = {"comp": {"title": "X", "parties": [["b-alt", "b-alt"]]},
                    "builds": {"b-alt": {"name": "Flex", "playstyle": "dps", "weapon": {"src": "/item-icons/MAIN_MACE__t8.png"},

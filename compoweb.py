@@ -128,7 +128,7 @@ _SRC_RE = re.compile(r"/item-icons/([A-Z0-9_]+?)(?:__t\d(?:_e\d)?)?\.png")      
 def _parse_payload(payload: dict) -> dict:
     comp = payload.get("comp") or {}
     builds = payload.get("builds") or {}
-    parties = [{"title": f"Party {i}", "slots": [[bid] if bid else [] for bid in (p or [])]}
+    parties = [{"title": f"Party {i}", "slots": [[b for b in bid if b] if isinstance(bid, list) else ([bid] if bid else []) for bid in (p or [])]}   # una posición puede traer varias builds: [id, id]
                for i, p in enumerate(comp.get("parties") or [], start=1)]
     if not parties:
         raise WebError("La compo no tiene grupos.")
