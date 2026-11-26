@@ -3830,6 +3830,11 @@ def cta_db_init():
         CREATE INDEX IF NOT EXISTS idx_cta_runs_status ON cta_runs(guild_id, status, closes_at);
         CREATE INDEX IF NOT EXISTS idx_cta_signups_cta ON cta_signups(cta_id);
         CREATE INDEX IF NOT EXISTS idx_cta_runs_thread ON cta_runs(thread_id);
+        CREATE TABLE IF NOT EXISTS cta_slot_options (
+            slot_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            PRIMARY KEY (slot_id, name)
+        );
         """)
         # Migración aditiva: ids de los mensajes del tablero en el hilo de cada CTA.
         db_ensure_column(conn, "cta_runs", "board_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -3903,6 +3908,67 @@ def cta_get_composition(guild_id: int, name: str):
     for slot in comp["slots"]:
         slot["role_ids"] = json.loads(slot.pop("role_ids_json", "[]"))
     return comp
+
+
+CTA_SLOT_NAME_MAX = 80
+
+
+def cta_slot_options(slot_id: int) -> list:
+    """Opciones extra que se le agregaron a mano a una posición (ej. «Spiked off cd» en una de GALATINAS)."""
+    return [r["name"] for r in db_fetchall("SELECT name FROM cta_slot_options WHERE slot_id=? ORDER BY rowid", (slot_id,))]
+
+
+def cta_name_parts(name: str) -> list:
+    return [x.strip() for x in (name or "").split(" / ") if x.strip()]
+
+
+def cta_name_with_options(base: str, options: list) -> str:
+    """«GALATINAS» + [«Spiked off cd»] -> «GALATINAS / Spiked off cd» (sin repetir)."""
+    parts = cta_name_parts(base)
+    low = {x.casefold() for x in parts}
+    for o in options:
+        if o.casefold() not in low:
+            parts.append(o)
+            low.add(o.casefold())
+    return " / ".join(parts)[:CTA_SLOT_NAME_MAX]
+
+
+def cta_add_slot_option(composition_id: int, slot_id: int, name: str) -> Optional[str]:
+    """Agrega la opción a la posición (nombre y registro, para que /compo actualizar no la pierda). Devuelve el nombre nuevo o None si no existe."""
+    with db_immediate() as conn:
+        row = conn.execute("SELECT role_name FROM cta_slots WHERE id=? AND composition_id=?", (slot_id, composition_id)).fetchone()
+        if not row:
+            return None
+        conn.execute("INSERT OR IGNORE INTO cta_slot_options(slot_id,name) VALUES (?,?)", (slot_id, name))
+        new = cta_name_with_options(row[0], [name])
+        conn.execute("UPDATE cta_slots SET role_name=? WHERE id=?", (new, slot_id))
+        conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), composition_id))
+        return new
+
+
+def cta_remove_slot_option(composition_id: int, slot_id: int, name: str) -> Optional[str]:
+    with db_immediate() as conn:
+        row = conn.execute("SELECT role_name FROM cta_slots WHERE id=? AND composition_id=?", (slot_id, composition_id)).fetchone()
+        if not row:
+            return None
+        conn.execute("DELETE FROM cta_slot_options WHERE slot_id=? AND name=?", (slot_id, name))
+        parts = cta_name_parts(row[0])
+        rest = [x for x in parts if x.casefold() != name.casefold()] or parts
+        new = " / ".join(rest)
+        conn.execute("UPDATE cta_slots SET role_name=? WHERE id=?", (new, slot_id))
+        conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), composition_id))
+        return new
+
+
+def cta_defs_with_options(comp: dict, defs: list) -> list:
+    """/compo actualizar: a cada posición que viene de la web le vuelve a sumar las opciones agregadas a mano."""
+    ids = {(int(x["party_no"]), int(x["position_no"])): int(x["id"]) for x in comp["slots"]}
+    out = []
+    for d in defs:
+        sid = ids.get((d["party_no"], d["position_no"]))
+        opts = cta_slot_options(sid) if sid else []
+        out.append(dict(d, role_name=cta_name_with_options(d["role_name"], opts)) if opts else d)
+    return out
 
 
 def cta_ensure_brawl(guild_id: int, creator_id: int):
@@ -6651,6 +6717,106 @@ class CTABulkAddModal(discord.ui.Modal, title="Agregar varias posiciones"):
         await interaction.response.send_message(f"✅ Agregué {len(names)} posiciones a la Party {party}.", ephemeral=True)
 
 
+async def cta_comp_build_names(comp: dict, slot: dict) -> list:
+    """Nombres de las builds de la compo importada para ofrecer como opción: primero las del mismo tipo (DPS, healer...) que la posición."""
+    if compoweb is None:
+        return []
+    try:
+        parsed = await cta_comp_parsed(comp)
+    except Exception as exc:
+        print(f"Opciones del slot: no pude leer las builds: {exc!r}")
+        return []
+    if not parsed:
+        return []
+    builds = parsed.get("builds", {})
+    try:
+        here = parsed["parties"][int(slot["party_no"]) - 1]["slots"][int(slot["position_no"]) - 1]
+    except (IndexError, KeyError, ValueError):
+        here = []
+    play = next((builds.get(b, {}).get("playstyle") for b in here or [] if builds.get(b)), "")
+    names = []
+    for bid, b in builds.items():
+        if bid == compoweb.FILL_BATTLEMOUNT_ID or b.get("playstyle") == "battlemount":
+            continue
+        names.append((b.get("playstyle") != play, b.get("name") or "Build"))
+    return list(dict.fromkeys(n for _, n in sorted(names, key=lambda x: (x[0], x[1].casefold()))))
+
+
+class CTASlotOptionModal(discord.ui.Modal, title="Agregar opción al slot"):
+    name = discord.ui.TextInput(label="Nombre de la opción", max_length=40, placeholder="Spiked off cd")
+
+    def __init__(self, parent: "CTASlotOptionsView"):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.parent.add(interaction, str(self.name.value).strip())
+
+
+class CTASlotOptionsView(discord.ui.View):
+    """Agregar o quitar opciones a una posición: «GALATINAS» -> «GALATINAS / Spiked off cd». Se conservan al hacer /compo actualizar."""
+
+    def __init__(self, composition: dict, slot: dict, actor_id: int, builds: list):
+        super().__init__(timeout=300)
+        self.composition, self.slot, self.actor_id, self.builds = composition, slot, actor_id, builds
+        self.refresh()
+
+    def text(self) -> str:
+        opts = cta_slot_options(int(self.slot["id"]))
+        return (f"🔀 **P{self.slot['party_no']} · {self.slot['role_name']}**\n"
+                + (f"Opciones agregadas: {', '.join(opts)}\n" if opts else "")
+                + "Elegí una build de la compo para sumarla como opción, o escribí otra. El rol que pide la posición no cambia.")
+
+    def refresh(self):
+        self.clear_items()
+        have = {x.casefold() for x in cta_name_parts(self.slot["role_name"])}
+        avail = [n for n in self.builds if n.casefold() not in have][:25]
+        if avail:
+            sel = discord.ui.Select(placeholder="Agregar una build de la compo", options=[discord.SelectOption(label=n[:100], value=n[:100]) for n in avail])
+            async def on_add(interaction, sel=sel):
+                await self.add(interaction, sel.values[0])
+            sel.callback = on_add
+            self.add_item(sel)
+        opts = cta_slot_options(int(self.slot["id"]))
+        if opts:
+            rem = discord.ui.Select(placeholder="Quitar una opción", options=[discord.SelectOption(label=n[:100], value=n[:100]) for n in opts[:25]])
+            async def on_rem(interaction, rem=rem):
+                await self.remove(interaction, rem.values[0])
+            rem.callback = on_rem
+            self.add_item(rem)
+        write = discord.ui.Button(label="Escribir otra", style=discord.ButtonStyle.secondary, emoji="✏️")
+        async def on_write(interaction):
+            await interaction.response.send_modal(CTASlotOptionModal(self))
+        write.callback = on_write
+        self.add_item(write)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_id or not is_council_or_admin(interaction.user):
+            await interaction.response.send_message("No podés usar este menú.", ephemeral=True)
+            return False
+        return True
+
+    async def _show(self, interaction: discord.Interaction, new_name: Optional[str], action: str, name: str):
+        if new_name is None:
+            return await interaction.response.send_message("Esa posición ya no existe.", ephemeral=True)
+        self.slot = dict(self.slot, role_name=new_name)
+        cta_audit(int(self.composition["guild_id"]), interaction.user.id, action,
+                  details=f"comp={self.composition['id']}; slot={self.slot['id']}; option={name}")
+        self.refresh()
+        if interaction.type == discord.InteractionType.modal_submit and interaction.message is None:
+            return await interaction.response.send_message(self.text(), view=self, ephemeral=True)
+        await interaction.response.edit_message(content=self.text(), view=self)
+
+    async def add(self, interaction: discord.Interaction, name: str):
+        name = " ".join((name or "").split()).replace(" / ", " ")
+        if not name:
+            return await interaction.response.send_message("La opción no puede quedar vacía.", ephemeral=True)
+        await self._show(interaction, cta_add_slot_option(int(self.composition["id"]), int(self.slot["id"]), name), "composition_slot_option_add", name)
+
+    async def remove(self, interaction: discord.Interaction, name: str):
+        await self._show(interaction, cta_remove_slot_option(int(self.composition["id"]), int(self.slot["id"]), name), "composition_slot_option_remove", name)
+
+
 class CTACompositionEditorView(discord.ui.View):
     def __init__(self, composition: dict, actor_id: int, party_filter: Optional[int] = None):
         super().__init__(timeout=300)
@@ -6681,6 +6847,8 @@ class CTACompositionEditorView(discord.ui.View):
         preview = discord.ui.Button(label="Ver composición", style=discord.ButtonStyle.secondary, emoji="👁️")
         party_access = discord.ui.Button(label="Restringir party", style=discord.ButtonStyle.secondary, emoji="🛡️")
         move = discord.ui.Button(label="Mover / reordenar", style=discord.ButtonStyle.primary, emoji="↕️", disabled=not options)
+        option = discord.ui.Button(label="Opciones del slot", style=discord.ButtonStyle.primary, emoji="🔀", disabled=not options)
+        option.callback = self.slot_options
         add.callback = self.add_slot
         bulk.callback = self.bulk_add
         edit_party.callback = self.edit_party
@@ -6690,7 +6858,7 @@ class CTACompositionEditorView(discord.ui.View):
         preview.callback = self.preview
         party_access.callback = self.configure_party_access
         move.callback = self.move_slot
-        for item in (add, bulk, edit_party, edit, access, delete, preview, move):
+        for item in (add, bulk, edit_party, edit, access, delete, preview, move, option):
             self.add_item(item)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -6749,6 +6917,14 @@ class CTACompositionEditorView(discord.ui.View):
         if not slot:
             return await interaction.response.send_message("Elegí primero una posición.", ephemeral=True)
         await interaction.response.send_modal(CTAMoveSlotModal(self.composition, slot, interaction.user.id))
+
+    async def slot_options(self, interaction: discord.Interaction):
+        slot = self._current_slot()
+        if not slot:
+            return await interaction.response.send_message("Elegí primero una posición.", ephemeral=True)
+        builds = await cta_comp_build_names(self.composition, slot)
+        view = CTASlotOptionsView(self.composition, slot, interaction.user.id, builds)
+        await interaction.response.send_message(view.text(), view=view, ephemeral=True)
 
     async def delete_slot(self, interaction: discord.Interaction):
         slot = self._current_slot()
@@ -7145,6 +7321,7 @@ async def compo_actualizar(interaction: discord.Interaction, nombre: str):
     except Exception as exc:
         print(f"/compo actualizar: {exc!r}")
         return await interaction.followup.send("❌ No pude leer la compo (formato inesperado).", ephemeral=True)
+    defs = cta_defs_with_options(comp, defs)                 # las opciones agregadas a mano se conservan
     d = compoweb.diff_slots(comp["slots"], defs)
     lines = [f"🔄 **{comp['name']}** vs la web: **{len(d['changed'])}** cambiadas · **{len(d['added'])}** nuevas · **{len(d['removed'])}** que sobran · {d['same']} iguales."]
     old = {(int(s["party_no"]), int(s["position_no"])): s for s in comp["slots"]}
@@ -7160,7 +7337,7 @@ async def compo_actualizar(interaction: discord.Interaction, nombre: str):
         await asyncio.to_thread(compoweb.save_link, DB_PATH, comp["id"], link["web_id"], link["url"])
         await asyncio.to_thread(compoweb.save_parsed, DB_PATH, comp["id"], parsed)
         return await interaction.followup.send("\n".join(lines)[:1990] + "\nNo hay nada que cambiar.", ephemeral=True)
-    lines.append("Las posiciones que editaste a mano se pisan con lo de la web." + cta_active_notice(comp["id"]))
+    lines.append("Las posiciones que editaste a mano se pisan con lo de la web (las opciones agregadas con 🔀 se conservan)." + cta_active_notice(comp["id"]))
     await interaction.followup.send("\n".join(lines)[:1990], view=CTAWebUpdateView(comp["id"], defs, link["web_id"], link["url"], interaction.user.id, parsed), ephemeral=True)
 
 
