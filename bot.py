@@ -3939,7 +3939,8 @@ def cta_add_slot_option(composition_id: int, slot_id: int, name: str) -> Optiona
         row = conn.execute("SELECT role_name FROM cta_slots WHERE id=? AND composition_id=?", (slot_id, composition_id)).fetchone()
         if not row:
             return None
-        conn.execute("INSERT OR IGNORE INTO cta_slot_options(slot_id,name) VALUES (?,?)", (slot_id, name))
+        if not conn.execute("SELECT 1 FROM cta_slot_options WHERE slot_id=? AND name=? COLLATE NOCASE", (slot_id, name)).fetchone():
+            conn.execute("INSERT INTO cta_slot_options(slot_id,name) VALUES (?,?)", (slot_id, name))
         new = cta_name_with_options(row[0], [name])
         conn.execute("UPDATE cta_slots SET role_name=? WHERE id=?", (new, slot_id))
         conn.execute("UPDATE cta_compositions SET updated_at=? WHERE id=?", (cta_now_iso(), composition_id))
@@ -3951,7 +3952,7 @@ def cta_remove_slot_option(composition_id: int, slot_id: int, name: str) -> Opti
         row = conn.execute("SELECT role_name FROM cta_slots WHERE id=? AND composition_id=?", (slot_id, composition_id)).fetchone()
         if not row:
             return None
-        conn.execute("DELETE FROM cta_slot_options WHERE slot_id=? AND name=?", (slot_id, name))
+        conn.execute("DELETE FROM cta_slot_options WHERE slot_id=? AND name=? COLLATE NOCASE", (slot_id, name))
         parts = cta_name_parts(row[0])
         rest = [x for x in parts if x.casefold() != name.casefold()] or parts
         new = " / ".join(rest)
