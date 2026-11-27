@@ -395,6 +395,34 @@ class CoachingDiscordTests(DiscordBase):
         self.assertIn("sin post", body)
         self.assertIn(f"<@{self.novato.id}> — **3/3**", body)
 
+    def test_sin_vods_y_publico(self):
+        self.open_post(self.novato)
+        run(self.cog.process_message(self.video_msg(self.novato, self.made[0], "healer https://youtu.be/z", 9200)))
+        lazy = discord.Member(700000000000000019, "Vago2", roles=[self.r_obs], guild=self.guild)
+        self.guild.members.append(lazy)
+        i = self.inter(self.alice)
+        run(self.cog.coaching_sin_vods.callback(self.cog, i))
+        self.assertIn("Solo el Staff", i.text)
+        i = self.inter(self.coach)
+        run(self.cog.coaching_sin_vods.callback(self.cog, i, True))
+        sent = i.response.sent[-1][1]
+        body = "\n".join(str(getattr(e, "description", "")) for e in sent["embeds"])
+        self.assertIn(f"<@{lazy.id}> · sin post", body)
+        self.assertNotIn(f"<@{self.novato.id}>", body)
+        self.assertFalse(sent.get("ephemeral"))
+
+    def test_reporte_largo_se_parte_en_varios_mensajes(self):
+        for k in range(150):
+            self.guild.members.append(discord.Member(710000000000000000 + k, f"Obs{k:03d}" * 3, roles=[self.r_obs], guild=self.guild))
+        i = self.inter(self.coach)
+        run(self.cog.coaching_reporte.callback(self.cog, i, None))
+        msgs = [kw for _, kw in i.response.sent if "embeds" in kw]
+        self.assertGreater(len(msgs), 1)
+        for kw in msgs:
+            self.assertLessEqual(len(kw["embeds"]), 10)
+            self.assertLessEqual(sum(len(e.title or "") + len(e.description or "") for e in kw["embeds"]), 6000)
+            self.assertTrue(kw.get("ephemeral"))
+
     def mis(self, user):
         i = self.inter(user)
         run(self.cog.mis_vods.callback(self.cog, i))
