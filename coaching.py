@@ -1052,44 +1052,89 @@ class CoachingCog(commands.Cog):
 
     coaching_g = app_commands.Group(name="coaching", description="Coaching: reporte semanal, verificación de posts, track de CTA y tus VODs", guild_only=True)
 
+    async def _send_embeds(self, interaction: discord.Interaction, head: str, embeds: List[discord.Embed], public: bool) -> None:
+        """Manda el reporte en uno o más mensajes: Discord rechaza más de 10 embeds o más de 6000 caracteres por mensaje."""
+        groups, cur, size = [], [], len(head)
+        for e in embeds:
+            n = len(e.title or "") + len(e.description or "")
+            if cur and (len(cur) >= 10 or size + n > 5800):
+                groups.append(cur)
+                cur, size = [], 0
+            cur.append(e)
+            size += n
+        groups.append(cur)
+        for i, group in enumerate(groups):
+            await interaction.followup.send(head if i == 0 else None, embeds=group, ephemeral=not public, allowed_mentions=NO_MENTIONS)
+
+    def _posts_for(self, user_ids: List[int]) -> Dict[int, Optional[dict]]:
+        return {u: cdb.get_post(self.db_path, u) for u in user_ids}
+
     @coaching_g.command(name="reporte", description="(Staff/Coaching) Quién cumplió los 3 VODs semanales y cuántos subió cada uno")
-    @app_commands.describe(semana="Semana en curso o la anterior (lunes a domingo, hora UTC)")
+    @app_commands.describe(semana="Semana en curso o la anterior (lunes a domingo, hora UTC)", publico="Mostrar la respuesta a todos en el canal")
     @app_commands.choices(semana=[app_commands.Choice(name="En curso", value="actual"), app_commands.Choice(name="Anterior", value="anterior")])
-    async def coaching_reporte(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None):
+    async def coaching_reporte(self, interaction: discord.Interaction, semana: Optional[app_commands.Choice[str]] = None,
+                               publico: bool = False):
         if not can_report(interaction.user):
             return await _say(interaction, "🔒 Solo el Staff, el Council, Coaching y Opinólogo pueden ver el reporte.")
         current = (getattr(semana, "value", semana) or "actual") == "actual"
         start = cdb.week_start(offset=0 if current else -1)
         end = start + timedelta(weeks=1)
-        await interaction.response.defer(ephemeral=True)
-        role = interaction.guild.get_role(OBSERVACION_ROLE_ID)
-        observers = [m for m in (role.members if role else []) if not m.bot]
-        counts = await self.run(cdb.count_between, start, end, only_obs=True)
-        others = await self.run(cdb.count_between, start, end, only_obs=False)
-        totals = await self.run(cdb.totals)
-        posts = {m.id: await self.run(cdb.get_post, m.id) for m in observers}
-        ok, bad = [], []
-        for m in sorted(observers, key=lambda x: (counts.get(x.id, 0), x.display_name.casefold())):
-            n = counts.get(m.id, 0)
-            extra = "" if posts.get(m.id) else " · sin post"
-            line = f"{m.mention} — **{n}/{cdb.WEEKLY_MIN}** · total {totals.get(m.id, 0)}{extra}"
-            (ok if n >= cdb.WEEKLY_MIN else bad).append(line)
-        label = f"<t:{int(start.timestamp())}:D> → <t:{int((end - timedelta(seconds=1)).timestamp())}:D>"
-        head = f"📋 **Coaching · semana {'en curso' if current else 'anterior'}** ({label})\nObservación: **{len(observers)}** · cumplieron: **{len(ok)}** · " + (
-            f"les falta: **{len(bad)}**" if current else f"no cumplieron: **{len(bad)}**")
-        embeds = []
-        title_bad = "⏳ Todavía no llegan a 3" if current else "❌ No cumplieron"
-        for title, lines, color in ((title_bad, bad, discord.Color.red()), ("✅ Cumplieron", ok, discord.Color.green())):
-            for i, chunk in enumerate(self._chunks(lines) or ["*Nadie.*"]):
-                embeds.append(discord.Embed(title=title if i == 0 else f"{title} (cont.)", description=chunk, color=color))
-        obs_ids = {m.id for m in observers}
-        extra_lines = [f"<@{u}> — {n} VOD(s) · total {totals.get(u, 0)}" for u, n in sorted(others.items(), key=lambda kv: -kv[1])]
-        extra_lines += [f"<@{u}> (ya sin Observación) — {n} VOD(s)" for u, n in sorted(counts.items(), key=lambda kv: -kv[1]) if u not in obs_ids]
-        if extra_lines:
-            for i, chunk in enumerate(self._chunks(extra_lines)):
-                embeds.append(discord.Embed(title="👥 Otros miembros (no se les exige el mínimo)" if i == 0 else "👥 Otros (cont.)",
-                                            description=chunk, color=discord.Color.blurple()))
-        await interaction.followup.send(head, embeds=embeds[:10], ephemeral=True, allowed_mentions=NO_MENTIONS)
+        await interaction.response.defer(ephemeral=not publico, thinking=True)
+        try:
+            role = interaction.guild.get_role(OBSERVACION_ROLE_ID)
+            observers = [m for m in (role.members if role else []) if not m.bot]
+            counts = await self.run(cdb.count_between, start, end, only_obs=True)
+            others = await self.run(cdb.count_between, start, end, only_obs=False)
+            totals = await self.run(cdb.totals)
+            posts = await asyncio.to_thread(self._posts_for, [m.id for m in observers])     # un solo hilo, no uno por miembro
+            ok, bad = [], []
+            for m in sorted(observers, key=lambda x: (counts.get(x.id, 0), x.display_name.casefold())):
+                n = counts.get(m.id, 0)
+                extra = "" if posts.get(m.id) else " · sin post"
+                line = f"{m.mention} — **{n}/{cdb.WEEKLY_MIN}** · total {totals.get(m.id, 0)}{extra}"
+                (ok if n >= cdb.WEEKLY_MIN else bad).append(line)
+            label = f"<t:{int(start.timestamp())}:D> → <t:{int((end - timedelta(seconds=1)).timestamp())}:D>"
+            head = f"📋 **Coaching · semana {'en curso' if current else 'anterior'}** ({label})\nObservación: **{len(observers)}** · cumplieron: **{len(ok)}** · " + (
+                f"les falta: **{len(bad)}**" if current else f"no cumplieron: **{len(bad)}**")
+            embeds = []
+            title_bad = "⏳ Todavía no llegan a 3" if current else "❌ No cumplieron"
+            for title, lines, color in ((title_bad, bad, discord.Color.red()), ("✅ Cumplieron", ok, discord.Color.green())):
+                for i, chunk in enumerate(self._chunks(lines) or ["*Nadie.*"]):
+                    embeds.append(discord.Embed(title=title if i == 0 else f"{title} (cont.)", description=chunk, color=color))
+            obs_ids = {m.id for m in observers}
+            extra_lines = [f"<@{u}> — {n} VOD(s) · total {totals.get(u, 0)}" for u, n in sorted(others.items(), key=lambda kv: -kv[1])]
+            extra_lines += [f"<@{u}> (ya sin Observación) — {n} VOD(s)" for u, n in sorted(counts.items(), key=lambda kv: -kv[1]) if u not in obs_ids]
+            if extra_lines:
+                for i, chunk in enumerate(self._chunks(extra_lines)):
+                    embeds.append(discord.Embed(title="👥 Otros miembros (no se les exige el mínimo)" if i == 0 else "👥 Otros (cont.)",
+                                                description=chunk, color=discord.Color.blurple()))
+            await self._send_embeds(interaction, head, embeds, publico)
+        except Exception:
+            traceback.print_exc()
+            await _say(interaction, "❌ No pude armar el reporte. Probá de nuevo o avisale a un admin.")
+
+    @coaching_g.command(name="sin-vods", description="(Staff/Coaching) Los de Observación que nunca subieron un VOD")
+    @app_commands.describe(publico="Mostrar la respuesta a todos en el canal")
+    async def coaching_sin_vods(self, interaction: discord.Interaction, publico: bool = False):
+        if not can_report(interaction.user):
+            return await _say(interaction, "🔒 Solo el Staff, el Council, Coaching y Opinólogo pueden ver esta lista.")
+        await interaction.response.defer(ephemeral=not publico, thinking=True)
+        try:
+            role = interaction.guild.get_role(OBSERVACION_ROLE_ID)
+            if role is None:
+                return await interaction.followup.send("⚠️ No encuentro el rol Observación en este servidor.", ephemeral=True)
+            observers = [m for m in role.members if not m.bot]
+            totals = await self.run(cdb.totals)
+            never = sorted((m for m in observers if not totals.get(m.id)), key=lambda x: x.display_name.casefold())
+            posts = await asyncio.to_thread(self._posts_for, [m.id for m in never])
+            lines = [f"{m.mention}" + ("" if posts.get(m.id) else " · sin post") for m in never]
+            head = f"🚫 **Coaching · nunca subieron VODs** — **{len(never)}** de **{len(observers)}** en Observación"
+            embeds = [discord.Embed(title="🚫 Nunca subieron" if i == 0 else "🚫 Nunca subieron (cont.)", description=chunk, color=discord.Color.red())
+                      for i, chunk in enumerate(self._chunks(lines) or ["*Nadie: todos subieron al menos uno.* 🎉"])]
+            await self._send_embeds(interaction, head, embeds, publico)
+        except Exception:
+            traceback.print_exc()
+            await _say(interaction, "❌ No pude armar la lista. Probá de nuevo o avisale a un admin.")
 
     @coaching_g.command(name="verificar-posts", description="(Staff/Coaching) Verifica que todos los de Observación tengan su post de VODs")
     async def coaching_verificar_posts(self, interaction: discord.Interaction):

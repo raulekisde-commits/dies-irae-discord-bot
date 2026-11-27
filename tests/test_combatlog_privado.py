@@ -29,15 +29,21 @@ class CombatlogPrivadoTests(unittest.TestCase):
         self.assertNotIn("public.send(f\"✅ {user.mention} subió su combatlog.\", files", body)   # el archivo nunca va al hilo público
 
 
+    def test_subir_logs_requiere_rol_de_logs(self):
+        self.assertIn("LOG_UPLOADER_ROLE_ID = 1462619849221079235", self.src)
+        for fn in ("async def upload(", "async def chestlog(", "async def cta_combatlog_upload(", "async def cta_chestlog_upload("):
+            i = self.src.index(fn)
+            self.assertIn("if not can_upload_logs(interaction.user):", self.src[i:i + 400])
+
     def test_boton_chestlog_solo_staff_council_al_hilo_privado(self):
         self.assertIn('custom_id="combatlog:chestlog"', self.src)
         i = self.src.index("async def chestlog(")
         btn = self.src[i:self.src.index("\n\n\n", i)]
-        self.assertIn("is_staff_or_council(interaction.user)", btn)
+        self.assertIn("can_upload_logs(interaction.user)", btn)
         self.assertIn("ChestlogUploadModal(", btn)
         i = self.src.index("async def cta_chestlog_upload(")
         body = self.src[i:self.src.index("\n\n\n", i)]
-        self.assertIn("is_staff_or_council(interaction.user)", body)
+        self.assertIn("can_upload_logs(interaction.user)", body)
         self.assertIn("await cta_combatlog_private_thread(", body)
         self.assertIn("files=out", body)
         self.assertNotIn("complete_by_source", body)              # no cierra la tarea del combatlog

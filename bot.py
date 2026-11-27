@@ -445,6 +445,7 @@ bs.register("log", "Logs generales del bot", LOG_CHANNEL_ID, "Registro general d
 
 RECRUITER_ROLE_ID = 1257896905099444354
 CONTENT_CREATOR_ROLE_ID = 1258562816512884808     # puede usar /content (iniciar CTA de content)
+LOG_UPLOADER_ROLE_ID = 1462619849221079235      # puede subir combatlog y chestlog (además de Staff/Council)
 FLEX_ROLE_ID = 1558522576743964762                # puede anotarse en cualquier posición de una CTA, sin importar los roles pedidos
 MIEMBRO_ROLE_ID = 1257896455860129822
 TANK_ROLE_ID = 1260755129754189854
@@ -872,6 +873,12 @@ def is_council_or_admin(member) -> bool:
 
 def is_staff_or_council(member) -> bool:
     return isinstance(member, discord.Member) and (is_staff_member(member) or is_council_or_admin(member))
+
+
+def can_upload_logs(member) -> bool:
+    """Quien puede subir combatlog y chestlog: el rol de logs, Staff, Council y administradores."""
+    return isinstance(member, discord.Member) and (
+        is_staff_or_council(member) or any(r.id == LOG_UPLOADER_ROLE_ID for r in member.roles))
 
 
 def is_cta_manager(member) -> bool:
@@ -5045,6 +5052,8 @@ class CombatlogPanelView(discord.ui.View):
 
     @discord.ui.button(label="Subir combatlog", style=discord.ButtonStyle.primary, custom_id="combatlog:upload", emoji="📤")
     async def upload(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_upload_logs(interaction.user):
+            return await interaction.response.send_message("🔒 No tenés permiso para subir logs.", ephemeral=True)
         rows = db_fetchall("SELECT id FROM cta_runs WHERE combatlog_message_id=?", (interaction.message.id,)) if interaction.message else []
         if not rows:
             return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
@@ -5054,8 +5063,8 @@ class CombatlogPanelView(discord.ui.View):
 
     @discord.ui.button(label="Subir chestlog", style=discord.ButtonStyle.secondary, custom_id="combatlog:chestlog", emoji="📦")
     async def chestlog(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_staff_or_council(interaction.user):
-            return await interaction.response.send_message("🔒 Solo el Staff o el Council pueden subir el chestlog.", ephemeral=True)
+        if not can_upload_logs(interaction.user):
+            return await interaction.response.send_message("🔒 No tenés permiso para subir logs.", ephemeral=True)
         rows = db_fetchall("SELECT id FROM cta_runs WHERE combatlog_message_id=?", (interaction.message.id,)) if interaction.message else []
         if not rows:
             return await interaction.response.send_message("No encontré la CTA de este panel.", ephemeral=True)
@@ -5090,8 +5099,8 @@ class ChestlogUploadModal(discord.ui.Modal):
 
 async def cta_chestlog_upload(interaction: discord.Interaction, cta_id: int, files) -> None:
     """Reenvía el chestlog al hilo privado de la CTA. Sin tarea, sin tirada y sin aviso en el hilo público."""
-    if not is_staff_or_council(interaction.user):
-        return await interaction.response.send_message("🔒 Solo el Staff o el Council pueden subir el chestlog.", ephemeral=True)
+    if not can_upload_logs(interaction.user):
+        return await interaction.response.send_message("🔒 No tenés permiso para subir logs.", ephemeral=True)
     if not files:
         return await interaction.response.send_message("❌ No llegó ningún archivo.", ephemeral=True)
     run = cta_run_get(cta_id)
@@ -5114,6 +5123,8 @@ async def cta_chestlog_upload(interaction: discord.Interaction, cta_id: int, fil
 
 async def cta_combatlog_upload(interaction: discord.Interaction, cta_id: int, files) -> None:
     """Envío del formulario: reenvía los archivos al hilo privado, avisa en el hilo público, cierra la tarea y da la tirada."""
+    if not can_upload_logs(interaction.user):
+        return await interaction.response.send_message("🔒 No tenés permiso para subir logs.", ephemeral=True)
     if not files:
         return await interaction.response.send_message("❌ No llegó ningún archivo.", ephemeral=True)
     run = cta_run_get(cta_id)
@@ -8432,7 +8443,8 @@ HELP_SECTIONS = [
         ("/sincronizar-registros", "Staff / Council / Admin", "Busca en Albion el ID, servidor y guild de los registros que quedaron solo con nombre (p. ej. vinculados cuando la API no respondía) y lista los que no pudo verificar."),
         ("/estado-api", "Admin", "Revisa si la API de Albion está respondiendo en cada región (búsqueda de jugadores y lista de la guild), cuánto tarda, el estado de la lista guardada en el bot y cuántos registros/reclutas quedaron pendientes."),
         ("/panel coaching", "Council / Admin", "Publica el panel de coaching: el botón abre un post por persona en el foro de VODs (lo pueden usar Observación y Miembros). Cada VOD (link o video) genera una tarea en el canal del coach de su rol (Dps, Tank, Supp, Healer) y un panel debajo del video con el botón **Puntuar**: el coach de ese rol pone la nota (1 a 10) y la devolución, el VOD queda listo y cobra su tirada. Ya puntuado, el jugador puede apretar **Pedir segunda opinión** (una vez por VOD): se etiqueta al coach de su rol, otro coach propone una nota y solo se cambia si la autoriza el Council; Observación debe subir 3 por semana (lunes a domingo, UTC)."),
-        ("/coaching reporte [semana]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte."),
+        ("/coaching reporte [semana] [publico]", "Council / Staff / Coaching / Opinólogo", "Quién cumplió los 3 VODs semanales (en curso o anterior), quién no, y cuántos VODs subió cada persona (total histórico). Los miembros sin Observación aparecen aparte. Con `publico` la respuesta la ve todo el canal."),
+        ("/coaching sin-vods [publico]", "Council / Staff / Coaching / Opinólogo", "Los de Observación que nunca subieron un VOD (y si tienen post). Con `publico` la respuesta la ve todo el canal."),
         ("/coaching notas [usuario]", "Miembros (las propias) · Staff / Coaching / Opinólogo / Council (las de otro)", "Promedio de las notas (1 a 10) que pusieron los coaches a los VODs del jugador y sus últimas notas. Escala: 7 cumplió su papel, 8-9 más de lo esperado, 10 gameplay de core member. Cada video con nota le da 1 tirada de Wujupón al coach que hizo la review (se cobra al puntuar con el botón del VOD; cambiar la nota no vuelve a pagar). También sale en /stats."),
         ("/coaching nota-lista mayor_a menor_a", "Staff / Coaching / Opinólogo / Council", "Lista de jugadores con promedio de nota de coaching entre esos dos números (incluidos), de mayor a menor."),
         ("/coaching notas-coaches [coach]", "Staff / Coaching / Opinólogo / Council", "Promedio de las notas que pone cada coach y cuántas puso."),
