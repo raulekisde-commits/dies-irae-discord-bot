@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import coaching_db as cdb
+import guildcheck_db as gdb
 import ctautil as cu
 import encargos_db as edb
 from encargos import can_take, is_staff_or_council
@@ -1125,10 +1126,39 @@ class CoachingCog(commands.Cog):
                 return await interaction.followup.send("⚠️ No encuentro el rol Observación en este servidor.", ephemeral=True)
             observers = [m for m in role.members if not m.bot]
             totals = await self.run(cdb.totals)
-            never = sorted((m for m in observers if not totals.get(m.id)), key=lambda x: x.display_name.casefold())
+            never = [m for m in observers if not totals.get(m.id)]
             posts = await asyncio.to_thread(self._posts_for, [m.id for m in never])
-            lines = [f"{m.mention}" + ("" if posts.get(m.id) else " · sin post") for m in never]
-            head = f"🚫 **Coaching · nunca subieron VODs** — **{len(never)}** de **{len(observers)}** en Observación"
+            regs = await self.run(gdb.registered_at_by_user)
+            chars = await self.run(gdb.chars_by_user)
+            kb = await self.run(gdb.kb_cta_presence, interaction.guild.id, chars)
+            signups = await self.run(gdb.cta_signups, interaction.guild.id)
+            esc = discord.utils.escape_markdown
+            pct = lambda a, b: f"{a * 100 // b}%" if b else "—"
+
+            def since_of(m) -> Optional[datetime]:
+                """Ingreso = cuando lo reclutaron o vinculó su cuenta de Albion; si no tiene, cuando entró al Discord."""
+                when = regs.get(m.id, (None, None))[0] or getattr(m, "joined_at", None)
+                return when.replace(tzinfo=timezone.utc) if when is not None and when.tzinfo is None else when
+
+            def line(m) -> str:
+                since, char = since_of(m), regs.get(m.id, (None, None))[1]
+                out = f"{m.mention} · " + (f"**{esc(char)}**" if char else "*sin Albion vinculado*")
+                if since is None:
+                    return out + " · ingreso desconocido" + ("" if posts.get(m.id) else " · sin post")
+                kb_tot = sum(1 for when, _p in kb if when >= since)
+                kb_in = sum(1 for when, present in kb if when >= since and m.id in present)
+                cta_tot = sum(1 for when, _s in signups if when >= since)
+                cta_in = sum(1 for when, signed in signups if when >= since and m.id in signed)
+                return (out + f" · en la guild <t:{int(since.timestamp())}:R>"
+                        + f"\n   🗡️ killboard **{kb_in}/{kb_tot}** ({pct(kb_in, kb_tot)}) · 📝 anotado **{cta_in}/{cta_tot}** ({pct(cta_in, cta_tot)})"
+                        + ("" if posts.get(m.id) else " · sin post"))
+
+            far = datetime.max.replace(tzinfo=timezone.utc)
+            never.sort(key=lambda m: (since_of(m) or far, m.display_name.casefold()))          # los más antiguos primero
+            lines = [line(m) for m in never]
+            head = (f"🚫 **Coaching · nunca subieron VODs** — **{len(never)}** de **{len(observers)}** en Observación\n"
+                    "Ingreso = cuando lo reclutaron o vinculó su cuenta de Albion. Asistencia desde que entró: "
+                    "🗡️ CTA con killboard en las que aparece · 📝 CTA a las que se anotó.")
             embeds = [discord.Embed(title="🚫 Nunca subieron" if i == 0 else "🚫 Nunca subieron (cont.)", description=chunk, color=discord.Color.red())
                       for i, chunk in enumerate(self._chunks(lines) or ["*Nadie: todos subieron al menos uno.* 🎉"])]
             await self._send_embeds(interaction, head, embeds, publico)

@@ -407,9 +407,32 @@ class CoachingDiscordTests(DiscordBase):
         run(self.cog.coaching_sin_vods.callback(self.cog, i, True))
         sent = i.response.sent[-1][1]
         body = "\n".join(str(getattr(e, "description", "")) for e in sent["embeds"])
-        self.assertIn(f"<@{lazy.id}> · sin post", body)
+        self.assertIn(f"<@{lazy.id}> · *sin Albion vinculado*", body)
+        self.assertIn("sin post", body)
         self.assertNotIn(f"<@{self.novato.id}>", body)
         self.assertFalse(sent.get("ephemeral"))
+
+    def test_sin_vods_muestra_nick_antiguedad_y_asistencia(self):
+        import sqlite3
+        import registration_db as rdb
+        rdb.init_schema(self.db)
+        lazy = discord.Member(700000000000000029, "Vago3", roles=[self.r_obs], guild=self.guild)
+        self.guild.members.append(lazy)
+        rdb.admin_link(self.db, lazy.id, "VagoAlbion", self.coach.id)
+        c = sqlite3.connect(self.db)
+        c.execute("UPDATE albion_links SET registered_at='2026-01-01T00:00:00+00:00' WHERE discord_id=?", (lazy.id,))
+        c.executescript("CREATE TABLE IF NOT EXISTS cta_runs(id INTEGER PRIMARY KEY, guild_id INTEGER, status TEXT, closes_at TEXT);"
+                        "CREATE TABLE IF NOT EXISTS cta_positions(cta_id INTEGER, user_id INTEGER);")
+        c.execute("INSERT INTO cta_runs VALUES (1, ?, 'closed', '2025-12-01T00:00:00+00:00')", (GUILD_ID,))   # antes de entrar: no cuenta
+        c.execute("INSERT INTO cta_runs VALUES (2, ?, 'closed', '2026-02-01T00:00:00+00:00')", (GUILD_ID,))
+        c.execute("INSERT INTO cta_runs VALUES (3, ?, 'closed', '2026-03-01T00:00:00+00:00')", (GUILD_ID,))
+        c.execute("INSERT INTO cta_positions VALUES (2, ?)", (lazy.id,))
+        c.commit(); c.close()
+        i = self.inter(self.coach)
+        run(self.cog.coaching_sin_vods.callback(self.cog, i))
+        body = "\n".join(str(getattr(e, "description", "")) for e in i.response.sent[-1][1]["embeds"])
+        self.assertIn(f"<@{lazy.id}> · **VagoAlbion** · en la guild <t:1767225600:R>", body)
+        self.assertIn("📝 anotado **1/2** (50%)", body)
 
     def test_reporte_largo_se_parte_en_varios_mensajes(self):
         for k in range(150):
