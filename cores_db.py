@@ -7,7 +7,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from dbutil import connect, utcnow_iso, write_tx
 
-KINDS = ("core", "vortex")
+KINDS = ("core", "vortex")                         # con rareza (y en /stats)
+FIXED_SPINS = {"arania": 2}                        # sin rareza: siempre las mismas tiradas (la rareza guardada no se usa)
+ALL_KINDS = KINDS + tuple(FIXED_SPINS)
 RARITIES = ("verde", "azul", "morado", "dorado")
 RARITY_LABEL = {"verde": "Verde", "azul": "Azul", "morado": "Morado", "dorado": "Dorado"}
 RARITY_EMOJI = {"verde": "🟢", "azul": "🔵", "morado": "🟣", "dorado": "🟡"}
@@ -17,14 +19,16 @@ KIND_RARITY_SPINS = {"core": RARITY_SPINS, "vortex": {"verde": 3, "azul": 6, "mo
 
 def spins_for(kind: str, rarity: str) -> int:
     """Tiradas de Wujupón que da un orbe según tipo y rareza."""
+    if kind in FIXED_SPINS:
+        return FIXED_SPINS[kind]
     return KIND_RARITY_SPINS.get(kind, RARITY_SPINS)[rarity]
-KIND_LABEL = {"core": "Core", "vortex": "Vortex"}
+KIND_LABEL = {"core": "Core", "vortex": "Vortex", "arania": "Araña"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orb_reports (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id    INTEGER NOT NULL,
-    kind        TEXT NOT NULL,                 -- core | vortex
+    kind        TEXT NOT NULL,                 -- core | vortex | arania
     user_id     INTEGER NOT NULL,              -- quien lo reportó
     rarity      TEXT NOT NULL,                 -- verde | azul | morado | dorado
     share       INTEGER NOT NULL DEFAULT 0,    -- quiere repartirlo
@@ -69,7 +73,7 @@ def mates_of(report: dict) -> List[int]:
 
 def create(db_path: str, *, guild_id: int, kind: str, user_id: int, rarity: str, share: bool,
            mates: Iterable[int] = ()) -> int:
-    if kind not in KINDS or rarity not in RARITIES:
+    if kind not in ALL_KINDS or rarity not in RARITIES:
         raise ValueError("tipo o rareza inválidos")
     conn = connect(db_path)
     try:
@@ -223,6 +227,23 @@ def top(db_path: str, kind: str) -> List[Tuple[int, int, Dict[str, int]]]:
         per.setdefault(int(r["user_id"]), {x: 0 for x in RARITIES})[r["rarity"]] = int(r["n"])
     out = [(u, sum(c.values()), c) for u, c in per.items()]
     out.sort(key=lambda t: (-t[1], -t[2].get("dorado", 0), -t[2].get("morado", 0)))
+    return out
+
+
+def spins_by_kind(db_path: str) -> Dict[str, Tuple[int, int]]:
+    """{tipo: (reportes, tiradas)}: cuántas tiradas de Wujupón se dieron por cada comando (aprobados o repartidos)."""
+    out = {k: (0, 0) for k in ALL_KINDS}
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT r.kind, COUNT(DISTINCT r.id) AS n, COALESCE(SUM(a.spins), 0) AS spins FROM orb_reports r "
+                            "LEFT JOIN orb_awards a ON a.report_id=r.id WHERE r.status IN ('approved','shared') GROUP BY r.kind").fetchall()
+    except Exception:                                  # tablas todavía no creadas
+        return out
+    finally:
+        conn.close()
+    for r in rows:
+        if r["kind"] in out:
+            out[r["kind"]] = (int(r["n"]), int(r["spins"]))
     return out
 
 
