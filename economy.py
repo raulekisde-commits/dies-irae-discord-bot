@@ -745,7 +745,8 @@ class EconomyCog(commands.Cog):
                       app_commands.Choice(name="⚔ Rol secundario: los que menos juegan su main", value="rolsec"),
                       app_commands.Choice(name="🔆 Foco donado", value="foco"),
                       app_commands.Choice(name="🔮 Cores reportados", value="core"),
-                      app_commands.Choice(name="🌀 Vortex reportados", value="vortex")])
+                      app_commands.Choice(name="🌀 Vortex reportados", value="vortex"),
+                      app_commands.Choice(name="🎰 Wujupón dado por /core, /vortex y /arania", value="orbspins")])
 
     @app_commands.command(name="top", description="Todos los tops: Wuju Coins, kills, muertes, primer engage, IP, winrate y tareas")
     @app_commands.describe(tipo="Qué top ver (si no elegís, el de Wuju Coins)")
@@ -785,6 +786,8 @@ class EconomyCog(commands.Cog):
             return await self.send_top_foco(interaction)
         if key in ("core", "vortex"):
             return await self.send_top_orbs(interaction, key)
+        if key == "orbspins":
+            return await self.send_orb_spins(interaction)
         if key == "rolsec":
             other = self.bot.get_cog("MainRoleCog")
             if other is None:
@@ -891,6 +894,16 @@ class EconomyCog(commands.Cog):
         await self._send_paged_top(interaction, f"{'🔮' if kind == 'core' else '🌀'} Top {label.lower()} reportados", lines,
                                    f"Todavía nadie reportó un {label.lower()} aprobado.", discord.Color.purple(),
                                    f"Aprobados o repartidos · total {sum(t for _u, t, _c in rows)}" if rows else "")
+
+    async def send_orb_spins(self, interaction: discord.Interaction):
+        """`/top orbspins`: cuántas tiradas de Wujupón se dieron por /core, /vortex y /arania."""
+        import cores_db as odb
+        data = await self._db(odb.spins_by_kind)
+        emoji = {"core": "🔮", "vortex": "🌀", "arania": "🕷️"}
+        lines = [f"{emoji.get(k, '•')} **/{k}** — **{t}** tirada(s) · {n} reporte(s)" for k, (n, t) in data.items()]
+        total = sum(t for _n, t in data.values())
+        await self._send_paged_top(interaction, "🎰 Wujupón dado por comando", lines, "Todavía no se dio nada.",
+                                   discord.Color.gold(), f"Aprobados o repartidos · total {total} tirada(s)")
 
     eco_g = app_commands.Group(name="eco", description="Administración de Wuju Coins y permisos económicos", guild_only=True)
 

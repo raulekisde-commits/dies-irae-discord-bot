@@ -1,10 +1,11 @@
-"""/core y /vortex: un miembro reporta un orbe con foto; el Staff lo aprueba, rechaza, edita o reparte desde un panel.
+"""/core, /vortex y /arania: un miembro reporta un orbe con foto; el Staff lo aprueba, rechaza, edita o reparte desde un panel.
 
 - El comando pide los tres datos (repartir, rareza y foto); la respuesta al miembro es privada.
 - El panel se publica en el canal «cores» (configurable con /canal) con la foto reenviada y los botones.
 - Aprobar: core 1/2/3/5 · vortex 3/6/10/15 tiradas de Wujupón (Verde/Azul/Morado/Dorado) a quien lo reportó. Si pidió repartirlo, se reparte
   directamente entre quien lo reportó y los compañeros que puso: a cada uno le toca la parte entera y el sobrante se sortea.
   Si hay más personas que tiradas, se sortean todas.
+- /arania: solo foto y compañeros opcionales; siempre 2 tiradas (si son más de 2 personas, se sortean).
 - Todos los avisos van al canal general etiquetando a las personas.
 - /stats cuenta, por rareza, cuántos orbes le dieron tiradas a cada persona."""
 import asyncio
@@ -38,13 +39,28 @@ RARITY_COLOR = {"verde": discord.Color.green(), "azul": discord.Color.blue(), "m
 MAX_REASON = 300
 MAX_MATES = 24                                     # con quien lo reportó, 25 (lo mismo que deja elegir el botón Repartir)
 MENTION_RE = re.compile(r"<@!?(\d+)>")
+ARANIA_TAUNT = "Y vos fracasado que estas mirando esto porque no te pones a pushear?"   # al final del aviso de aprobación de /arania
 
 SHARE_CHOICES = [app_commands.Choice(name="Sí", value="si"), app_commands.Choice(name="No", value="no")]
 RARITY_CHOICES = [app_commands.Choice(name=odb.RARITY_LABEL[r], value=r) for r in odb.RARITIES]
 
 
 def orb_name(report: dict) -> str:
+    if report["kind"] in odb.FIXED_SPINS:                  # /arania: sin rareza
+        return odb.KIND_LABEL[report["kind"]]
     return f"{odb.KIND_LABEL[report['kind']]} {odb.RARITY_LABEL[report['rarity']]}"
+
+
+def _fem(report: dict) -> bool:
+    return report["kind"] == "arania"
+
+
+def _del(report: dict) -> str:
+    return "de la" if _fem(report) else "del"
+
+
+def _o(report: dict) -> str:
+    return "a" if _fem(report) else "o"
 
 
 def is_member(m) -> bool:
@@ -54,10 +70,12 @@ def is_member(m) -> bool:
 def build_embed(report: dict, image_url: Optional[str] = None, awards: Optional[Dict[int, int]] = None,
                 actor_id: Optional[int] = None) -> discord.Embed:
     st = report["status"]
-    emb = discord.Embed(title=f"{odb.RARITY_EMOJI[report['rarity']]} {orb_name(report)} · #{report['id']}",
-                        color=STATUS_COLOR.get(st) or RARITY_COLOR[report["rarity"]])
+    fixed = report["kind"] in odb.FIXED_SPINS
+    emb = discord.Embed(title=f"{'🕷️' if fixed else odb.RARITY_EMOJI[report['rarity']]} {orb_name(report)} · #{report['id']}",
+                        color=STATUS_COLOR.get(st) or (discord.Color.dark_grey() if fixed else RARITY_COLOR[report["rarity"]]))
     emb.add_field(name="Reportado por", value=f"<@{report['user_id']}>", inline=True)
-    emb.add_field(name="Rareza", value=odb.RARITY_LABEL[report["rarity"]], inline=True)
+    if not fixed:
+        emb.add_field(name="Rareza", value=odb.RARITY_LABEL[report["rarity"]], inline=True)
     emb.add_field(name="¿Lo quiere repartir?", value="Sí" if report["share"] else "No", inline=True)
     mates = odb.mates_of(report)
     if mates:
@@ -77,11 +95,11 @@ def build_embed(report: dict, image_url: Optional[str] = None, awards: Optional[
 def share_text(report: dict, awards: Dict[int, int], participants: List[int]) -> str:
     total = odb.spins_for(report["kind"], report["rarity"])
     n = len(participants)
-    lines = [f"🎲 **Reparto del {orb_name(report)}** de <@{report['user_id']}>: **{total}** tirada(s) de Wujupón entre **{n}** persona(s)."]
+    lines = [f"🎲 **Reparto {_del(report)} {orb_name(report)}** de <@{report['user_id']}>: **{total}** tirada(s) de Wujupón entre **{n}** persona(s)."]
     kind = odb.KIND_LABEL[report["kind"]].lower()
     mates = odb.mates_of(report)
     if mates:
-        lines.append(f"👥 Las personas del reparto las eligió <@{report['user_id']}> al poner el {kind}: "
+        lines.append(f"👥 Las personas del reparto las eligió <@{report['user_id']}> al poner {'la' if _fem(report) else 'el'} {kind}: "
                      + " ".join(f"<@{u}>" for u in mates))
     added = [u for u in participants if u != int(report["user_id"]) and u not in mates]
     if added:
@@ -97,6 +115,8 @@ def share_text(report: dict, awards: Dict[int, int], participants: List[int]) ->
     if left:
         lines.append("Sin premio esta vez: " + " ".join(f"<@{u}>" for u in left))
     lines.append("¡Ya se les dieron las tiradas, gracias por aportar! 💚")
+    if _fem(report):
+        lines.append(ARANIA_TAUNT)
     return "\n".join(lines)
 
 
@@ -161,6 +181,9 @@ class OrbPanelView(discord.ui.View):
         report = await self.cog.pending_or_say(interaction, interaction.message)
         if report is None:
             return
+        if report["kind"] in odb.FIXED_SPINS:
+            return await _say(interaction, f"ℹ️ La **{orb_name(report)}** no tiene rareza: siempre da "
+                                           f"{odb.spins_for(report['kind'], report['rarity'])} tiradas.")
         await _say(interaction, f"✏️ Elegí la rareza correcta del **{orb_name(report)}** #{report['id']}.",
                    view=EditView(self.cog, interaction.message, report["rarity"]))
 
@@ -306,7 +329,8 @@ class CoresCog(commands.Cog):
         if not is_member(interaction.user):
             return await _say(interaction, f"🔒 Solo los miembros pueden usar /{kind}.")
         if repartir not in ("si", "no") or rareza not in odb.RARITIES or foto is None:
-            return await _say(interaction, "❌ Tenés que completar todos los datos: si lo querés repartir, la rareza y la foto.")
+            return await _say(interaction, "❌ Tenés que completar todos los datos: si lo querés repartir, la rareza y la foto."
+                              if kind not in odb.FIXED_SPINS else "❌ Tenés que subir la foto.")
         ctype = (getattr(foto, "content_type", None) or "").lower()
         fname = (getattr(foto, "filename", "") or "").lower()
         if not (ctype.startswith("image/") or fname.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))):
@@ -364,6 +388,15 @@ class CoresCog(commands.Cog):
     async def vortex_cmd(self, interaction: discord.Interaction, repartir: app_commands.Choice[str], rareza: app_commands.Choice[str],
                          foto: discord.Attachment, companeros: Optional[str] = None):
         await self.submit(interaction, "vortex", repartir.value, rareza.value, foto, companeros)
+
+    @app_commands.command(name="arania", description="Reportar una araña con foto: 2 tiradas de Wujupón (se sortean si son más de 2)")
+    @app_commands.describe(foto="Foto de la araña",
+                           companeros="Opcional: con quiénes repartirla (@persona @persona)")
+    @app_commands.rename(companeros="compañeros")
+    @app_commands.guild_only()
+    async def arania_cmd(self, interaction: discord.Interaction, foto: discord.Attachment, companeros: Optional[str] = None):
+        repartir = "si" if companeros and companeros.strip() else "no"
+        await self.submit(interaction, "arania", repartir, odb.RARITIES[0], foto, companeros)
 
     # ---------- panel ----------
     async def pending_or_say(self, interaction: discord.Interaction, message) -> Optional[dict]:
@@ -448,8 +481,9 @@ class CoresCog(commands.Cog):
         done = await self._decide(interaction, message, "approved", {int(report["user_id"]): n})
         if done is None:
             return
-        await self.announce(f"✅ <@{done['user_id']}> tu **{orb_name(done)}** fue aprobado: ya se te dieron **{n}** tirada(s) de "
-                            f"Wujupón 🎰. ¡Gracias por aportar a la guild! 💚", message, done["id"])
+        await self.announce(f"✅ <@{done['user_id']}> tu **{orb_name(done)}** fue aprobad{_o(done)}: ya se te dieron **{n}** tirada(s) de "
+                            f"Wujupón 🎰. ¡Gracias por aportar a la guild! 💚" + (f"\n{ARANIA_TAUNT}" if _fem(done) else ""),
+                            message, done["id"])
         await _say(interaction, f"✅ Aprobado: {n} tirada(s) para <@{done['user_id']}>.")
 
     async def reject(self, interaction: discord.Interaction, message, reason: str):
@@ -460,7 +494,7 @@ class CoresCog(commands.Cog):
         done = await self._decide(interaction, message, "rejected", {}, reason[:MAX_REASON] or None)
         if done is None:
             return
-        await self.announce(f"❌ <@{done['user_id']}> tu **{orb_name(done)}** fue rechazado."
+        await self.announce(f"❌ <@{done['user_id']}> tu **{orb_name(done)}** fue rechazad{_o(done)}."
                             + (f"\n📝 Motivo: {reason[:MAX_REASON]}" if reason else "")
                             + "\nSi creés que es un error, hablá con el Staff.", message, done["id"])
         await _say(interaction, "❌ Reporte rechazado.")
