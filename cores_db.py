@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from dbutil import connect, utcnow_iso, write_tx
 
 KINDS = ("core", "vortex")                         # con rareza (y en /stats)
-FIXED_SPINS = {"arania": 2}                        # sin rareza: siempre las mismas tiradas (la rareza guardada no se usa)
+FIXED_SPINS = {"arania": 1}                        # sin rareza: siempre las mismas tiradas (la rareza guardada no se usa)
 ALL_KINDS = KINDS + tuple(FIXED_SPINS)
 RARITIES = ("verde", "azul", "morado", "dorado")
 RARITY_LABEL = {"verde": "Verde", "azul": "Azul", "morado": "Morado", "dorado": "Dorado"}

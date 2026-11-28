@@ -5,7 +5,7 @@
 - Aprobar: core 1/2/3/5 · vortex 3/6/10/15 tiradas de Wujupón (Verde/Azul/Morado/Dorado) a quien lo reportó. Si pidió repartirlo, se reparte
   directamente entre quien lo reportó y los compañeros que puso: a cada uno le toca la parte entera y el sobrante se sortea.
   Si hay más personas que tiradas, se sortean todas.
-- /arania: solo foto y compañeros opcionales; siempre 2 tiradas (si son más de 2 personas, se sortean).
+- /arania: solo foto y compañeros opcionales; siempre 1 tirada (si son más de 1 persona, se sortea).
 - Todos los avisos van al canal general etiquetando a las personas.
 - /stats cuenta, por rareza, cuántos orbes le dieron tiradas a cada persona."""
 import asyncio
@@ -389,7 +389,7 @@ class CoresCog(commands.Cog):
                          foto: discord.Attachment, companeros: Optional[str] = None):
         await self.submit(interaction, "vortex", repartir.value, rareza.value, foto, companeros)
 
-    @app_commands.command(name="arania", description="Reportar una araña con foto: 2 tiradas de Wujupón (se sortean si son más de 2)")
+    @app_commands.command(name="arania", description="Reportar una araña con foto: 1 tirada de Wujupón (se sortea si son varios)")
     @app_commands.describe(foto="Foto de la araña",
                            companeros="Opcional: con quiénes repartirla (@persona @persona)")
     @app_commands.rename(companeros="compañeros")
